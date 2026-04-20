@@ -1,9 +1,9 @@
 package openai
 
 import (
-	"Pulse/compoents/schema"
 	"context"
 	"fmt"
+	"pulse/compoents/schema"
 
 	"net/http"
 	"time"

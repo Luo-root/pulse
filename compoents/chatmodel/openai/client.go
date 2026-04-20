@@ -1,12 +1,12 @@
 package openai
 
 import (
-	"Pulse/compoents/schema"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"pulse/compoents/schema"
 
 	"net/http"
 )

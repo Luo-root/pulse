@@ -1,7 +1,7 @@
 package node
 
 import (
-	"Pulse/compoents/schema"
+	"pulse/compoents/schema"
 )
 
 // Node 工作流节点

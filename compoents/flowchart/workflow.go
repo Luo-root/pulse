@@ -1,8 +1,8 @@
 package flowchart
 
 import (
-	"Pulse/compoents/flowchart/node"
-	"Pulse/compoents/schema"
+	"pulse/compoents/flowchart/node"
+	"pulse/compoents/schema"
 )
 
 // Workflow 工作流引擎

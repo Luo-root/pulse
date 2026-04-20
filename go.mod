@@ -1,3 +1,3 @@
-module Pulse
+module pulse
 
 go 1.25

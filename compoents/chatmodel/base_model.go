@@ -1,8 +1,8 @@
 package chatmodel
 
 import (
-	"Pulse/compoents/schema"
 	"context"
+	"pulse/compoents/schema"
 )
 
 type BaseModel interface {

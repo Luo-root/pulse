@@ -1,7 +1,7 @@
 package node
 
 import (
-	"Pulse/compoents/schema"
+	"pulse/compoents/schema"
 )
 
 // Aspect 切面接口

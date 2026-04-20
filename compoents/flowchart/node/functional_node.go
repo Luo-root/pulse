@@ -1,9 +1,9 @@
 package node
 
 import (
-	"Pulse/compoents/chatmodel"
-	"Pulse/compoents/schema"
 	"context"
+	"pulse/compoents/chatmodel"
+	"pulse/compoents/schema"
 )
 
 // NewConditionNode 创建【条件判断节点】
