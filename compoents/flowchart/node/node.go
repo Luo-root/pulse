@@ -1,7 +1,7 @@
 package node
 
 import (
-	"my-GoAI/internal/agent_framework/components/schema"
+	"Pulse/compoents/schema"
 )
 
 // Node 工作流节点
