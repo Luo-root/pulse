@@ -1,5 +1,7 @@
 package schema
 
+import "context"
+
 // FlowContext 工作流上下文（高级名称）
 // 支持：
 // 1. 数据多订阅共享
@@ -10,10 +12,19 @@ type FlowContext struct {
 	slots *SafeMap[string, *DataSlot]
 }
 
+type ReadOnlyFlowContext interface {
+	Get(key string) (any, bool)
+}
+
 func NewFlowContext() *FlowContext {
 	return &FlowContext{
 		slots: new(SafeMap[string, *DataSlot]),
 	}
+}
+
+func (c *FlowContext) Get(key string) (any, bool) {
+	slot, ok := c.slots.Get(key)
+	return slot, ok
 }
 
 // 获取或创建数据槽
@@ -32,15 +43,19 @@ func (c *FlowContext) Set(key string, value any) {
 }
 
 // Wait 等待数据（多节点可同时等待同一个key）
-func (c *FlowContext) Wait(key string) any {
-	return c.slot(key).Get()
+func (c *FlowContext) Wait(ctx context.Context, key string) (any, error) {
+	return c.slot(key).Get(ctx)
 }
 
 // WaitAll 等待多个数据
-func (c *FlowContext) WaitAll(keys ...string) map[string]any {
+func (c *FlowContext) WaitAll(ctx context.Context, keys ...string) (map[string]any, error) {
 	result := make(map[string]any, len(keys))
 	for _, k := range keys {
-		result[k] = c.Wait(k)
+		val, err := c.Wait(ctx, k)
+		if err != nil {
+			return nil, err // 任意一个等待取消，直接返回错误
+		}
+		result[k] = val
 	}
-	return result
+	return result, nil
 }

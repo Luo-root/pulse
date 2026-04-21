@@ -1,6 +1,6 @@
 package openai
 
-import "github.com/Luo-root/pulse/compoents/schema"
+import "github.com/Luo-root/pulse/components/schema"
 
 type ChatModelResponse struct {
 	ID      string       `json:"id"`      // 对话ID，随便看看

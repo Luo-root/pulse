@@ -9,7 +9,7 @@ import (
 
 	"net/http"
 
-	"github.com/Luo-root/pulse/compoents/schema"
+	"github.com/Luo-root/pulse/components/schema"
 )
 
 type Client struct {
