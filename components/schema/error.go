@@ -10,7 +10,6 @@ var (
 	ErrWorkflowResetRunning     = errors.New("cannot reset a running workflow")
 	ErrWorkflowSubmitNodeToPool = errors.New("failed to submit node to pool")
 	ErrWorkflowClosed           = errors.New("workflow has been closed and cannot be used")
-	ErrNoNodesSubmitted         = errors.New("no nodes were successfully submitted to the pool")
 )
 
 // LoopStatus 循环执行状态
@@ -84,15 +83,6 @@ func NewLoopCancelledResult(iterations int, err error) *LoopResult {
 		LoopStatusCancelled,
 		iterations,
 		fmt.Sprintf("cancelled: %v", err),
-	)
-}
-
-// NewLoopConditionFailedResult 创建条件不满足的循环结果
-func NewLoopConditionFailedResult(iterations int) *LoopResult {
-	return NewLoopResult(
-		LoopStatusConditionFailed,
-		iterations,
-		fmt.Sprintf("condition_failed: executed %d iterations", iterations),
 	)
 }
 

@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Luo-root/pulse/components/chatmodel"
@@ -97,6 +98,15 @@ func NewLoopNode(
 				// 检查context是否取消
 				select {
 				case <-ctx.Done():
+					// 区分超时和其他取消原因
+					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						result := schema.NewLoopTimeoutResult(iteration)
+						return map[string]any{
+							outputKey: result,
+						}, schema.ErrLoopTimeout
+					}
+
+					// 其他取消原因（手动取消、父context取消等）
 					result := schema.NewLoopCancelledResult(iteration, ctx.Err())
 					return map[string]any{
 						outputKey: result,
@@ -114,7 +124,8 @@ func NewLoopNode(
 
 				// 检查循环条件
 				if !condition(flowCtx) {
-					result := schema.NewLoopConditionFailedResult(iteration)
+					// 条件不满足，退出循环（正常完成）
+					result := schema.NewLoopCompletedResult(iteration)
 					return map[string]any{
 						outputKey: result,
 					}, nil

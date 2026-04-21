@@ -14,10 +14,10 @@ import (
 type RoleType string
 
 const (
-	Assistant RoleType = "assistant"
-	User      RoleType = "user"
-	System    RoleType = "system"
-	Tool      RoleType = "tool"
+	AssistantRole RoleType = "assistant"
+	UserRole      RoleType = "user"
+	SystemRole    RoleType = "system"
+	ToolRole      RoleType = "tool"
 )
 
 type Message struct {
@@ -73,7 +73,7 @@ func (m *Message) Clone() Message {
 // SystemMessage 返回一个role为system的信息
 func SystemMessage(content string) *Message {
 	return &Message{
-		Role:    System,
+		Role:    SystemRole,
 		Content: content,
 	}
 }
@@ -81,7 +81,7 @@ func SystemMessage(content string) *Message {
 // UserMessage 返回一个role为user的信息
 func UserMessage(content string) *Message {
 	return &Message{
-		Role:    User,
+		Role:    UserRole,
 		Content: content,
 	}
 }
@@ -89,7 +89,7 @@ func UserMessage(content string) *Message {
 // AssistantMessage 返回一个role为user的信息
 func AssistantMessage(content string) *Message {
 	return &Message{
-		Role:    Assistant,
+		Role:    AssistantRole,
 		Content: content,
 	}
 }
@@ -97,7 +97,7 @@ func AssistantMessage(content string) *Message {
 // ToolMessage 返回一个role为tool的信息
 func ToolMessage(content string) *Message {
 	return &Message{
-		Role:    Tool,
+		Role:    ToolRole,
 		Content: content,
 	}
 }
