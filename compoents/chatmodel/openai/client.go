@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"pulse/compoents/schema"
 
 	"net/http"
+
+	"github.com/Luo-root/pulse/compoents/schema"
 )
 
 type Client struct {

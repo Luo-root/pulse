@@ -3,10 +3,11 @@ package openai
 import (
 	"context"
 	"fmt"
-	"pulse/compoents/schema"
 
 	"net/http"
 	"time"
+
+	"github.com/Luo-root/pulse/compoents/schema"
 )
 
 type ResponseFormatType string

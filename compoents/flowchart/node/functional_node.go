@@ -2,8 +2,9 @@ package node
 
 import (
 	"context"
-	"pulse/compoents/chatmodel"
-	"pulse/compoents/schema"
+
+	"github.com/Luo-root/pulse/compoents/chatmodel"
+	"github.com/Luo-root/pulse/compoents/schema"
 )
 
 // NewConditionNode 创建【条件判断节点】

@@ -2,7 +2,8 @@ package chatmodel
 
 import (
 	"context"
-	"pulse/compoents/schema"
+
+	"github.com/Luo-root/pulse/compoents/schema"
 )
 
 type BaseModel interface {

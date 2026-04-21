@@ -1,8 +1,8 @@
 package flowchart
 
 import (
-	"pulse/compoents/flowchart/node"
-	"pulse/compoents/schema"
+	"github.com/Luo-root/pulse/compoents/flowchart/node"
+	"github.com/Luo-root/pulse/compoents/schema"
 )
 
 // Workflow 工作流引擎

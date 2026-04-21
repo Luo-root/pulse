@@ -1,7 +1,7 @@
 package node
 
 import (
-	"pulse/compoents/schema"
+	"github.com/Luo-root/pulse/compoents/schema"
 )
 
 // Node 工作流节点
