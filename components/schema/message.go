@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -29,18 +30,27 @@ type Message struct {
 	Partial   bool       `json:"partial,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
-	Usage *Usage
+	ToolResults []ToolResult `json:"tool_results,omitempty"`
+	Usage       *Usage       `json:"-"`
 }
 
 type ToolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"`
+	Index    int          `json:"index,omitempty"`
 	Function FunctionCall `json:"function"`
 }
 
 type FunctionCall struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+}
+
+// ToolResult 工具执行结果
+type ToolResult struct {
+	CallID  string `json:"call_id"`  // 对应 ToolCall.ID
+	Content string `json:"content"`  // 结果内容（JSON字符串或纯文本）
+	IsError bool   `json:"is_error"` // 是否错误（Claude支持）
 }
 
 // Clone 深拷贝
@@ -56,6 +66,12 @@ func (m *Message) Clone() Message {
 	if m.ToolCalls != nil {
 		cloned.ToolCalls = make([]ToolCall, len(m.ToolCalls))
 		copy(cloned.ToolCalls, m.ToolCalls)
+	}
+
+	// 深拷贝切片
+	if m.ToolResults != nil {
+		cloned.ToolResults = make([]ToolResult, len(m.ToolResults))
+		copy(cloned.ToolResults, m.ToolResults)
 	}
 
 	// 深拷贝指针
@@ -101,6 +117,8 @@ func ToolMessage(content string) *Message {
 		Content: content,
 	}
 }
+
+// TODO: StreamReader需要适配工具调用
 
 // StreamReader 流式消息读取器
 type StreamReader struct {
@@ -182,8 +200,9 @@ type Choice struct {
 }
 
 type Delta struct {
-	Content string `json:"content"`
-	Role    string `json:"role,omitempty"`
+	Content   string     `json:"content"`
+	Role      string     `json:"role,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
 type Usage struct {
@@ -227,7 +246,7 @@ func StreamReception(resp *http.Response) (*StreamReader, error) {
 			if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
 				continue
 			}
-
+			fmt.Println(streamResp)
 			if len(streamResp.Choices) == 0 {
 				continue
 			}
@@ -236,16 +255,35 @@ func StreamReception(resp *http.Response) (*StreamReader, error) {
 			// 设置角色（第一条有效）
 			if choice.Delta.Role != "" {
 				msg.Role = RoleType(choice.Delta.Role)
+
 			}
 
-			// 空内容不发送！
-			content := choice.Delta.Content
-			if content == "" {
-				continue
+			if choice.Delta.Content != "" {
+				msg.Content = choice.Delta.Content
+			} else {
+				msg.Content = ""
 			}
 
-			// 赋值内容
-			msg.Content = content
+			if len(choice.Delta.ToolCalls) > 0 {
+				for _, tc := range choice.Delta.ToolCalls {
+					idx := tc.Index
+					for len(msg.ToolCalls) <= idx {
+						msg.ToolCalls = append(msg.ToolCalls, ToolCall{})
+					}
+					if tc.Function.Arguments != "" {
+						msg.ToolCalls[idx].Function.Arguments += tc.Function.Arguments
+					}
+					if tc.ID != "" {
+						msg.ToolCalls[idx].ID = tc.ID
+					}
+					if tc.Type != "" {
+						msg.ToolCalls[idx].Type = tc.Type
+					}
+					if tc.Function.Name != "" {
+						msg.ToolCalls[idx].Function.Name = tc.Function.Name
+					}
+				}
+			}
 
 			// 安全赋值 usage
 			if streamResp.Choices[0].Usage != nil {
@@ -253,7 +291,7 @@ func StreamReception(resp *http.Response) (*StreamReader, error) {
 			}
 
 			// 发送到通道
-			reader.streamChan <- msg
+			reader.streamChan <- msg.Clone()
 		}
 	}()
 

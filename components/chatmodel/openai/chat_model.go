@@ -31,7 +31,7 @@ type ChatModelConfig struct {
 	// 是否以流式方式返回响应，默认 false
 	Stream bool `json:"stream,omitempty"`
 	// 模型可调用的工具列表, 最大长度 128
-	Tools []Tool `json:"tools,omitempty"`
+	Tools []schema.Tool `json:"-"`
 	// 用于缓存相似请求的响应以优化缓存命中率。给长系统提示词 / 长记忆做缓存,让速度变快、省钱
 	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 	// 用于检测可能违反使用政策的用户的稳定标识符。应为唯一标识每个用户的字符串。建议对用户名或邮箱进行哈希处理以避免发送可识别信息
@@ -73,6 +73,21 @@ type ToolFunction struct {
 	Parameters any `json:"parameters"`
 	// 函数功能描述
 	Description string `json:"description"`
+}
+
+func SchemaToOpenAI(tools []schema.Tool) []Tool {
+	result := make([]Tool, len(tools))
+	for i, t := range tools {
+		result[i] = Tool{
+			Type: Function, // "function"
+			Function: ToolFunction{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.Parameters,
+			},
+		}
+	}
+	return result
 }
 
 type ChatModel struct {

@@ -23,9 +23,50 @@ type Header struct {
 	APIKey  string
 }
 
+// client.go 新增：schema.Message → openai 可发送的消息
+
+type APIMessage struct {
+	Role       string            `json:"role"`
+	Content    string            `json:"content"`
+	Name       string            `json:"name,omitempty"`
+	ToolCalls  []schema.ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"` // ← 新增：tool 角色时需要
+}
+
+func toAPIMessages(messages []*schema.Message) []APIMessage {
+	result := make([]APIMessage, len(messages))
+	for i, m := range messages {
+		am := APIMessage{
+			Role:    string(m.Role),
+			Content: m.Content,
+		}
+
+		// assistant 有 tool_calls
+		if m.Role == schema.AssistantRole && len(m.ToolCalls) > 0 {
+			am.ToolCalls = m.ToolCalls
+		}
+
+		// tool 角色：OpenAI 需要 tool_call_id
+		if m.Role == schema.ToolRole {
+			am.Role = "tool"
+			am.ToolCallID = m.Name
+			// 优先用 ToolResults
+			if len(m.ToolResults) > 0 {
+				// OpenAI 只支持一个结果，取第一个
+				am.Content = m.ToolResults[0].Content
+			} else {
+				am.Content = m.Content
+			}
+		}
+
+		result[i] = am
+	}
+	return result
+}
+
 type RequestBody struct {
-	Model    string            `json:"model"`
-	Messages []*schema.Message `json:"messages"`
+	Model    string       `json:"model"`
+	Messages []APIMessage `json:"messages"`
 	// 聊天补全生成的最大 Token 数量。如果不给的话，默认给一个不错的整数比如 1024。
 	//如果结果达到最大 Token 数而未结束，finish reason 将为 "length"；否则为 "stop"。
 	//此值为期望返回的 Token 长度，而非输入加输出的总长度。如果输入加 max_completion_tokens 超出模型上下文窗口，将返回 invalid_request_error。
@@ -64,11 +105,11 @@ func NewClient(ctx context.Context, config *ChatModelConfig) *Client {
 
 	reqBode := &RequestBody{
 		Model:               config.Model,
-		Messages:            config.Messages,
+		Messages:            toAPIMessages(config.Messages),
 		MaxCompletionTokens: config.MaxCompletionTokens,
 		ResponseFormat:      config.ResponseFormat,
 		Stream:              config.Stream,
-		Tools:               config.Tools,
+		Tools:               SchemaToOpenAI(config.Tools),
 		PromptCacheKey:      config.PromptCacheKey,
 		SafetyIdentifier:    config.SafetyIdentifier,
 		Temperature:         config.Temperature,
@@ -102,7 +143,7 @@ func (c *Client) genRequest() (*http.Request, error) {
 }
 
 func (c *Client) Generate(ctx context.Context, in []*schema.Message) (*schema.Message, error) {
-	c.RequestBody.Messages = in
+	c.RequestBody.Messages = toAPIMessages(in)
 	c.RequestBody.Stream = false
 
 	var modelResp ChatModelResponse
@@ -142,7 +183,7 @@ func (c *Client) Generate(ctx context.Context, in []*schema.Message) (*schema.Me
 }
 
 func (c *Client) Stream(ctx context.Context, in []*schema.Message) (*schema.StreamReader, error) {
-	c.RequestBody.Messages = in
+	c.RequestBody.Messages = toAPIMessages(in)
 	c.RequestBody.Stream = true
 
 	req, err := c.genRequest()
