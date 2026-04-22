@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Luo-root/pulse/components/schema"
 )
 
 // CommandExec 执行命令（带超时）
@@ -46,4 +48,19 @@ func CommandExec(ctx context.Context, args map[string]any) (any, error) {
 
 	result["status"] = "success"
 	return result, nil
+}
+
+func RegisterCommandExecTools(executor *schema.ToolExecutor) {
+	executor.MustRegister(schema.Tool{
+		Name:        "command_exec",
+		Description: "执行系统命令，返回输出结果",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{"type": "string", "description": "要执行的命令"},
+				"timeout": map[string]any{"type": "number", "description": "超时时间（秒），默认30"},
+			},
+			"required": []string{"command"},
+		},
+	}, CommandExec)
 }

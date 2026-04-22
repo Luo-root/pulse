@@ -34,12 +34,15 @@ func (ma *MemoryAgent) Send(ctx context.Context, userContent string) (*schema.Me
 		return nil, err
 	}
 
-	ma.manager.SaveTurn(ctx, ma.sessionID, schema.UserMessage(userContent), resp)
+	err = ma.manager.SaveTurn(ctx, ma.sessionID, schema.UserMessage(userContent), resp)
+	if err != nil {
+		return nil, err
+	}
 	return resp, nil
 }
 
 // SendStream 流式
-func (ma *MemoryAgent) SendStream(ctx context.Context, userContent string, onChunk func(msg *schema.Message) bool) error {
+func (ma *MemoryAgent) SendStream(ctx context.Context, userContent string, onChunk func(msg *schema.Message, isToolPhase bool) bool) (*schema.Message, error) {
 	history, _ := ma.manager.GetHistory(ctx, ma.sessionID)
 	history = append(history, schema.UserMessage(userContent))
 	contextMsgs, _ := ma.manager.BuildContext(ctx, ma.sessionID, userContent, history)
@@ -48,26 +51,19 @@ func (ma *MemoryAgent) SendStream(ctx context.Context, userContent string, onChu
 
 	// 包装回调，保存结果
 	var lastResp *schema.Message
-	wrappedOnChunk := func(msg *schema.Message) bool {
-		if !onChunk(msg) {
-			return false
-		}
-		// 收集完整响应用于保存
-		if msg.Role == schema.AssistantRole && len(msg.ToolCalls) == 0 {
-			lastResp = msg
-		}
-		return true
-	}
 
-	err := ma.agent.SendStream(ctx, userContent, wrappedOnChunk)
+	lastResp, err := ma.agent.SendStream(ctx, userContent, onChunk)
 	if err != nil {
-		return err
+		return lastResp, err
 	}
 
 	if lastResp != nil {
-		ma.manager.SaveTurn(ctx, ma.sessionID, schema.UserMessage(userContent), lastResp)
+		err = ma.manager.SaveTurn(ctx, ma.sessionID, schema.UserMessage(userContent), lastResp)
+		if err != nil {
+			return lastResp, err
+		}
 	}
-	return nil
+	return lastResp, nil
 }
 
 // Clear 清空会话

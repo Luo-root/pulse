@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/Luo-root/pulse/components/schema"
 	tools "github.com/Luo-root/pulse/components/tool"
@@ -48,7 +47,9 @@ func NewAgent(model BaseModel, executor *schema.ToolExecutor) *Agent {
 // Send 非流式
 // 返回：最终 assistant 消息（无工具调用时的回答）
 func (ag *Agent) Send(ctx context.Context, userContent string) (*schema.Message, error) {
-	ag.msgs = append(ag.msgs, schema.UserMessage(userContent))
+	if userContent != "" {
+		ag.msgs = append(ag.msgs, schema.UserMessage(userContent))
+	}
 
 	for {
 		resp, err := ag.model.Generate(ctx, ag.msgs)
@@ -69,20 +70,26 @@ func (ag *Agent) Send(ctx context.Context, userContent string) (*schema.Message,
 
 // SendStream 流式
 // 功能：自动处理流式输出、实时回调、工具调用循环、用户中断
-func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk func(msg *schema.Message) bool) error {
+func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error) {
 	// 将用户输入添加到对话历史
-	ag.msgs = append(ag.msgs, schema.UserMessage(userContent))
+	if userContent != "" {
+		ag.msgs = append(ag.msgs, schema.UserMessage(userContent))
+	}
 
 	for {
 		// 调用模型流式接口
 		reader, err := ag.model.Stream(ctx, ag.msgs)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		// 收集完整的流式消息（和原chatStream逻辑一致）
+		// 流式读取，实时回调
 		var fullMsg schema.Message
-		var contentParts []string
+		var isToolPhase bool
+
+		if fullMsg.Role == "" {
+			fullMsg.Role = schema.AssistantRole
+		}
 
 		// 流式读取每一个chunk
 		for {
@@ -92,24 +99,25 @@ func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk fun
 				break
 			}
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			// 累加文本内容
 			if msg.Content != "" {
-				contentParts = append(contentParts, msg.Content)
-				fullMsg.Content = strings.Join(contentParts, "")
+				fullMsg.Content += msg.Content
+				fullMsg.Role = msg.Role
 			}
 
 			// 覆盖工具调用（LLM流式返回的是完整累加状态）
 			if len(msg.ToolCalls) > 0 {
+				isToolPhase = true
 				fullMsg.ToolCalls = msg.ToolCalls
 			}
 
 			// 实时回调：将chunk推送给调用方
 			// 如果回调返回false，代表用户主动中断，直接退出
-			if !onChunk(msg) {
-				return errors.New("user cancelled stream")
+			if !onChunk(msg, isToolPhase) {
+				return &fullMsg, errors.New("user cancelled stream")
 			}
 		}
 
@@ -117,13 +125,12 @@ func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk fun
 		if len(fullMsg.ToolCalls) == 0 {
 			// 将完整的助手消息加入历史
 			ag.msgs = append(ag.msgs, &fullMsg)
-			return nil
+			return &fullMsg, nil
 		}
 
 		// 有工具调用 → 复用已有方法执行工具，并追加历史
-		fmt.Println("\nAI 调用工具:", fullMsg.ToolCalls)
 		if err := ag.handleToolCalls(ctx, &fullMsg); err != nil {
-			return err
+			return &fullMsg, err
 		}
 
 		// 工具执行完成，继续循环，让模型生成最终回答

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/Luo-root/pulse/components/schema"
 )
 
 // FileRead 读取文件
@@ -67,4 +69,42 @@ func FileList(ctx context.Context, args map[string]any) (any, error) {
 	}
 
 	return map[string]any{"files": files, "path": dir}, nil
+}
+
+func RegisterFileTools(executor *schema.ToolExecutor) {
+	executor.MustRegister(schema.Tool{
+		Name:        "file_read",
+		Description: "读取文件内容，返回文本",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string", "description": "文件路径"},
+			},
+			"required": []string{"path"},
+		},
+	}, FileRead)
+
+	executor.MustRegister(schema.Tool{
+		Name:        "file_write",
+		Description: "写入内容到文件",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":    map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string"},
+			},
+			"required": []string{"path", "content"},
+		},
+	}, FileWrite)
+
+	executor.MustRegister(schema.Tool{
+		Name:        "file_list",
+		Description: "列出目录下的文件",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string", "description": "目录路径，默认为当前目录"},
+			},
+		},
+	}, FileList)
 }
