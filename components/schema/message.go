@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -117,8 +116,6 @@ func ToolMessage(content string) *Message {
 		Content: content,
 	}
 }
-
-// TODO: StreamReader需要适配工具调用
 
 // StreamReader 流式消息读取器
 type StreamReader struct {
@@ -242,11 +239,12 @@ func StreamReception(resp *http.Response) (*StreamReader, error) {
 				return
 			}
 
+			streamResp = StreamResponse{}
 			// 解析JSON
 			if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
 				continue
 			}
-			fmt.Println(streamResp)
+
 			if len(streamResp.Choices) == 0 {
 				continue
 			}
