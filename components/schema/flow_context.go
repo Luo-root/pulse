@@ -10,21 +10,26 @@ import "context"
 // 4. 数据驱动执行
 type FlowContext struct {
 	slots *SafeMap[string, *DataSlot]
+	ctx   context.Context
+}
+
+func (c *FlowContext) GetContext() *context.Context {
+	return &c.ctx
 }
 
 type ReadOnlyFlowContext interface {
-	Get(key string) (any, bool)
+	Get(key string) (any, error)
 }
 
-func NewFlowContext() *FlowContext {
+func NewFlowContext(ctx context.Context) *FlowContext {
 	return &FlowContext{
 		slots: new(SafeMap[string, *DataSlot]),
+		ctx:   ctx,
 	}
 }
 
-func (c *FlowContext) Get(key string) (any, bool) {
-	slot, ok := c.slots.Get(key)
-	return slot, ok
+func (c *FlowContext) Get(key string) (any, error) {
+	return c.Wait(key)
 }
 
 // 获取或创建数据槽
@@ -43,15 +48,15 @@ func (c *FlowContext) Set(key string, value any) {
 }
 
 // Wait 等待数据（多节点可同时等待同一个key）
-func (c *FlowContext) Wait(ctx context.Context, key string) (any, error) {
-	return c.slot(key).Get(ctx)
+func (c *FlowContext) Wait(key string) (any, error) {
+	return c.slot(key).Get(c.ctx)
 }
 
 // WaitAll 等待多个数据
-func (c *FlowContext) WaitAll(ctx context.Context, keys ...string) (map[string]any, error) {
+func (c *FlowContext) WaitAll(keys ...string) (map[string]any, error) {
 	result := make(map[string]any, len(keys))
 	for _, k := range keys {
-		val, err := c.Wait(ctx, k)
+		val, err := c.Wait(k)
 		if err != nil {
 			return nil, err // 任意一个等待取消，直接返回错误
 		}

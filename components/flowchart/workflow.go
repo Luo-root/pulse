@@ -24,7 +24,7 @@ type Workflow struct {
 
 // NewWorkflow 创建工作流实例
 // maxWorkers: 最大并发节点数（建议根据 CPU 核心数和业务特性调整）
-func NewWorkflow(maxWorkers int) (*Workflow, error) {
+func NewWorkflow(ctx context.Context, maxWorkers int) (*Workflow, error) {
 	if maxWorkers <= 0 {
 		maxWorkers = ants.DefaultAntsPoolSize
 	}
@@ -35,7 +35,9 @@ func NewWorkflow(maxWorkers int) (*Workflow, error) {
 	}
 
 	return &Workflow{
-		ctx:        schema.NewFlowContext(),
+		nodes:      make([]node.Node, 0),
+		ctx:        schema.NewFlowContext(ctx),
+		aspects:    make([]node.Aspect, 0),
 		pool:       pool,
 		maxWorkers: maxWorkers,
 		closed:     false,
@@ -91,7 +93,7 @@ func (w *Workflow) Start() error {
 		err := w.pool.Submit(func() {
 			// 执行完成后自动标记运行状态（所有节点执行完才置false）
 			defer wg.Done()
-			w.runNode(context.Background(), nodeCopy)
+			w.runNode(nodeCopy)
 		})
 		if err != nil {
 			w.mu.Lock()
@@ -113,7 +115,7 @@ func (w *Workflow) Start() error {
 }
 
 // runNode 执行单个节点（包含全局切面 + 节点切面）
-func (w *Workflow) runNode(ctx context.Context, node node.Node) {
+func (w *Workflow) runNode(node node.Node) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("runNode panic [node=%s]: %v", node.ID(), r)
@@ -122,14 +124,18 @@ func (w *Workflow) runNode(ctx context.Context, node node.Node) {
 
 	// 切面 Before
 	for _, a := range w.aspects {
-		a.Before(w.ctx, node)
+		if a != nil {
+			a.Before(w.ctx, node)
+		}
 	}
 	for _, a := range node.Aspects() {
-		a.Before(w.ctx, node)
+		if a != nil {
+			a.Before(w.ctx, node)
+		}
 	}
 
 	// 执行业务
-	inputs, err := w.ctx.WaitAll(ctx, node.Inputs()...)
+	inputs, err := w.ctx.WaitAll(node.Inputs()...)
 	if err != nil {
 		log.Printf("wait input failed: %v", err)
 		return
@@ -138,10 +144,14 @@ func (w *Workflow) runNode(ctx context.Context, node node.Node) {
 
 	// 切面 After
 	for _, a := range w.aspects {
-		a.After(w.ctx, node, runErr)
+		if a != nil {
+			a.After(w.ctx, node, runErr)
+		}
 	}
 	for _, a := range node.Aspects() {
-		a.After(w.ctx, node, runErr)
+		if a != nil {
+			a.After(w.ctx, node, runErr)
+		}
 	}
 
 	// 输出结果
@@ -166,7 +176,7 @@ func (w *Workflow) Input(key string, value any) error {
 }
 
 // Reset 重置工作流上下文，安全可重入
-func (w *Workflow) Reset() error {
+func (w *Workflow) Reset(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -178,18 +188,12 @@ func (w *Workflow) Reset() error {
 		return schema.ErrWorkflowResetRunning
 	}
 
-	w.ctx = schema.NewFlowContext()
+	w.ctx = schema.NewFlowContext(ctx)
 	return nil
 }
 
 // Run 运行工作流（阻塞直到所有节点完成）
-// 每次调用前会自动重置上下文，支持多次运行
-func (w *Workflow) Run(ctx context.Context) error {
-	// 重置上下文以清除旧数据
-	if err := w.Reset(); err != nil {
-		return err
-	}
-
+func (w *Workflow) Run(Input map[string]any) error {
 	// 标记为运行中
 	w.mu.Lock()
 	w.running = true
@@ -201,6 +205,12 @@ func (w *Workflow) Run(ctx context.Context) error {
 		w.mu.Unlock()
 	}()
 
+	for k, v := range Input {
+		err := w.Input(k, v)
+		if err != nil {
+			return err
+		}
+	}
 	// 启动所有节点
 	var wg sync.WaitGroup
 
@@ -210,7 +220,7 @@ func (w *Workflow) Run(ctx context.Context) error {
 
 		err := w.pool.Submit(func() {
 			defer wg.Done()
-			w.runNode(ctx, nodeCopy)
+			w.runNode(nodeCopy)
 		})
 		if err != nil {
 			return schema.ErrWorkflowSubmitNodeToPool
@@ -255,9 +265,9 @@ func (w *Workflow) IsClosed() bool {
 	return w.closed
 }
 
-// GetContext 获取当前上下文（只读）
-func (w *Workflow) GetContext() schema.ReadOnlyFlowContext {
-	return w.ctx
+// Get 上下文中的数据
+func (w *Workflow) Get(key string) (any, error) {
+	return w.ctx.Get(key)
 }
 
 // GetStats 获取工作流和线程池统计信息

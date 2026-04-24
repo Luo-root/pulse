@@ -17,7 +17,7 @@ type AgentInterface interface {
 
 	// SendStream 真正流式：实时回调，Agent 内部处理工具调用循环
 	// 回调返回 bool：true=继续，false=中断（用户取消）
-	SendStream(ctx context.Context, userContent string, onChunk func(msg *schema.Message) bool) error
+	SendStream(ctx context.Context, userContent string, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error)
 }
 
 // Agent  封装多轮对话（支持 Generate 和 Stream）

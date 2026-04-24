@@ -28,7 +28,7 @@ func (ma *MemoryAgent) Send(ctx context.Context, userContent string) (*schema.Me
 	history = append(history, schema.UserMessage(userContent))
 	contextMsgs, _ := ma.manager.BuildContext(ctx, ma.sessionID, userContent, history)
 
-	ma.agent.SetMessages(contextMsgs)
+	ma.agent.AddMessages(contextMsgs)
 	resp, err := ma.agent.Send(ctx, userContent) // 复用 Agent 的 Send
 	if err != nil {
 		return nil, err
@@ -47,7 +47,7 @@ func (ma *MemoryAgent) SendStream(ctx context.Context, userContent string, onChu
 	history = append(history, schema.UserMessage(userContent))
 	contextMsgs, _ := ma.manager.BuildContext(ctx, ma.sessionID, userContent, history)
 
-	ma.agent.SetMessages(contextMsgs)
+	ma.agent.AddMessages(contextMsgs)
 
 	// 包装回调，保存结果
 	var lastResp *schema.Message
@@ -69,4 +69,18 @@ func (ma *MemoryAgent) SendStream(ctx context.Context, userContent string, onChu
 // Clear 清空会话
 func (ma *MemoryAgent) Clear(ctx context.Context) error {
 	return ma.manager.Clear(ctx, ma.sessionID)
+}
+
+// GetHistory 获取当前对话历史
+func (ma *MemoryAgent) GetHistory() []*schema.Message {
+	result := make([]*schema.Message, len(ma.agent.msgs))
+	for i, m := range ma.agent.msgs {
+		result[i] = &schema.Message{
+			Role:    m.Role,
+			Content: m.Content,
+			Name:    m.Name,
+			// 不拷贝 ToolCalls/ToolResults，外部只读即可
+		}
+	}
+	return result
 }
