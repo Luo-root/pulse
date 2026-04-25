@@ -183,7 +183,7 @@ func (ag *Agent) AddSystemMessage(content string) {
 }
 
 // AgentHistory 清空历史（保留 system）
-func (ag *Agent) AgentHistory() {
+func (ag *Agent) ClearAgentHistory() {
 	var systemMsgs []*schema.Message
 	for _, m := range ag.msgs {
 		if m.Role == schema.SystemRole {

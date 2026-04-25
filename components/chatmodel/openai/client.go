@@ -152,7 +152,7 @@ func (c *Client) Generate(ctx context.Context, in []*schema.Message) (*schema.Me
 		return nil, err
 	}
 
-	req.WithContext(ctx)
+	req = req.WithContext(ctx)
 
 	resp, err := c.cli.Do(req)
 	if err != nil {

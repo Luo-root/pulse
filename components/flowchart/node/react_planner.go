@@ -66,8 +66,8 @@ func ScheduleLoopNode(
 
 	return NewNode(
 		id,
-		[]string{planName, finalAnswer},
-		nil,
+		[]string{planName},
+		[]string{finalAnswer},
 		func(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error) {
 			baseCtx := ctx.GetContext()
 			for {
@@ -88,7 +88,7 @@ func ScheduleLoopNode(
 						plan.Tasks[i].State = TaskCancelled
 						plan.mu.Unlock()
 					}
-					ctx.Set("final_answer", (*baseCtx).Err().Error())
+					ctx.Set(finalAnswer, (*baseCtx).Err().Error())
 					return nil, (*baseCtx).Err()
 				default:
 					time.Sleep(100 * time.Millisecond)
@@ -108,7 +108,7 @@ func ScheduleLoopNode(
 					// 重规划
 					newPlan, err := RePlan(*baseCtx, plan, failedTask, agent)
 					if err != nil {
-						ctx.Set("final_answer", fmt.Sprintf("RePlan Failed：%v", err))
+						ctx.Set(finalAnswer, fmt.Sprintf("RePlan Failed：%v", err))
 						break // 无法恢复，结束
 					}
 					plan = newPlan
@@ -188,7 +188,6 @@ func Planning(ctx context.Context, goal string, agent chatmodel.AgentInterface) 
 	// 解析 Agent 返回的计划
 	plan := NewPlan()
 	resp.Content = TrimJSONWrapper(resp.Content)
-	fmt.Println(resp.Content)
 	if err := json.Unmarshal([]byte(resp.Content), &plan); err != nil {
 		// Agent 可能没按格式，尝试从 Content 提取
 		*plan, err = extractPlan(resp.Content, goal)

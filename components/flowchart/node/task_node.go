@@ -19,6 +19,20 @@ func BatchNewTaskNode(plannerNodeID string, plan *Plan, agent chatmodel.AgentInt
 	}
 	return taskNodes
 }
+
+func buildOutputExample(outputs []string) string {
+	example := "{\n"
+	for i, output := range outputs {
+		example += fmt.Sprintf("\t\"%s\": \"<%s的结果>\"", output, output)
+		if i < len(outputs)-1 {
+			example += ","
+		}
+		example += "\n"
+	}
+	example += "}"
+	return example
+}
+
 func NewTaskNode(plannerNodeID string, task Task, agent chatmodel.AgentInterface) *SimpleNode {
 	planName := fmt.Sprintf("%s_plan", plannerNodeID)
 	allInputs := append(task.Inputs, planName)
@@ -42,29 +56,28 @@ func NewTaskNode(plannerNodeID string, task Task, agent chatmodel.AgentInterface
 				}
 				inputsInfo = append(inputsInfo, fmt.Sprintf("%s: %v", input, get))
 			}
-			strings.Join(inputsInfo, "\n")
+			inputsInfoStr := strings.Join(inputsInfo, "\n")
+
 			prompt := fmt.Sprintf(`
-任务详细目标和输入输出参数含义: 
+# 任务要求
+严格执行以下任务，**必须使用已提供的工具完成所有实际操作**，禁止直接编造任何结果。
+
+## 当前任务
+任务ID: %s
+任务描述: %s
+
+## 前置输入
 %s
 
-该任务的前置输入信息:
+## 输出要求
+1. 所有实际操作（文件读写、目录检查等）必须通过调用工具完成
+2. 工具执行完成后，基于工具返回的结果继续处理
+3. 任务全部完成后，仅输出最终结果JSON，严格匹配以下结构：
 %s
+4. 不要输出任何解释、说明、注释，仅输出JSON
 
-需要输出的结果参数:
-%v
-
-输出格式要求（强制遵守）
-1. 仅输出JSON文本，无任何多余文字、注释、说明
-2. JSON语法合规（无多余逗号、引号闭合）
-3. 严格匹配以下结构，字段不可修改：
-{
-	"current_path": "<需要的结果>"
-	"file_list": "<需要的结果>"
-}
-
-请严格按规则输出完整JSON。
-开始完成你的任务！
-`, task.Description, inputsInfo, task.Outputs)
+开始执行！
+`, task.ID, task.Description, inputsInfoStr, buildOutputExample(task.Outputs))
 			resp, err := agent.Send(*ctx.GetContext(), prompt)
 			if err != nil {
 				taskStateModifyFailed(planVal, task.ID)
