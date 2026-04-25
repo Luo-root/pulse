@@ -28,6 +28,8 @@ type ChatModelConfig struct {
 	MaxCompletionTokens uint64 `json:"max_completion_tokens,omitempty"`
 	// 设置为 {"type": "json_object"} 可启用 JSON 模式，确保生成的内容为有效 JSON。设置后，需在 prompt 中明确引导模型输出 JSON 格式并指定具体格式，否则可能产生意外结果。默认值为 {"type": "text"}。
 	ResponseFormat ResponseFormatType `json:"response_format,omitempty"`
+	// 停用词，完全匹配时将停止输出。匹配到的词本身不会被输出。最多允许 5 个字符串，每个不超过 32 字节
+	Stop string `json:"stop,omitempty"`
 	// 是否以流式方式返回响应，默认 false
 	Stream bool `json:"stream,omitempty"`
 	// 模型可调用的工具列表, 最大长度 128
@@ -36,6 +38,8 @@ type ChatModelConfig struct {
 	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 	// 用于检测可能违反使用政策的用户的稳定标识符。应为唯一标识每个用户的字符串。建议对用户名或邮箱进行哈希处理以避免发送可识别信息
 	SafetyIdentifier string `json:"safety_identifier,omitempty"`
+	// 控制 kimi-k2.6 模型是否启用思考能力, 以及是否完整保留多轮对话中的 reasoning_content
+	Thinking Thinking `json:"thinking,omitempty"`
 	// 采样温度，范围 0 到 1。较高的值（如 0.7）使输出更随机，较低的值（如 0.2）使输出更集中和确定。默认值为 0.6。
 	Temperature float64 `json:"temperature,omitempty"`
 	// 另一种采样方法，模型考虑累积概率质量为 top_p 的 Token 结果。例如 0.1 表示仅考虑概率质量前 10% 的 Token。通常建议只修改此参数或 temperature 其中之一。默认值为 1.0。
@@ -73,6 +77,29 @@ type ToolFunction struct {
 	Parameters any `json:"parameters"`
 	// 函数功能描述
 	Description string `json:"description"`
+}
+
+type ThinkingType string
+
+const (
+	Enabled  ThinkingType = "enabled"
+	Disabled ThinkingType = "disabled"
+)
+
+type ThinkingKeepEnum string
+
+const (
+	Null ThinkingType = "null"
+	All  ThinkingType = "all"
+)
+
+type Thinking struct {
+	// 启用或禁用思考能力
+	Type ThinkingType `json:"type,omitempty"`
+	// 控制是否保留历史对话轮次（previous turns）的 reasoning_content
+	// 默认为 null: 服务端会忽略历史 turns 的 reasoning_content。
+	// "all"：保留历史 turns 的 reasoning_content 并随上下文一同提供给模型，启用 Preserved Thinking。使用时需把每一轮历史 assistant 消息中的 reasoning_content 原样保留在 messages 中。
+	Keep ThinkingKeepEnum `json:"keep,omitempty"`
 }
 
 func SchemaToOpenAI(tools []schema.Tool) []Tool {

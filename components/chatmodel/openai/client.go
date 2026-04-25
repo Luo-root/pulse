@@ -26,19 +26,21 @@ type Header struct {
 // client.go 新增：schema.Message → openai 可发送的消息
 
 type APIMessage struct {
-	Role       string            `json:"role"`
-	Content    string            `json:"content"`
-	Name       string            `json:"name,omitempty"`
-	ToolCalls  []schema.ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string            `json:"tool_call_id,omitempty"` // ← 新增：tool 角色时需要
+	Role             string            `json:"role"`
+	Content          string            `json:"content"`
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
+	Name             string            `json:"name,omitempty"`
+	ToolCalls        []schema.ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string            `json:"tool_call_id,omitempty"` // ← 新增：tool 角色时需要
 }
 
 func toAPIMessages(messages []*schema.Message) []APIMessage {
 	result := make([]APIMessage, len(messages))
 	for i, m := range messages {
 		am := APIMessage{
-			Role:    string(m.Role),
-			Content: m.Content,
+			Role:             string(m.Role),
+			Content:          m.Content,
+			ReasoningContent: m.ReasoningContent,
 		}
 
 		// assistant 有 tool_calls
@@ -81,6 +83,8 @@ type RequestBody struct {
 	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 	// 用于检测可能违反使用政策的用户的稳定标识符。应为唯一标识每个用户的字符串。建议对用户名或邮箱进行哈希处理以避免发送可识别信息
 	SafetyIdentifier string `json:"safety_identifier,omitempty"`
+	// 控制 kimi-k2.6 模型是否启用思考能力, 以及是否完整保留多轮对话中的 reasoning_content
+	Thinking Thinking `json:"thinking,omitempty"`
 	// 采样温度，范围 0 到 1。较高的值（如 0.7）使输出更随机，较低的值（如 0.2）使输出更集中和确定。默认值为 0.6。
 	Temperature float64 `json:"temperature,omitempty"`
 	// 另一种采样方法，模型考虑累积概率质量为 top_p 的 Token 结果。例如 0.1 表示仅考虑概率质量前 10% 的 Token。通常建议只修改此参数或 temperature 其中之一。默认值为 1.0。
@@ -112,6 +116,7 @@ func NewClient(ctx context.Context, config *ChatModelConfig) *Client {
 		Tools:               SchemaToOpenAI(config.Tools),
 		PromptCacheKey:      config.PromptCacheKey,
 		SafetyIdentifier:    config.SafetyIdentifier,
+		Thinking:            config.Thinking,
 		Temperature:         config.Temperature,
 		TopP:                config.TopP,
 		N:                   config.N,

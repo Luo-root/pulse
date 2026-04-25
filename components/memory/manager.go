@@ -54,7 +54,7 @@ func (m *Manager) BuildContext(ctx context.Context, sessionID string, currentQue
 		if msg.Role == schema.SystemRole {
 			result = append(result, msg)
 			// 在 system 后插入记忆
-			result = append(result, schema.SystemMessage(memoryPrompt))
+			result = append(result, schema.SystemMessage(memoryPrompt, ""))
 			result = append(result, history[i+1:]...)
 			hasSystem = true
 			break
@@ -63,7 +63,7 @@ func (m *Manager) BuildContext(ctx context.Context, sessionID string, currentQue
 
 	if !hasSystem {
 		// 没有 system，插入到最前面
-		result = append([]*schema.Message{schema.SystemMessage(memoryPrompt)}, history...)
+		result = append([]*schema.Message{schema.SystemMessage(memoryPrompt, "")}, history...)
 	}
 
 	return result, nil

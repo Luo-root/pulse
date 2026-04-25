@@ -21,8 +21,9 @@ const (
 )
 
 type Message struct {
-	Role    RoleType `json:"role"`
-	Content string   `json:"content"`
+	Role             RoleType `json:"role"`
+	Content          string   `json:"content"`
+	ReasoningContent string   `json:"reasoning_content,omitempty"`
 	// 消息发送者的名称（可选）
 	Name string `json:"name,omitempty"`
 	// 当设置为 true 时，表示这条消息是未完成的，模型需要继续生成这条消息的剩余内容。（可选）
@@ -86,10 +87,11 @@ func (m *Message) Clone() Message {
 }
 
 // SystemMessage 返回一个role为system的信息
-func SystemMessage(content string) *Message {
+func SystemMessage(content, reasoningContent string) *Message {
 	return &Message{
-		Role:    SystemRole,
-		Content: content,
+		Role:             SystemRole,
+		Content:          content,
+		ReasoningContent: reasoningContent,
 	}
 }
 
@@ -197,9 +199,10 @@ type Choice struct {
 }
 
 type Delta struct {
-	Content   string     `json:"content"`
-	Role      string     `json:"role,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role             string     `json:"role,omitempty"`
+	Content          string     `json:"content"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
 type Usage struct {
@@ -258,8 +261,10 @@ func StreamReception(resp *http.Response) (*StreamReader, error) {
 
 			if choice.Delta.Content != "" {
 				msg.Content = choice.Delta.Content
+				msg.ReasoningContent = choice.Delta.ReasoningContent
 			} else {
 				msg.Content = ""
+				msg.ReasoningContent = ""
 			}
 
 			if len(choice.Delta.ToolCalls) > 0 {

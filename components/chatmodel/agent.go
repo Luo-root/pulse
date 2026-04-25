@@ -59,7 +59,7 @@ func NewAgent(model BaseModel, executor *schema.ToolExecutor) *Agent {
 2. 输出内容必须基于工具返回的真实数据
 3. 路径、文件名、内容等关键信息必须经过工具验证
 `, workDir,
-		)))
+		), ""))
 
 	return ag
 }
@@ -178,11 +178,11 @@ func (ag *Agent) AddUserMessage(content string) {
 }
 
 // AddSystemMessage 添加系统消息
-func (ag *Agent) AddSystemMessage(content string) {
-	ag.msgs = append(ag.msgs, schema.SystemMessage(content))
+func (ag *Agent) AddSystemMessage(content, reasoningContent string) {
+	ag.msgs = append(ag.msgs, schema.SystemMessage(content, reasoningContent))
 }
 
-// AgentHistory 清空历史（保留 system）
+// ClearAgentHistory 清空历史（保留 system）
 func (ag *Agent) ClearAgentHistory() {
 	var systemMsgs []*schema.Message
 	for _, m := range ag.msgs {
