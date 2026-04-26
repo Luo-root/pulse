@@ -76,9 +76,10 @@ func (ma *MemoryAgent) GetHistory() []*schema.Message {
 	result := make([]*schema.Message, len(ma.agent.msgs))
 	for i, m := range ma.agent.msgs {
 		result[i] = &schema.Message{
-			Role:    m.Role,
-			Content: m.Content,
-			Name:    m.Name,
+			Role:             m.Role,
+			Content:          m.Content,
+			ReasoningContent: m.ReasoningContent,
+			Name:             m.Name,
 			// 不拷贝 ToolCalls/ToolResults，外部只读即可
 		}
 	}

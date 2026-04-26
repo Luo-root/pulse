@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -56,10 +57,11 @@ type ToolResult struct {
 // Clone 深拷贝
 func (m *Message) Clone() Message {
 	cloned := Message{
-		Role:    m.Role,
-		Content: m.Content,
-		Name:    m.Name,
-		Partial: m.Partial,
+		Role:             m.Role,
+		Content:          m.Content,
+		ReasoningContent: m.ReasoningContent,
+		Name:             m.Name,
+		Partial:          m.Partial,
 	}
 
 	// 深拷贝切片
@@ -261,10 +263,10 @@ func StreamReception(resp *http.Response) (*StreamReader, error) {
 
 			if choice.Delta.Content != "" {
 				msg.Content = choice.Delta.Content
+			}
+
+			if choice.Delta.ReasoningContent != "" {
 				msg.ReasoningContent = choice.Delta.ReasoningContent
-			} else {
-				msg.Content = ""
-				msg.ReasoningContent = ""
 			}
 
 			if len(choice.Delta.ToolCalls) > 0 {
@@ -401,4 +403,113 @@ func sendToAll(readers []*StreamReader, msgs []Message, timeout time.Duration) b
 		}
 	}
 	return true
+}
+
+// FormatMessages 标准化格式化 []*Message 为可读字符串
+// 返回格式清晰的结构化文本，包含所有字段的详细展示
+func FormatMessages(messages []*Message) string {
+	if len(messages) == 0 {
+		return "📭 无消息"
+	}
+
+	var builder strings.Builder
+	separator := "────────────────────────────────────────────────────────────────"
+
+	for i, msg := range messages {
+		if msg == nil {
+			continue
+		}
+
+		// 消息头部
+		builder.WriteString(fmt.Sprintf("%s\n", separator))
+		builder.WriteString(fmt.Sprintf("📨 消息 #%d\n", i+1))
+		builder.WriteString(fmt.Sprintf("%s\n", separator))
+
+		// 基础信息（角色、名称、是否未完成）
+		builder.WriteString(fmt.Sprintf("🎭 角色: %s", msg.Role))
+		if msg.Name != "" {
+			builder.WriteString(fmt.Sprintf(" | 🏷️ 名称: %s", msg.Name))
+		}
+		if msg.Partial {
+			builder.WriteString(" | ⏳ [未完成]")
+		}
+		builder.WriteString("\n")
+
+		// 消息内容
+		content := msg.Content
+		if content == "" {
+			content = "(空)"
+		}
+		builder.WriteString(fmt.Sprintf("📝 内容:\n%s\n", indentString(content, "  ")))
+
+		// 思考内容
+		if msg.ReasoningContent != "" {
+			builder.WriteString(fmt.Sprintf("💭 思考内容:\n%s\n", indentString(msg.ReasoningContent, "  ")))
+		}
+
+		// 工具调用
+		if len(msg.ToolCalls) > 0 {
+			builder.WriteString("🔧 工具调用:\n")
+			for j, tc := range msg.ToolCalls {
+				builder.WriteString(fmt.Sprintf("  #%d\n", j+1))
+				builder.WriteString(fmt.Sprintf("    🆔 ID: %s\n", tc.ID))
+				builder.WriteString(fmt.Sprintf("    📌 类型: %s\n", tc.Type))
+				builder.WriteString(fmt.Sprintf("    📦 函数: %s\n", tc.Function.Name))
+				args := tc.Function.Arguments
+				if args == "" {
+					args = "(空)"
+				}
+				builder.WriteString(fmt.Sprintf("    📋 参数:\n%s\n", indentString(args, "      ")))
+			}
+		}
+
+		// 工具结果
+		if len(msg.ToolResults) > 0 {
+			builder.WriteString("📊 工具结果:\n")
+			for j, tr := range msg.ToolResults {
+				builder.WriteString(fmt.Sprintf("  #%d\n", j+1))
+				builder.WriteString(fmt.Sprintf("    🔗 调用ID: %s\n", tr.CallID))
+				errStatus := "❌ 是"
+				if !tr.IsError {
+					errStatus = "✅ 否"
+				}
+				builder.WriteString(fmt.Sprintf("    ⚠️ 错误: %s\n", errStatus))
+				content := tr.Content
+				if content == "" {
+					content = "(空)"
+				}
+				builder.WriteString(fmt.Sprintf("    📄 内容:\n%s\n", indentString(content, "      ")))
+			}
+		}
+
+		// Token 使用情况
+		if msg.Usage != nil {
+			builder.WriteString(fmt.Sprintf("💰 Token 使用: 提示=%d, 完成=%d, 总计=%d\n",
+				msg.Usage.PromptTokens, msg.Usage.Completion, msg.Usage.TotalTokens))
+		}
+
+		builder.WriteString("\n")
+	}
+
+	builder.WriteString(separator)
+	return builder.String()
+}
+
+// PrintMessages 标准化打印 []*Message
+// 直接将格式化后的消息打印到控制台
+func PrintMessages(messages []*Message) {
+	fmt.Println(FormatMessages(messages))
+}
+
+// indentString 为多行字符串的每一行添加指定前缀（用于缩进）
+func indentString(s, prefix string) string {
+	if s == "" {
+		return prefix + "(空)"
+	}
+	lines := strings.Split(s, "\n")
+	var indented strings.Builder
+	for _, line := range lines {
+		indented.WriteString(fmt.Sprintf("%s%s\n", prefix, line))
+	}
+	return strings.TrimSuffix(indented.String(), "\n")
 }

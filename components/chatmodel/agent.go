@@ -123,9 +123,14 @@ func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk fun
 			}
 
 			// 累加文本内容
+			fullMsg.Role = msg.Role
+
 			if msg.Content != "" {
 				fullMsg.Content += msg.Content
-				fullMsg.Role = msg.Role
+			}
+
+			if msg.ReasoningContent != "" {
+				fullMsg.ReasoningContent += msg.ReasoningContent
 			}
 
 			// 覆盖工具调用（LLM流式返回的是完整累加状态）
@@ -214,9 +219,10 @@ func (ag *Agent) handleToolCalls(ctx context.Context, assistantMsg *schema.Messa
 
 	// 构造 assistant 消息（保留 tool_calls）
 	assistantWithTools := &schema.Message{
-		Role:      schema.AssistantRole,
-		Content:   assistantMsg.Content,
-		ToolCalls: assistantMsg.ToolCalls,
+		Role:             schema.AssistantRole,
+		Content:          assistantMsg.Content,
+		ReasoningContent: assistantMsg.ReasoningContent,
+		ToolCalls:        assistantMsg.ToolCalls,
 	}
 
 	// 追加到历史

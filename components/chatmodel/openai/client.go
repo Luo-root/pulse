@@ -46,6 +46,7 @@ func toAPIMessages(messages []*schema.Message) []APIMessage {
 		// assistant 有 tool_calls
 		if m.Role == schema.AssistantRole && len(m.ToolCalls) > 0 {
 			am.ToolCalls = m.ToolCalls
+			am.ReasoningContent = m.ReasoningContent
 		}
 
 		// tool 角色：OpenAI 需要 tool_call_id

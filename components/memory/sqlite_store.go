@@ -15,8 +15,8 @@ type LocalStore struct {
 	db *sql.DB
 }
 
-// NewLocalStore 创建本地 SQLite 存储
-func NewLocalStore(dbPath string) (*LocalStore, error) {
+// NewSqliteStore 创建本地 SQLite 存储
+func NewSqliteStore(dbPath string) (*LocalStore, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, err
@@ -29,6 +29,7 @@ func NewLocalStore(dbPath string) (*LocalStore, error) {
 		session_id TEXT NOT NULL,
 		role TEXT NOT NULL,
 		content TEXT NOT NULL,
+		reasoning_content TEXT NOT NULL,
 		embedding BLOB,
 		timestamp INTEGER NOT NULL,
 		metadata TEXT
@@ -50,8 +51,8 @@ func (s *LocalStore) Save(ctx context.Context, sessionID string, msgs []*schema.
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT OR REPLACE INTO messages (id, session_id, role, content, timestamp, metadata)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT OR REPLACE INTO messages (id, session_id, role, content,reasoning_content, timestamp, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -67,6 +68,7 @@ func (s *LocalStore) Save(ctx context.Context, sessionID string, msgs []*schema.
 			sessionID,
 			string(msg.Role),
 			msg.Content,
+			msg.ReasoningContent,
 			time.Now().Unix(),
 			string(metadata),
 		)
@@ -80,13 +82,12 @@ func (s *LocalStore) Save(ctx context.Context, sessionID string, msgs []*schema.
 
 func (s *LocalStore) Recall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
 	// 简单实现：按关键词匹配 + 时间倒序
-	// 后续接入 embedding 后用向量相似度
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT role, content, timestamp FROM messages
-		WHERE session_id = ? AND content LIKE ?
+		SELECT role, content, reasoning_content, timestamp FROM messages
+		WHERE session_id = ? AND (content LIKE ? OR reasoning_content LIKE ?)
 		ORDER BY timestamp DESC
 		LIMIT ?
-	`, sessionID, "%"+query+"%", topK)
+	`, sessionID, "%"+query+"%", "%"+query+"%", topK)
 	if err != nil {
 		return nil, err
 	}
@@ -94,15 +95,16 @@ func (s *LocalStore) Recall(ctx context.Context, sessionID string, query string,
 
 	var results []*schema.Message
 	for rows.Next() {
-		var role, content string
+		var role, content, reasoningContent string
 		var timestamp int64
-		if err := rows.Scan(&role, &content, &timestamp); err != nil {
+		if err := rows.Scan(&role, &content, &reasoningContent, &timestamp); err != nil {
 			continue
 		}
 
 		results = append(results, &schema.Message{
-			Role:    schema.RoleType(role),
-			Content: content,
+			Role:             schema.RoleType(role),
+			Content:          content,
+			ReasoningContent: reasoningContent,
 		})
 	}
 
@@ -112,6 +114,32 @@ func (s *LocalStore) Recall(ctx context.Context, sessionID string, query string,
 func (s *LocalStore) GetSession(ctx context.Context, sessionID string) ([]*schema.Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT role, content FROM messages
+		WHERE session_id = ?
+		ORDER BY timestamp ASC
+	`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*schema.Message
+	for rows.Next() {
+		var role, content string
+		if err := rows.Scan(&role, &content); err != nil {
+			continue
+		}
+		results = append(results, &schema.Message{
+			Role:    schema.RoleType(role),
+			Content: content,
+		})
+	}
+
+	return results, nil
+}
+
+func (s *LocalStore) GetSessionWithReasoning(ctx context.Context, sessionID string) ([]*schema.Message, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT role, content, reasoning_content FROM messages
 		WHERE session_id = ?
 		ORDER BY timestamp ASC
 	`, sessionID)
