@@ -263,10 +263,14 @@ func StreamReception(resp *http.Response) (*StreamReader, error) {
 
 			if choice.Delta.Content != "" {
 				msg.Content = choice.Delta.Content
+			} else {
+				msg.Content = ""
 			}
 
 			if choice.Delta.ReasoningContent != "" {
 				msg.ReasoningContent = choice.Delta.ReasoningContent
+			} else {
+				msg.ReasoningContent = ""
 			}
 
 			if len(choice.Delta.ToolCalls) > 0 {
