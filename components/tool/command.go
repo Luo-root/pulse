@@ -86,18 +86,27 @@ func CommandExec(ctx context.Context, args map[string]any) (any, error) {
 	return result, nil
 }
 
-func RegisterCommandExecTools(executor *schema.ToolExecutor) {
-	executor.MustRegister(schema.Tool{
+// commandExecParams command_exec 参数定义
+var commandExecParams = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"command": map[string]any{"type": "string", "description": "要执行的命令（必填）"},
+		"timeout": map[string]any{"type": "number", "description": "超时时间（秒），默认30"},
+		"cwd":     map[string]any{"type": "string", "description": "命令执行的工作目录（可选）"},
+	},
+	"required": []string{"command"},
+}
+
+// RegisterCommandTools 注册命令工具
+func RegisterCommandTools(registry *schema.ToolRegistry) {
+	registry.MustRegister(schema.ToolMetadata{
 		Name:        "command_exec",
-		Description: "执行系统命令（支持 Windows/Linux/macOS），返回输出结果。禁止执行危险命令（如 rm -rf、mkfs 等）。",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"command": map[string]any{"type": "string", "description": "要执行的命令（必填）"},
-				"timeout": map[string]any{"type": "number", "description": "超时时间（秒），默认30"},
-				"cwd":     map[string]any{"type": "string", "description": "命令执行的工作目录（可选）"},
-			},
-			"required": []string{"command"},
-		},
+		Description: "执行系统命令（支持 Windows/Linux/macOS），返回输出结果",
+		Parameters:  commandExecParams,
+		Permission:  schema.PermDangerous,
+		Category:    "system",
+		Version:     "1.0.0",
+		Tags:        []string{"system", "command", "dangerous"},
+		Timeout:     30 * time.Second,
 	}, CommandExec)
 }

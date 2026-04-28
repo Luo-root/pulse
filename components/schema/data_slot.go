@@ -20,8 +20,9 @@ func NewDataSlot() *DataSlot {
 	}
 }
 
-// Set 写入值（唤醒所有等待者）
-func (s *DataSlot) Set(value any) {
+// SetOnce 首次写入值（幂等：如果已设置则忽略，不报错）
+// 适用于：节点输出写入上下文，确保只写入一次
+func (s *DataSlot) SetOnce(value any) {
 	s.cond.L.Lock()
 	defer s.cond.L.Unlock()
 
@@ -32,6 +33,32 @@ func (s *DataSlot) Set(value any) {
 	s.value = value
 	s.ready = true
 	s.cond.Broadcast()
+}
+
+// SetOrUpdate 写入或更新值（始终覆盖，唤醒等待者）
+// 适用于：ReAct 重规划时更新计划、状态变更等场景
+// 注意：更新时会再次 Broadcast，确保新等待者能获取最新值
+func (s *DataSlot) SetOrUpdate(value any) {
+	s.cond.L.Lock()
+	defer s.cond.L.Unlock()
+
+	wasReady := s.ready
+	s.value = value
+	s.ready = true
+
+	// 如果是首次设置，或更新值，都广播唤醒等待者
+	// 更新时广播可确保任何在检查 ready 和 Wait 之间的竞态都能被处理
+	s.cond.Broadcast()
+
+	// 如果之前未就绪，现在刚设置，不需要额外处理
+	// 如果之前已就绪，现在更新，Broadcast 确保新值能被感知
+	_ = wasReady
+}
+
+// Set 写入值（唤醒所有等待者）
+// 行为同 SetOnce，保持向后兼容
+func (s *DataSlot) Set(value any) {
+	s.SetOnce(value)
 }
 
 // Get 等待值就绪
@@ -62,4 +89,24 @@ func (s *DataSlot) Get(ctx context.Context) (any, error) {
 	}
 
 	return s.value, nil
+}
+
+// TryGet 非阻塞获取值
+// 返回值和 true 表示获取成功
+// 返回 nil 和 false 表示值尚未就绪
+func (s *DataSlot) TryGet() (any, bool) {
+	s.cond.L.Lock()
+	defer s.cond.L.Unlock()
+
+	if !s.ready {
+		return nil, false
+	}
+	return s.value, true
+}
+
+// IsReady 检查值是否已就绪
+func (s *DataSlot) IsReady() bool {
+	s.cond.L.Lock()
+	defer s.cond.L.Unlock()
+	return s.ready
 }

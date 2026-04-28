@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/Luo-root/pulse/components/schema"
 	tools "github.com/Luo-root/pulse/components/tool"
@@ -20,18 +21,40 @@ type AgentInterface interface {
 	SendStream(ctx context.Context, userContent string, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error)
 }
 
-// Agent  封装多轮对话（支持 Generate 和 Stream）
-type Agent struct {
-	model    BaseModel
-	executor *schema.ToolExecutor
-	msgs     []*schema.Message
+// AgentOption Agent 配置选项
+type AgentOption func(*Agent)
+
+// WithWindow 设置对话窗口管理器，用于限制工作记忆长度
+func WithWindow(wm *WindowManager) AgentOption {
+	return func(a *Agent) {
+		a.window = wm
+	}
 }
 
-func NewAgent(model BaseModel, executor *schema.ToolExecutor) *Agent {
+// WithUsageTracker 设置 Usage 追踪器
+func WithUsageTracker(tracker *UsageTracker) AgentOption {
+	return func(a *Agent) {
+		a.usageTracker = tracker
+	}
+}
+
+// Agent  封装多轮对话（支持 Generate 和 Stream）
+type Agent struct {
+	model        BaseModel
+	registry     *schema.ToolRegistry
+	msgs         []*schema.Message
+	window       *WindowManager // 对话窗口管理器（可选）
+	usageTracker *UsageTracker  // Usage 追踪器（可选）
+}
+
+func NewAgent(model BaseModel, registry *schema.ToolRegistry, opts ...AgentOption) *Agent {
 	ag := &Agent{
 		model:    model,
-		executor: executor,
+		registry: registry,
 		msgs:     make([]*schema.Message, 0),
+	}
+	for _, opt := range opts {
+		opt(ag)
 	}
 
 	// 注入当前目录
@@ -64,6 +87,13 @@ func NewAgent(model BaseModel, executor *schema.ToolExecutor) *Agent {
 	return ag
 }
 
+// applyWindow 在发送给模型前应用窗口截断，防止工作记忆无限增长
+func (ag *Agent) applyWindow() {
+	if ag.window != nil {
+		ag.msgs = ag.window.Truncate(ag.msgs)
+	}
+}
+
 // Send 非流式
 // 返回：最终 assistant 消息（无工具调用时的回答）
 func (ag *Agent) Send(ctx context.Context, userContent string) (*schema.Message, error) {
@@ -72,9 +102,21 @@ func (ag *Agent) Send(ctx context.Context, userContent string) (*schema.Message,
 	}
 
 	for {
+		// 每次调用模型前截断窗口
+		ag.applyWindow()
+
+		// 记录调用开始时间
+		startTime := time.Now()
+
 		resp, err := ag.model.Generate(ctx, ag.msgs)
 		if err != nil {
 			return nil, err
+		}
+
+		// 记录 Usage
+		if ag.usageTracker != nil && resp.Usage != nil {
+			duration := time.Since(startTime)
+			ag.usageTracker.Record(*resp.Usage, ag.getModelName(), duration)
 		}
 
 		if len(resp.ToolCalls) == 0 {
@@ -97,6 +139,12 @@ func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk fun
 	}
 
 	for {
+		// 每次调用模型前截断窗口
+		ag.applyWindow()
+
+		// 记录调用开始时间
+		startTime := time.Now()
+
 		// 调用模型流式接口
 		reader, err := ag.model.Stream(ctx, ag.msgs)
 		if err != nil {
@@ -146,6 +194,17 @@ func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk fun
 			}
 		}
 
+		// 记录 Usage（从 StreamReader 获取）
+		if ag.usageTracker != nil {
+			duration := time.Since(startTime)
+			usage := schema.Usage{
+				PromptTokens: reader.Usage.PromptTokens,
+				Completion:   reader.Usage.Completion,
+				TotalTokens:  reader.Usage.TotalTokens,
+			}
+			ag.usageTracker.Record(usage, ag.getModelName(), duration)
+		}
+
 		// 无工具调用 → 对话结束，退出总循环
 		if len(fullMsg.ToolCalls) == 0 {
 			// 将完整的助手消息加入历史
@@ -160,6 +219,15 @@ func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk fun
 
 		// 工具执行完成，继续循环，让模型生成最终回答
 	}
+}
+
+// getModelName 获取模型名称（用于 Usage 记录）
+func (ag *Agent) getModelName() string {
+	// 尝试从模型获取名称
+	if modelWithName, ok := ag.model.(interface{ GetModelName() string }); ok {
+		return modelWithName.GetModelName()
+	}
+	return "unknown"
 }
 
 // SetMessages 直接设置完整消息列表（用于注入记忆上下文）
@@ -212,10 +280,25 @@ func (ag *Agent) GetHistory() []*schema.Message {
 	return result
 }
 
+// GetRawMessages 获取内部完整消息副本（含 ToolCalls/ToolResults）
+func (ag *Agent) GetRawMessages() []*schema.Message {
+	result := make([]*schema.Message, len(ag.msgs))
+	for i, m := range ag.msgs {
+		cloned := m.Clone()
+		result[i] = &cloned
+	}
+	return result
+}
+
+// GetUsageTracker 获取 UsageTracker
+func (ag *Agent) GetUsageTracker() *UsageTracker {
+	return ag.usageTracker
+}
+
 // handleToolCalls 处理工具调用：执行 + 追加历史
 func (ag *Agent) handleToolCalls(ctx context.Context, assistantMsg *schema.Message) error {
 	// 执行工具
-	results := ag.executor.ExecuteBatch(ctx, assistantMsg.ToolCalls)
+	results := ag.registry.ExecuteBatch(ctx, assistantMsg.ToolCalls)
 
 	// 构造 assistant 消息（保留 tool_calls）
 	assistantWithTools := &schema.Message{
@@ -227,7 +310,7 @@ func (ag *Agent) handleToolCalls(ctx context.Context, assistantMsg *schema.Messa
 
 	// 追加到历史
 	ag.msgs = append(ag.msgs, assistantWithTools)
-	ag.msgs = append(ag.msgs, ag.executor.ToToolMessages(results)...)
+	ag.msgs = append(ag.msgs, ag.registry.ToToolMessages(results)...)
 
 	return nil
 }

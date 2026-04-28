@@ -14,6 +14,17 @@ type Aspect interface {
 	After(ctx *schema.FlowContext, node Node, err error)
 }
 
+// Interceptor 是能够拦截节点执行的切面（AOP 增强）
+// 它包装了实际的节点执行逻辑，可实现重试、超时、熔断、兜底等高级控制。
+// Interceptor 也是 Aspect，因此可以直接通过 AddAspect 添加到节点或工作流。
+type Interceptor interface {
+	Aspect
+	// Around 包装节点执行，构建洋葱调用链
+	// next: 调用下一个拦截器或实际节点执行
+	// 返回: 节点输出和错误
+	Around(ctx *schema.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error)
+}
+
 // BeforeAspect 简易实现：只执行 Before
 type BeforeAspect struct {
 	Fn func(ctx *schema.FlowContext, node Node)

@@ -9,6 +9,8 @@ import (
 	"github.com/Luo-root/pulse/components/schema"
 )
 
+// BatchNewTaskNode 批量创建任务节点（保留兼容）
+// 注意：返回的节点列表可直接用于 Workflow.AddNode，也可传入 NewTopologicalNode 进行拓扑排序执行
 func BatchNewTaskNode(plannerNodeID string, plan *Plan, agent chatmodel.AgentInterface) []*SimpleNode {
 	if plan == nil {
 		return nil
@@ -18,6 +20,23 @@ func BatchNewTaskNode(plannerNodeID string, plan *Plan, agent chatmodel.AgentInt
 		taskNodes = append(taskNodes, NewTaskNode(plannerNodeID, task, agent))
 	}
 	return taskNodes
+}
+
+// BatchNewTaskNodeWithTopo 批量创建任务节点并包装为拓扑排序节点
+// 这是推荐的用法，自动解析任务依赖并按拓扑序执行
+func BatchNewTaskNodeWithTopo(plannerNodeID string, plan *Plan, agent chatmodel.AgentInterface, outputKeys []string) (*TopologicalNode, error) {
+	nodes := BatchNewTaskNode(plannerNodeID, plan, agent)
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("no tasks in plan")
+	}
+
+	// 将 SimpleNode 转为 Node 接口
+	nodeList := make([]Node, len(nodes))
+	for i, n := range nodes {
+		nodeList[i] = n
+	}
+
+	return NewTopologicalNode(fmt.Sprintf("%s_topo", plannerNodeID), nodeList, outputKeys)
 }
 
 func buildOutputExample(outputs []string) string {
@@ -47,7 +66,8 @@ func NewTaskNode(plannerNodeID string, task Task, agent chatmodel.AgentInterface
 			}
 			planVal := plan.(*Plan)
 			taskStateModifyRunning(planVal, task.ID)
-			ctx.Set(planName, plan)
+			// 使用 SetOrUpdate 确保计划状态变更能被正确传播
+			ctx.SetOrUpdate(planName, plan)
 			var inputsInfo []string
 			for _, input := range allInputs {
 				get, err := ctx.Get(input)
@@ -82,6 +102,8 @@ func NewTaskNode(plannerNodeID string, task Task, agent chatmodel.AgentInterface
 			if err != nil {
 				taskStateModifyFailed(planVal, task.ID)
 				taskModifyError(planVal, task.ID, err.Error())
+				// 使用 SetOrUpdate 确保计划状态变更能被正确传播
+				ctx.SetOrUpdate(planName, plan)
 				return nil, err
 			}
 
@@ -89,12 +111,15 @@ func NewTaskNode(plannerNodeID string, task Task, agent chatmodel.AgentInterface
 			if err != nil {
 				taskStateModifyFailed(planVal, task.ID)
 				taskModifyError(planVal, task.ID, err.Error())
+				// 使用 SetOrUpdate 确保计划状态变更能被正确传播
+				ctx.SetOrUpdate(planName, plan)
 				return nil, err
 			}
 
 			taskModifyResult(planVal, task.ID, result)
 			taskStateModifySuccess(planVal, task.ID)
-			ctx.Set(planName, plan)
+			// 使用 SetOrUpdate 确保计划状态变更能被正确传播
+			ctx.SetOrUpdate(planName, plan)
 			return result, nil
 		},
 	)
@@ -109,6 +134,7 @@ func taskStateModifyRunning(plan *Plan, taskID string) {
 			break
 		}
 	}
+	plan.notifyStateChanged()
 }
 
 func taskStateModifyFailed(plan *Plan, taskID string) {
@@ -120,6 +146,7 @@ func taskStateModifyFailed(plan *Plan, taskID string) {
 			break
 		}
 	}
+	plan.notifyStateChanged()
 }
 
 func taskModifyError(plan *Plan, taskID string, errMsg string) {
@@ -131,6 +158,7 @@ func taskModifyError(plan *Plan, taskID string, errMsg string) {
 			break
 		}
 	}
+	plan.notifyStateChanged()
 }
 
 func taskStateModifySuccess(plan *Plan, taskID string) {
@@ -142,6 +170,7 @@ func taskStateModifySuccess(plan *Plan, taskID string) {
 			break
 		}
 	}
+	plan.notifyStateChanged()
 }
 
 func taskModifyResult(plan *Plan, taskID string, result map[string]any) {
@@ -153,6 +182,7 @@ func taskModifyResult(plan *Plan, taskID string, result map[string]any) {
 			break
 		}
 	}
+	plan.notifyStateChanged()
 }
 
 func parseDynamicJSON(raw string) (map[string]any, error) {

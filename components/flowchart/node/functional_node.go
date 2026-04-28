@@ -193,10 +193,12 @@ func NewLLMStreamNode(
 				return nil, err
 			}
 
-			multicastReaders := streamReader.Multicast(copies)
+			// 使用 MulticastController
+			mc := schema.NewMulticastController(streamReader, 16)
+			multicastReaders := mc.Fork(int(copies))
 
-			// 输出【多播后的第一个流】
-			// 你永远输出多播流，下游永远安全，不会抢数据
+			// 输出【多播后的流列表】
+			// 下游节点可安全读取，不会抢数据
 			return map[string]any{
 				OutputKey: multicastReaders,
 			}, nil

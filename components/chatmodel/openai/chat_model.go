@@ -119,6 +119,7 @@ func SchemaToOpenAI(tools []schema.Tool) []Tool {
 
 type ChatModel struct {
 	client *Client
+	model  string
 }
 
 func NewChatModel(ctx context.Context, config *ChatModelConfig) (*ChatModel, error) {
@@ -142,6 +143,7 @@ func NewChatModel(ctx context.Context, config *ChatModelConfig) (*ChatModel, err
 	cli := NewClient(ctx, config)
 	return &ChatModel{
 		client: cli,
+		model:  config.Model,
 	}, nil
 }
 
@@ -151,4 +153,9 @@ func (cm *ChatModel) Generate(ctx context.Context, input []*schema.Message) (*sc
 
 func (cm *ChatModel) Stream(ctx context.Context, input []*schema.Message) (*schema.StreamReader, error) {
 	return cm.client.Stream(ctx, input)
+}
+
+// GetModelName 返回模型名称（用于 UsageTracker 记录）
+func (cm *ChatModel) GetModelName() string {
+	return cm.model
 }

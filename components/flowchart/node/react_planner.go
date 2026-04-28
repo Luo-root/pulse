@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/Luo-root/pulse/components/chatmodel"
 	"github.com/Luo-root/pulse/components/schema"
@@ -54,6 +53,7 @@ func NewReActPlannerNode(
 }
 
 // ScheduleLoopNode 调度循环：监听任务完成/失败，触发重规划
+// 修复：使用 Plan 的状态变更通知机制替代忙等待轮询
 // plannerNodeName: 需要监控的 planner 的节点ID
 // 最终结果会存到: final_answer 中
 func ScheduleLoopNode(
@@ -70,58 +70,76 @@ func ScheduleLoopNode(
 		[]string{finalAnswer},
 		func(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error) {
 			baseCtx := ctx.GetContext()
-			for {
-				// 从上下文获取最新计划
-				planVal, err := ctx.Get(planName)
-				if err != nil {
-					return nil, fmt.Errorf("plan %s not found in ctx", planName)
-				}
-				plan, ok := planVal.(*Plan)
-				if !ok {
-					return nil, fmt.Errorf("plan %s type error", planName)
-				}
 
+			// 获取初始计划
+			planVal, err := ctx.Get(planName)
+			if err != nil {
+				return nil, fmt.Errorf("plan %s not found in ctx", planName)
+			}
+			plan, ok := planVal.(*Plan)
+			if !ok {
+				return nil, fmt.Errorf("plan %s type error", planName)
+			}
+
+			// 获取状态变更通知 channel
+			stateCh := plan.GetStateChannel()
+
+			for {
+				// 检查外部取消
 				select {
-				case <-(*baseCtx).Done(): // 监听外部取消/超时
+				case <-(*baseCtx).Done():
+					plan.mu.Lock()
 					for i := range plan.Tasks {
-						plan.mu.Lock()
 						plan.Tasks[i].State = TaskCancelled
-						plan.mu.Unlock()
 					}
-					ctx.Set(finalAnswer, (*baseCtx).Err().Error())
+					plan.mu.Unlock()
+					ctx.SetOrUpdate(finalAnswer, (*baseCtx).Err().Error())
 					return nil, (*baseCtx).Err()
 				default:
-					time.Sleep(100 * time.Millisecond)
 				}
 
-				// 检查失败任务
-				var failedTask *Task
-				for i := range plan.Tasks {
-					if plan.Tasks[i].State == TaskFailed {
-						failedTask = &plan.Tasks[i]
-						break
-					}
-				}
+				// 检查失败任务（使用线程安全的方法）
+				if failedTask := plan.FindFailedTask(); failedTask != nil {
+					fmt.Println("检测到失败任务，开始重规划:", failedTask.ID)
 
-				if failedTask != nil {
-					fmt.Println("又重规划了")
 					// 重规划
 					newPlan, err := RePlan(*baseCtx, plan, failedTask, agent)
 					if err != nil {
-						ctx.Set(finalAnswer, fmt.Sprintf("RePlan Failed：%v", err))
+						ctx.SetOrUpdate(finalAnswer, fmt.Sprintf("RePlan Failed：%v", err))
 						break // 无法恢复，结束
 					}
+
+					// 更新计划引用
 					plan = newPlan
-					ctx.Set(planName, plan)
+					// 使用 SetOrUpdate 确保新计划能覆盖旧计划
+					ctx.SetOrUpdate(planName, plan)
+					// 更新状态变更 channel
+					stateCh = plan.GetStateChannel()
 					continue
 				}
 
-				// 检查是否全部完成
-				if IsCompleted(plan) {
+				// 检查是否全部完成（使用线程安全的方法）
+				if plan.IsAllCompleted() {
 					// 收集结果，生成最终答案
 					result := synthesizeResult(plan)
-					ctx.Set(finalAnswer, result)
+					ctx.SetOrUpdate(finalAnswer, result)
 					break
+				}
+
+				// 等待状态变更通知（替代忙等待）
+				// 使用 select 同时监听状态变更和外部取消
+				select {
+				case <-stateCh:
+					// 状态变更，继续循环检查
+					continue
+				case <-(*baseCtx).Done():
+					plan.mu.Lock()
+					for i := range plan.Tasks {
+						plan.Tasks[i].State = TaskCancelled
+					}
+					plan.mu.Unlock()
+					ctx.SetOrUpdate(finalAnswer, (*baseCtx).Err().Error())
+					return nil, (*baseCtx).Err()
 				}
 			}
 

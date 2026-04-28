@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/Luo-root/pulse/components/schema"
 )
@@ -28,14 +29,22 @@ func GetWorkDirTool(ctx context.Context, args map[string]any) (any, error) {
 	}, nil
 }
 
-// RegisterEnvTools 注册环境相关工具
-func RegisterEnvTools(executor *schema.ToolExecutor) {
-	executor.MustRegister(schema.Tool{
+// getWorkDirParams get_work_dir 参数定义
+var getWorkDirParams = map[string]any{
+	"type":       "object",
+	"properties": map[string]any{},
+}
+
+// RegisterEnvTools 注册环境工具
+func RegisterEnvTools(registry *schema.ToolRegistry) {
+	registry.MustRegister(schema.ToolMetadata{
 		Name:        "get_work_dir",
 		Description: "获取当前工作目录和操作系统信息",
-		Parameters: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
+		Parameters:  getWorkDirParams,
+		Permission:  schema.PermReadOnly,
+		Category:    "env",
+		Version:     "1.0.0",
+		Tags:        []string{"env", "info", "safe"},
+		Timeout:     5 * time.Second,
 	}, GetWorkDirTool)
 }

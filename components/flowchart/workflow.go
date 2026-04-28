@@ -2,8 +2,10 @@ package flowchart
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/Luo-root/pulse/components/flowchart/node"
 	"github.com/Luo-root/pulse/components/schema"
@@ -93,7 +95,7 @@ func (w *Workflow) Start() error {
 		err := w.pool.Submit(func() {
 			// 执行完成后自动标记运行状态（所有节点执行完才置false）
 			defer wg.Done()
-			w.runNode(nodeCopy)
+			w.RunNode(nodeCopy)
 		})
 		if err != nil {
 			w.mu.Lock()
@@ -114,47 +116,84 @@ func (w *Workflow) Start() error {
 	return nil
 }
 
-// runNode 执行单个节点（包含全局切面 + 节点切面）
-func (w *Workflow) runNode(node node.Node) {
+// RunNode 执行单个节点（包含全局切面 + 节点切面 + Interceptor 调用链）
+func (w *Workflow) RunNode(n node.Node) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("runNode panic [node=%s]: %v", node.ID(), r)
+			log.Printf("runNode panic [node=%s]: %v", n.ID(), r)
+			// panic 也应触发工作流级取消，防止其他节点无限等待
+			w.ctx.Cancel(fmt.Errorf("panic in node %s: %v", n.ID(), r))
 		}
 	}()
 
-	// 切面 Before
+	// 1. 收集所有切面（全局 + 节点私有）
+	var aspects []node.Aspect
 	for _, a := range w.aspects {
 		if a != nil {
-			a.Before(w.ctx, node)
+			aspects = append(aspects, a)
 		}
 	}
-	for _, a := range node.Aspects() {
+	for _, a := range n.Aspects() {
 		if a != nil {
-			a.Before(w.ctx, node)
+			aspects = append(aspects, a)
 		}
 	}
 
-	// 执行业务
-	inputs, err := w.ctx.WaitAll(node.Inputs()...)
-	if err != nil {
-		log.Printf("wait input failed: %v", err)
-		return
-	}
-	outputs, runErr := node.Run(w.ctx, inputs)
-
-	// 切面 After
-	for _, a := range w.aspects {
-		if a != nil {
-			a.After(w.ctx, node, runErr)
-		}
-	}
-	for _, a := range node.Aspects() {
-		if a != nil {
-			a.After(w.ctx, node, runErr)
+	// 2. 分离传统 Before/After 切面 与 Interceptor（可拦截执行）
+	var traditional []node.Aspect
+	var interceptors []node.Interceptor
+	for _, a := range aspects {
+		if ic, ok := a.(node.Interceptor); ok {
+			interceptors = append(interceptors, ic)
+		} else {
+			traditional = append(traditional, a)
 		}
 	}
 
-	// 输出结果
+	// 3. 传统切面 Before 阶段（如日志、监控埋点）
+	for _, a := range traditional {
+		a.Before(w.ctx, n)
+	}
+
+	// 4. 构建调用链：实际执行被 Interceptor 层层包裹（洋葱模型）
+	invoker := func() (map[string]any, error) {
+		// 新增：全局错误自检，实现快速失败
+		// 若兄弟节点已失败并触发 Cancel，此处直接退出，避免无效执行与无效等待
+		if err := w.ctx.Err(); err != nil {
+			return nil, err
+		}
+		inputs, err := w.ctx.WaitAll(n.Inputs()...)
+		if err != nil {
+			return nil, err
+		}
+		return n.Run(w.ctx, inputs)
+	}
+
+	// 反向包裹：interceptors 数组后面的包在最外层
+	for i := len(interceptors) - 1; i >= 0; i-- {
+		ic := interceptors[i]
+		next := invoker
+		invoker = func(ic node.Interceptor, next func() (map[string]any, error)) func() (map[string]any, error) {
+			return func() (map[string]any, error) {
+				return ic.Around(w.ctx, n, next)
+			}
+		}(ic, next)
+	}
+
+	outputs, runErr := invoker()
+
+	// 新增：只要节点执行出错（且不是已被取消的连锁反应），立即触发工作流级取消
+	// 这会通过 context 传播给所有正在 WaitAll/DataSlot.Get 中等待的节点，实现级联中断
+	if runErr != nil {
+		w.ctx.Cancel(runErr)
+	}
+
+	// 5. 传统切面 After 阶段
+	for _, a := range traditional {
+		a.After(w.ctx, n, runErr)
+	}
+
+	// 6. 输出结果（仅成功时写入上下文）
 	if runErr == nil && outputs != nil {
 		for k, v := range outputs {
 			w.ctx.Set(k, v)
@@ -193,6 +232,7 @@ func (w *Workflow) Reset(ctx context.Context) error {
 }
 
 // Run 运行工作流（阻塞直到所有节点完成）
+// 若任意节点执行失败（含超时、熔断、panic 等），返回该错误，实现错误透出
 func (w *Workflow) Run(Input map[string]any) error {
 	// 标记为运行中
 	w.mu.Lock()
@@ -220,7 +260,7 @@ func (w *Workflow) Run(Input map[string]any) error {
 
 		err := w.pool.Submit(func() {
 			defer wg.Done()
-			w.runNode(nodeCopy)
+			w.RunNode(nodeCopy)
 		})
 		if err != nil {
 			return schema.ErrWorkflowSubmitNodeToPool
@@ -230,7 +270,24 @@ func (w *Workflow) Run(Input map[string]any) error {
 	// 等待所有节点完成
 	wg.Wait()
 
+	// 新增：若工作流执行过程中任意节点出错，将首错返回给调用方
+	if err := w.ctx.Err(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// Wait 阻塞等待工作流运行结束（适用于 Start 启动的异步模式），并返回工作流级错误（若存在）
+func (w *Workflow) Wait() error {
+	for w.IsRunning() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	return w.ctx.Err()
+}
+
+// Err 非阻塞查询当前工作流错误状态
+func (w *Workflow) Err() error {
+	return w.ctx.Err()
 }
 
 // Close 关闭工作流，释放线程池资源

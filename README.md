@@ -1,6 +1,6 @@
 # Pulse - Go 语言 AI Agent 框架
 
-> 一个轻量级、模块化、可扩展的 Go 语言 AI Agent 开发框架，支持多模型对话、工具调用、记忆管理、流式输出和工作流编排。
+> 一个模块化、可扩展的 Go 语言 AI Agent 开发框架，支持多模型对话、工具调用、记忆管理、流式输出和工作流编排。
 
 ## 📋 目录
 
@@ -9,10 +9,9 @@
 - [核心组件](#核心组件)
   - [Schema（核心数据结构）](#1-schema核心数据结构)
   - [ChatModel（模型层）](#2-chatmodel模型层)
-  - [Agent（智能体）](#3-agent智能体)
-  - [Tool（工具系统）](#4-tool工具系统)
-  - [Memory（记忆系统）](#5-memory记忆系统)
-  - [Flowchart（工作流引擎）](#6-flowchart工作流引擎)
+  - [Tool（工具系统）](#3-tool工具系统)
+  - [Memory（记忆系统）](#4-memory记忆系统)
+  - [Flowchart（工作流引擎）](#5-flowchart工作流引擎)
 - [快速开始](#快速开始)
 - [使用样例](#使用样例)
 - [API 参考](#api-参考)
@@ -25,11 +24,12 @@
 **Pulse** 是一个面向 Go 开发者的 AI Agent 框架，旨在简化大语言模型（LLM）应用的开发流程。框架采用模块化设计，核心特性包括：
 
 - 🧠 **多模型支持**：OpenAI 兼容接口（已完成）、Claude、Gemini（适配中）
-- 🔧 **工具调用**：内置文件操作、命令执行、环境查询等工具，支持自定义扩展
-- 💾 **记忆管理**：基于 SQLite 的本地记忆存储，支持对话历史召回
+- 🔧 **工具调用**：内置文件操作、命令执行、环境查询等工具，支持动态扩展
+- 💾 **记忆管理**：基于 SQLite 的本地记忆存储，支持语义搜索和对话历史召回
 - 🌊 **流式输出**：完整的 SSE 流式接收与多播机制
 - 🔄 **工作流编排**：基于 DAG 的异步工作流引擎，支持 ReAct 规划模式
 - 🛡️ **安全约束**：工作目录限制、危险命令拦截、路径安全检查
+- 📊 **用量追踪**：内置 Token 使用量统计和成本计算
 
 ---
 
@@ -40,11 +40,10 @@ pulse/
 ├── components/
 │   ├── schema/          # 核心数据结构（Message、Tool、FlowContext 等）
 │   ├── chatmodel/       # 模型层（OpenAI/Claude/Gemini + Agent 封装）
-│   ├── tool/            # 工具系统（文件/命令/环境）
-│   ├── memory/          # 记忆系统（SQLite 存储 + 管理器）
+│   ├── tool/            # 工具系统（文件/命令/环境 + 动态加载基础设施）
+│   ├── memory/          # 记忆系统（SQLite 存储 + MemNetAI 云端记忆）
 │   └── flowchart/       # 工作流引擎（DAG + ReAct 规划）
 ├── go.mod
-├── main_test.go         # 完整使用示例
 └── README.md
 ```
 
@@ -90,52 +89,59 @@ msg := schema.AssistantMessage("助手回复")
 msg := schema.ToolMessage("工具结果")
 ```
 
-#### Tool 工具定义
+#### ToolRegistry 工具注册中心
+
+`ToolRegistry` 是一个功能完整的动态工具注册中心，支持：
+
+- 动态注册/注销/热更新工具
+- 启用/禁用工具
+- 按分类、权限、标签查询工具
+- 批量并行执行
+- 生命周期钩子（Before/After/OnRegister）
+- 使用统计
 
 ```go
-type Tool struct {
-    Name        string `json:"name"`        // 工具名称
-    Description string `json:"description"` // 功能描述
-    Parameters  any    `json:"parameters"`  // JSON Schema 参数定义
-}
-```
-
-#### ToolExecutor 工具执行器
-
-```go
-// 创建执行器
-executor := schema.NewToolExecutor()
+// 创建注册中心
+registry := schema.NewToolRegistry()
 
 // 注册工具
-executor.MustRegister(schema.Tool{
-    Name:        "get_weather",
-    Description: "获取指定城市的天气",
+registry.MustRegister(schema.ToolMetadata{
+    Name:        "my_tool",
+    Description: "我的自定义工具",
     Parameters: map[string]any{
         "type": "object",
         "properties": map[string]any{
-            "city": map[string]any{"type": "string"},
+            "param1": map[string]any{"type": "string"},
         },
-        "required": []string{"city"},
+        "required": []string{"param1"},
     },
+    Permission: schema.PermReadOnly,
+    Category:   "custom",
+    Version:    "1.0.0",
+    Tags:       []string{"safe"},
+    Timeout:    30 * time.Second,
 }, func(ctx context.Context, args map[string]any) (any, error) {
-    city := args["city"].(string)
-    return map[string]string{
-        "city": city,
-        "temperature": "25°C",
-    }, nil
+    // 实现逻辑
+    return result, nil
 })
 
-// 获取工具 Schema（发给模型）
-tools := executor.GetToolsSchema()
+// 获取启用的工具（发给模型）
+tools := registry.GetEnabledTools()
 
 // 执行单个工具调用
-result := executor.Execute(ctx, toolCall)
+result := registry.Execute(ctx, toolCall)
 
 // 批量并发执行
-results := executor.ExecuteBatch(ctx, toolCalls)
+results := registry.ExecuteBatch(ctx, toolCalls)
 
 // 转换为 Message 列表（回传给模型）
-msgs := executor.ToToolMessages(results)
+msgs := registry.ToToolMessages(results)
+
+// 添加生命周期钩子
+registry.AddBeforeExecuteHook(func(ctx context.Context, toolName string, args map[string]any) error {
+    fmt.Printf("[HOOK] Executing tool: %s\n", toolName)
+    return nil
+})
 ```
 
 #### StreamReader 流式读取器
@@ -157,7 +163,8 @@ for {
 }
 
 // 多播：1 个源流 → N 个独立流
-readers := reader.Multicast(3)  // 分成 3 个独立流
+mc := schema.NewMulticastController(streamReader, 16)
+readers := mc.Fork(3)  // 分成 3 个独立流
 ```
 
 #### FlowContext 工作流上下文
@@ -166,14 +173,20 @@ readers := reader.Multicast(3)  // 分成 3 个独立流
 // 创建上下文
 ctx := schema.NewFlowContext(context.Background())
 
-// 设置数据
-ctx.Set("key", value)
+// 设置数据（幂等：首次设置，已存在则忽略）
+ctx.SetOnce("key", value)
+
+// 设置或更新数据（始终覆盖）
+ctx.SetOrUpdate("key", newValue)
 
 // 等待数据（支持多节点同时等待）
 val, err := ctx.Wait("key")
 
 // 等待多个数据
 vals, err := ctx.WaitAll("key1", "key2", "key3")
+
+// 非阻塞获取
+val, ok := ctx.TryGet("key")
 ```
 
 ---
@@ -199,7 +212,7 @@ model, err := openai.NewChatModel(context.Background(), &openai.ChatModelConfig{
     BaseUrl: "https://api.moonshot.cn/v1/chat/completions",  // Moonshot/Kimi
     APIKey:  "your-api-key",
     Model:   "kimi-k2-0905-preview",
-    Tools:   executor.GetToolsSchema(),  // 可选：绑定工具
+    Tools:   registry.GetEnabledTools(),  // 可选：绑定工具
     
     // 可选参数
     MaxCompletionTokens: 4096,
@@ -226,25 +239,26 @@ reader, err := model.Stream(ctx, messages)
 | Claude | 🚧 适配中 | `components/chatmodel/claude` |
 | Gemini | 🚧 适配中 | `components/chatmodel/gemini` |
 
----
-
-### 3. Agent（智能体）
+#### Agent 智能体
 
 Agent 是对话循环的封装，自动处理工具调用循环。
-
-#### 基础 Agent
 
 ```go
 import "github.com/Luo-root/pulse/components/chatmodel"
 
 // 创建 Agent
-agent := chatmodel.NewAgent(model, executor)
+agent := chatmodel.NewAgent(model, registry)
 
-// 添加系统消息
-agent.AddSystemMessage("你是一个天气助手", "")
+// 可选：配置对话窗口管理器
+window := chatmodel.NewWindowManager(
+    chatmodel.WindowConfig{MaxHistoryMessages: 20},
+    model, nil,
+)
+agent := chatmodel.NewAgent(model, registry, chatmodel.WithWindow(window))
 
-// 添加用户消息
-agent.AddUserMessage("北京天气怎么样")
+// 可选：配置用量追踪器
+tracker := chatmodel.NewUsageTracker()
+agent := chatmodel.NewAgent(model, registry, chatmodel.WithUsageTracker(tracker))
 
 // 非流式发送（自动处理工具调用循环）
 resp, err := agent.Send(ctx, "北京天气怎么样")
@@ -263,18 +277,25 @@ resp, err := agent.SendStream(ctx, "北京天气怎么样", func(msg *schema.Mes
 })
 ```
 
-#### 带记忆的 Agent
+**Agent 内置系统提示：**
+
+Agent 自动注入工作目录约束和工具调用规则：
+- 所有文件操作限制在当前工作目录
+- 不确定时必须调用工具验证
+- 禁止凭空回答，必须基于工具返回的真实数据
+
+#### MemoryAgent 带记忆的智能体
 
 ```go
 // 创建记忆存储
-store, err := memory.NewLocalStore("./chat.db")
+store, err := memory.NewSqliteStore("./chat.db")
 if err != nil {
     log.Fatal(err)
 }
 defer store.Close()
 
 // 创建带记忆的 Agent
-memAgent := chatmodel.NewMemoryAgent(model, executor, store, "session_001")
+memAgent := chatmodel.NewMemoryAgent(model, registry, store, "session_001")
 
 // 发送消息（自动注入历史记忆、保存对话）
 resp, err := memAgent.Send(ctx, "北京天气怎么样")
@@ -289,65 +310,94 @@ err = memAgent.Clear(ctx)
 history := memAgent.GetHistory()
 ```
 
-**Agent 内置系统提示：**
+#### UsageTracker 用量追踪
 
-Agent 自动注入工作目录约束和工具调用规则：
-- 所有文件操作限制在当前工作目录
-- 不确定时必须调用工具验证
-- 禁止凭空回答，必须基于工具返回的真实数据
+```go
+// 创建追踪器
+tracker := chatmodel.NewUsageTracker()
+
+// 配置预算（可选）
+tracker.SetBudget(10.0)  // 10 美元预算
+
+// 检查是否超预算
+if tracker.IsOverBudget() {
+    fmt.Println("预算已用完")
+}
+
+// 获取统计
+stats := tracker.GetStats()
+fmt.Printf("总调用次数: %d\n", stats.TotalCalls)
+fmt.Printf("总 Token: %d\n", stats.TotalTokens)
+fmt.Printf("总成本: $%.4f\n", stats.TotalCost)
+
+// 导出 JSON
+data, _ := tracker.ExportJSON()
+```
 
 ---
 
-### 4. Tool（工具系统）
+### 3. Tool（工具系统）
 
 #### 内置工具
 
-| 工具名 | 功能 | 参数 |
-|--------|------|------|
-| `file_read` | 读取文件（最大 10MB） | `path` |
-| `file_write` | 写入文件（自动创建父目录） | `path`, `content` |
-| `file_list` | 列出目录内容 | `path`（可选） |
-| `command_exec` | 执行系统命令（带安全检查） | `command`, `timeout`, `cwd` |
-| `get_work_dir` | 获取当前工作目录 | 无 |
+| 工具名 | 功能 | 参数 | 权限 | 超时 |
+|--------|------|------|------|------|
+| `file_read` | 读取文件（最大 10MB） | `path` | 只读 | 30s |
+| `file_write` | 写入文件（自动创建父目录） | `path`, `content` | 读写 | 30s |
+| `file_list` | 列出目录内容 | `path`（可选） | 只读 | 30s |
+| `command_exec` | 执行系统命令（带安全检查） | `command`, `timeout`, `cwd` | 危险 | 30s |
+| `get_work_dir` | 获取当前工作目录 | 无 | 只读 | 5s |
 
 #### 注册所有工具
 
 ```go
 import tools "github.com/Luo-root/pulse/components/tool"
 
-executor := schema.NewToolExecutor()
-tools.RegisterAll(executor)  // 注册所有内置工具
+registry := schema.NewToolRegistry()
+tools.RegisterAll(registry)  // 注册所有内置工具
 ```
 
-#### 自定义工具
+#### 动态工具加载（选项模式）
 
 ```go
-executor.MustRegister(schema.Tool{
-    Name:        "my_tool",
-    Description: "我的自定义工具",
-    Parameters: map[string]any{
+// 创建动态加载器
+loader := tools.NewDynamicToolLoader(registry)
+
+// 使用选项模式注册工具
+loader.Load(
+    "calculator",
+    "执行数学计算",
+    calculatorHandler,
+    map[string]any{
         "type": "object",
         "properties": map[string]any{
-            "param1": map[string]any{"type": "string"},
+            "expression": map[string]any{"type": "string"},
         },
-        "required": []string{"param1"},
     },
-}, func(ctx context.Context, args map[string]any) (any, error) {
-    // 实现逻辑
-    return result, nil
-})
+    tools.WithCategory("math"),
+    tools.WithTimeout(5*time.Second),
+    tools.WithTags("safe", "math"),
+)
+
+// 简化版（无参数工具）
+loader.LoadSimple(
+    "get_time",
+    "获取当前时间",
+    getTimeHandler,
+    tools.WithCategory("system"),
+)
 ```
 
 #### 安全特性
 
-- **路径限制**：所有文件操作必须在当前工作目录内
-- **命令拦截**：禁止 `rm -rf`, `mkfs`, `dd` 等危险命令
+- **路径限制**：所有文件操作必须在当前工作目录内（通过 `safePath` 函数实现）
+- **命令拦截**：禁止 `rm -rf`, `mkfs`, `dd`, `;`, `&&`, `||` 等危险命令
 - **超时控制**：命令执行默认 30 秒超时
 - **跨平台**：支持 Windows/Linux/macOS
 
 ---
 
-### 5. Memory（记忆系统）
+### 4. Memory（记忆系统）
 
 #### Store 接口
 
@@ -361,20 +411,29 @@ type Store interface {
 }
 ```
 
-#### LocalStore（SQLite 实现）
+#### GormStore（SQLite 实现）
 
 ```go
-// 创建本地存储
-store, err := memory.NewLocalStore("./chat.db")
+// 创建本地存储（纯 Go，无需 CGO）
+store, err := memory.NewSqliteStore("./chat.db")
 if err != nil {
     log.Fatal(err)
 }
 defer store.Close()
 
+// 高级配置（支持向量搜索）
+store, err := memory.NewGormStore(&memory.GormStoreConfig{
+    DBPath:              "./chat.db",
+    MaxOpenConns:        10,
+    MaxIdleConns:        5,
+    DisableVectorSearch: false,  // 启用向量搜索
+    EmbeddingDimension:  384,
+}, embeddingFunc)
+
 // 保存消息
 err = store.Save(ctx, "session_001", messages)
 
-// 召回相关记忆（关键词匹配）
+// 召回相关记忆（语义搜索 + 关键词混合）
 memories, err := store.Recall(ctx, "session_001", "天气", 3)
 
 // 获取完整历史
@@ -382,6 +441,23 @@ history, err := store.GetSession(ctx, "session_001")
 
 // 清空会话
 err = store.ClearSession(ctx, "session_001")
+```
+
+#### MemNetAIStore（云端长记忆）
+
+```go
+// 创建 MemNetAI 存储
+store, err := memory.NewMemNetAIStore(&memory.MemNetAIConfig{
+    APIKey:    "your-memnetai-api-key",
+    Namespace: "user_123",
+    Language:  "zh",
+})
+
+// 保存对话（AI 自动提取记忆）
+err = store.Save(ctx, "session_001", messages)
+
+// 召回记忆（立体认知重构）
+memories, err := store.Recall(ctx, "session_001", "用户喜欢什么", 3)
 ```
 
 #### Manager（记忆管理器）
@@ -392,13 +468,13 @@ manager := memory.NewManager(store)
 // 保存一轮对话
 err = manager.SaveTurn(ctx, "session_001", userMsg, assistantMsg)
 
-// 构建带记忆的上下文
+// 构建带记忆的上下文（自动召回相关记忆并注入 system prompt）
 contextMsgs, err := manager.BuildContext(ctx, "session_001", currentQuery, history)
 ```
 
 ---
 
-### 6. Flowchart（工作流引擎）
+### 5. Flowchart（工作流引擎）
 
 基于 DAG 的异步工作流引擎，支持自动依赖等待、并发执行、AOP 切面。
 
@@ -449,16 +525,17 @@ result, err := wf.Get("final_answer")
 |----------|------|------|
 | 通用节点 | `node.NewNode()` | 自定义执行逻辑 |
 | 条件节点 | `node.NewConditionNode()` | 条件分支 |
-| 循环节点 | `node.NewLoopNode()` | while 循环 |
+| 循环节点 | `node.NewLoopNode()` | while 循环，支持超时和最大迭代次数 |
 | 并行节点 | `node.NewParallelNode()` | 等待多个输入 |
 | 流式 LLM | `node.NewLLMStreamNode()` | 流式模型调用 |
 | ReAct 规划 | `node.NewReActPlannerNode()` | AI 任务规划 |
 | 任务节点 | `node.NewTaskNode()` | 执行规划任务 |
+| 拓扑节点 | `node.NewTopologicalNode()` | 按拓扑序执行有依赖关系的节点 |
 
-#### AOP 切面
+#### AOP 切面与拦截器
 
 ```go
-// 定义切面
+// 定义传统切面
 aspect := &node.AroundAspect{
     BeforeFn: func(ctx *schema.FlowContext, node node.Node) {
         fmt.Println("节点开始:", node.ID())
@@ -472,8 +549,18 @@ aspect := &node.AroundAspect{
     },
 }
 
+// 定义拦截器（可拦截执行）
+retryInterceptor := node.NewRetryInterceptor(3, 1*time.Second)
+timeoutInterceptor := node.NewTimeoutInterceptor(30 * time.Second)
+cbInterceptor := node.NewCircuitBreakerInterceptor(5, 30*time.Second)
+cbInterceptor.FallbackFunc = func(ctx *schema.FlowContext, node node.Node) (map[string]any, error) {
+    return map[string]any{"fallback": true}, nil
+}
+
 // 添加到节点
 plannerNode.AddAspect(aspect)
+plannerNode.AddAspect(retryInterceptor)
+plannerNode.AddAspect(timeoutInterceptor)
 
 // 或添加到工作流（全局生效）
 wf.AddAspect(aspect)
@@ -493,8 +580,8 @@ plannerWF.Run(map[string]any{"user_goal": "创建前端页面"})
 // 3. 获取规划结果
 plan, _ := plannerWF.Get("react_planner_plan")
 
-// 4. 创建任务执行节点
-taskNodes := node.BatchNewTaskNode("react_planner", plan.(*node.Plan), agent)
+// 4. 创建任务执行节点（自动拓扑排序）
+topoNode, err := node.BatchNewTaskNodeWithTopo("react_planner", plan.(*node.Plan), agent, []string{"final_answer"})
 
 // 5. 创建调度循环
 loopNode := node.ScheduleLoopNode("react_planner", agent)
@@ -502,9 +589,7 @@ loopNode := node.ScheduleLoopNode("react_planner", agent)
 // 6. 运行任务工作流
 tasksWF, _ := flowchart.NewWorkflow(ctx, 10)
 tasksWF.AddNode(loopNode)
-for _, n := range taskNodes {
-    tasksWF.AddNode(n)
-}
+tasksWF.AddNode(topoNode)
 tasksWF.Run(map[string]any{"react_planner_plan": plan})
 
 // 7. 获取最终结果
@@ -524,10 +609,10 @@ go get github.com/Luo-root/pulse
 ### 依赖
 
 ```
-go 1.25.0
+go 1.24.0
 
 require (
-    github.com/glebarez/sqlite v1.11.0    // SQLite 驱动
+    github.com/glebarez/sqlite v1.11.0    // SQLite 驱动（纯 Go）
     github.com/panjf2000/ants/v2 v2.12.0  // 协程池
 )
 ```
@@ -551,19 +636,19 @@ func main() {
     ctx := context.Background()
     
     // 1. 初始化工具
-    executor := schema.NewToolExecutor()
-    tools.RegisterAll(executor)
+    registry := schema.NewToolRegistry()
+    tools.RegisterAll(registry)
     
     // 2. 初始化模型
     model, _ := openai.NewChatModel(ctx, &openai.ChatModelConfig{
         BaseUrl: "https://api.moonshot.cn/v1/chat/completions",
         APIKey:  "your-api-key",
         Model:   "kimi-k2-0905-preview",
-        Tools:   executor.GetToolsSchema(),
+        Tools:   registry.GetEnabledTools(),
     })
     
     // 3. 创建 Agent
-    agent := chatmodel.NewAgent(model, executor)
+    agent := chatmodel.NewAgent(model, registry)
     
     // 4. 对话
     resp, err := agent.Send(ctx, "在当前目录创建一个 hello.txt 文件，内容为 Hello World")
@@ -585,9 +670,9 @@ func main() {
 func basicChat() {
     ctx := context.Background()
     
-    // 创建执行器并注册工具
-    executor := schema.NewToolExecutor()
-    executor.MustRegister(schema.Tool{
+    // 创建注册中心并注册工具
+    registry := schema.NewToolRegistry()
+    registry.MustRegister(schema.ToolMetadata{
         Name:        "get_weather",
         Description: "获取指定城市的天气",
         Parameters: map[string]any{
@@ -597,6 +682,9 @@ func basicChat() {
             },
             "required": []string{"city"},
         },
+        Permission: schema.PermReadOnly,
+        Category:   "weather",
+        Timeout:    10 * time.Second,
     }, func(ctx context.Context, args map[string]any) (any, error) {
         city := args["city"].(string)
         return map[string]string{
@@ -611,11 +699,11 @@ func basicChat() {
         BaseUrl: "https://api.moonshot.cn/v1/chat/completions",
         APIKey:  "your-api-key",
         Model:   "kimi-k2-0905-preview",
-        Tools:   executor.GetToolsSchema(),
+        Tools:   registry.GetEnabledTools(),
     })
     
     // 创建 Agent 并对话
-    agent := chatmodel.NewAgent(model, executor)
+    agent := chatmodel.NewAgent(model, registry)
     agent.AddSystemMessage("你是一个天气助手", "")
     
     resp, err := agent.Send(ctx, "北京天气怎么样")
@@ -634,17 +722,17 @@ func basicChat() {
 func streamChat() {
     ctx := context.Background()
     
-    executor := schema.NewToolExecutor()
-    tools.RegisterAll(executor)
+    registry := schema.NewToolRegistry()
+    tools.RegisterAll(registry)
     
     model, _ := openai.NewChatModel(ctx, &openai.ChatModelConfig{
         BaseUrl: "https://api.moonshot.cn/v1/chat/completions",
         APIKey:  "your-api-key",
         Model:   "kimi-k2-0905-preview",
-        Tools:   executor.GetToolsSchema(),
+        Tools:   registry.GetEnabledTools(),
     })
     
-    agent := chatmodel.NewAgent(model, executor)
+    agent := chatmodel.NewAgent(model, registry)
     
     resp, err := agent.SendStream(ctx, "北京天气怎么样", func(msg *schema.Message, isToolCall bool) bool {
         if isToolCall {
@@ -672,25 +760,25 @@ func memoryChat() {
     ctx := context.Background()
     
     // 1. 初始化记忆存储
-    store, err := memory.NewLocalStore("./chat.db")
+    store, err := memory.NewSqliteStore("./chat.db")
     if err != nil {
         log.Fatal(err)
     }
     defer store.Close()
     
     // 2. 初始化工具和模型
-    executor := schema.NewToolExecutor()
-    tools.RegisterAll(executor)
+    registry := schema.NewToolRegistry()
+    tools.RegisterAll(registry)
     
     model, _ := openai.NewChatModel(ctx, &openai.ChatModelConfig{
         BaseUrl: "https://api.moonshot.cn/v1/chat/completions",
         APIKey:  "your-api-key",
         Model:   "kimi-k2-0905-preview",
-        Tools:   executor.GetToolsSchema(),
+        Tools:   registry.GetEnabledTools(),
     })
     
     // 3. 创建带记忆的 Agent
-    agent := chatmodel.NewMemoryAgent(model, executor, store, "user_123")
+    agent := chatmodel.NewMemoryAgent(model, registry, store, "user_123")
     
     // 4. 多轮对话
     resp1, _ := agent.Send(ctx, "我叫张三")
@@ -707,14 +795,14 @@ func memoryChat() {
 func manualStream() {
     ctx := context.Background()
     
-    executor := schema.NewToolExecutor()
-    tools.RegisterAll(executor)
+    registry := schema.NewToolRegistry()
+    tools.RegisterAll(registry)
     
     model, _ := openai.NewChatModel(ctx, &openai.ChatModelConfig{
         BaseUrl: "https://api.moonshot.cn/v1/chat/completions",
         APIKey:  "your-api-key",
         Model:   "kimi-k2-0905-preview",
-        Tools:   executor.GetToolsSchema(),
+        Tools:   registry.GetEnabledTools(),
     })
     
     msgs := []*schema.Message{schema.UserMessage("北京天气怎么样")}
@@ -757,14 +845,14 @@ func manualStream() {
         
         // 有工具调用，执行并追加历史
         fmt.Println("\nAI 调用工具:", fullMsg.ToolCalls)
-        results := executor.ExecuteBatch(ctx, fullMsg.ToolCalls)
+        results := registry.ExecuteBatch(ctx, fullMsg.ToolCalls)
         
         msgs = append(msgs, &schema.Message{
             Role:      schema.AssistantRole,
             Content:   fullMsg.Content,
             ToolCalls: fullMsg.ToolCalls,
         })
-        msgs = append(msgs, executor.ToToolMessages(results)...)
+        msgs = append(msgs, registry.ToToolMessages(results)...)
     }
 }
 ```
@@ -845,17 +933,17 @@ func workflowExample() {
 func reactExample() {
     ctx := context.Background()
     
-    executor := schema.NewToolExecutor()
-    tools.RegisterAll(executor)
+    registry := schema.NewToolRegistry()
+    tools.RegisterAll(registry)
     
     model, _ := openai.NewChatModel(ctx, &openai.ChatModelConfig{
         BaseUrl: "https://api.moonshot.cn/v1/chat/completions",
         APIKey:  "your-api-key",
         Model:   "kimi-k2-0905-preview",
-        Tools:   executor.GetToolsSchema(),
+        Tools:   registry.GetEnabledTools(),
     })
     
-    agent := chatmodel.NewAgent(model, executor)
+    agent := chatmodel.NewAgent(model, registry)
     
     // 定义 AOP 切面
     aspect := node.AroundAspect{
@@ -884,13 +972,11 @@ func reactExample() {
     agent.ClearAgentHistory()
     
     loopNode := node.ScheduleLoopNode("react_planner", agent)
-    taskNodes := node.BatchNewTaskNode("react_planner", plan.(*node.Plan), agent)
+    topoNode, _ := node.BatchNewTaskNodeWithTopo("react_planner", plan.(*node.Plan), agent, []string{"final_answer"})
     
     tasksWF, _ := flowchart.NewWorkflow(ctx, 10)
     tasksWF.AddNode(loopNode)
-    for _, n := range taskNodes {
-        tasksWF.AddNode(n)
-    }
+    tasksWF.AddNode(topoNode)
     tasksWF.AddAspect(&aspect)
     tasksWF.Run(map[string]any{"react_planner_plan": plan})
     
@@ -916,12 +1002,16 @@ func reactExample() {
 | `Tool` | 工具定义结构体 |
 | `ToolCall` | 工具调用请求 |
 | `ToolResult` | 工具执行结果 |
-| `ToolExecutor` | 工具执行器 |
-| `NewToolExecutor()` | 创建执行器 |
+| `ToolRegistry` | 工具注册中心 |
+| `NewToolRegistry()` | 创建注册中心 |
+| `ToolMetadata` | 工具元数据 |
+| `ToolPermission` | 工具权限级别 |
 | `StreamReader` | 流式读取器 |
 | `NewStreamReader()` | 创建流读取器 |
+| `MulticastController` | 流多播控制器 |
 | `FlowContext` | 工作流上下文 |
 | `NewFlowContext()` | 创建上下文 |
+| `DataSlot` | 数据槽（支持多协程等待） |
 
 ### chatmodel 包
 
@@ -930,14 +1020,16 @@ func reactExample() {
 | `BaseModel` | 模型接口 |
 | `Agent` | 基础智能体 |
 | `NewAgent()` | 创建 Agent |
+| `WithWindow()` | 配置窗口管理器 |
+| `WithUsageTracker()` | 配置用量追踪器 |
 | `MemoryAgent` | 带记忆的智能体 |
 | `NewMemoryAgent()` | 创建记忆 Agent |
 | `Agent.Send()` | 非流式发送 |
 | `Agent.SendStream()` | 流式发送 |
-| `Agent.AddSystemMessage()` | 添加系统消息 |
-| `Agent.AddUserMessage()` | 添加用户消息 |
-| `Agent.ClearAgentHistory()` | 清空历史 |
-| `Agent.GetHistory()` | 获取历史 |
+| `WindowManager` | 对话窗口管理器 |
+| `NewWindowManager()` | 创建窗口管理器 |
+| `UsageTracker` | 用量追踪器 |
+| `NewUsageTracker()` | 创建追踪器 |
 
 ### openai 包
 
@@ -947,6 +1039,7 @@ func reactExample() {
 | `NewChatModel()` | 创建模型 |
 | `ChatModel.Generate()` | 非流式生成 |
 | `ChatModel.Stream()` | 流式生成 |
+| `ChatModel.GetModelName()` | 获取模型名称 |
 | `Thinking` | 思考模式配置 |
 
 ### tool 包
@@ -955,17 +1048,27 @@ func reactExample() {
 |-----------|------|
 | `RegisterAll()` | 注册所有内置工具 |
 | `RegisterFileTools()` | 注册文件工具 |
-| `RegisterCommandExecTools()` | 注册命令工具 |
+| `RegisterCommandTools()` | 注册命令工具 |
 | `RegisterEnvTools()` | 注册环境工具 |
 | `GetWorkDir()` | 获取工作目录 |
+| `DynamicToolLoader` | 动态工具加载器 |
+| `NewDynamicToolLoader()` | 创建加载器 |
+| `ToolOption` | 工具配置选项 |
+| `WithPermission()` | 设置权限 |
+| `WithCategory()` | 设置分类 |
+| `WithTimeout()` | 设置超时 |
+| `WithTags()` | 设置标签 |
 
 ### memory 包
 
 | 类型/函数 | 说明 |
 |-----------|------|
 | `Store` | 存储接口 |
-| `LocalStore` | SQLite 实现 |
-| `NewLocalStore()` | 创建本地存储 |
+| `GormStore` | GORM SQLite 实现 |
+| `NewGormStore()` | 创建高级存储 |
+| `NewSqliteStore()` | 创建简单存储 |
+| `MemNetAIStore` | MemNetAI 云端记忆 |
+| `NewMemNetAIStore()` | 创建云端存储 |
 | `Manager` | 记忆管理器 |
 | `NewManager()` | 创建管理器 |
 | `Manager.SaveTurn()` | 保存一轮对话 |
@@ -990,8 +1093,12 @@ func reactExample() {
 | `NewReActPlannerNode()` | 创建 ReAct 规划节点 |
 | `ScheduleLoopNode()` | 创建调度循环节点 |
 | `BatchNewTaskNode()` | 批量创建任务节点 |
+| `BatchNewTaskNodeWithTopo()` | 批量创建并拓扑排序 |
 | `Aspect` | 切面接口 |
 | `AroundAspect` | 环绕切面 |
+| `RetryInterceptor` | 重试拦截器 |
+| `TimeoutInterceptor` | 超时拦截器 |
+| `CircuitBreakerInterceptor` | 熔断拦截器 |
 
 ---
 

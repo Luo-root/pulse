@@ -2,14 +2,12 @@ package schema
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 )
 
 type RoleType string
@@ -305,108 +303,6 @@ func StreamReception(resp *http.Response) (*StreamReader, error) {
 	}()
 
 	return reader, nil
-}
-
-// Multicast 多播：1个源流 → N个独立流
-// 生产级实现：不丢数据、错误传播、并发安全、带超时背压
-func (sr *StreamReader) Multicast(n uint) []*StreamReader {
-	if n <= 0 {
-		return nil
-	}
-
-	// 1. 创建 N 个消费者
-	readers := make([]*StreamReader, n)
-	for i := range readers {
-		readers[i] = NewStreamReaderWithBuffer(16)
-	}
-
-	// 2. 后台转发协程（核心）
-	go func() {
-		// 退出时统一关闭所有子流
-		defer func() {
-			for _, r := range readers {
-				r.Usage = sr.Usage
-				r.Close()
-			}
-		}()
-
-		for {
-			// 3. 从源流读
-			msg, err := sr.Recv()
-			if err != nil {
-				// 错误传播给所有子节点
-				for _, r := range readers {
-					r.setError(err)
-				}
-				return
-			}
-
-			// 4. 深拷贝 N 份
-			msgs := make([]Message, n)
-			for i := range msgs {
-				msgs[i] = msg.Clone()
-			}
-
-			// 5. 同步发送：全部送达 or 超时失败
-			ok := sendToAll(readers, msgs, 5*time.Second)
-			if !ok {
-				return
-			}
-		}
-	}()
-
-	return readers
-}
-
-// sendToAll 向所有子流发送消息（带超时，不丢数据）
-func sendToAll(readers []*StreamReader, msgs []Message, timeout time.Duration) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	n := len(readers)
-	results := make(chan struct {
-		idx int
-		ok  bool
-	}, n)
-
-	var wg sync.WaitGroup
-	wg.Add(n)
-
-	for i := range readers {
-		go func(idx int) {
-			defer wg.Done()
-			select {
-			case readers[idx].streamChan <- msgs[idx]:
-				results <- struct {
-					idx int
-					ok  bool
-				}{idx, true}
-			case <-ctx.Done():
-				results <- struct {
-					idx int
-					ok  bool
-				}{idx, false}
-			}
-		}(i)
-	}
-
-	// 安全关闭 result channel
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	success := make([]bool, n)
-	for res := range results {
-		success[res.idx] = res.ok
-	}
-
-	for _, ok := range success {
-		if !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // FormatMessages 标准化格式化 []*Message 为可读字符串
