@@ -7,4 +7,6 @@ func RegisterAll(registry *schema.ToolRegistry) {
 	RegisterFileTools(registry)
 	RegisterCommandTools(registry)
 	RegisterEnvTools(registry)
+	RegisterWebTools(registry)
+	RegisterUserConfigTools(registry)
 }

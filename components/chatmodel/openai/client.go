@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"net/http"
 
@@ -103,8 +104,10 @@ type RequestBody struct {
 }
 
 func NewClient(ctx context.Context, config *ChatModelConfig) *Client {
+	baseURL := strings.TrimRight(config.BaseUrl, "/") + "/v1/messages"
+
 	header := &Header{
-		BaseUrl: config.BaseUrl,
+		BaseUrl: baseURL,
 		APIKey:  config.APIKey,
 	}
 

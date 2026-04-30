@@ -87,11 +87,10 @@ func (m *Message) Clone() Message {
 }
 
 // SystemMessage 返回一个role为system的信息
-func SystemMessage(content, reasoningContent string) *Message {
+func SystemMessage(content string) *Message {
 	return &Message{
-		Role:             SystemRole,
-		Content:          content,
-		ReasoningContent: reasoningContent,
+		Role:    SystemRole,
+		Content: content,
 	}
 }
 

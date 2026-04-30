@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Luo-root/pulse/components/schema"
-	tools "github.com/Luo-root/pulse/components/tool"
+	"github.com/Luo-root/pulse/components/tools"
 )
 
 // AgentInterface 统一接口
@@ -47,7 +47,7 @@ type Agent struct {
 	usageTracker *UsageTracker  // Usage 追踪器（可选）
 }
 
-func NewAgent(model BaseModel, registry *schema.ToolRegistry, opts ...AgentOption) *Agent {
+func NewAgent(model BaseModel, registry *schema.ToolRegistry, prompt string, opts ...AgentOption) *Agent {
 	ag := &Agent{
 		model:    model,
 		registry: registry,
@@ -57,10 +57,10 @@ func NewAgent(model BaseModel, registry *schema.ToolRegistry, opts ...AgentOptio
 		opt(ag)
 	}
 
-	// 注入当前目录
-	workDir := tools.GetWorkDir()
-	ag.msgs = append(ag.msgs,
-		schema.SystemMessage(fmt.Sprintf(`
+	if prompt == "" {
+		workDir := tools.GetWorkDir()
+		ag.msgs = append(ag.msgs,
+			schema.SystemMessage(fmt.Sprintf(`
 # 核心身份
 你是专业的自动化执行助手，严格遵守指令，绝不臆测、绝不编造信息。
 
@@ -81,8 +81,10 @@ func NewAgent(model BaseModel, registry *schema.ToolRegistry, opts ...AgentOptio
 1. 严格执行工具调用循环，直到信息完整、确认无误
 2. 输出内容必须基于工具返回的真实数据
 3. 路径、文件名、内容等关键信息必须经过工具验证
-`, workDir,
-		), ""))
+`, workDir)))
+	} else {
+		ag.msgs = append(ag.msgs, schema.SystemMessage(prompt))
+	}
 
 	return ag
 }
@@ -251,8 +253,8 @@ func (ag *Agent) AddUserMessage(content string) {
 }
 
 // AddSystemMessage 添加系统消息
-func (ag *Agent) AddSystemMessage(content, reasoningContent string) {
-	ag.msgs = append(ag.msgs, schema.SystemMessage(content, reasoningContent))
+func (ag *Agent) AddSystemMessage(content string) {
+	ag.msgs = append(ag.msgs, schema.SystemMessage(content))
 }
 
 // ClearAgentHistory 清空历史（保留 system）

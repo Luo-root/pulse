@@ -254,7 +254,7 @@ func (r *ToolRegistry) GetByPermission(perm ToolPermission) []*RegisteredToolV2 
 	return result
 }
 
-// SearchByTag 按标签搜索工具
+// GetByTag 按标签搜索工具
 func (r *ToolRegistry) GetByTag(tag string) []*RegisteredToolV2 {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

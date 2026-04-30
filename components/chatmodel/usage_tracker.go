@@ -40,16 +40,11 @@ type ModelPricing struct {
 }
 
 // DefaultPricingTable 内置价格表
-// 价格单位：美元 / 1K tokens
+// 价格单位：元 / 1k tokens
 var DefaultPricingTable = map[string]ModelPricing{
-	"gpt-4":             {InputPrice: 0.03, OutputPrice: 0.06},
-	"gpt-4-turbo":       {InputPrice: 0.01, OutputPrice: 0.03},
-	"gpt-4o":            {InputPrice: 0.005, OutputPrice: 0.015},
-	"gpt-4o-mini":       {InputPrice: 0.00015, OutputPrice: 0.0006},
-	"gpt-3.5-turbo":     {InputPrice: 0.0005, OutputPrice: 0.0015},
-	"deepseek-chat":     {InputPrice: 0.00014, OutputPrice: 0.00028},
-	"deepseek-reasoner": {InputPrice: 0.00055, OutputPrice: 0.00219},
-	"kimi-k2.6":         {InputPrice: 0.01, OutputPrice: 0.03},
+	"deepseek-v4-flash": {InputPrice: 0.001, OutputPrice: 0.002},
+	"deepseek-v4-pro":   {InputPrice: 0.012, OutputPrice: 0.024},
+	"kimi-k2.6":         {InputPrice: 0.0065, OutputPrice: 0.027},
 }
 
 // UsageTracker Token 使用追踪器

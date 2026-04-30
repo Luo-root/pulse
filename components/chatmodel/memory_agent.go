@@ -14,9 +14,9 @@ type MemoryAgent struct {
 	sessionID string
 }
 
-func NewMemoryAgent(model BaseModel, registry *schema.ToolRegistry, store memory.Store, sessionID string, opts ...AgentOption) *MemoryAgent {
+func NewMemoryAgent(model BaseModel, registry *schema.ToolRegistry, prompt string, store memory.Store, sessionID string, opts ...AgentOption) *MemoryAgent {
 	return &MemoryAgent{
-		agent:     NewAgent(model, registry, opts...),
+		agent:     NewAgent(model, registry, prompt, opts...),
 		manager:   memory.NewManager(store),
 		sessionID: sessionID,
 	}
@@ -33,8 +33,8 @@ func (ma *MemoryAgent) buildContext(ctx context.Context, userContent string) (*s
 	history = append(history, userMsg)
 	contextMsgs, _ := ma.manager.BuildContext(ctx, ma.sessionID, userContent, history)
 
-	// 3. 将上下文注入 Agent（包含用户消息，Agent 不再重复添加）
-	ma.agent.AddMessages(contextMsgs)
+	// 3. 将上下文注入 Agent（使用 SetMessages 清空旧消息，防止泄漏）
+	ma.agent.SetMessages(contextMsgs)
 
 	return userMsg, nil
 }
@@ -96,4 +96,9 @@ func (ma *MemoryAgent) Clear(ctx context.Context) error {
 // GetHistory 获取当前对话历史
 func (ma *MemoryAgent) GetHistory() []*schema.Message {
 	return ma.agent.GetHistory()
+}
+
+// AddMessages 将消息注入 Agent（用于迁移历史，如切换模型时保留对话）
+func (ma *MemoryAgent) AddMessages(msgs []*schema.Message) {
+	ma.agent.AddMessages(msgs)
 }

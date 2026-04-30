@@ -337,7 +337,7 @@ func (s *MemNetAIStore) Recall(ctx context.Context, sessionID string, query stri
 
 	// 1. memoryPrompt 是最核心的回忆结果，直接作为 System 消息注入
 	if result.Data.MemoryPrompt != "" {
-		messages = append(messages, schema.SystemMessage(result.Data.MemoryPrompt, ""))
+		messages = append(messages, schema.SystemMessage(result.Data.MemoryPrompt))
 	}
 
 	// 2. 将 memorySummaryList 也加入上下文（可选增强）
