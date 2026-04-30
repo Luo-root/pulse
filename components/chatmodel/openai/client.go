@@ -104,7 +104,7 @@ type RequestBody struct {
 }
 
 func NewClient(ctx context.Context, config *ChatModelConfig) *Client {
-	baseURL := strings.TrimRight(config.BaseUrl, "/") + "/v1/messages"
+	baseURL := strings.TrimRight(config.BaseUrl, "/") + "/chat/completions"
 
 	header := &Header{
 		BaseUrl: baseURL,
