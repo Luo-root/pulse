@@ -37,12 +37,12 @@ func (sw *StreamWriter) Send(msg *Message) error {
 
 	// 检查 reader 是否已关闭
 	select {
-	case sw.reader.streamChan <- *msg:
+	case sw.reader.StreamChan <- *msg:
 		return nil
 	default:
 		// 通道可能已关闭或已满
 		select {
-		case sw.reader.streamChan <- *msg:
+		case sw.reader.StreamChan <- *msg:
 			return nil
 		case <-func() chan struct{} {
 			ch := make(chan struct{})

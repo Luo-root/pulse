@@ -120,7 +120,7 @@ func ToolMessage(content string) *Message {
 
 // StreamReader 流式消息读取器
 type StreamReader struct {
-	streamChan chan Message
+	StreamChan chan Message
 	closeOnce  sync.Once
 	err        error      // 存储流错误
 	errMu      sync.Mutex // 错误保护
@@ -135,7 +135,7 @@ func NewStreamReader() *StreamReader {
 // NewStreamReaderWithBuffer 带缓冲大小
 func NewStreamReaderWithBuffer(bufSize int) *StreamReader {
 	return &StreamReader{
-		streamChan: make(chan Message, bufSize),
+		StreamChan: make(chan Message, bufSize),
 	}
 }
 
@@ -154,7 +154,7 @@ func (sr *StreamReader) setError(err error) {
 // Close 安全关闭
 func (sr *StreamReader) Close() {
 	sr.closeOnce.Do(func() {
-		close(sr.streamChan)
+		close(sr.StreamChan)
 	})
 }
 
@@ -178,7 +178,7 @@ func (sr *StreamReader) Recv() (*Message, error) {
 		return nil, err
 	}
 
-	msg, ok := <-sr.streamChan
+	msg, ok := <-sr.StreamChan
 	if !ok {
 		return nil, io.EOF
 	}
@@ -297,7 +297,7 @@ func StreamReception(resp *http.Response) (*StreamReader, error) {
 			}
 
 			// 发送到通道
-			reader.streamChan <- msg.Clone()
+			reader.StreamChan <- msg.Clone()
 		}
 	}()
 

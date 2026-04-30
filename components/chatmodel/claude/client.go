@@ -361,7 +361,7 @@ func anthropicStreamReception(resp *http.Response) *schema.StreamReader {
 		)
 
 		sendChunk := func() {
-			reader.Send(msg.Clone())
+			reader.StreamChan <- msg.Clone()
 		}
 
 		processEvent := func(eventType, data string) {

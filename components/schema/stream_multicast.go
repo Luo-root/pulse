@@ -130,7 +130,7 @@ func (mc *MulticastController) broadcast(readers []*StreamReader, msgs []Message
 			defer cancel()
 
 			select {
-			case readers[idx].streamChan <- msgs[idx]:
+			case readers[idx].StreamChan <- msgs[idx]:
 				// 发送成功
 			case <-ctx.Done():
 				// 超时：设置错误并关闭该子流
