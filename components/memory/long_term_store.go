@@ -7,8 +7,8 @@ import (
 	"github.com/Luo-root/pulse/components/schema"
 )
 
-// Store 记忆存储接口
-type Store interface {
+// LongTermStore 记忆存储接口
+type LongTermStore interface {
 	// Save 保存消息到记忆
 	Save(ctx context.Context, sessionID string, msgs []*schema.Message) error
 

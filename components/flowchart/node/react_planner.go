@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Luo-root/pulse/components/chatmodel"
+	"github.com/Luo-root/pulse/components/agent"
 	"github.com/Luo-root/pulse/components/schema"
 )
 
@@ -19,7 +19,7 @@ import (
 // 规划的结果会存到: ID_plan 中
 func NewReActPlannerNode(
 	id string,
-	agent chatmodel.AgentInterface,
+	agent agent.AgentInterface,
 ) *SimpleNode {
 	userGoal := "user_goal"
 	planName := fmt.Sprintf("%s_plan", id)
@@ -58,7 +58,7 @@ func NewReActPlannerNode(
 // 最终结果会存到: final_answer 中
 func ScheduleLoopNode(
 	plannerNodeID string,
-	agent chatmodel.AgentInterface,
+	agent agent.AgentInterface,
 ) *SimpleNode {
 	finalAnswer := "final_answer"
 	id := fmt.Sprintf("%s_schedule_loop", plannerNodeID)
@@ -148,7 +148,7 @@ func ScheduleLoopNode(
 	)
 }
 
-func Planning(ctx context.Context, goal string, agent chatmodel.AgentInterface) (*Plan, error) {
+func Planning(ctx context.Context, goal string, agent agent.AgentInterface) (*Plan, error) {
 	prompt := fmt.Sprintf(`
 # 角色
 你是专业的任务规划专家，擅长将复杂目标拆解为可执行、可验证的任务序列。
@@ -219,7 +219,7 @@ func Planning(ctx context.Context, goal string, agent chatmodel.AgentInterface) 
 	return plan, nil
 }
 
-func RePlan(ctx context.Context, plan *Plan, failedTask *Task, agent chatmodel.AgentInterface) (*Plan, error) {
+func RePlan(ctx context.Context, plan *Plan, failedTask *Task, agent agent.AgentInterface) (*Plan, error) {
 	planState := planStateJSON(plan)
 
 	prompt := fmt.Sprintf(`

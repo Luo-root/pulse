@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -53,12 +54,13 @@ func toAPIMessages(messages []*schema.Message) []APIMessage {
 		// tool 角色：OpenAI 需要 tool_call_id
 		if m.Role == schema.ToolRole {
 			am.Role = "tool"
-			am.ToolCallID = m.Name
 			// 优先用 ToolResults
 			if len(m.ToolResults) > 0 {
 				// OpenAI 只支持一个结果，取第一个
+				am.ToolCallID = m.ToolResults[0].CallID
 				am.Content = m.ToolResults[0].Content
 			} else {
+				am.ToolCallID = m.Name
 				am.Content = m.Content
 			}
 		}
@@ -191,6 +193,101 @@ func (c *Client) Generate(ctx context.Context, in []*schema.Message) (*schema.Me
 	return &modelResp.Choices[0].Message, nil
 }
 
+// StreamReception 流式接收并返回一个 StreamReader 用于读取流式数据
+func StreamReception(resp *http.Response) (*schema.StreamReader, error) {
+	reader := schema.NewStreamReader()
+
+	go func() {
+		defer func() {
+			_ = resp.Body.Close()
+			reader.Close()
+		}()
+
+		const maxBufferSize = 1 << 20
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, maxBufferSize), maxBufferSize)
+
+		var msg schema.Message
+		var streamResp StreamResponse
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				return
+			}
+
+			streamResp = StreamResponse{}
+			// 解析JSON
+			if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
+				reader.SetError(err)
+				continue
+			}
+
+			if len(streamResp.Choices) == 0 {
+				continue
+			}
+			choice := streamResp.Choices[0]
+
+			// 设置角色（第一条有效）
+			if choice.Delta.Role != "" {
+				msg.Role = schema.RoleType(choice.Delta.Role)
+
+			}
+
+			if choice.Delta.Content != "" {
+				msg.Content = choice.Delta.Content
+			} else {
+				msg.Content = ""
+			}
+
+			if choice.Delta.ReasoningContent != "" {
+				msg.ReasoningContent = choice.Delta.ReasoningContent
+			} else {
+				msg.ReasoningContent = ""
+			}
+
+			if len(choice.Delta.ToolCalls) > 0 {
+				for _, tc := range choice.Delta.ToolCalls {
+					idx := tc.Index
+					for len(msg.ToolCalls) <= idx {
+						msg.ToolCalls = append(msg.ToolCalls, schema.ToolCall{})
+					}
+					if tc.Function.Arguments != "" {
+						msg.ToolCalls[idx].Function.Arguments += tc.Function.Arguments
+					}
+					if tc.ID != "" {
+						msg.ToolCalls[idx].ID = tc.ID
+					}
+					if tc.Type != "" {
+						msg.ToolCalls[idx].Type = tc.Type
+					}
+					if tc.Function.Name != "" {
+						msg.ToolCalls[idx].Function.Name = tc.Function.Name
+					}
+				}
+			}
+
+			// 安全赋值 usage
+			if streamResp.Choices[0].Usage != nil {
+				reader.Usage = *streamResp.Choices[0].Usage
+			}
+
+			// 发送到通道
+			reader.Send(msg.Clone())
+		}
+	}()
+
+	return reader, nil
+}
+
 func (c *Client) Stream(ctx context.Context, in []*schema.Message) (*schema.StreamReader, error) {
 	c.RequestBody.Messages = toAPIMessages(in)
 	c.RequestBody.Stream = true
@@ -213,7 +310,7 @@ func (c *Client) Stream(ctx context.Context, in []*schema.Message) (*schema.Stre
 		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	reader, err := schema.StreamReception(resp)
+	reader, err := StreamReception(resp)
 	if err != nil {
 		return nil, err
 	}

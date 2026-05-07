@@ -1,11 +1,8 @@
 package schema
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 	"sync"
 )
@@ -50,6 +47,12 @@ type ToolResult struct {
 	CallID  string `json:"call_id"`  // 对应 ToolCall.ID
 	Content string `json:"content"`  // 结果内容（JSON字符串或纯文本）
 	IsError bool   `json:"is_error"` // 是否错误（Claude支持）
+}
+
+type Usage struct {
+	PromptTokens uint64 `json:"prompt_tokens"`
+	Completion   uint64 `json:"completion"`
+	TotalTokens  uint64 `json:"total_tokens"`
 }
 
 // Clone 深拷贝
@@ -103,24 +106,34 @@ func UserMessage(content string) *Message {
 }
 
 // AssistantMessage 返回一个role为user的信息
-func AssistantMessage(content string) *Message {
+func AssistantMessage(content, ReasoningContent string) *Message {
 	return &Message{
-		Role:    AssistantRole,
-		Content: content,
+		Role:             AssistantRole,
+		Content:          content,
+		ReasoningContent: ReasoningContent,
 	}
 }
 
-// ToolMessage 返回一个role为tool的信息
-func ToolMessage(content string) *Message {
+// ToolResultsMessage 创建一条包含多个工具结果的消息
+func ToolResultsMessage(results []ToolResult) *Message {
 	return &Message{
-		Role:    ToolRole,
+		Role:        ToolRole,
+		ToolResults: results,
+	}
+}
+
+// NewToolResult 便捷构造一个结果条目
+func NewToolResult(callID, content string, isError bool) ToolResult {
+	return ToolResult{
+		CallID:  callID,
 		Content: content,
+		IsError: isError,
 	}
 }
 
 // StreamReader 流式消息读取器
 type StreamReader struct {
-	StreamChan chan Message
+	streamChan chan Message
 	closeOnce  sync.Once
 	err        error      // 存储流错误
 	errMu      sync.Mutex // 错误保护
@@ -135,12 +148,16 @@ func NewStreamReader() *StreamReader {
 // NewStreamReaderWithBuffer 带缓冲大小
 func NewStreamReaderWithBuffer(bufSize int) *StreamReader {
 	return &StreamReader{
-		StreamChan: make(chan Message, bufSize),
+		streamChan: make(chan Message, bufSize),
 	}
 }
 
-// setError 内部设置错误
-func (sr *StreamReader) setError(err error) {
+func (sr *StreamReader) Send(msg Message) {
+	sr.streamChan <- msg
+}
+
+// SetError 内部设置错误
+func (sr *StreamReader) SetError(err error) {
 	if err == nil || err == io.EOF {
 		return
 	}
@@ -154,7 +171,7 @@ func (sr *StreamReader) setError(err error) {
 // Close 安全关闭
 func (sr *StreamReader) Close() {
 	sr.closeOnce.Do(func() {
-		close(sr.StreamChan)
+		close(sr.streamChan)
 	})
 }
 
@@ -178,130 +195,11 @@ func (sr *StreamReader) Recv() (*Message, error) {
 		return nil, err
 	}
 
-	msg, ok := <-sr.StreamChan
+	msg, ok := <-sr.streamChan
 	if !ok {
 		return nil, io.EOF
 	}
 	return &msg, nil
-}
-
-// StreamResponse 流式响应最外层
-type StreamResponse struct {
-	Choices []Choice `json:"choices"`
-}
-
-type Choice struct {
-	Index        int    `json:"index"`
-	Delta        Delta  `json:"delta"`
-	FinishReason string `json:"finish_reason"`
-	Usage        *Usage `json:"usage,omitempty"`
-}
-
-type Delta struct {
-	Role             string     `json:"role,omitempty"`
-	Content          string     `json:"content"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-}
-
-type Usage struct {
-	PromptTokens uint64 `json:"prompt_tokens"`
-	Completion   uint64 `json:"completion"`
-	TotalTokens  uint64 `json:"total_tokens"`
-}
-
-// StreamReception 流式接收并返回一个 StreamReader 用于读取流式数据
-func StreamReception(resp *http.Response) (*StreamReader, error) {
-	reader := NewStreamReader()
-
-	go func() {
-		defer func() {
-			_ = resp.Body.Close()
-			reader.Close()
-		}()
-
-		const maxBufferSize = 1 << 20
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, maxBufferSize), maxBufferSize)
-
-		var msg Message
-		var streamResp StreamResponse
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				return
-			}
-
-			streamResp = StreamResponse{}
-			// 解析JSON
-			if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
-				continue
-			}
-
-			if len(streamResp.Choices) == 0 {
-				continue
-			}
-			choice := streamResp.Choices[0]
-
-			// 设置角色（第一条有效）
-			if choice.Delta.Role != "" {
-				msg.Role = RoleType(choice.Delta.Role)
-
-			}
-
-			if choice.Delta.Content != "" {
-				msg.Content = choice.Delta.Content
-			} else {
-				msg.Content = ""
-			}
-
-			if choice.Delta.ReasoningContent != "" {
-				msg.ReasoningContent = choice.Delta.ReasoningContent
-			} else {
-				msg.ReasoningContent = ""
-			}
-
-			if len(choice.Delta.ToolCalls) > 0 {
-				for _, tc := range choice.Delta.ToolCalls {
-					idx := tc.Index
-					for len(msg.ToolCalls) <= idx {
-						msg.ToolCalls = append(msg.ToolCalls, ToolCall{})
-					}
-					if tc.Function.Arguments != "" {
-						msg.ToolCalls[idx].Function.Arguments += tc.Function.Arguments
-					}
-					if tc.ID != "" {
-						msg.ToolCalls[idx].ID = tc.ID
-					}
-					if tc.Type != "" {
-						msg.ToolCalls[idx].Type = tc.Type
-					}
-					if tc.Function.Name != "" {
-						msg.ToolCalls[idx].Function.Name = tc.Function.Name
-					}
-				}
-			}
-
-			// 安全赋值 usage
-			if streamResp.Choices[0].Usage != nil {
-				reader.Usage = *streamResp.Choices[0].Usage
-			}
-
-			// 发送到通道
-			reader.StreamChan <- msg.Clone()
-		}
-	}()
-
-	return reader, nil
 }
 
 // FormatMessages 标准化格式化 []*Message 为可读字符串

@@ -1,4 +1,4 @@
-package chatmodel
+package agent
 
 import (
 	"encoding/json"

@@ -1,4 +1,4 @@
-package chatmodel
+package agent
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"io"
 	"time"
 
+	"github.com/Luo-root/pulse/components/chatmodel"
+	"github.com/Luo-root/pulse/components/memory"
 	"github.com/Luo-root/pulse/components/schema"
 	"github.com/Luo-root/pulse/components/tools"
 )
@@ -24,10 +26,10 @@ type AgentInterface interface {
 // AgentOption Agent 配置选项
 type AgentOption func(*Agent)
 
-// WithWindow 设置对话窗口管理器，用于限制工作记忆长度
-func WithWindow(wm *WindowManager) AgentOption {
+// WithMemoryController 记忆控制器
+func WithMemoryController(mc *memory.Controller) AgentOption {
 	return func(a *Agent) {
-		a.window = wm
+		a.memoryController = mc
 	}
 }
 
@@ -40,26 +42,25 @@ func WithUsageTracker(tracker *UsageTracker) AgentOption {
 
 // Agent  封装多轮对话（支持 Generate 和 Stream）
 type Agent struct {
-	model        BaseModel
-	registry     *schema.ToolRegistry
-	msgs         []*schema.Message
-	window       *WindowManager // 对话窗口管理器（可选）
-	usageTracker *UsageTracker  // Usage 追踪器（可选）
+	model            chatmodel.BaseModel
+	registry         *schema.ToolRegistry
+	memoryController *memory.Controller // 记忆控制器（可选）
+	sessionID        string             // 会话 ID（可选）
+	usageTracker     *UsageTracker      // Usage 追踪器（可选）
 }
 
-func NewAgent(model BaseModel, registry *schema.ToolRegistry, prompt string, opts ...AgentOption) *Agent {
+func NewAgent(model chatmodel.BaseModel, registry *schema.ToolRegistry, opts ...AgentOption) *Agent {
 	ag := &Agent{
 		model:    model,
 		registry: registry,
-		msgs:     make([]*schema.Message, 0),
 	}
 	for _, opt := range opts {
 		opt(ag)
 	}
 
-	if prompt == "" {
+	if ag.memoryController == nil {
 		workDir := tools.GetWorkDir()
-		ag.msgs = append(ag.msgs,
+		systemPrompt := []*schema.Message{
 			schema.SystemMessage(fmt.Sprintf(`
 # 核心身份
 你是专业的自动化执行助手，严格遵守指令，绝不臆测、绝不编造信息。
@@ -81,36 +82,41 @@ func NewAgent(model BaseModel, registry *schema.ToolRegistry, prompt string, opt
 1. 严格执行工具调用循环，直到信息完整、确认无误
 2. 输出内容必须基于工具返回的真实数据
 3. 路径、文件名、内容等关键信息必须经过工具验证
-`, workDir)))
-	} else {
-		ag.msgs = append(ag.msgs, schema.SystemMessage(prompt))
+`, workDir)),
+		}
+
+		ag.memoryController = memory.NewController(systemPrompt, memory.NewSimpleWindowMemory(
+			memory.NewWindowManager(memory.WindowConfig{
+				MaxHistoryMessages: 200,
+				ReserveTokens:      4000,
+			},
+				ag.model,
+				nil,
+			)),
+			nil)
 	}
 
 	return ag
 }
 
-// applyWindow 在发送给模型前应用窗口截断，防止工作记忆无限增长
-func (ag *Agent) applyWindow() {
-	if ag.window != nil {
-		ag.msgs = ag.window.Truncate(ag.msgs)
-	}
-}
-
 // Send 非流式
 // 返回：最终 assistant 消息（无工具调用时的回答）
 func (ag *Agent) Send(ctx context.Context, userContent string) (*schema.Message, error) {
-	if userContent != "" {
-		ag.msgs = append(ag.msgs, schema.UserMessage(userContent))
+	err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{schema.UserMessage(userContent)})
+	if err != nil {
+		return nil, err
 	}
 
 	for {
-		// 每次调用模型前截断窗口
-		ag.applyWindow()
-
 		// 记录调用开始时间
 		startTime := time.Now()
 
-		resp, err := ag.model.Generate(ctx, ag.msgs)
+		msgs, err := ag.memoryController.BuildContext(ctx, ag.sessionID, userContent)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := ag.model.Generate(ctx, msgs)
 		if err != nil {
 			return nil, err
 		}
@@ -122,7 +128,10 @@ func (ag *Agent) Send(ctx context.Context, userContent string) (*schema.Message,
 		}
 
 		if len(resp.ToolCalls) == 0 {
-			ag.msgs = append(ag.msgs, resp)
+			err = ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{schema.AssistantMessage(resp.Content, resp.ReasoningContent)})
+			if err != nil {
+				return nil, err
+			}
 			return resp, nil
 		}
 
@@ -136,19 +145,21 @@ func (ag *Agent) Send(ctx context.Context, userContent string) (*schema.Message,
 // 功能：自动处理流式输出、实时回调、工具调用循环、用户中断
 func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error) {
 	// 将用户输入添加到对话历史
-	if userContent != "" {
-		ag.msgs = append(ag.msgs, schema.UserMessage(userContent))
+	err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{schema.UserMessage(userContent)})
+	if err != nil {
+		return nil, err
 	}
 
 	for {
-		// 每次调用模型前截断窗口
-		ag.applyWindow()
-
 		// 记录调用开始时间
 		startTime := time.Now()
 
+		msgs, err := ag.memoryController.BuildContext(ctx, ag.sessionID, userContent)
+		if err != nil {
+			return nil, err
+		}
 		// 调用模型流式接口
-		reader, err := ag.model.Stream(ctx, ag.msgs)
+		reader, err := ag.model.Stream(ctx, msgs)
 		if err != nil {
 			return nil, err
 		}
@@ -210,7 +221,10 @@ func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk fun
 		// 无工具调用 → 对话结束，退出总循环
 		if len(fullMsg.ToolCalls) == 0 {
 			// 将完整的助手消息加入历史
-			ag.msgs = append(ag.msgs, &fullMsg)
+			err = ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{schema.AssistantMessage(fullMsg.Content, fullMsg.ReasoningContent)})
+			if err != nil {
+				return nil, err
+			}
 			return &fullMsg, nil
 		}
 
@@ -233,59 +247,56 @@ func (ag *Agent) getModelName() string {
 }
 
 // SetMessages 直接设置完整消息列表（用于注入记忆上下文）
-func (ag *Agent) SetMessages(msgs []*schema.Message) {
-	ag.msgs = msgs
+func (ag *Agent) SetMessages(ctx context.Context, msgs []*schema.Message) error {
+	err := ag.memoryController.Clear(ctx, ag.sessionID)
+	if err != nil {
+		return err
+	}
+
+	err = ag.memoryController.SaveTurn(ctx, ag.sessionID, msgs)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // AddMessages 追加多条消息
-func (ag *Agent) AddMessages(msgs []*schema.Message) {
-	ag.msgs = append(ag.msgs, msgs...)
-}
-
-// AddMessage 添加任意消息（灵活扩展）
-func (ag *Agent) AddMessage(msg *schema.Message) {
-	ag.msgs = append(ag.msgs, msg)
-}
-
-// AddUserMessage 添加用户消息
-func (ag *Agent) AddUserMessage(content string) {
-	ag.msgs = append(ag.msgs, schema.UserMessage(content))
+func (ag *Agent) AddMessages(ctx context.Context, msgs []*schema.Message) error {
+	err := ag.memoryController.SaveTurn(ctx, ag.sessionID, msgs)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // AddSystemMessage 添加系统消息
 func (ag *Agent) AddSystemMessage(content string) {
-	ag.msgs = append(ag.msgs, schema.SystemMessage(content))
+	ag.memoryController.SystemPrompt = append(ag.memoryController.SystemPrompt, schema.SystemMessage(content))
 }
 
 // ClearAgentHistory 清空历史（保留 system）
-func (ag *Agent) ClearAgentHistory() {
-	var systemMsgs []*schema.Message
-	for _, m := range ag.msgs {
-		if m.Role == schema.SystemRole {
-			systemMsgs = append(systemMsgs, m)
-		}
+func (ag *Agent) ClearAgentHistory(ctx context.Context) error {
+	err := ag.memoryController.Clear(ctx, ag.sessionID)
+	if err != nil {
+		return err
 	}
-	ag.msgs = systemMsgs
+	return nil
 }
 
 // GetHistory 获取当前对话历史
-func (ag *Agent) GetHistory() []*schema.Message {
-	result := make([]*schema.Message, len(ag.msgs))
-	for i, m := range ag.msgs {
-		result[i] = &schema.Message{
-			Role:    m.Role,
-			Content: m.Content,
-			Name:    m.Name,
-			// 不拷贝 ToolCalls/ToolResults，外部只读即可
-		}
+func (ag *Agent) GetHistory(ctx context.Context) ([]*schema.Message, error) {
+	history, err := ag.memoryController.GetHistory(ctx, ag.sessionID)
+	if err != nil {
+		return nil, err
 	}
-	return result
+	return history, nil
 }
 
 // GetRawMessages 获取内部完整消息副本（含 ToolCalls/ToolResults）
 func (ag *Agent) GetRawMessages() []*schema.Message {
-	result := make([]*schema.Message, len(ag.msgs))
-	for i, m := range ag.msgs {
+	msgs := ag.memoryController.ShortMemory.GetContextMessages(ag.sessionID)
+	result := make([]*schema.Message, len(ag.memoryController.ShortMemory.GetContextMessages(ag.sessionID)))
+	for i, m := range msgs {
 		cloned := m.Clone()
 		result[i] = &cloned
 	}
@@ -311,8 +322,15 @@ func (ag *Agent) handleToolCalls(ctx context.Context, assistantMsg *schema.Messa
 	}
 
 	// 追加到历史
-	ag.msgs = append(ag.msgs, assistantWithTools)
-	ag.msgs = append(ag.msgs, ag.registry.ToToolMessages(results)...)
+	err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{assistantWithTools})
+	if err != nil {
+		return err
+	}
+
+	err = ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{schema.ToolResultsMessage(results)})
+	if err != nil {
+		return err
+	}
 
 	return nil
 }

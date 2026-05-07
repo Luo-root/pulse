@@ -130,11 +130,11 @@ func (mc *MulticastController) broadcast(readers []*StreamReader, msgs []Message
 			defer cancel()
 
 			select {
-			case readers[idx].StreamChan <- msgs[idx]:
+			case readers[idx].streamChan <- msgs[idx]:
 				// 发送成功
 			case <-ctx.Done():
 				// 超时：设置错误并关闭该子流
-				readers[idx].setError(context.DeadlineExceeded)
+				readers[idx].SetError(context.DeadlineExceeded)
 				readers[idx].Close()
 				// 从控制器中移除该子流
 				mc.removeReader(readers[idx])
@@ -173,7 +173,7 @@ func (mc *MulticastController) closeAllReaders(err error) {
 
 	for _, r := range mc.readers {
 		if err != nil {
-			r.setError(err)
+			r.SetError(err)
 		}
 		r.Usage = mc.source.Usage
 		r.Close()

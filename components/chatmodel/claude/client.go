@@ -361,7 +361,7 @@ func anthropicStreamReception(resp *http.Response) *schema.StreamReader {
 		)
 
 		sendChunk := func() {
-			reader.StreamChan <- msg.Clone()
+			reader.Send(msg.Clone())
 		}
 
 		processEvent := func(eventType, data string) {
@@ -370,6 +370,7 @@ func anthropicStreamReception(resp *http.Response) *schema.StreamReader {
 			}
 			var evt streamEvent
 			if err := json.Unmarshal([]byte(data), &evt); err != nil {
+				reader.SetError(err)
 				return
 			}
 

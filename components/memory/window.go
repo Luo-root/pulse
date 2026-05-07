@@ -1,6 +1,7 @@
-package chatmodel
+package memory
 
 import (
+	"github.com/Luo-root/pulse/components/chatmodel"
 	"github.com/Luo-root/pulse/components/schema"
 )
 
@@ -69,7 +70,7 @@ type WindowManager struct {
 // NewWindowManager 创建窗口管理器
 // model 用于自动获取上下文长度（可选，实现 ModelContextWindow 接口即可）
 // estimator 可自定义 Token 计算方式，传 nil 使用默认估算
-func NewWindowManager(config WindowConfig, model BaseModel, estimator TokenEstimator) *WindowManager {
+func NewWindowManager(config WindowConfig, model chatmodel.BaseModel, estimator TokenEstimator) *WindowManager {
 	if estimator == nil {
 		estimator = &defaultEstimator{}
 	}

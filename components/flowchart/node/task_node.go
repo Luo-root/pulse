@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Luo-root/pulse/components/chatmodel"
+	"github.com/Luo-root/pulse/components/agent"
 	"github.com/Luo-root/pulse/components/schema"
 )
 
 // BatchNewTaskNode 批量创建任务节点（保留兼容）
 // 注意：返回的节点列表可直接用于 Workflow.AddNode，也可传入 NewTopologicalNode 进行拓扑排序执行
-func BatchNewTaskNode(plannerNodeID string, plan *Plan, agent chatmodel.AgentInterface) []*SimpleNode {
+func BatchNewTaskNode(plannerNodeID string, plan *Plan, agent agent.AgentInterface) []*SimpleNode {
 	if plan == nil {
 		return nil
 	}
@@ -24,7 +24,7 @@ func BatchNewTaskNode(plannerNodeID string, plan *Plan, agent chatmodel.AgentInt
 
 // BatchNewTaskNodeWithTopo 批量创建任务节点并包装为拓扑排序节点
 // 这是推荐的用法，自动解析任务依赖并按拓扑序执行
-func BatchNewTaskNodeWithTopo(plannerNodeID string, plan *Plan, agent chatmodel.AgentInterface, outputKeys []string) (*TopologicalNode, error) {
+func BatchNewTaskNodeWithTopo(plannerNodeID string, plan *Plan, agent agent.AgentInterface, outputKeys []string) (*TopologicalNode, error) {
 	nodes := BatchNewTaskNode(plannerNodeID, plan, agent)
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("no tasks in plan")
@@ -52,7 +52,7 @@ func buildOutputExample(outputs []string) string {
 	return example
 }
 
-func NewTaskNode(plannerNodeID string, task Task, agent chatmodel.AgentInterface) *SimpleNode {
+func NewTaskNode(plannerNodeID string, task Task, agent agent.AgentInterface) *SimpleNode {
 	planName := fmt.Sprintf("%s_plan", plannerNodeID)
 	allInputs := append(task.Inputs, planName)
 	return NewNode(
