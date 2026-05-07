@@ -50,3 +50,26 @@ func (sr *SkillRegistry) Remove(name string) {
 	defer sr.mu.Unlock()
 	delete(sr.skills, name)
 }
+
+func (sr *SkillRegistry) Names() []string {
+	sr.mu.RLock()
+	defer sr.mu.RUnlock()
+	names := make([]string, 0, len(sr.skills))
+	for name := range sr.skills {
+		names = append(names, name)
+	}
+	return names
+}
+
+// GetInstructionalSkills 获取所有指令型 Skill
+func (sr *SkillRegistry) GetInstructionalSkills() []*Skill {
+	sr.mu.RLock()
+	defer sr.mu.RUnlock()
+	var result []*Skill
+	for _, s := range sr.skills {
+		if s.Type == SkillTypeInstruction {
+			result = append(result, s)
+		}
+	}
+	return result
+}

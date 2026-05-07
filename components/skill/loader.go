@@ -20,13 +20,19 @@ import (
 // Markdown 解析
 // ============================================================================
 
-// SkillFrontmatter Skill Markdown 文档前置元数据
+// SkillFrontmatter 对应 SKILL.md 的 YAML frontmatter
 type SkillFrontmatter struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Category    string   `yaml:"category"`
-	Timeout     int      `yaml:"timeout"` // 秒
-	Tags        []string `yaml:"tags"`
+	Name          string         `yaml:"name"`
+	Description   string         `yaml:"description"`
+	License       string         `yaml:"license"`
+	Compatibility string         `yaml:"compatibility"`
+	AllowedTools  string         `yaml:"allowed-tools"` // YAML 中可写空格分隔
+	Metadata      map[string]any `yaml:"metadata"`
+	Parameters    map[string]any `yaml:"parameters"`
+	// 自定义扩展
+	Category string   `yaml:"category"`
+	Tags     []string `yaml:"tags"`
+	Timeout  int      `yaml:"timeout"` // 秒
 }
 
 // CodeBlock 代码块
@@ -37,51 +43,73 @@ type CodeBlock struct {
 
 // ParseSkillMarkdown 解析 Skill Markdown 文档
 func ParseSkillMarkdown(content string) (*Skill, error) {
-	// 1. 解析 YAML Frontmatter
 	fm, body, err := parseFrontmatter(content)
 	if err != nil {
 		return nil, fmt.Errorf("parse frontmatter failed: %w", err)
 	}
 
-	// 2. 提取代码块
 	codeBlocks := extractCodeBlocks(body)
-	if len(codeBlocks) == 0 {
-		return nil, fmt.Errorf("no code block found in skill markdown")
-	}
+	var handler schema.ToolHandler
 
-	// 3. 找到 Go 代码块
-	var handlerCode string
-	for _, cb := range codeBlocks {
-		if cb.Language == "go" || cb.Language == "golang" {
-			handlerCode = cb.Code
-			break
+	if len(codeBlocks) > 0 {
+		for _, cb := range codeBlocks {
+			if cb.Language == "go" || cb.Language == "golang" {
+				handler, err = compileHandler(cb.Code)
+				if err != nil {
+					return nil, fmt.Errorf("compile handler failed: %w", err)
+				}
+				break
+			}
 		}
 	}
-	if handlerCode == "" {
-		return nil, fmt.Errorf("no go code block found")
-	}
 
-	// 4. 编译 handler
-	handler, err := compileHandler(handlerCode)
-	if err != nil {
-		return nil, fmt.Errorf("compile handler failed: %w", err)
-	}
-
-	// 5. 构建 Skill
 	timeout := time.Duration(fm.Timeout) * time.Second
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
 
-	return &Skill{
-		Name:        fm.Name,
-		Description: fm.Description,
-		Category:    fm.Category,
-		Timeout:     timeout,
-		Tags:        fm.Tags,
-		Parameters:  extractParameters(body),
-		Handler:     handler,
-	}, nil
+	// 解析 allowed-tools
+	var allowedTools []string
+	if fm.AllowedTools != "" {
+		allowedTools = strings.Fields(fm.AllowedTools)
+	}
+
+	// 如果 frontmatter 没写 parameters，给默认值
+	params := fm.Parameters
+	if params == nil {
+		params = map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		}
+	}
+
+	skill := &Skill{
+		Name:          fm.Name,
+		Description:   fm.Description,
+		License:       fm.License,
+		Compatibility: fm.Compatibility,
+		AllowedTools:  allowedTools,
+		Metadata:      fm.Metadata,
+		Parameters:    params,
+		Category:      fm.Category,
+		Tags:          fm.Tags,
+		Timeout:       timeout,
+		Handler:       handler,
+	}
+
+	// 判断类型
+	if skill.Handler != nil {
+		skill.Type = SkillTypeCode
+	} else {
+		skill.Type = SkillTypeInstruction
+		skill.Body = body
+	}
+
+	if err := skill.IsValid(); err != nil {
+		return nil, err
+	}
+
+	return skill, nil
 }
 
 // parseFrontmatter 解析 YAML Frontmatter
@@ -134,15 +162,6 @@ func extractCodeBlocks(content string) []CodeBlock {
 	return blocks
 }
 
-// extractParameters 从文档提取参数定义（简化版）
-func extractParameters(content string) map[string]any {
-	// 默认参数结构
-	return map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
-	}
-}
-
 // ============================================================================
 // Handler 编译（使用 yaegi 解释器）
 // ============================================================================
@@ -150,50 +169,45 @@ func extractParameters(content string) map[string]any {
 // compileHandler 编译 Go 代码为 ToolHandler
 // 使用 yaegi 解释器执行 Skill 代码，支持动态加载和沙箱隔离
 func compileHandler(code string) (schema.ToolHandler, error) {
-	// 创建 yaegi 解释器
 	i := interp.New(interp.Options{})
-
-	// 导入标准库（限制可用的包，增强安全性）
 	i.Use(stdlib.Symbols)
 
-	// 构建完整的 Skill 代码
-	// 用户代码只需要写函数体，我们包装成完整的函数
-	wrappedCode := fmt.Sprintf(`
+	var evalCode string
+	if strings.HasPrefix(strings.TrimSpace(code), "package ") {
+		// 完整文件模式：用户自己写 package skill 等
+		evalCode = code
+	} else {
+		// 函数体模式：自动包装
+		evalCode = fmt.Sprintf(`
 package skill
 
 import (
-	"context"
-	"fmt"
+    "context"
+    "fmt"
 )
 
-// Handler 执行 Skill 逻辑
 func Handler(ctx context.Context, args map[string]any) (any, error) {
 %s
 }
 `, code)
+	}
 
-	// 编译代码
-	_, err := i.Eval(wrappedCode)
+	_, err := i.Eval(evalCode)
 	if err != nil {
 		return nil, fmt.Errorf("compile skill code failed: %w", err)
 	}
 
-	// 获取编译后的函数
 	v, err := i.Eval("skill.Handler")
 	if err != nil {
 		return nil, fmt.Errorf("get handler function failed: %w", err)
 	}
 
-	// 类型断言为 ToolHandler
 	handler, ok := v.Interface().(func(context.Context, map[string]any) (any, error))
 	if !ok {
-		return nil, fmt.Errorf("handler type mismatch: expected func(context.Context, map[string]any) (any, error)")
+		return nil, fmt.Errorf("handler type mismatch")
 	}
 
-	// 返回包装后的 handler，添加超时控制
 	return func(ctx context.Context, args map[string]any) (any, error) {
-		// 使用带超时的 context
-		// 注意：实际超时时间由 ToolRegistry 控制，这里只是额外的一层保护
 		return handler(ctx, args)
 	}, nil
 }
@@ -204,14 +218,55 @@ func Handler(ctx context.Context, args map[string]any) (any, error) {
 
 // SkillLoader Skill 加载器
 type SkillLoader struct {
-	loader *tools.DynamicToolLoader
+	loader       *tools.DynamicToolLoader
+	registry     *SkillRegistry
+	toolRegistry *schema.ToolRegistry
 }
 
-// NewSkillLoader 创建 Skill 加载器
-func NewSkillLoader(registry *schema.ToolRegistry) *SkillLoader {
+func NewSkillLoader(registry *SkillRegistry, toolRegistry *schema.ToolRegistry) *SkillLoader {
 	return &SkillLoader{
-		loader: tools.NewDynamicToolLoader(registry),
+		loader:       tools.NewDynamicToolLoader(toolRegistry),
+		registry:     registry,
+		toolRegistry: toolRegistry,
 	}
+}
+
+func (sl *SkillLoader) Register(skill Skill) error {
+	if err := skill.IsValid(); err != nil {
+		return fmt.Errorf("invalid skill %s: %w", skill.Name, err)
+	}
+	sl.registry.Register(&skill)
+
+	var handler schema.ToolHandler
+	if skill.Type == SkillTypeCode {
+		handler = skill.Handler
+	} else {
+		// 指令型 Skill：调用时返回完整的 Markdown 正文
+		body := skill.Body
+		handler = func(ctx context.Context, args map[string]any) (any, error) {
+			return body, nil
+		}
+	}
+
+	if handler != nil {
+		return sl.loader.Load(
+			skill.Name,
+			skill.Description,
+			handler,
+			skill.Parameters,
+			tools.WithCategory(skill.Category),
+			tools.WithTimeout(skill.Timeout),
+			tools.WithTags(skill.Tags...),
+		)
+	}
+	return nil
+}
+
+func (sl *SkillLoader) Unload(name string) error {
+	// 从 registry 移除
+	sl.registry.Remove(name)
+	// 从 ToolRegistry 注销
+	return sl.toolRegistry.Unregister(name)
 }
 
 // LoadFromFile 从 Markdown 文件加载 Skill
@@ -234,41 +289,39 @@ func (sl *SkillLoader) LoadFromString(content string) error {
 	return sl.Register(*skill)
 }
 
-// LoadFromDir 从目录批量加载 Skill
+// LoadFromDir 从目录加载标准 Skill 目录结构
 func (sl *SkillLoader) LoadFromDir(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("read skill dir failed: %w", err)
 	}
 
+	var errs []error
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if !entry.IsDir() {
 			continue
 		}
-		if !strings.HasSuffix(entry.Name(), ".md") {
-			continue
+		skillDir := filepath.Join(dir, entry.Name())
+		skillFile := filepath.Join(skillDir, "SKILL.md")
+		if _, err := os.Stat(skillFile); os.IsNotExist(err) {
+			// 兼容旧格式：检查目录下有没有 .md 文件
+			subEntries, _ := os.ReadDir(skillDir)
+			for _, se := range subEntries {
+				if !se.IsDir() && strings.HasSuffix(se.Name(), ".md") {
+					skillFile = filepath.Join(skillDir, se.Name())
+					break
+				}
+			}
 		}
 
-		path := filepath.Join(dir, entry.Name())
-		if err := sl.LoadFromFile(path); err != nil {
-			// 记录错误但继续加载其他
-			fmt.Printf("load skill %s failed: %v\n", entry.Name(), err)
+		if err := sl.LoadFromFile(skillFile); err != nil {
+			errs = append(errs, fmt.Errorf("load %s failed: %w", entry.Name(), err))
 			continue
 		}
 	}
 
+	if len(errs) > 0 {
+		return fmt.Errorf("skill loading errors: %v", errs)
+	}
 	return nil
-}
-
-// Register 注册 Skill 到 Registry
-func (sl *SkillLoader) Register(skill Skill) error {
-	return sl.loader.Load(
-		skill.Name,
-		skill.Description,
-		skill.Handler,
-		skill.Parameters,
-		tools.WithCategory(skill.Category),
-		tools.WithTimeout(skill.Timeout),
-		tools.WithTags(skill.Tags...),
-	)
 }
