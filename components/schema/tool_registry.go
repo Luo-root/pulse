@@ -272,6 +272,7 @@ func (r *ToolRegistry) GetByTag(tag string) []*RegisteredToolV2 {
 }
 
 // Enable/Disable 启用/禁用工具
+
 func (r *ToolRegistry) Enable(toolName string) error {
 	return r.setEnabled(toolName, true)
 }
@@ -455,9 +456,16 @@ func parseToolArgs(call ToolCall) (map[string]any, error) {
 }
 
 func marshalOutput(output any) (string, error) {
-	data, err := json.Marshal(output)
-	if err != nil {
-		return "", err
+	switch v := output.(type) {
+	case string:
+		return v, nil // 直接返回字符串
+	case []byte:
+		return string(v), nil
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
 	}
-	return string(data), nil
 }

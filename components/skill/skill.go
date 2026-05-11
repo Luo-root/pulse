@@ -41,7 +41,8 @@ type Skill struct {
 	Type SkillType `yaml:"-"`
 
 	// 纯指令 Skill 的正文内容（不含 frontmatter）
-	Body string `yaml:"-"`
+	Body    string   `yaml:"-"`
+	EnvVars []string `yaml:"-"` // 新增：Skill 运行时需要的环境变量列表
 }
 
 func (s *Skill) ToToolMetadata() schema.ToolMetadata {

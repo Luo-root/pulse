@@ -32,7 +32,8 @@ type SkillFrontmatter struct {
 	// 自定义扩展
 	Category string   `yaml:"category"`
 	Tags     []string `yaml:"tags"`
-	Timeout  int      `yaml:"timeout"` // 秒
+	Timeout  int      `yaml:"timeout"`  // 秒
+	EnvVars  string   `yaml:"env_vars"` // 新增：空格分隔的环境变量名，如 "SERPER_API_KEY GOOGLE_CX"
 }
 
 // CodeBlock 代码块
@@ -83,6 +84,11 @@ func ParseSkillMarkdown(content string) (*Skill, error) {
 		}
 	}
 
+	var envVars []string
+	if fm.EnvVars != "" {
+		envVars = strings.Fields(fm.EnvVars)
+	}
+
 	skill := &Skill{
 		Name:          fm.Name,
 		Description:   fm.Description,
@@ -95,6 +101,7 @@ func ParseSkillMarkdown(content string) (*Skill, error) {
 		Tags:          fm.Tags,
 		Timeout:       timeout,
 		Handler:       handler,
+		EnvVars:       envVars,
 	}
 
 	// 判断类型

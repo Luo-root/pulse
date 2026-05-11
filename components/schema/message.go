@@ -115,11 +115,15 @@ func AssistantMessage(content, ReasoningContent string) *Message {
 }
 
 // ToolResultsMessage 创建一条包含多个工具结果的消息
-func ToolResultsMessage(results []ToolResult) *Message {
-	return &Message{
-		Role:        ToolRole,
-		ToolResults: results,
+func ToolResultsMessage(results []ToolResult) []*Message {
+	var msgs []*Message
+	for _, result := range results {
+		msgs = append(msgs, &Message{
+			Role:        ToolRole,
+			ToolResults: []ToolResult{result},
+		})
 	}
+	return msgs
 }
 
 // NewToolResult 便捷构造一个结果条目

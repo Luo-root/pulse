@@ -7,17 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/Luo-root/pulse/components/schema"
 )
-
-const SERPER_API_KEY = "b768255f92cf64a884c6f7215fe232cb3a9636e7"
-
-// =================================================================
-
-// SERPER_API_URL Serper API 端点（固定，无需修改）
-const SERPER_API_URL = "https://google.serper.dev/search"
 
 // WebSearch 真实联网搜索（基于 Serper.dev Google 搜索）
 func WebSearch(ctx context.Context, args map[string]any) (any, error) {
@@ -57,13 +51,13 @@ func WebSearch(ctx context.Context, args map[string]any) (any, error) {
 	}
 
 	// 3. 创建 HTTP 请求
-	req, err := http.NewRequestWithContext(ctx, "POST", SERPER_API_URL, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", os.Getenv("SERPER_API_URL"), bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
 	}
 
 	// 设置 Serper API 认证头（关键！）
-	req.Header.Set("X-API-KEY", SERPER_API_KEY)
+	req.Header.Set("X-API-KEY", os.Getenv("SERPER_API_KEY"))
 	req.Header.Set("Content-Type", "application/json")
 
 	// 4. 发送请求（带超时）

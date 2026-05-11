@@ -59,10 +59,12 @@ func toAPIMessages(messages []*schema.Message) []APIMessage {
 				// OpenAI 只支持一个结果，取第一个
 				am.ToolCallID = m.ToolResults[0].CallID
 				am.Content = m.ToolResults[0].Content
-			} else {
-				am.ToolCallID = m.Name
-				am.Content = m.Content
 			}
+		}
+
+		// 确保 content 不为空
+		if am.Content == "" {
+			am.Content = `{"status": "completed"}`
 		}
 
 		result[i] = am

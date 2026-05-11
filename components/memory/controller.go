@@ -13,6 +13,8 @@ type Controller struct {
 	// 系统提示词 —— 永久存在于上下文底层
 	SystemPrompt []*schema.Message
 
+	RecallMsg *schema.Message
+
 	// 短期记忆管理器 —— 滑动窗口 / 摘要
 	ShortMemory ShortMemoryManager
 
@@ -60,7 +62,7 @@ func (c *Controller) BuildContext(ctx context.Context, sessionID string, current
 	}
 
 	// 长期记忆注入（跨会话相关历史）
-	if c.LongStore != nil {
+	if c.LongStore != nil && currentQuery != "" {
 		mems, err := c.LongStore.Recall(ctx, sessionID, currentQuery, c.TopK)
 		if err != nil {
 			// 可以降级，不影响主流程
@@ -71,8 +73,9 @@ func (c *Controller) BuildContext(ctx context.Context, sessionID string, current
 			for i, m := range mems {
 				sb.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, m.Role, m.Content))
 			}
-			msgs = append(msgs, schema.SystemMessage(sb.String()))
+			c.RecallMsg = schema.SystemMessage(sb.String())
 		}
+		msgs = append(msgs, c.RecallMsg)
 	}
 
 	// 短期记忆（当前会话的窗口 + 摘要）
@@ -80,9 +83,6 @@ func (c *Controller) BuildContext(ctx context.Context, sessionID string, current
 		shortMsgs := c.ShortMemory.GetContextMessages(sessionID)
 		msgs = append(msgs, shortMsgs...)
 	}
-
-	// 当前用户输入
-	msgs = append(msgs, &schema.Message{Role: schema.UserRole, Content: currentQuery})
 
 	return msgs, nil
 }

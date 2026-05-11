@@ -88,7 +88,7 @@ func NewAgent(model chatmodel.BaseModel, registry *schema.ToolRegistry, opts ...
 		ag.memoryController = memory.NewController(systemPrompt, memory.NewSimpleWindowMemory(
 			memory.NewWindowManager(memory.WindowConfig{
 				MaxHistoryMessages: 200,
-				ReserveTokens:      4000,
+				ReserveTokens:      8000,
 			},
 				ag.model,
 				nil,
@@ -107,11 +107,13 @@ func (ag *Agent) Send(ctx context.Context, userContent string) (*schema.Message,
 		return nil, err
 	}
 
+	query := userContent
+
 	for {
 		// 记录调用开始时间
 		startTime := time.Now()
 
-		msgs, err := ag.memoryController.BuildContext(ctx, ag.sessionID, userContent)
+		msgs, err := ag.memoryController.BuildContext(ctx, ag.sessionID, query)
 		if err != nil {
 			return nil, err
 		}
@@ -127,17 +129,19 @@ func (ag *Agent) Send(ctx context.Context, userContent string) (*schema.Message,
 			ag.usageTracker.Record(*resp.Usage, ag.getModelName(), duration)
 		}
 
-		if len(resp.ToolCalls) == 0 {
-			err = ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{schema.AssistantMessage(resp.Content, resp.ReasoningContent)})
-			if err != nil {
+		if len(resp.ToolCalls) != 0 {
+			if shouldContinue, err := ag.handleToolCalls(ctx, resp); err != nil {
 				return nil, err
+			} else if shouldContinue {
+				query = ""
+				continue // 再次进入循环，获取模型最终回答
 			}
-			return resp, nil
 		}
-
-		if err := ag.handleToolCalls(ctx, resp); err != nil {
+		err = ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{resp})
+		if err != nil {
 			return nil, err
 		}
+		return resp, nil
 	}
 }
 
@@ -165,12 +169,10 @@ func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk fun
 		}
 
 		// 流式读取，实时回调
-		var fullMsg schema.Message
-		var isToolPhase bool
-
-		if fullMsg.Role == "" {
-			fullMsg.Role = schema.AssistantRole
+		fullMsg := schema.Message{
+			Role: schema.AssistantRole,
 		}
+		var isToolPhase bool
 
 		// 流式读取每一个chunk
 		for {
@@ -218,22 +220,18 @@ func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk fun
 			ag.usageTracker.Record(usage, ag.getModelName(), duration)
 		}
 
-		// 无工具调用 → 对话结束，退出总循环
-		if len(fullMsg.ToolCalls) == 0 {
-			// 将完整的助手消息加入历史
-			err = ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{schema.AssistantMessage(fullMsg.Content, fullMsg.ReasoningContent)})
-			if err != nil {
+		if len(fullMsg.ToolCalls) != 0 {
+			if shouldContinue, err := ag.handleToolCalls(ctx, &fullMsg); err != nil {
 				return nil, err
+			} else if shouldContinue {
+				continue // 再次进入循环，获取模型最终回答
 			}
-			return &fullMsg, nil
 		}
-
-		// 有工具调用 → 复用已有方法执行工具，并追加历史
-		if err := ag.handleToolCalls(ctx, &fullMsg); err != nil {
-			return &fullMsg, err
+		err = ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{&fullMsg})
+		if err != nil {
+			return nil, err
 		}
-
-		// 工具执行完成，继续循环，让模型生成最终回答
+		return &fullMsg, nil
 	}
 }
 
@@ -308,29 +306,29 @@ func (ag *Agent) GetUsageTracker() *UsageTracker {
 	return ag.usageTracker
 }
 
-// handleToolCalls 处理工具调用：执行 + 追加历史
-func (ag *Agent) handleToolCalls(ctx context.Context, assistantMsg *schema.Message) error {
+// handleToolCalls 处理工具调用：执行 + 追加历史 + 返回是否需要继续循环
+func (ag *Agent) handleToolCalls(ctx context.Context, assistantMsg *schema.Message) (bool, error) {
 	// 执行工具
 	results := ag.registry.ExecuteBatch(ctx, assistantMsg.ToolCalls)
 
+	var msgs []*schema.Message
+
 	// 构造 assistant 消息（保留 tool_calls）
-	assistantWithTools := &schema.Message{
+	msgs = append(msgs, &schema.Message{
 		Role:             schema.AssistantRole,
 		Content:          assistantMsg.Content,
 		ReasoningContent: assistantMsg.ReasoningContent,
 		ToolCalls:        assistantMsg.ToolCalls,
-	}
+	})
 
 	// 追加到历史
-	err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{assistantWithTools})
+	msgs = append(msgs, schema.ToolResultsMessage(results)...)
+
+	err := ag.memoryController.SaveTurn(ctx, ag.sessionID, msgs)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	err = ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{schema.ToolResultsMessage(results)})
-	if err != nil {
-		return err
-	}
-
-	return nil
+	// 返回 true 表示已保存历史，主循环应继续请求模型
+	return true, nil
 }
