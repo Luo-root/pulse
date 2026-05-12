@@ -111,6 +111,10 @@ type GormStoreConfig struct {
 	RecallMode RecallMode
 	// CombinedWeights 组合模式的权重（仅当 RecallModeCombined 时生效）
 	CombinedWeights *CombinedWeights
+	// ChunkSize 分块大小（中文字符数），0 或负数表示不分块
+	ChunkSize int
+	// ChunkOverlap 分块重叠大小（中文字符数）
+	ChunkOverlap int
 }
 
 // CombinedWeights 组合召回的各因子权重，总和应为 1.0
@@ -141,7 +145,47 @@ func DefaultGormStoreConfig() *GormStoreConfig {
 		EmbeddingDimension:  384,
 		RecallMode:          RecallModeAuto,
 		CombinedWeights:     DefaultCombinedWeights(),
+		ChunkSize:           512, // 大约对应 256 token
+		ChunkOverlap:        64,
 	}
+}
+
+// EmbeddingChunk 分块嵌入记录，用于长文本分段存储
+type EmbeddingChunk struct {
+	ID         string `gorm:"primaryKey;size:64"`
+	MessageID  string `gorm:"index;size:64;not null"`  // 关联 MessageModel.ID
+	SessionID  string `gorm:"index;size:128;not null"` // 冗余字段，加速查询
+	ChunkIndex int    `gorm:"not null"`                // 块序号
+	Content    string `gorm:"type:text;not null"`      // 块文本
+	Embedding  string `gorm:"type:text"`               // 嵌入向量 JSON
+}
+
+func (EmbeddingChunk) TableName() string {
+	return "embedding_chunks"
+}
+
+func (c *EmbeddingChunk) GetEmbedding() ([]float32, error) {
+	if c.Embedding == "" {
+		return nil, nil
+	}
+	var vec []float32
+	if err := json.Unmarshal([]byte(c.Embedding), &vec); err != nil {
+		return nil, err
+	}
+	return vec, nil
+}
+
+func (c *EmbeddingChunk) SetEmbedding(vec []float32) error {
+	if len(vec) == 0 {
+		c.Embedding = ""
+		return nil
+	}
+	data, err := json.Marshal(vec)
+	if err != nil {
+		return err
+	}
+	c.Embedding = string(data)
+	return nil
 }
 
 // ============================================================================
@@ -196,7 +240,7 @@ func NewGormStore(config *GormStoreConfig, embedding EmbeddingFunc) (*GormStore,
 	sqlDB.SetConnMaxLifetime(config.ConnMaxLifetime)
 
 	// 自动迁移
-	if err := db.AutoMigrate(&MessageModel{}); err != nil {
+	if err := db.AutoMigrate(&MessageModel{}, &EmbeddingChunk{}); err != nil {
 		return nil, fmt.Errorf("gorm: auto migrate failed: %w", err)
 	}
 
@@ -228,19 +272,29 @@ func (s *GormStore) rebuildIndexFromDB() {
 	if err := s.db.Find(&models).Error; err != nil {
 		return
 	}
+	var chunks []EmbeddingChunk
+	if err := s.db.Find(&chunks).Error; err != nil {
+		// 忽略，可能表不存在
+	}
 
-	nodes := make([]*messageNode, 0, len(models))
+	s.vecMu.Lock()
+	defer s.vecMu.Unlock()
+
 	for i := range models {
 		vec, err := models[i].GetEmbedding()
 		if err != nil || len(vec) == 0 {
 			continue
 		}
-		nodes = append(nodes, &messageNode{model: &models[i], vec: vec})
+		s.vecIndex.Add(&messageNode{model: &models[i], vec: vec})
 	}
 
-	s.vecMu.Lock()
-	defer s.vecMu.Unlock()
-	s.vecIndex.Add(nodes...)
+	for i := range chunks {
+		vec, err := chunks[i].GetEmbedding()
+		if err != nil || len(vec) == 0 {
+			continue
+		}
+		s.vecIndex.Add(&messageNode{model: &MessageModel{ID: chunks[i].ID}, vec: vec})
+	}
 }
 
 // Save 保存消息（支持批量 + 嵌入生成）
@@ -276,20 +330,58 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 				model.Metadata = string(meta)
 			}
 
-			// 生成嵌入向量后
+			// 生成嵌入向量
 			if !s.config.DisableVectorSearch && s.embedding != nil {
 				text := msg.Content
 				if msg.ReasoningContent != "" {
 					text = msg.ReasoningContent + " " + text
 				}
-				vec, err := s.embedding(ctx, text)
-				if err == nil && len(vec) > 0 {
-					model.SetEmbedding(vec)
-					s.vecMu.Lock()
-					if s.vecIndex != nil {
-						s.vecIndex.Add(&messageNode{model: model, vec: vec})
+
+				// 判断是否需要分块：简单以字符数估算 (1 token ≈ 2 中文字符)
+				estTokens := len([]rune(text)) / 2
+				needChunk := s.config.ChunkSize > 0 && estTokens > s.config.ChunkSize
+
+				if needChunk {
+					chunks := SplitText(text, s.config.ChunkSize, s.config.ChunkOverlap)
+					for idx, chunkContent := range chunks {
+						vec, err := s.embedding(ctx, chunkContent)
+						if err != nil {
+							continue
+						}
+						if len(vec) == 0 {
+							continue
+						}
+						chunkModel := &EmbeddingChunk{
+							ID:         fmt.Sprintf("%s_chunk_%d", model.ID, idx),
+							MessageID:  model.ID,
+							SessionID:  sessionID,
+							ChunkIndex: idx,
+							Content:    chunkContent,
+						}
+						chunkModel.SetEmbedding(vec)
+
+						// 保存分块记录
+						if err := tx.Create(chunkModel).Error; err != nil {
+							return err
+						}
+						// 加入向量索引
+						s.vecMu.Lock()
+						if s.vecIndex != nil {
+							s.vecIndex.Add(&messageNode{model: &MessageModel{ID: chunkModel.ID}, vec: vec})
+						}
+						s.vecMu.Unlock()
 					}
-					s.vecMu.Unlock()
+				} else {
+					// 不分块，保留原消息嵌入
+					vec, err := s.embedding(ctx, text)
+					if err == nil && len(vec) > 0 {
+						model.SetEmbedding(vec)
+						s.vecMu.Lock()
+						if s.vecIndex != nil {
+							s.vecIndex.Add(&messageNode{model: model, vec: vec})
+						}
+						s.vecMu.Unlock()
+					}
 				}
 			}
 
@@ -422,7 +514,6 @@ func (s *GormStore) vectorSearch(ctx context.Context, sessionID string, queryVec
 		return nil, fmt.Errorf("index not initialized")
 	}
 
-	// 多取一些候选，用于过滤 session
 	fetchN := topK * 3
 	if fetchN < 10 {
 		fetchN = 10
@@ -432,17 +523,62 @@ func (s *GormStore) vectorSearch(ctx context.Context, sessionID string, queryVec
 		return nil, nil
 	}
 
-	candidates := make([]vectorCandidate, 0, topK)
+	// 用于去重消息 ID 并保留相似度
+	msgMap := make(map[string]*vectorCandidate)
+	var orderedIDs []string
+
 	for _, node := range results {
-		if node.model.SessionID == sessionID {
-			sim := cosineSimilarity(queryVec, node.Embedding())
-			candidates = append(candidates, vectorCandidate{
-				model:      node.model,
-				similarity: sim,
-			})
-			if len(candidates) >= topK {
-				break
+		// node.ID() 可能是 message ID 或 chunk ID
+		nodeID := node.ID()
+
+		var msgID string
+		var sim float64
+		if strings.Contains(nodeID, "_chunk_") {
+			// 分块节点：查询对应的 EmbeddingChunk 确认 Session 和 MessageID
+			var chunk EmbeddingChunk
+			if err := s.db.WithContext(ctx).Where("id = ? AND session_id = ?", nodeID, sessionID).First(&chunk).Error; err != nil {
+				continue
 			}
+			msgID = chunk.MessageID
+			sim = cosineSimilarity(queryVec, node.Embedding())
+		} else {
+			// 非分块节点：直接是 MessageModel，检查 Session
+			var msg MessageModel
+			if err := s.db.WithContext(ctx).Where("id = ? AND session_id = ?", nodeID, sessionID).First(&msg).Error; err != nil {
+				continue
+			}
+			msgID = nodeID
+			sim = cosineSimilarity(queryVec, node.Embedding())
+		}
+
+		if existing, exists := msgMap[msgID]; exists {
+			if sim > existing.similarity {
+				existing.similarity = sim
+			}
+			continue
+		}
+
+		// 加载完整的 MessageModel 作为候选
+		var fullMsg MessageModel
+		if err := s.db.WithContext(ctx).Where("id = ?", msgID).First(&fullMsg).Error; err != nil {
+			continue
+		}
+		if fullMsg.SessionID != sessionID {
+			continue
+		}
+
+		msgMap[msgID] = &vectorCandidate{model: &fullMsg, similarity: sim}
+		orderedIDs = append(orderedIDs, msgID)
+
+		if len(msgMap) >= topK {
+			break
+		}
+	}
+
+	var candidates []vectorCandidate
+	for _, id := range orderedIDs {
+		if cand, ok := msgMap[id]; ok {
+			candidates = append(candidates, *cand)
 		}
 	}
 	return candidates, nil
@@ -586,7 +722,23 @@ func (s *GormStore) ClearSession(ctx context.Context, sessionID string) error {
 		s.vecMu.Unlock()
 	}
 
-	// 3. 硬删除数据库中的消息记录
+	// 3. 同时删除分块记录和对应的向量索引（如果有）
+	if s.vecIndex != nil {
+		var chunkIDs []string
+		if err := s.db.WithContext(ctx).Model(&EmbeddingChunk{}).Where("session_id = ?", sessionID).Pluck("id", &chunkIDs).Error; err == nil {
+			s.vecMu.Lock()
+			for _, cid := range chunkIDs {
+				s.vecIndex.Delete(cid)
+			}
+			s.vecMu.Unlock()
+		}
+	}
+	// 删除分块表数据
+	if err := s.db.WithContext(ctx).Where("session_id = ?", sessionID).Delete(&EmbeddingChunk{}).Error; err != nil {
+		return err
+	}
+
+	// 最后删除 messages
 	return s.db.WithContext(ctx).
 		Where("session_id = ?", sessionID).
 		Delete(&MessageModel{}).Error
@@ -727,4 +879,57 @@ func extractKeywords(text string) []string {
 	}
 
 	return keywords
+}
+
+// SplitText 将文本按字符数分块，优先在自然边界（句号、换行等）处断开
+func SplitText(text string, chunkSize, chunkOverlap int) []string {
+	if chunkSize <= 0 {
+		chunkSize = 512
+	}
+	if chunkOverlap >= chunkSize {
+		chunkOverlap = chunkSize / 5
+	}
+
+	var chunks []string
+	runes := []rune(text)
+	if len(runes) <= chunkSize {
+		return []string{text}
+	}
+
+	// 定义自然边界字符
+	isBoundary := func(r rune) bool {
+		switch r {
+		case '。', '！', '？', '\n', '.', '!', '?', '；', ';':
+			return true
+		}
+		return false
+	}
+
+	i := 0
+	for i < len(runes) {
+		end := i + chunkSize
+		if end > len(runes) {
+			end = len(runes)
+		}
+
+		// 尝试在自然边界处断开
+		if end < len(runes) {
+			// 从 end 往前找第一个边界，但不能低于 chunkSize 的一半
+			for j := end; j > i+chunkSize/2; j-- {
+				if isBoundary(runes[j]) {
+					end = j + 1 // 包含边界字符
+					break
+				}
+			}
+		}
+
+		chunkText := string(runes[i:end])
+		chunks = append(chunks, strings.TrimSpace(chunkText))
+
+		if end >= len(runes) {
+			break
+		}
+		i = end - chunkOverlap
+	}
+	return chunks
 }

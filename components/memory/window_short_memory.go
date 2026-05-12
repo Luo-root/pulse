@@ -1,7 +1,9 @@
 package memory
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/Luo-root/pulse/components/chatmodel"
@@ -114,4 +116,90 @@ func mergeSummaries(old, new string) string {
 		return new
 	}
 	return old + "\n" + new // 简单拼接，也可由摘要器处理
+}
+
+// DefaultSummaryFunc 创建一个默认的摘要生成函数
+// 该函数会调用传入的 LLM 模型，将历史消息总结为一段简短的摘要
+func DefaultSummaryFunc() SummaryFunc {
+	return func(messages []*schema.Message, model chatmodel.BaseModel) string {
+		if len(messages) == 0 {
+			return ""
+		}
+
+		// 构建摘要提示词
+		prompt := buildSummaryPrompt(messages)
+
+		// 调用模型生成摘要
+		ctx := context.Background()
+		msgs := []*schema.Message{
+			schema.UserMessage(prompt),
+		}
+
+		resp, err := model.Generate(ctx, msgs)
+		if err != nil {
+			// 摘要失败时返回一个退化版本：拼接前几条消息内容
+			return fallbackSummary(messages)
+		}
+
+		return strings.TrimSpace(resp.Content)
+	}
+}
+
+// buildSummaryPrompt 构建摘要提示词
+func buildSummaryPrompt(messages []*schema.Message) string {
+	var sb strings.Builder
+	sb.WriteString("请将以下对话历史总结为一段简洁的摘要，保留关键信息、决策和行动：\n\n")
+
+	for _, m := range messages {
+		switch m.Role {
+		case schema.UserRole:
+			sb.WriteString(fmt.Sprintf("用户: %s\n", m.Content))
+		case schema.AssistantRole:
+			content := m.Content
+			if m.ReasoningContent != "" {
+				content = m.ReasoningContent + " " + content
+			}
+			sb.WriteString(fmt.Sprintf("助手: %s\n", content))
+		case schema.ToolRole:
+			summary := summarizeToolResult(m)
+			sb.WriteString(fmt.Sprintf("工具结果: %s\n", summary))
+		}
+	}
+
+	sb.WriteString("\n摘要：")
+	return sb.String()
+}
+
+// summarizeToolResult 将工具消息简化为短文本
+func summarizeToolResult(msg *schema.Message) string {
+	if len(msg.ToolResults) == 0 {
+		return msg.Content
+	}
+	// 只取第一个结果的简略信息
+	content := msg.ToolResults[0].Content
+	if len(content) > 200 {
+		content = content[:200] + "..."
+	}
+	if msg.ToolResults[0].IsError {
+		return fmt.Sprintf("错误: %s", content)
+	}
+	return content
+}
+
+// fallbackSummary 当模型调用失败时，用简单拼接作为退路
+func fallbackSummary(messages []*schema.Message) string {
+	var parts []string
+	for _, m := range messages {
+		if m.Role == schema.UserRole || m.Role == schema.AssistantRole {
+			text := m.Content
+			if len(text) > 100 {
+				text = text[:100] + "..."
+			}
+			parts = append(parts, text)
+		}
+		if len(parts) >= 5 { // 限制拼接长度
+			break
+		}
+	}
+	return strings.Join(parts, " | ")
 }
