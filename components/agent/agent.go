@@ -306,6 +306,10 @@ func (ag *Agent) GetUsageTracker() *UsageTracker {
 	return ag.usageTracker
 }
 
+func (ag *Agent) ChangeModel(model chatmodel.BaseModel) {
+	ag.model = model
+}
+
 // handleToolCalls 处理工具调用：执行 + 追加历史 + 返回是否需要继续循环
 func (ag *Agent) handleToolCalls(ctx context.Context, assistantMsg *schema.Message) (bool, error) {
 	// 执行工具
