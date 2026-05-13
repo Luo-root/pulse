@@ -123,6 +123,7 @@ func NewClient(ctx context.Context, config *ChatModelConfig) *Client {
 		MaxCompletionTokens: config.MaxCompletionTokens,
 		ResponseFormat:      config.ResponseFormat,
 		Stream:              config.Stream,
+		StreamOptions:       config.StreamOptions,
 		Tools:               SchemaToOpenAI(config.Tools),
 		PromptCacheKey:      config.PromptCacheKey,
 		SafetyIdentifier:    config.SafetyIdentifier,
