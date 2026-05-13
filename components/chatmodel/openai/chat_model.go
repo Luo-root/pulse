@@ -32,6 +32,8 @@ type ChatModelConfig struct {
 	Stop string `json:"stop,omitempty"`
 	// 是否以流式方式返回响应，默认 false
 	Stream bool `json:"stream,omitempty"`
+
+	StreamOptions StreamOptions `json:"stream_options,omitempty"`
 	// 模型可调用的工具列表, 最大长度 128
 	Tools []schema.Tool `json:"-"`
 	// 用于缓存相似请求的响应以优化缓存命中率。给长系统提示词 / 长记忆做缓存,让速度变快、省钱
@@ -57,6 +59,10 @@ type ChatModelConfig struct {
 
 	TimeOut    time.Duration
 	HTTPClient *http.Client `json:"http_client"`
+}
+
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type ToolType string
