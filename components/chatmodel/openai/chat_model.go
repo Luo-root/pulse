@@ -32,7 +32,7 @@ type ChatModelConfig struct {
 	Stop string `json:"stop,omitempty"`
 	// 是否以流式方式返回响应，默认 false
 	Stream bool `json:"stream,omitempty"`
-
+	// 流式响应选项
 	StreamOptions StreamOptions `json:"stream_options,omitempty"`
 	// 模型可调用的工具列表, 最大长度 128
 	Tools []schema.Tool `json:"-"`
