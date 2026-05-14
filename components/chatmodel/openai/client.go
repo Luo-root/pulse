@@ -43,28 +43,22 @@ func toAPIMessages(messages []*schema.Message) []APIMessage {
 			Role:             string(m.Role),
 			Content:          m.Content,
 			ReasoningContent: m.ReasoningContent,
+			Name:             m.Name,
 		}
 
 		// assistant 有 tool_calls
 		if m.Role == schema.AssistantRole && len(m.ToolCalls) > 0 {
 			am.ToolCalls = m.ToolCalls
-			am.ReasoningContent = m.ReasoningContent
 		}
 
-		// tool 角色：OpenAI 需要 tool_call_id
+		// tool 消息：直接用 Message 上的字段
 		if m.Role == schema.ToolRole {
-			am.Role = "tool"
-			// 优先用 ToolResults
-			if len(m.ToolResults) > 0 {
-				// OpenAI 只支持一个结果，取第一个
-				am.ToolCallID = m.ToolResults[0].CallID
-				am.Content = m.ToolResults[0].Content
-			}
+			am.ToolCallID = m.ToolCallID
 		}
 
-		// 确保 content 不为空
-		if am.Content == "" {
-			am.Content = `{"status": "completed"}`
+		// assistant 消息只有 tool_calls 时 content 不能为空
+		if am.Role == "assistant" && am.Content == "" && len(am.ToolCalls) > 0 {
+			am.Content = ""
 		}
 
 		result[i] = am

@@ -17,17 +17,17 @@ const (
 )
 
 type Message struct {
-	Role             RoleType `json:"role"`
-	Content          string   `json:"content"`
-	ReasoningContent string   `json:"reasoning_content,omitempty"`
-	// 消息发送者的名称（可选）
-	Name string `json:"name,omitempty"`
-	// 当设置为 true 时，表示这条消息是未完成的，模型需要继续生成这条消息的剩余内容。（可选）
-	Partial   bool       `json:"partial,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role             RoleType   `json:"role"`
+	Content          string     `json:"content,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	Name             string     `json:"name,omitempty"`
+	Partial          bool       `json:"partial,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 
-	ToolResults []ToolResult `json:"tool_results,omitempty"`
-	Usage       *Usage       `json:"-"`
+	// tool 消息专用：关联到哪个 ToolCall
+	ToolCallID string `json:"tool_call_id,omitempty"`
+
+	Usage *Usage `json:"-"`
 }
 
 type ToolCall struct {
@@ -63,21 +63,14 @@ func (m *Message) Clone() Message {
 		ReasoningContent: m.ReasoningContent,
 		Name:             m.Name,
 		Partial:          m.Partial,
+		ToolCallID:       m.ToolCallID,
 	}
 
-	// 深拷贝切片
 	if m.ToolCalls != nil {
 		cloned.ToolCalls = make([]ToolCall, len(m.ToolCalls))
 		copy(cloned.ToolCalls, m.ToolCalls)
 	}
 
-	// 深拷贝切片
-	if m.ToolResults != nil {
-		cloned.ToolResults = make([]ToolResult, len(m.ToolResults))
-		copy(cloned.ToolResults, m.ToolResults)
-	}
-
-	// 深拷贝指针
 	if m.Usage != nil {
 		cloned.Usage = &Usage{
 			PromptTokens: m.Usage.PromptTokens,
@@ -116,11 +109,16 @@ func AssistantMessage(content, ReasoningContent string) *Message {
 
 // ToolResultsMessage 创建一条包含多个工具结果的消息
 func ToolResultsMessage(results []ToolResult) []*Message {
-	var msgs []*Message
-	for _, result := range results {
+	msgs := make([]*Message, 0, len(results))
+	for _, r := range results {
+		content := r.Content
+		if r.IsError {
+			content = "[Error] " + content
+		}
 		msgs = append(msgs, &Message{
-			Role:        ToolRole,
-			ToolResults: []ToolResult{result},
+			Role:       ToolRole,
+			Content:    content,
+			ToolCallID: r.CallID,
 		})
 	}
 	return msgs
@@ -264,23 +262,8 @@ func FormatMessages(messages []*Message) string {
 			}
 		}
 
-		// 工具结果
-		if len(msg.ToolResults) > 0 {
-			builder.WriteString("📊 工具结果:\n")
-			for j, tr := range msg.ToolResults {
-				builder.WriteString(fmt.Sprintf("  #%d\n", j+1))
-				builder.WriteString(fmt.Sprintf("    🔗 调用ID: %s\n", tr.CallID))
-				errStatus := "❌ 是"
-				if !tr.IsError {
-					errStatus = "✅ 否"
-				}
-				builder.WriteString(fmt.Sprintf("    ⚠️ 错误: %s\n", errStatus))
-				content := tr.Content
-				if content == "" {
-					content = "(空)"
-				}
-				builder.WriteString(fmt.Sprintf("    📄 内容:\n%s\n", indentString(content, "      ")))
-			}
+		if msg.ToolCallID != "" {
+			builder.WriteString(fmt.Sprintf("🔗 工具调用ID: %s\n", msg.ToolCallID))
 		}
 
 		// Token 使用情况
