@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Luo-root/pulse/components/schema"
+	"github.com/Luo-root/pulse/components/tools"
 )
 
 // SkillType 技能类型
@@ -34,8 +34,8 @@ type Skill struct {
 	Timeout  time.Duration `yaml:"timeout"`
 
 	// 运行时字段（不从 frontmatter 解析）
-	Path    string             `yaml:"-"` // Skill 目录路径
-	Handler schema.ToolHandler `yaml:"-"` // 编译后的处理函数
+	Path    string            `yaml:"-"` // Skill 目录路径
+	Handler tools.ToolHandler `yaml:"-"` // 编译后的处理函数
 
 	// Skill 类型（代码型 / 指令型）
 	Type SkillType `yaml:"-"`
@@ -45,12 +45,12 @@ type Skill struct {
 	EnvVars []string `yaml:"-"` // 新增：Skill 运行时需要的环境变量列表
 }
 
-func (s *Skill) ToToolMetadata() schema.ToolMetadata {
+func (s *Skill) ToToolMetadata() tools.ToolMetadata {
 	timeout := s.Timeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	return schema.ToolMetadata{
+	return tools.ToolMetadata{
 		Name:        s.Name,
 		Description: s.Description,
 		Parameters:  s.Parameters,

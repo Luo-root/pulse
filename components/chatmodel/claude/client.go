@@ -76,15 +76,6 @@ func toContentBlocks(msg *schema.Message) []ContentBlock {
 		})
 	}
 
-	for _, tr := range msg.ToolResults {
-		blocks = append(blocks, ContentBlock{
-			Type:      "tool_result",
-			ToolUseID: tr.CallID,
-			Content:   tr.Content,
-			IsError:   tr.IsError,
-		})
-	}
-
 	return blocks
 }
 

@@ -7,8 +7,6 @@ import (
 	"regexp"
 	"runtime"
 	"time"
-
-	"github.com/Luo-root/pulse/components/schema"
 )
 
 // 预编译危险命令正则（提升性能）
@@ -98,12 +96,12 @@ var commandExecParams = map[string]any{
 }
 
 // RegisterCommandTools 注册命令工具
-func RegisterCommandTools(registry *schema.ToolRegistry) {
-	registry.MustRegister(schema.ToolMetadata{
+func RegisterCommandTools(registry *ToolRegistry) {
+	registry.MustRegister(ToolMetadata{
 		Name:        "command_exec",
 		Description: "执行系统命令（支持 Windows/Linux/macOS），返回输出结果",
 		Parameters:  commandExecParams,
-		Permission:  schema.PermDangerous,
+		Permission:  PermDangerous,
 		Category:    "system",
 		Version:     "1.0.0",
 		Tags:        []string{"system", "command", "dangerous"},

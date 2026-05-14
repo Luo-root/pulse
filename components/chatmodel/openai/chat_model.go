@@ -71,18 +71,25 @@ const (
 	Function ToolType = "function"
 )
 
+// Tool API 请求中的工具定义，Function 直接复用 schema.Tool
 type Tool struct {
-	Type     ToolType     `json:"type"`
-	Function ToolFunction `json:"function"`
+	Type     ToolType    `json:"type"`
+	Function schema.Tool `json:"function"`
 }
 
-type ToolFunction struct {
-	// 函数名称。必须符合正则表达式：^[a-zA-Z_][a-zA-Z0-9-_]{2,63}$
-	Name string `json:"name"`
-	// 函数参数，JSON Schema 格式
-	Parameters any `json:"parameters"`
-	// 函数功能描述
-	Description string `json:"description"`
+// WrapTools 将 schema.Tool 列表包装为 API 请求格式
+func WrapTools(tools []schema.Tool) []Tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	result := make([]Tool, len(tools))
+	for i, t := range tools {
+		result[i] = Tool{
+			Type:     Function,
+			Function: t,
+		}
+	}
+	return result
 }
 
 type ThinkingType string
@@ -106,21 +113,6 @@ type Thinking struct {
 	// 默认为 null: 服务端会忽略历史 turns 的 reasoning_content。
 	// "all"：保留历史 turns 的 reasoning_content 并随上下文一同提供给模型，启用 Preserved Thinking。使用时需把每一轮历史 assistant 消息中的 reasoning_content 原样保留在 messages 中。
 	Keep ThinkingKeepEnum `json:"keep,omitempty"`
-}
-
-func SchemaToOpenAI(tools []schema.Tool) []Tool {
-	result := make([]Tool, len(tools))
-	for i, t := range tools {
-		result[i] = Tool{
-			Type: Function, // "function"
-			Function: ToolFunction{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.Parameters,
-			},
-		}
-	}
-	return result
 }
 
 type ChatModel struct {

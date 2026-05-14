@@ -51,14 +51,9 @@ func toAPIMessages(messages []*schema.Message) []APIMessage {
 			am.ToolCalls = m.ToolCalls
 		}
 
-		// tool 消息：直接用 Message 上的字段
+		// tool 消息：直接用 Message 上的 ToolCallID
 		if m.Role == schema.ToolRole {
 			am.ToolCallID = m.ToolCallID
-		}
-
-		// assistant 消息只有 tool_calls 时 content 不能为空
-		if am.Role == "assistant" && am.Content == "" && len(am.ToolCalls) > 0 {
-			am.Content = ""
 		}
 
 		result[i] = am
@@ -118,7 +113,7 @@ func NewClient(ctx context.Context, config *ChatModelConfig) *Client {
 		ResponseFormat:      config.ResponseFormat,
 		Stream:              config.Stream,
 		StreamOptions:       config.StreamOptions,
-		Tools:               SchemaToOpenAI(config.Tools),
+		Tools:               WrapTools(config.Tools),
 		PromptCacheKey:      config.PromptCacheKey,
 		SafetyIdentifier:    config.SafetyIdentifier,
 		Thinking:            config.Thinking,

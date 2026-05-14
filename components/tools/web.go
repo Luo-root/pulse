@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"os"
 	"time"
-
-	"github.com/Luo-root/pulse/components/schema"
 )
 
 // WebSearch 真实联网搜索（基于 Serper.dev Google 搜索）
@@ -117,12 +115,12 @@ var webSearchParams = map[string]any{
 }
 
 // RegisterWebTools 注册联网搜索工具
-func RegisterWebTools(registry *schema.ToolRegistry) {
-	registry.MustRegister(schema.ToolMetadata{
+func RegisterWebTools(registry *ToolRegistry) {
+	registry.MustRegister(ToolMetadata{
 		Name:        "web_search",
 		Description: "真实联网搜索（基于 Serper.dev Google 搜索），返回最新的网页搜索结果",
 		Parameters:  webSearchParams,
-		Permission:  schema.PermReadOnly,
+		Permission:  PermReadOnly,
 		Category:    "network",
 		Version:     "1.0.0",
 		Tags:        []string{"network", "search", "web", "safe", "google"},

@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/Luo-root/pulse/components/schema"
 )
 
 // GetWorkDir 获取当前工作目录
@@ -36,12 +34,12 @@ var getWorkDirParams = map[string]any{
 }
 
 // RegisterEnvTools 注册环境工具
-func RegisterEnvTools(registry *schema.ToolRegistry) {
-	registry.MustRegister(schema.ToolMetadata{
+func RegisterEnvTools(registry *ToolRegistry) {
+	registry.MustRegister(ToolMetadata{
 		Name:        "get_work_dir",
 		Description: "获取当前工作目录和操作系统信息",
 		Parameters:  getWorkDirParams,
-		Permission:  schema.PermReadOnly,
+		Permission:  PermReadOnly,
 		Category:    "env",
 		Version:     "1.0.0",
 		Tags:        []string{"env", "info", "safe"},

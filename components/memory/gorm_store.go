@@ -322,11 +322,15 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 			}
 
 			// 序列化元数据（ToolCalls 等）
-			if len(msg.ToolCalls) > 0 || len(msg.ToolResults) > 0 {
-				meta, _ := json.Marshal(map[string]any{
-					"tool_calls":   msg.ToolCalls,
-					"tool_results": msg.ToolResults,
-				})
+			if len(msg.ToolCalls) > 0 || msg.ToolCallID != "" {
+				metaData := make(map[string]any)
+				if len(msg.ToolCalls) > 0 {
+					metaData["tool_calls"] = msg.ToolCalls
+				}
+				if msg.ToolCallID != "" {
+					metaData["tool_call_id"] = msg.ToolCallID
+				}
+				meta, _ := json.Marshal(metaData)
 				model.Metadata = string(meta)
 			}
 

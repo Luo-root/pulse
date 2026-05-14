@@ -172,16 +172,21 @@ func buildSummaryPrompt(messages []*schema.Message) string {
 
 // summarizeToolResult 将工具消息简化为短文本
 func summarizeToolResult(msg *schema.Message) string {
-	if len(msg.ToolResults) == 0 {
-		return msg.Content
+	content := msg.Content
+	if content == "" {
+		return "(空)"
 	}
-	// 只取第一个结果的简略信息
-	content := msg.ToolResults[0].Content
+	// tool 消息的错误前缀已经在 ToolResultsMessage 里加好了
+	if strings.HasPrefix(content, "[Error] ") {
+		// 保留错误标记，截断内容
+		rest := content[len("[Error] "):]
+		if len(rest) > 200 {
+			rest = rest[:200] + "..."
+		}
+		return fmt.Sprintf("错误: %s", rest)
+	}
 	if len(content) > 200 {
 		content = content[:200] + "..."
-	}
-	if msg.ToolResults[0].IsError {
-		return fmt.Sprintf("错误: %s", content)
 	}
 	return content
 }

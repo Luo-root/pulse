@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Luo-root/pulse/components/schema"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -236,12 +235,12 @@ var userConfigParams = map[string]any{
 }
 
 // RegisterUserConfigTools 注册用户配置管理工具（保持不变）
-func RegisterUserConfigTools(registry *schema.ToolRegistry) {
-	registry.MustRegister(schema.ToolMetadata{
+func RegisterUserConfigTools(registry *ToolRegistry) {
+	registry.MustRegister(ToolMetadata{
 		Name:        "user_config",
 		Description: "用户配置管理工具，支持获取/设置用户偏好和运行规则，以及查看所有可用配置键",
 		Parameters:  userConfigParams,
-		Permission:  schema.PermReadWrite,
+		Permission:  PermReadWrite,
 		Category:    "config",
 		Version:     "2.0.0",
 		Tags:        []string{"config", "preference", "rules", "user", "list"},

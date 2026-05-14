@@ -50,9 +50,11 @@ func (e *defaultEstimator) Estimate(msg *schema.Message) int {
 		total += len([]rune(tc.Function.Name))
 		total += len([]rune(tc.Function.Arguments))
 	}
-	for _, tr := range msg.ToolResults {
-		total += len([]rune(tr.Content))
+
+	if msg.ToolCallID != "" {
+		total += len([]rune(msg.ToolCallID))
 	}
+
 	tokens := int(float64(total) / 1.8)
 	if tokens < 1 && total > 0 {
 		return 1

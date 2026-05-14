@@ -43,13 +43,13 @@ func WithUsageTracker(tracker *UsageTracker) AgentOption {
 // Agent  封装多轮对话（支持 Generate 和 Stream）
 type Agent struct {
 	model            chatmodel.BaseModel
-	registry         *schema.ToolRegistry
+	registry         *tools.ToolRegistry
 	memoryController *memory.Controller // 记忆控制器（可选）
 	sessionID        string             // 会话 ID（可选）
 	usageTracker     *UsageTracker      // Usage 追踪器（可选）
 }
 
-func NewAgent(model chatmodel.BaseModel, registry *schema.ToolRegistry, opts ...AgentOption) *Agent {
+func NewAgent(model chatmodel.BaseModel, registry *tools.ToolRegistry, opts ...AgentOption) *Agent {
 	ag := &Agent{
 		model:    model,
 		registry: registry,

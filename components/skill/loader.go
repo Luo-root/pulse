@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Luo-root/pulse/components/schema"
 	tools "github.com/Luo-root/pulse/components/tools"
 	"github.com/traefik/yaegi/interp"
 	"github.com/traefik/yaegi/stdlib"
@@ -50,7 +49,7 @@ func ParseSkillMarkdown(content string) (*Skill, error) {
 	}
 
 	codeBlocks := extractCodeBlocks(body)
-	var handler schema.ToolHandler
+	var handler tools.ToolHandler
 
 	if len(codeBlocks) > 0 {
 		for _, cb := range codeBlocks {
@@ -175,7 +174,7 @@ func extractCodeBlocks(content string) []CodeBlock {
 
 // compileHandler 编译 Go 代码为 ToolHandler
 // 使用 yaegi 解释器执行 Skill 代码，支持动态加载和沙箱隔离
-func compileHandler(code string) (schema.ToolHandler, error) {
+func compileHandler(code string) (tools.ToolHandler, error) {
 	i := interp.New(interp.Options{})
 	i.Use(stdlib.Symbols)
 
@@ -227,10 +226,10 @@ func Handler(ctx context.Context, args map[string]any) (any, error) {
 type SkillLoader struct {
 	loader       *tools.DynamicToolLoader
 	registry     *SkillRegistry
-	toolRegistry *schema.ToolRegistry
+	toolRegistry *tools.ToolRegistry
 }
 
-func NewSkillLoader(registry *SkillRegistry, toolRegistry *schema.ToolRegistry) *SkillLoader {
+func NewSkillLoader(registry *SkillRegistry, toolRegistry *tools.ToolRegistry) *SkillLoader {
 	return &SkillLoader{
 		loader:       tools.NewDynamicToolLoader(toolRegistry),
 		registry:     registry,
@@ -244,7 +243,7 @@ func (sl *SkillLoader) Register(skill Skill) error {
 	}
 	sl.registry.Register(&skill)
 
-	var handler schema.ToolHandler
+	var handler tools.ToolHandler
 	if skill.Type == SkillTypeCode {
 		handler = skill.Handler
 	} else {

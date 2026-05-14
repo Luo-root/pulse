@@ -17,12 +17,14 @@ const (
 )
 
 type Message struct {
-	Role             RoleType   `json:"role"`
-	Content          string     `json:"content,omitempty"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
-	Name             string     `json:"name,omitempty"`
-	Partial          bool       `json:"partial,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	Role             RoleType `json:"role"`
+	Content          string   `json:"content,omitempty"`
+	ReasoningContent string   `json:"reasoning_content,omitempty"`
+	// 消息发送者的名称（可选）
+	Name string `json:"name,omitempty"`
+	// 当设置为 true 时，表示这条消息是未完成的，模型需要继续生成这条消息的剩余内容。（可选）
+	Partial   bool       `json:"partial,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
 	// tool 消息专用：关联到哪个 ToolCall
 	ToolCallID string `json:"tool_call_id,omitempty"`
@@ -42,11 +44,11 @@ type FunctionCall struct {
 	Arguments string `json:"arguments,omitempty"`
 }
 
-// ToolResult 工具执行结果
+// ToolResult 工具执行结果（仅用于工具执行层内部传递，不作为 Message 字段）
 type ToolResult struct {
-	CallID  string `json:"call_id"`  // 对应 ToolCall.ID
-	Content string `json:"content"`  // 结果内容（JSON字符串或纯文本）
-	IsError bool   `json:"is_error"` // 是否错误（Claude支持）
+	CallID  string `json:"call_id"`
+	Content string `json:"content"`
+	IsError bool   `json:"is_error"`
 }
 
 type Usage struct {
@@ -66,11 +68,13 @@ func (m *Message) Clone() Message {
 		ToolCallID:       m.ToolCallID,
 	}
 
+	// 深拷贝切片
 	if m.ToolCalls != nil {
 		cloned.ToolCalls = make([]ToolCall, len(m.ToolCalls))
 		copy(cloned.ToolCalls, m.ToolCalls)
 	}
 
+	// 深拷贝指针
 	if m.Usage != nil {
 		cloned.Usage = &Usage{
 			PromptTokens: m.Usage.PromptTokens,
@@ -98,16 +102,16 @@ func UserMessage(content string) *Message {
 	}
 }
 
-// AssistantMessage 返回一个role为user的信息
-func AssistantMessage(content, ReasoningContent string) *Message {
+// AssistantMessage 返回一个role为assistant的信息
+func AssistantMessage(content, reasoningContent string) *Message {
 	return &Message{
 		Role:             AssistantRole,
 		Content:          content,
-		ReasoningContent: ReasoningContent,
+		ReasoningContent: reasoningContent,
 	}
 }
 
-// ToolResultsMessage 创建一条包含多个工具结果的消息
+// ToolResultsMessage 创建一组 tool 角色的消息，每个 ToolResult 对应一条独立消息
 func ToolResultsMessage(results []ToolResult) []*Message {
 	msgs := make([]*Message, 0, len(results))
 	for _, r := range results {
@@ -205,7 +209,6 @@ func (sr *StreamReader) Recv() (*Message, error) {
 }
 
 // FormatMessages 标准化格式化 []*Message 为可读字符串
-// 返回格式清晰的结构化文本，包含所有字段的详细展示
 func FormatMessages(messages []*Message) string {
 	if len(messages) == 0 {
 		return "📭 无消息"
@@ -219,12 +222,10 @@ func FormatMessages(messages []*Message) string {
 			continue
 		}
 
-		// 消息头部
 		builder.WriteString(fmt.Sprintf("%s\n", separator))
 		builder.WriteString(fmt.Sprintf("📨 消息 #%d\n", i+1))
 		builder.WriteString(fmt.Sprintf("%s\n", separator))
 
-		// 基础信息（角色、名称、是否未完成）
 		builder.WriteString(fmt.Sprintf("🎭 角色: %s", msg.Role))
 		if msg.Name != "" {
 			builder.WriteString(fmt.Sprintf(" | 🏷️ 名称: %s", msg.Name))
@@ -234,19 +235,16 @@ func FormatMessages(messages []*Message) string {
 		}
 		builder.WriteString("\n")
 
-		// 消息内容
 		content := msg.Content
 		if content == "" {
 			content = "(空)"
 		}
 		builder.WriteString(fmt.Sprintf("📝 内容:\n%s\n", indentString(content, "  ")))
 
-		// 思考内容
 		if msg.ReasoningContent != "" {
 			builder.WriteString(fmt.Sprintf("💭 思考内容:\n%s\n", indentString(msg.ReasoningContent, "  ")))
 		}
 
-		// 工具调用
 		if len(msg.ToolCalls) > 0 {
 			builder.WriteString("🔧 工具调用:\n")
 			for j, tc := range msg.ToolCalls {
@@ -266,7 +264,6 @@ func FormatMessages(messages []*Message) string {
 			builder.WriteString(fmt.Sprintf("🔗 工具调用ID: %s\n", msg.ToolCallID))
 		}
 
-		// Token 使用情况
 		if msg.Usage != nil {
 			builder.WriteString(fmt.Sprintf("💰 Token 使用: 提示=%d, 完成=%d, 总计=%d\n",
 				msg.Usage.PromptTokens, msg.Usage.Completion, msg.Usage.TotalTokens))
@@ -280,7 +277,6 @@ func FormatMessages(messages []*Message) string {
 }
 
 // PrintMessages 标准化打印 []*Message
-// 直接将格式化后的消息打印到控制台
 func PrintMessages(messages []*Message) {
 	fmt.Println(FormatMessages(messages))
 }

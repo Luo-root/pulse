@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/Luo-root/pulse/components/schema"
 )
 
 // safePath 安全路径检查：限制在工作目录内
@@ -236,34 +234,34 @@ var fileListParams = map[string]any{
 }
 
 // RegisterFileTools 注册文件工具
-func RegisterFileTools(registry *schema.ToolRegistry) {
-	registry.MustRegister(schema.ToolMetadata{
+func RegisterFileTools(registry *ToolRegistry) {
+	registry.MustRegister(ToolMetadata{
 		Name:        "file_read",
 		Description: "读取文件内容，最大10MB",
 		Parameters:  fileReadParams,
-		Permission:  schema.PermReadOnly,
+		Permission:  PermReadOnly,
 		Category:    "file",
 		Version:     "1.0.0",
 		Tags:        []string{"file", "read", "safe"},
 		Timeout:     30 * time.Second,
 	}, FileRead)
 
-	registry.MustRegister(schema.ToolMetadata{
+	registry.MustRegister(ToolMetadata{
 		Name:        "file_write",
 		Description: "写入内容到文件，自动创建父目录",
 		Parameters:  fileWriteParams,
-		Permission:  schema.PermReadWrite,
+		Permission:  PermReadWrite,
 		Category:    "file",
 		Version:     "1.0.0",
 		Tags:        []string{"file", "write"},
 		Timeout:     30 * time.Second,
 	}, FileWrite)
 
-	registry.MustRegister(schema.ToolMetadata{
+	registry.MustRegister(ToolMetadata{
 		Name:        "file_list",
 		Description: "列出目录下的文件和文件夹",
 		Parameters:  fileListParams,
-		Permission:  schema.PermReadOnly,
+		Permission:  PermReadOnly,
 		Category:    "file",
 		Version:     "1.0.0",
 		Tags:        []string{"file", "list", "safe"},
