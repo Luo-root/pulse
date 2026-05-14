@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+var SafeBaseDir = "." // 可在 init 时修改，比如 tools.SafeBaseDir = "/home/user/workspace"
+
 // safePath 安全路径检查：限制在工作目录内
 //
 // 安全策略：
@@ -115,7 +117,7 @@ func FileRead(ctx context.Context, args map[string]any) (any, error) {
 	}
 
 	// 安全路径检查
-	safePath, err := safePath(".", path)
+	safePath, err := safePath(SafeBaseDir, path)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +155,7 @@ func FileWrite(ctx context.Context, args map[string]any) (any, error) {
 	}
 
 	// 安全路径检查
-	safePath, err := safePath(".", path)
+	safePath, err := safePath(SafeBaseDir, path)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +181,7 @@ func FileList(ctx context.Context, args map[string]any) (any, error) {
 	}
 
 	// 安全路径检查
-	safeDir, err := safePath(".", dir)
+	safeDir, err := safePath(SafeBaseDir, dir)
 	if err != nil {
 		return nil, err
 	}

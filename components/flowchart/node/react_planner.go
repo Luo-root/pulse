@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/Luo-root/pulse/components/agent"
-	"github.com/Luo-root/pulse/components/schema"
+	"github.com/Luo-root/pulse/components/flow"
 )
 
 // NewReActPlannerNode 创建 ReAct 规划节点
@@ -27,7 +27,7 @@ func NewReActPlannerNode(
 		id,
 		[]string{userGoal},
 		[]string{planName},
-		func(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error) {
+		func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
 			get, err := ctx.Get(userGoal)
 			if err != nil {
 				return nil, err
@@ -68,7 +68,7 @@ func ScheduleLoopNode(
 		id,
 		[]string{planName},
 		[]string{finalAnswer},
-		func(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error) {
+		func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
 			baseCtx := ctx.GetContext()
 
 			// 获取初始计划
@@ -141,6 +141,11 @@ func ScheduleLoopNode(
 					ctx.SetOrUpdate(finalAnswer, (*baseCtx).Err().Error())
 					return nil, (*baseCtx).Err()
 				}
+			}
+
+			if plan.IsAllCompleted() {
+				result := synthesizeResult(plan)
+				return map[string]any{finalAnswer: result}, nil
 			}
 
 			return nil, nil
@@ -296,9 +301,11 @@ func RePlan(ctx context.Context, plan *Plan, failedTask *Task, agent agent.Agent
 	if err := json.Unmarshal([]byte(resp.Content), &newPlan); err != nil {
 		// 解析失败：保留原计划，重置失败任务状态
 		newPlan = &Plan{
-			Goal:  plan.Goal,
-			mu:    &sync.Mutex{},
-			Tasks: make([]Task, len(plan.Tasks)),
+			Goal:         plan.Goal,
+			mu:           &sync.Mutex{},
+			Tasks:        make([]Task, len(plan.Tasks)),
+			stateChanged: make(chan struct{}, 1),
+			cond:         sync.NewCond(&sync.Mutex{}),
 		}
 		copy(newPlan.Tasks, plan.Tasks)
 

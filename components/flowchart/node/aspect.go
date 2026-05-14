@@ -1,17 +1,17 @@
 package node
 
 import (
-	"github.com/Luo-root/pulse/components/schema"
+	"github.com/Luo-root/pulse/components/flow"
 )
 
 // Aspect 切面接口
 // 对应你要的三种类型
 type Aspect interface {
 	// Before 节点执行前调用
-	Before(ctx *schema.FlowContext, node Node)
+	Before(ctx *flow.FlowContext, node Node)
 
 	// After 节点执行后调用
-	After(ctx *schema.FlowContext, node Node, err error)
+	After(ctx *flow.FlowContext, node Node, err error)
 }
 
 // Interceptor 是能够拦截节点执行的切面（AOP 增强）
@@ -22,39 +22,39 @@ type Interceptor interface {
 	// Around 包装节点执行，构建洋葱调用链
 	// next: 调用下一个拦截器或实际节点执行
 	// 返回: 节点输出和错误
-	Around(ctx *schema.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error)
+	Around(ctx *flow.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error)
 }
 
 // BeforeAspect 简易实现：只执行 Before
 type BeforeAspect struct {
-	Fn func(ctx *schema.FlowContext, node Node)
+	Fn func(ctx *flow.FlowContext, node Node)
 }
 
-func (a *BeforeAspect) Before(ctx *schema.FlowContext, node Node) {
+func (a *BeforeAspect) Before(ctx *flow.FlowContext, node Node) {
 	a.Fn(ctx, node)
 }
-func (a *BeforeAspect) After(ctx *schema.FlowContext, node Node, err error) {}
+func (a *BeforeAspect) After(ctx *flow.FlowContext, node Node, err error) {}
 
 // AfterAspect 简易实现：只执行 After
 type AfterAspect struct {
-	Fn func(ctx *schema.FlowContext, node Node, err error)
+	Fn func(ctx *flow.FlowContext, node Node, err error)
 }
 
-func (a *AfterAspect) Before(ctx *schema.FlowContext, node Node)           {}
-func (a *AfterAspect) After(ctx *schema.FlowContext, node Node, err error) { a.Fn(ctx, node, err) }
+func (a *AfterAspect) Before(ctx *flow.FlowContext, node Node)           {}
+func (a *AfterAspect) After(ctx *flow.FlowContext, node Node, err error) { a.Fn(ctx, node, err) }
 
 // AroundAspect 简易实现：前后都执行
 type AroundAspect struct {
-	BeforeFn func(ctx *schema.FlowContext, node Node)
-	AfterFn  func(ctx *schema.FlowContext, node Node, err error)
+	BeforeFn func(ctx *flow.FlowContext, node Node)
+	AfterFn  func(ctx *flow.FlowContext, node Node, err error)
 }
 
-func (a *AroundAspect) Before(ctx *schema.FlowContext, node Node) {
+func (a *AroundAspect) Before(ctx *flow.FlowContext, node Node) {
 	if a.BeforeFn != nil {
 		a.BeforeFn(ctx, node)
 	}
 }
-func (a *AroundAspect) After(ctx *schema.FlowContext, node Node, err error) {
+func (a *AroundAspect) After(ctx *flow.FlowContext, node Node, err error) {
 	if a.AfterFn != nil {
 		a.AfterFn(ctx, node, err)
 	}

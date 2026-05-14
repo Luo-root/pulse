@@ -1,17 +1,19 @@
-package schema
+package stream
 
 import (
 	"context"
 	"io"
 	"sync"
 	"time"
+
+	"github.com/Luo-root/pulse/components/schema"
 )
 
 // MulticastController 多播控制器，管理源流到多个子流的分发
 // 提供优雅关闭、错误传播、背压控制等生产级特性
 type MulticastController struct {
-	source     *StreamReader
-	readers    []*StreamReader
+	source     *schema.StreamReader
+	readers    []*schema.StreamReader
 	mu         sync.RWMutex
 	closed     bool
 	err        error
@@ -21,7 +23,7 @@ type MulticastController struct {
 }
 
 // NewMulticastController 创建多播控制器
-func NewMulticastController(source *StreamReader, bufferSize int) *MulticastController {
+func NewMulticastController(source *schema.StreamReader, bufferSize int) *MulticastController {
 	if bufferSize <= 0 {
 		bufferSize = 16
 	}
@@ -33,7 +35,7 @@ func NewMulticastController(source *StreamReader, bufferSize int) *MulticastCont
 
 // Fork 创建 N 个子流，返回可独立读取的 StreamReader 列表
 // 子流通过内部缓冲实现背压隔离，慢消费者不会影响其他消费者
-func (mc *MulticastController) Fork(n int) []*StreamReader {
+func (mc *MulticastController) Fork(n int) []*schema.StreamReader {
 	if n <= 0 {
 		return nil
 	}
@@ -43,17 +45,17 @@ func (mc *MulticastController) Fork(n int) []*StreamReader {
 
 	if mc.closed {
 		// 已关闭时返回已关闭的reader
-		readers := make([]*StreamReader, n)
+		readers := make([]*schema.StreamReader, n)
 		for i := range readers {
-			readers[i] = NewStreamReaderWithBuffer(1)
+			readers[i] = schema.NewStreamReaderWithBuffer(1)
 			readers[i].Close()
 		}
 		return readers
 	}
 
-	readers := make([]*StreamReader, n)
+	readers := make([]*schema.StreamReader, n)
 	for i := range readers {
-		readers[i] = NewStreamReaderWithBuffer(mc.bufferSize)
+		readers[i] = schema.NewStreamReaderWithBuffer(mc.bufferSize)
 	}
 	mc.readers = append(mc.readers, readers...)
 
@@ -92,7 +94,7 @@ func (mc *MulticastController) forwardLoop(ctx context.Context) {
 
 		// 获取当前所有reader的快照
 		mc.mu.RLock()
-		readers := make([]*StreamReader, len(mc.readers))
+		readers := make([]*schema.StreamReader, len(mc.readers))
 		copy(readers, mc.readers)
 		mc.mu.RUnlock()
 
@@ -101,7 +103,7 @@ func (mc *MulticastController) forwardLoop(ctx context.Context) {
 		}
 
 		// 克隆消息给每个子流
-		cloned := make([]Message, len(readers))
+		cloned := make([]schema.Message, len(readers))
 		for i := range readers {
 			cloned[i] = msg.Clone()
 		}
@@ -113,40 +115,31 @@ func (mc *MulticastController) forwardLoop(ctx context.Context) {
 
 // broadcast 向所有子流广播消息，每个子流独立超时控制
 // 超时的子流会被标记错误并关闭，不影响其他子流
-func (mc *MulticastController) broadcast(readers []*StreamReader, msgs []Message, timeout time.Duration) {
+func (mc *MulticastController) broadcast(readers []*schema.StreamReader, msgs []schema.Message, timeout time.Duration) {
 	n := len(readers)
 	if n == 0 {
 		return
 	}
-
 	var wg sync.WaitGroup
 	wg.Add(n)
-
 	for i := range readers {
 		go func(idx int) {
 			defer wg.Done()
-
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
-
-			select {
-			case readers[idx].streamChan <- msgs[idx]:
-				// 发送成功
-			case <-ctx.Done():
-				// 超时：设置错误并关闭该子流
+			ok := readers[idx].SendWithContext(ctx, msgs[idx])
+			if !ok {
 				readers[idx].SetError(context.DeadlineExceeded)
 				readers[idx].Close()
-				// 从控制器中移除该子流
 				mc.removeReader(readers[idx])
 			}
 		}(i)
 	}
-
 	wg.Wait()
 }
 
 // removeReader 从控制器中移除指定子流
-func (mc *MulticastController) removeReader(r *StreamReader) {
+func (mc *MulticastController) removeReader(r *schema.StreamReader) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 

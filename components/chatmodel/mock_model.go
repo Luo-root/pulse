@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Luo-root/pulse/components/schema"
+	"github.com/Luo-root/pulse/components/stream"
 )
 
 // MockResponse 定义 Mock 模型的响应行为
@@ -235,7 +236,7 @@ func (m *MockModel) Stream(ctx context.Context, input []*schema.Message) (*schem
 	}
 
 	// 创建流式读取器，模拟逐字输出
-	reader, writer := schema.PipeStreamReader()
+	reader, writer := stream.PipeStreamReader()
 
 	go func() {
 		defer writer.Close()

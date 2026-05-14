@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -160,6 +161,17 @@ func NewStreamReaderWithBuffer(bufSize int) *StreamReader {
 
 func (sr *StreamReader) Send(msg Message) {
 	sr.streamChan <- msg
+}
+
+// SendWithContext 带上下文的发送，可被取消或超时实现超时控制
+// 返回 true 表示发送成功，false 表示被取消
+func (sr *StreamReader) SendWithContext(ctx context.Context, msg Message) bool {
+	select {
+	case sr.streamChan <- msg:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // SetError 内部设置错误

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/Luo-root/pulse/components/schema"
+	"github.com/Luo-root/pulse/components/flow"
 )
 
 // TopologicalNode 拓扑排序节点包装器
@@ -232,8 +232,7 @@ func (tn *TopologicalNode) AddAspect(aspect Aspect) {
 //   - 按拓扑分层，每层内部节点并行执行（通过 goroutine）
 //   - 层间串行：前一层全部完成后，后一层才能开始
 //   - 节点通过 ctx.WaitAll 等待自己的输入就绪（来自前一层节点的输出或外部输入）
-func (tn *TopologicalNode) Run(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error) {
-	// 将外部输入注入到 FlowContext
+func (tn *TopologicalNode) Run(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
 	for k, v := range inputs {
 		ctx.SetOrUpdate(k, v)
 	}
@@ -243,10 +242,10 @@ func (tn *TopologicalNode) Run(ctx *schema.FlowContext, inputs map[string]any) (
 		nodeMap[n.ID()] = n
 	}
 
-	// 按层执行
 	for layerIdx, layer := range tn.layers {
 		var wg sync.WaitGroup
-		errChan := make(chan error, len(layer))
+		var mu sync.Mutex
+		var errs []error
 
 		for _, nodeID := range layer {
 			n := nodeMap[nodeID]
@@ -254,23 +253,28 @@ func (tn *TopologicalNode) Run(ctx *schema.FlowContext, inputs map[string]any) (
 			go func(node Node) {
 				defer wg.Done()
 
-				// 等待该节点的所有输入就绪
-				// 对于第一层节点，输入可能来自外部（已注入到ctx）
-				// 对于后续层节点，输入来自前一层节点的输出（已在ctx中设置）
+				// 快速失败：检查是否已被取消
+				if err := ctx.Err(); err != nil {
+					return
+				}
+
 				nodeInputs, err := ctx.WaitAll(node.Inputs()...)
 				if err != nil {
-					errChan <- fmt.Errorf("node %s wait inputs failed: %w", node.ID(), err)
+					mu.Lock()
+					errs = append(errs, fmt.Errorf("node %s wait inputs: %w", node.ID(), err))
+					mu.Unlock()
 					return
 				}
 
-				// 执行节点
 				outputs, err := node.Run(ctx, nodeInputs)
 				if err != nil {
-					errChan <- fmt.Errorf("node %s run failed: %w", node.ID(), err)
+					ctx.Cancel(err) // 通知其他节点
+					mu.Lock()
+					errs = append(errs, fmt.Errorf("node %s run: %w", node.ID(), err))
+					mu.Unlock()
 					return
 				}
 
-				// 将输出写入 FlowContext，供下游节点消费
 				if outputs != nil {
 					for k, v := range outputs {
 						ctx.SetOrUpdate(k, v)
@@ -279,21 +283,14 @@ func (tn *TopologicalNode) Run(ctx *schema.FlowContext, inputs map[string]any) (
 			}(n)
 		}
 
-		// 等待当前层所有节点完成
 		wg.Wait()
-		close(errChan)
 
-		// 检查当前层是否有错误
-		var errs []error
-		for err := range errChan {
-			errs = append(errs, err)
-		}
 		if len(errs) > 0 {
 			return nil, fmt.Errorf("layer %d execution failed: %w", layerIdx, errs[0])
 		}
 	}
 
-	// 收集最终输出
+	// 收集输出
 	result := make(map[string]any)
 	for _, outKey := range tn.outputs {
 		val, err := ctx.Get(outKey)

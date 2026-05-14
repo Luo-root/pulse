@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Luo-root/pulse/components/schema"
+	"github.com/Luo-root/pulse/components/flow"
 )
 
 // ============================================================================
@@ -30,10 +30,10 @@ func NewRetryInterceptor(maxAttempts int, delay time.Duration) *RetryInterceptor
 	}
 }
 
-func (r *RetryInterceptor) Before(ctx *schema.FlowContext, node Node)           {}
-func (r *RetryInterceptor) After(ctx *schema.FlowContext, node Node, err error) {}
+func (r *RetryInterceptor) Before(ctx *flow.FlowContext, node Node)           {}
+func (r *RetryInterceptor) After(ctx *flow.FlowContext, node Node, err error) {}
 
-func (r *RetryInterceptor) Around(ctx *schema.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
+func (r *RetryInterceptor) Around(ctx *flow.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
 	var out map[string]any
 	var err error
 	for i := 0; i < r.MaxAttempts; i++ {
@@ -65,25 +65,27 @@ func NewTimeoutInterceptor(timeout time.Duration) *TimeoutInterceptor {
 	return &TimeoutInterceptor{Timeout: timeout}
 }
 
-func (t *TimeoutInterceptor) Before(ctx *schema.FlowContext, node Node)           {}
-func (t *TimeoutInterceptor) After(ctx *schema.FlowContext, node Node, err error) {}
+func (t *TimeoutInterceptor) Before(ctx *flow.FlowContext, node Node)           {}
+func (t *TimeoutInterceptor) After(ctx *flow.FlowContext, node Node, err error) {}
 
-func (t *TimeoutInterceptor) Around(ctx *schema.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
+func (t *TimeoutInterceptor) Around(ctx *flow.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
 	type result struct {
 		out map[string]any
 		err error
 	}
-	// 使用缓冲 channel，防止超时后 goroutine 泄漏阻塞
 	done := make(chan result, 1)
 	go func() {
 		out, err := next()
 		done <- result{out, err}
 	}()
 
+	timer := time.NewTimer(t.Timeout)
+	defer timer.Stop()
+
 	select {
 	case r := <-done:
 		return r.out, r.err
-	case <-time.After(t.Timeout):
+	case <-timer.C:
 		return nil, fmt.Errorf("node %s execution timeout after %v", node.ID(), t.Timeout)
 	}
 }
@@ -115,7 +117,7 @@ type CircuitBreakerInterceptor struct {
 	HalfOpenMaxCalls int // 半开时最多允许的试探次数，达到即关闭
 
 	// FallbackFunc 降级函数，熔断时调用。若 nil，则返回错误。
-	FallbackFunc func(ctx *schema.FlowContext, node Node) (map[string]any, error)
+	FallbackFunc func(ctx *flow.FlowContext, node Node) (map[string]any, error)
 }
 
 // NewCircuitBreakerInterceptor 创建熔断拦截器
@@ -130,10 +132,10 @@ func NewCircuitBreakerInterceptor(threshold int, timeout time.Duration) *Circuit
 	}
 }
 
-func (cb *CircuitBreakerInterceptor) Before(ctx *schema.FlowContext, node Node)           {}
-func (cb *CircuitBreakerInterceptor) After(ctx *schema.FlowContext, node Node, err error) {}
+func (cb *CircuitBreakerInterceptor) Before(ctx *flow.FlowContext, node Node)           {}
+func (cb *CircuitBreakerInterceptor) After(ctx *flow.FlowContext, node Node, err error) {}
 
-func (cb *CircuitBreakerInterceptor) Around(ctx *schema.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
+func (cb *CircuitBreakerInterceptor) Around(ctx *flow.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
 	if !cb.allow() {
 		if cb.FallbackFunc != nil {
 			return cb.FallbackFunc(ctx, node)
@@ -215,18 +217,18 @@ func (cb *CircuitBreakerInterceptor) recordResult(err error) {
 type RecoveryInterceptor struct {
 	// FallbackFunc 兜底函数，接收 panic 值，返回兜底结果。
 	// 若 nil，则 panic 被转为 error 返回。
-	FallbackFunc func(ctx *schema.FlowContext, node Node, recoverVal any) (map[string]any, error)
+	FallbackFunc func(ctx *flow.FlowContext, node Node, recoverVal any) (map[string]any, error)
 }
 
 // NewRecoveryInterceptor 创建兜底拦截器
-func NewRecoveryInterceptor(fallback func(ctx *schema.FlowContext, node Node, recoverVal any) (map[string]any, error)) *RecoveryInterceptor {
+func NewRecoveryInterceptor(fallback func(ctx *flow.FlowContext, node Node, recoverVal any) (map[string]any, error)) *RecoveryInterceptor {
 	return &RecoveryInterceptor{FallbackFunc: fallback}
 }
 
-func (r *RecoveryInterceptor) Before(ctx *schema.FlowContext, node Node)           {}
-func (r *RecoveryInterceptor) After(ctx *schema.FlowContext, node Node, err error) {}
+func (r *RecoveryInterceptor) Before(ctx *flow.FlowContext, node Node)           {}
+func (r *RecoveryInterceptor) After(ctx *flow.FlowContext, node Node, err error) {}
 
-func (r *RecoveryInterceptor) Around(ctx *schema.FlowContext, node Node, next func() (map[string]any, error)) (outputs map[string]any, err error) {
+func (r *RecoveryInterceptor) Around(ctx *flow.FlowContext, node Node, next func() (map[string]any, error)) (outputs map[string]any, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			if r.FallbackFunc != nil {

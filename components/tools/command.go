@@ -9,44 +9,39 @@ import (
 	"time"
 )
 
-// 预编译危险命令正则（提升性能）
+// 预编译危险命令正则
+// 策略：只拦截明确的破坏性操作，不拦截 shell 操作符
 var dangerousPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)^rm\s+-rf`),
-	regexp.MustCompile(`(?i)mkfs\s+`),
-	regexp.MustCompile(`(?i)dd\s+if=/dev/zero`),
-	regexp.MustCompile(`(?i)^rd\s+/s`),
-	regexp.MustCompile(`(?i)^del\s+/s`),
-	regexp.MustCompile(`;`),
-	regexp.MustCompile(`&&`),
-	regexp.MustCompile(`\|\|`),
+	regexp.MustCompile(`(?i)\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|.*\s+)(/|[a-zA-Z]:\\)`), // rm -f / 或 rm C:\
+	regexp.MustCompile(`(?i)\bmkfs\b`),
+	regexp.MustCompile(`(?i)\bdd\s+if=/dev/(zero|random)\s+of=/dev/`),
+	regexp.MustCompile(`(?i)\brd\s+/s\s+/q\b`), // rd /s /q (Windows 强制删除目录)
+	regexp.MustCompile(`(?i)\bdel\s+/[sfq]\b`), // del /s /f /q
+	regexp.MustCompile(`(?i)shutdown\b`),
+	regexp.MustCompile(`(?i)format\s+[a-zA-Z]:`), // format C:
 }
 
-// CommandExec 执行命令（带超时+跨平台+安全检查）
 func CommandExec(ctx context.Context, args map[string]any) (any, error) {
-	// 1. 安全校验参数
 	command, ok := args["command"].(string)
 	if !ok || command == "" {
 		return nil, fmt.Errorf("command must be a non-empty string")
 	}
 
-	// 2. 危险命令检查
+	// 危险命令检查
 	for _, pat := range dangerousPatterns {
 		if pat.MatchString(command) {
 			return nil, fmt.Errorf("dangerous command blocked: %s", command)
 		}
 	}
 
-	// 3. 解析超时
 	timeoutSec := 30.0
 	if t, ok := args["timeout"].(float64); ok && t > 0 {
 		timeoutSec = t
 	}
 
-	// 4. 创建带超时的 context
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	// 5. 跨平台选择 shell
 	shell := "sh"
 	shellArg := "-c"
 	if runtime.GOOS == "windows" {
@@ -55,15 +50,17 @@ func CommandExec(ctx context.Context, args map[string]any) (any, error) {
 	}
 	cmd := exec.CommandContext(ctx, shell, shellArg, command)
 
-	// 6. 可选：设置工作目录
+	// 安全检查 cwd
 	if cwd, ok := args["cwd"].(string); ok && cwd != "" {
-		cmd.Dir = cwd
+		safeDir, err := safePath(".", cwd)
+		if err != nil {
+			return nil, fmt.Errorf("cwd access denied: %w", err)
+		}
+		cmd.Dir = safeDir
 	}
 
-	// 7. 执行命令
 	output, err := cmd.CombinedOutput()
 
-	// 8. 封装结果
 	result := map[string]any{
 		"command": command,
 		"output":  string(output),
@@ -80,26 +77,23 @@ func CommandExec(ctx context.Context, args map[string]any) (any, error) {
 		result["status"] = "success"
 	}
 
-	// 始终返回结果，让模型决定如何处理错误
 	return result, nil
 }
 
-// commandExecParams command_exec 参数定义
 var commandExecParams = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
 		"command": map[string]any{"type": "string", "description": "要执行的命令（必填）"},
 		"timeout": map[string]any{"type": "number", "description": "超时时间（秒），默认30"},
-		"cwd":     map[string]any{"type": "string", "description": "命令执行的工作目录（可选）"},
+		"cwd":     map[string]any{"type": "string", "description": "命令执行的工作目录（可选，需在安全目录内）"},
 	},
 	"required": []string{"command"},
 }
 
-// RegisterCommandTools 注册命令工具
 func RegisterCommandTools(registry *ToolRegistry) {
 	registry.MustRegister(ToolMetadata{
 		Name:        "command_exec",
-		Description: "执行系统命令（支持 Windows/Linux/macOS），返回输出结果",
+		Description: "执行系统命令（支持 Windows/Linux/macOS），返回输出结果。危险操作会被拦截",
 		Parameters:  commandExecParams,
 		Permission:  PermDangerous,
 		Category:    "system",

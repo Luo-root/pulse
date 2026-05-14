@@ -11,7 +11,9 @@ import (
 
 // UsageRecord 单次模型调用的使用记录
 type UsageRecord struct {
-	PromptTokens     uint64        `json:"prompt_tokens"`
+	// PromptTokens 输入 Token 数
+	PromptTokens uint64 `json:"prompt_tokens"`
+	// CompletionTokens 输出 Token 数（对应 schema.Usage.Completion）
 	CompletionTokens uint64        `json:"completion_tokens"`
 	TotalTokens      uint64        `json:"total_tokens"`
 	CachedTokens     uint64        `json:"cached_tokens,omitempty"`

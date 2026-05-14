@@ -1,4 +1,4 @@
-package schema
+package flow
 
 import (
 	"context"
@@ -12,12 +12,20 @@ type DataSlot struct {
 	value any
 	cond  *sync.Cond
 	ready bool
+	// 首次 SetOnce 时 close
+	done chan struct{}
 }
 
 func NewDataSlot() *DataSlot {
 	return &DataSlot{
 		cond: sync.NewCond(&sync.Mutex{}),
+		done: make(chan struct{}),
 	}
+}
+
+// Done 返回通知 channel，值被设置时会被 close
+func (s *DataSlot) Done() <-chan struct{} {
+	return s.done
 }
 
 // SetOnce 首次写入值（幂等：如果已设置则忽略，不报错）
@@ -33,6 +41,7 @@ func (s *DataSlot) SetOnce(value any) {
 	s.value = value
 	s.ready = true
 	s.cond.Broadcast()
+	close(s.done)
 }
 
 // SetOrUpdate 写入或更新值（始终覆盖，唤醒等待者）
@@ -42,17 +51,14 @@ func (s *DataSlot) SetOrUpdate(value any) {
 	s.cond.L.Lock()
 	defer s.cond.L.Unlock()
 
-	wasReady := s.ready
 	s.value = value
-	s.ready = true
 
-	// 如果是首次设置，或更新值，都广播唤醒等待者
-	// 更新时广播可确保任何在检查 ready 和 Wait 之间的竞态都能被处理
+	if !s.ready {
+		s.ready = true
+		close(s.done)
+	}
+
 	s.cond.Broadcast()
-
-	// 如果之前未就绪，现在刚设置，不需要额外处理
-	// 如果之前已就绪，现在更新，Broadcast 确保新值能被感知
-	_ = wasReady
 }
 
 // Set 写入值（唤醒所有等待者）

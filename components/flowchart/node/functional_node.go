@@ -3,10 +3,13 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Luo-root/pulse/components/chatmodel"
+	"github.com/Luo-root/pulse/components/flow"
 	"github.com/Luo-root/pulse/components/schema"
+	"github.com/Luo-root/pulse/components/stream"
 )
 
 // NewConditionNode 创建【条件判断节点】
@@ -22,19 +25,18 @@ func NewConditionNode(
 	trueKey string,
 	falseKey string,
 ) *SimpleNode {
-	// 复用 SimpleNode
 	return NewNode(
 		id,
 		[]string{inputKey},
 		[]string{trueKey, falseKey},
-		func(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error) {
+		func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
 			val := inputs[inputKey]
-			if condition(val) {
-				// 条件成立：只给 trueKey 赋值
-				return map[string]any{trueKey: val}, nil
-			}
-			// 条件不成立：只给 falseKey 赋值
-			return map[string]any{falseKey: val}, nil
+			match := condition(val)
+			// 两个 key 都设置：match 表示条件是否成立
+			return map[string]any{
+				trueKey:  match,
+				falseKey: !match,
+			}, nil
 		},
 	)
 }
@@ -56,8 +58,8 @@ type LoopConfig struct {
 func NewLoopNode(
 	id string,
 	controlKey string,
-	condition func(ctx *schema.FlowContext) bool, // 循环条件：true继续，false退出
-	loopBody func(ctx *schema.FlowContext), // 循环体逻辑
+	condition func(ctx *flow.FlowContext) bool, // 循环条件：true继续，false退出
+	loopBody func(ctx *flow.FlowContext), // 循环体逻辑
 	outputKey string, // 循环结束输出key
 	config *LoopConfig,
 ) *SimpleNode {
@@ -88,7 +90,7 @@ func NewLoopNode(
 		[]string{outputKey},
 
 		// 核心：循环执行逻辑
-		func(flowCtx *schema.FlowContext, inputs map[string]any) (map[string]any, error) {
+		func(flowCtx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
 			// 确保在函数退出时调用 cancel
 			defer cancel()
 
@@ -100,23 +102,23 @@ func NewLoopNode(
 				case <-ctx.Done():
 					// 区分超时和其他取消原因
 					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-						result := schema.NewLoopTimeoutResult(iteration)
+						result := flow.NewLoopTimeoutResult(iteration)
 						return map[string]any{
 							outputKey: result,
-						}, schema.ErrLoopTimeout
+						}, flow.ErrLoopTimeout
 					}
 
 					// 其他取消原因（手动取消、父context取消等）
-					result := schema.NewLoopCancelledResult(iteration, ctx.Err())
+					result := flow.NewLoopCancelledResult(iteration, ctx.Err())
 					return map[string]any{
 						outputKey: result,
-					}, schema.ErrLoopCancelled
+					}, flow.ErrLoopCancelled
 				default:
 				}
 
 				// 检查最大循环次数
 				if config.MaxIterations > 0 && iteration >= config.MaxIterations {
-					result := schema.NewLoopMaxIterationsResult(config.MaxIterations, iteration)
+					result := flow.NewLoopMaxIterationsResult(config.MaxIterations, iteration)
 					return map[string]any{
 						outputKey: result,
 					}, nil
@@ -125,7 +127,7 @@ func NewLoopNode(
 				// 检查循环条件
 				if !condition(flowCtx) {
 					// 条件不满足，退出循环（正常完成）
-					result := schema.NewLoopCompletedResult(iteration)
+					result := flow.NewLoopCompletedResult(iteration)
 					return map[string]any{
 						outputKey: result,
 					}, nil
@@ -151,15 +153,16 @@ func NewParallelNode(
 ) *SimpleNode {
 	return NewNode(
 		id,
-		waitKeys,            // 输入：所有要并行等待的key
-		[]string{outputKey}, // 输出：完成信号
-		// 核心逻辑：WaitAll 已经自动并行等待所有值
-		func(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error) {
-			// 所有输入都已经在 WaitAll 里等待完成了
-			// 走到这里 = 全部并行结束
-			return map[string]any{
-				outputKey: "complete",
-			}, nil
+		waitKeys,
+		[]string{outputKey},
+		func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
+			// 透传所有输入，附加一个完成标记
+			merged := make(map[string]any, len(inputs)+1)
+			for k, v := range inputs {
+				merged[k] = v
+			}
+			merged["__parallel_complete"] = true
+			return map[string]any{outputKey: merged}, nil
 		},
 	)
 }
@@ -173,35 +176,30 @@ func NewParallelNode(
 func NewLLMStreamNode(
 	id string,
 	promptKey string,
-	OutputKey string,
+	outputKey string,
 	model chatmodel.BaseModel,
 	copies uint,
 ) *SimpleNode {
-
 	return NewNode(
 		id,
 		[]string{promptKey},
-		[]string{OutputKey},
+		[]string{outputKey},
+		func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
+			prompt, ok := inputs[promptKey].(string)
+			if !ok {
+				return nil, fmt.Errorf("node %s: input %q is not a string, got %T", id, promptKey, inputs[promptKey])
+			}
 
-		func(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error) {
-
-			prompt := inputs[promptKey].(string)
 			msgs := []*schema.Message{{Role: "user", Content: prompt}}
-
-			streamReader, err := model.Stream(context.Background(), msgs)
+			streamReader, err := model.Stream(*ctx.GetContext(), msgs)
 			if err != nil {
 				return nil, err
 			}
 
-			// 使用 MulticastController
-			mc := schema.NewMulticastController(streamReader, 16)
-			multicastReaders := mc.Fork(int(copies))
+			mc := stream.NewMulticastController(streamReader, 16)
+			readers := mc.Fork(int(copies))
 
-			// 输出【多播后的流列表】
-			// 下游节点可安全读取，不会抢数据
-			return map[string]any{
-				OutputKey: multicastReaders,
-			}, nil
+			return map[string]any{outputKey: readers}, nil
 		},
 	)
 }

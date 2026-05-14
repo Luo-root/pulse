@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/Luo-root/pulse/components/agent"
-	"github.com/Luo-root/pulse/components/schema"
+	"github.com/Luo-root/pulse/components/flow"
 )
 
 // BatchNewTaskNode 批量创建任务节点（保留兼容）
@@ -20,23 +20,6 @@ func BatchNewTaskNode(plannerNodeID string, plan *Plan, agent agent.AgentInterfa
 		taskNodes = append(taskNodes, NewTaskNode(plannerNodeID, task, agent))
 	}
 	return taskNodes
-}
-
-// BatchNewTaskNodeWithTopo 批量创建任务节点并包装为拓扑排序节点
-// 这是推荐的用法，自动解析任务依赖并按拓扑序执行
-func BatchNewTaskNodeWithTopo(plannerNodeID string, plan *Plan, agent agent.AgentInterface, outputKeys []string) (*TopologicalNode, error) {
-	nodes := BatchNewTaskNode(plannerNodeID, plan, agent)
-	if len(nodes) == 0 {
-		return nil, fmt.Errorf("no tasks in plan")
-	}
-
-	// 将 SimpleNode 转为 Node 接口
-	nodeList := make([]Node, len(nodes))
-	for i, n := range nodes {
-		nodeList[i] = n
-	}
-
-	return NewTopologicalNode(fmt.Sprintf("%s_topo", plannerNodeID), nodeList, outputKeys)
 }
 
 func buildOutputExample(outputs []string) string {
@@ -59,22 +42,20 @@ func NewTaskNode(plannerNodeID string, task Task, agent agent.AgentInterface) *S
 		task.ID,
 		allInputs,
 		task.Outputs,
-		func(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error) {
-			plan, err := ctx.Get(planName)
-			if err != nil {
-				return nil, err
+		func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
+			planVal, ok := inputs[planName]
+			if !ok {
+				return nil, fmt.Errorf("task %s: plan %s not found in inputs", task.ID, planName)
 			}
-			planVal := plan.(*Plan)
-			taskStateModifyRunning(planVal, task.ID)
-			// 使用 SetOrUpdate 确保计划状态变更能被正确传播
-			ctx.SetOrUpdate(planName, plan)
+			plan, ok := planVal.(*Plan)
+			if !ok {
+				return nil, fmt.Errorf("task %s: plan %s has wrong type %T", task.ID, planName, planVal)
+			}
+			taskStateModifyRunning(plan, task.ID)
+
 			var inputsInfo []string
 			for _, input := range allInputs {
-				get, err := ctx.Get(input)
-				if err != nil {
-					return nil, err
-				}
-				inputsInfo = append(inputsInfo, fmt.Sprintf("%s: %v", input, get))
+				inputsInfo = append(inputsInfo, fmt.Sprintf("%s: %v", input, inputs[input]))
 			}
 			inputsInfoStr := strings.Join(inputsInfo, "\n")
 
@@ -100,8 +81,8 @@ func NewTaskNode(plannerNodeID string, task Task, agent agent.AgentInterface) *S
 `, task.ID, task.Description, inputsInfoStr, buildOutputExample(task.Outputs))
 			resp, err := agent.Send(*ctx.GetContext(), prompt)
 			if err != nil {
-				taskStateModifyFailed(planVal, task.ID)
-				taskModifyError(planVal, task.ID, err.Error())
+				taskStateModifyFailed(plan, task.ID)
+				taskModifyError(plan, task.ID, err.Error())
 				// 使用 SetOrUpdate 确保计划状态变更能被正确传播
 				ctx.SetOrUpdate(planName, plan)
 				return nil, err
@@ -109,15 +90,15 @@ func NewTaskNode(plannerNodeID string, task Task, agent agent.AgentInterface) *S
 
 			result, err := parseDynamicJSON(resp.Content)
 			if err != nil {
-				taskStateModifyFailed(planVal, task.ID)
-				taskModifyError(planVal, task.ID, err.Error())
+				taskStateModifyFailed(plan, task.ID)
+				taskModifyError(plan, task.ID, err.Error())
 				// 使用 SetOrUpdate 确保计划状态变更能被正确传播
 				ctx.SetOrUpdate(planName, plan)
 				return nil, err
 			}
 
-			taskModifyResult(planVal, task.ID, result)
-			taskStateModifySuccess(planVal, task.ID)
+			taskModifyResult(plan, task.ID, result)
+			taskStateModifySuccess(plan, task.ID)
 			// 使用 SetOrUpdate 确保计划状态变更能被正确传播
 			ctx.SetOrUpdate(planName, plan)
 			return result, nil

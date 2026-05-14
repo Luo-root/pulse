@@ -11,31 +11,82 @@ import (
 	"time"
 )
 
-// WebSearch 真实联网搜索（基于 Serper.dev Google 搜索）
-func WebSearch(ctx context.Context, args map[string]any) (any, error) {
-	// 1. 参数校验
-	query, ok := args["query"].(string)
-	if !ok || query == "" {
-		return nil, fmt.Errorf("query must be a non-empty string")
+// SearchProvider 搜索提供商接口
+type SearchProvider interface {
+	Search(ctx context.Context, query string, opts SearchOptions) (*SearchResult, error)
+}
+
+// SearchOptions 搜索选项
+type SearchOptions struct {
+	Count int
+	GL    string
+	HL    string
+}
+
+// SearchResult 搜索结果
+type SearchResult struct {
+	Provider string             `json:"provider"`
+	Query    string             `json:"query"`
+	Count    int                `json:"count"`
+	Results  []SearchResultItem `json:"results"`
+}
+
+// SearchResultItem 单条搜索结果
+type SearchResultItem struct {
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+	Snippet  string `json:"snippet"`
+	Position int    `json:"position"`
+}
+
+// ============================================================================
+// Serper.dev 实现
+// ============================================================================
+
+// SerperConfig Serper.dev 配置
+type SerperConfig struct {
+	APIKey  string
+	BaseURL string // 默认 https://google.serper.dev/search
+	GL      string // 默认搜索地区
+	HL      string // 默认搜索语言
+}
+
+// SerperProvider 基于 Serper.dev 的搜索实现
+type SerperProvider struct {
+	config SerperConfig
+	client *http.Client
+}
+
+func NewSerperProvider(config SerperConfig) *SerperProvider {
+	if config.BaseURL == "" {
+		config.BaseURL = "https://google.serper.dev/search"
+	}
+	if config.GL == "" {
+		config.GL = "cn"
+	}
+	if config.HL == "" {
+		config.HL = "zh-CN"
+	}
+	return &SerperProvider{
+		config: config,
+		client: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+func (s *SerperProvider) Search(ctx context.Context, query string, opts SearchOptions) (*SearchResult, error) {
+	gl := s.config.GL
+	if opts.GL != "" {
+		gl = opts.GL
+	}
+	hl := s.config.HL
+	if opts.HL != "" {
+		hl = opts.HL
+	}
+	count := opts.Count
+	if count <= 0 {
+		count = 5
 	}
 
-	// 可选参数处理
-	count := 5 // 默认返回5条结果
-	if c, ok := args["count"].(float64); ok && c > 0 && c <= 100 {
-		count = int(c)
-	}
-
-	gl := "cn" // 搜索地区：中国
-	if g, ok := args["gl"].(string); ok && g != "" {
-		gl = g
-	}
-
-	hl := "zh-CN" // 搜索语言：中文
-	if h, ok := args["hl"].(string); ok && h != "" {
-		hl = h
-	}
-
-	// 2. 构造 Serper API 请求体
 	reqBody := map[string]any{
 		"q":    query,
 		"num":  count,
@@ -45,104 +96,146 @@ func WebSearch(ctx context.Context, args map[string]any) (any, error) {
 	}
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request failed: %w", err)
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// 3. 创建 HTTP 请求
-	req, err := http.NewRequestWithContext(ctx, "POST", os.Getenv("SERPER_API_URL"), bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", s.config.BaseURL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, fmt.Errorf("create request failed: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
-
-	// 设置 Serper API 认证头（关键！）
-	req.Header.Set("X-API-KEY", os.Getenv("SERPER_API_KEY"))
+	req.Header.Set("X-API-KEY", s.config.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	// 4. 发送请求（带超时）
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("send request failed: %w", err)
+		return nil, fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// 5. 检查 API 响应状态
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("serper api error: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
-	// 6. 解析 Serper API 响应
-	var serperResp SerperSearchResponse
+	var serperResp serperSearchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&serperResp); err != nil {
-		return nil, fmt.Errorf("parse serper response failed: %w", err)
+		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
-	// 7. 提取并格式化搜索结果（统一格式，Agent 无需修改）
-	var results []map[string]any
+	result := &SearchResult{
+		Provider: "serper_google",
+		Query:    query,
+		Count:    len(serperResp.Organic),
+	}
 	for _, item := range serperResp.Organic {
-		results = append(results, map[string]any{
-			"title":    item.Title,
-			"url":      item.Link,
-			"snippet":  item.Snippet,
-			"position": item.Position,
+		result.Results = append(result.Results, SearchResultItem{
+			Title:    item.Title,
+			URL:      item.Link,
+			Snippet:  item.Snippet,
+			Position: item.Position,
 		})
 	}
 
-	// 8. 封装返回结果
-	return map[string]any{
-		"engine":  "serper_google",
-		"query":   query,
-		"count":   count,
-		"gl":      gl,
-		"hl":      hl,
-		"total":   len(results),
-		"results": results,
-		"status":  "success",
-	}, nil
+	return result, nil
 }
 
-// webSearchParams 联网搜索参数定义（JSON Schema）
-var webSearchParams = map[string]any{
-	"type": "object",
-	"properties": map[string]any{
-		"query": map[string]any{"type": "string", "description": "搜索关键词（必填）"},
-		"count": map[string]any{"type": "number", "description": "返回结果数量（1-100，默认5）"},
-		"gl":    map[string]any{"type": "string", "description": "搜索地区（可选，默认cn）"},
-		"hl":    map[string]any{"type": "string", "description": "搜索语言（可选，默认zh-CN）"},
-	},
-	"required": []string{"query"},
-}
-
-// RegisterWebTools 注册联网搜索工具
-func RegisterWebTools(registry *ToolRegistry) {
-	registry.MustRegister(ToolMetadata{
-		Name:        "web_search",
-		Description: "真实联网搜索（基于 Serper.dev Google 搜索），返回最新的网页搜索结果",
-		Parameters:  webSearchParams,
-		Permission:  PermReadOnly,
-		Category:    "network",
-		Version:     "1.0.0",
-		Tags:        []string{"network", "search", "web", "safe", "google"},
-		Timeout:     60 * time.Second,
-	}, WebSearch)
-}
-
-// ====================== Serper API 响应结构体（无需修改） ======================
-
-type SerperSearchResponse struct {
-	SearchParameters struct {
-		Q      string `json:"q"`
-		Gl     string `json:"gl"`
-		Hl     string `json:"hl"`
-		Num    int    `json:"num"`
-		Type   string `json:"type"`
-		Engine string `json:"engine"`
-	} `json:"searchParameters"`
+// Serper API 响应结构（内部使用，不导出）
+type serperSearchResponse struct {
 	Organic []struct {
 		Title    string `json:"title"`
 		Link     string `json:"link"`
 		Snippet  string `json:"snippet"`
 		Position int    `json:"position"`
 	} `json:"organic"`
+}
+
+// ============================================================================
+// WebSearch 工具
+// ============================================================================
+
+var defaultProvider SearchProvider
+
+// SetDefaultSearchProvider 设置默认搜索 provider
+func SetDefaultSearchProvider(provider SearchProvider) {
+	defaultProvider = provider
+}
+
+// GetDefaultSearchProvider 获取默认搜索 provider，未设置时从环境变量自动创建 Serper
+func GetDefaultSearchProvider() SearchProvider {
+	if defaultProvider != nil {
+		return defaultProvider
+	}
+	// 从环境变量自动创建
+	apiKey := os.Getenv("SERPER_API_KEY")
+	if apiKey == "" {
+		return nil
+	}
+	return NewSerperProvider(SerperConfig{
+		APIKey:  apiKey,
+		BaseURL: os.Getenv("SERPER_API_URL"),
+	})
+}
+
+// WebSearch 联网搜索工具
+func WebSearch(ctx context.Context, args map[string]any) (any, error) {
+	provider := GetDefaultSearchProvider()
+	if provider == nil {
+		return nil, fmt.Errorf("search provider not configured: set SERPER_API_KEY env or call SetDefaultSearchProvider()")
+	}
+
+	query, ok := args["query"].(string)
+	if !ok || query == "" {
+		return nil, fmt.Errorf("query must be a non-empty string")
+	}
+
+	count := 5
+	if c, ok := args["count"].(float64); ok && c > 0 && c <= 100 {
+		count = int(c)
+	}
+
+	opts := SearchOptions{Count: count}
+	if gl, ok := args["gl"].(string); ok && gl != "" {
+		opts.GL = gl
+	}
+	if hl, ok := args["hl"].(string); ok && hl != "" {
+		opts.HL = hl
+	}
+
+	result, err := provider.Search(ctx, query, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]any{
+		"engine":  result.Provider,
+		"query":   result.Query,
+		"count":   count,
+		"total":   len(result.Results),
+		"results": result.Results,
+		"status":  "success",
+	}, nil
+}
+
+var webSearchParams = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"query": map[string]any{"type": "string", "description": "搜索关键词（必填）"},
+		"count": map[string]any{"type": "number", "description": "返回结果数量（1-100，默认5）"},
+		"gl":    map[string]any{"type": "string", "description": "搜索地区（可选）"},
+		"hl":    map[string]any{"type": "string", "description": "搜索语言（可选）"},
+	},
+	"required": []string{"query"},
+}
+
+func RegisterWebTools(registry *ToolRegistry) {
+	registry.MustRegister(ToolMetadata{
+		Name:        "web_search",
+		Description: "联网搜索，返回最新网页搜索结果。需要配置 SERPER_API_KEY 环境变量或调用 SetDefaultSearchProvider",
+		Parameters:  webSearchParams,
+		Permission:  PermReadOnly,
+		Category:    "network",
+		Version:     "1.0.0",
+		Tags:        []string{"network", "search", "web", "safe"},
+		Timeout:     60 * time.Second,
+	}, WebSearch)
 }

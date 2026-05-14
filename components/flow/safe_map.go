@@ -1,4 +1,4 @@
-package schema
+package flow
 
 import "sync"
 
@@ -23,6 +23,17 @@ func (s *SafeMap[K, V]) Get(key K) (V, bool) {
 	}
 	// 类型断言（泛型安全）
 	return val.(V), true
+}
+
+// GetOrSet 原子的「获取或创建」
+// 已存在则返回已有值，不存在则调用 createFn 创建后存入
+func (s *SafeMap[K, V]) GetOrSet(key K, createFn func() V) V {
+	if val, ok := s.m.Load(key); ok {
+		return val.(V)
+	}
+	newVal := createFn()
+	actual, _ := s.m.LoadOrStore(key, newVal)
+	return actual.(V)
 }
 
 // MustGet 没有就panic

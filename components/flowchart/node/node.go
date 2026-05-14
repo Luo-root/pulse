@@ -1,7 +1,7 @@
 package node
 
 import (
-	"github.com/Luo-root/pulse/components/schema"
+	"github.com/Luo-root/pulse/components/flow"
 )
 
 // Node 工作流节点
@@ -11,7 +11,7 @@ type Node interface {
 	Outputs() []string // 输出 keys
 
 	// Run 执行节点业务逻辑
-	Run(ctx *schema.FlowContext, inputs map[string]any) (outputs map[string]any, err error)
+	Run(ctx *flow.FlowContext, inputs map[string]any) (outputs map[string]any, err error)
 
 	// Aspects 节点自己的切面（AOP）
 	Aspects() []Aspect
@@ -22,7 +22,7 @@ type SimpleNode struct {
 	id      string
 	inputs  []string
 	outputs []string
-	runFunc func(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error)
+	runFunc func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error)
 	aspects []Aspect
 }
 
@@ -32,7 +32,7 @@ func NewNode(
 	id string,
 	inputs []string,
 	outputs []string,
-	runFunc func(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error),
+	runFunc func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error),
 ) *SimpleNode {
 	return &SimpleNode{
 		id:      id,
@@ -60,7 +60,7 @@ func (n *SimpleNode) Outputs() []string {
 	return n.outputs
 }
 
-func (n *SimpleNode) Run(ctx *schema.FlowContext, inputs map[string]any) (map[string]any, error) {
+func (n *SimpleNode) Run(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
 	return n.runFunc(ctx, inputs)
 }
 
