@@ -33,6 +33,8 @@ type Skill struct {
 	Tags     []string      `yaml:"tags"`
 	Timeout  time.Duration `yaml:"timeout"`
 
+	Language string `yaml:"language"` // python, go, node, shell（默认 go）
+
 	// 运行时字段（不从 frontmatter 解析）
 	Path    string            `yaml:"-"` // Skill 目录路径
 	Handler tools.ToolHandler `yaml:"-"` // 编译后的处理函数

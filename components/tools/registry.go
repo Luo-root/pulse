@@ -63,16 +63,27 @@ type RegisteredTool struct {
 	UseCount     int64
 }
 
+// HookID 钩子标识
+type HookID int
+
 // ToolRegistry 动态工具注册中心
 type ToolRegistry struct {
 	mu    sync.RWMutex
 	tools map[string]*RegisteredTool
-	hooks struct {
-		beforeExecute []func(ctx context.Context, toolName string, args map[string]any) error
-		afterExecute  []func(ctx context.Context, toolName string, result schema.ToolResult, duration time.Duration)
-		onRegister    []func(tool *RegisteredTool)
-		onUnregister  []func(toolName string)
-	}
+
+	nextHookID HookID
+
+	beforeExecuteID   []HookID
+	beforeExecuteFunc []func(ctx context.Context, toolName string, args map[string]any) error
+
+	afterExecuteID   []HookID
+	afterExecuteFunc []func(ctx context.Context, toolName string, result schema.ToolResult, duration time.Duration)
+
+	onRegisterID   []HookID
+	onRegisterFunc []func(tool *RegisteredTool)
+
+	onUnregisterID   []HookID
+	onUnregisterFunc []func(toolName string)
 }
 
 // NewToolRegistry 创建工具注册中心
@@ -112,7 +123,7 @@ func (r *ToolRegistry) Register(meta ToolMetadata, handler ToolHandler) error {
 
 	r.tools[meta.Name] = tool
 
-	for _, hook := range r.hooks.onRegister {
+	for _, hook := range r.onRegisterFunc {
 		hook(tool)
 	}
 
@@ -138,7 +149,7 @@ func (r *ToolRegistry) Unregister(toolName string) error {
 
 	delete(r.tools, toolName)
 
-	for _, hook := range r.hooks.onUnregister {
+	for _, hook := range r.onUnregisterFunc {
 		hook(toolName)
 	}
 
@@ -293,7 +304,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 		return schema.NewToolResult(call.ID, fmt.Sprintf(`{"error": "%s"}`, err.Error()), true)
 	}
 
-	for _, hook := range r.hooks.beforeExecute {
+	for _, hook := range r.beforeExecuteFunc {
 		if err := hook(ctx, call.Function.Name, args); err != nil {
 			return schema.NewToolResult(call.ID, fmt.Sprintf(`{"error": "before execute hook failed: %s"}`, err.Error()), true)
 		}
@@ -317,7 +328,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 		result = schema.NewToolResult(call.ID, content, false)
 	}
 
-	for _, hook := range r.hooks.afterExecute {
+	for _, hook := range r.afterExecuteFunc {
 		hook(ctx, call.Function.Name, result, duration)
 	}
 
@@ -358,28 +369,100 @@ func (r *ToolRegistry) ToToolMessages(results []schema.ToolResult) []*schema.Mes
 // 生命周期钩子
 // ============================================================================
 
-func (r *ToolRegistry) AddBeforeExecuteHook(hook func(ctx context.Context, toolName string, args map[string]any) error) {
+// AddBeforeExecuteHook 注册 beforeExecute 钩子，返回 ID
+func (r *ToolRegistry) AddBeforeExecuteHook(hook func(ctx context.Context, toolName string, args map[string]any) error) HookID {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.hooks.beforeExecute = append(r.hooks.beforeExecute, hook)
+	r.nextHookID++
+	id := r.nextHookID
+	r.beforeExecuteID = append(r.beforeExecuteID, id)
+	r.beforeExecuteFunc = append(r.beforeExecuteFunc, hook)
+	return id
 }
 
-func (r *ToolRegistry) AddAfterExecuteHook(hook func(ctx context.Context, toolName string, result schema.ToolResult, duration time.Duration)) {
+// RemoveBeforeExecuteHook 移除 beforeExecute 钩子
+func (r *ToolRegistry) RemoveBeforeExecuteHook(id HookID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.hooks.afterExecute = append(r.hooks.afterExecute, hook)
+	for i, hid := range r.beforeExecuteID {
+		if hid == id {
+			r.beforeExecuteID = append(r.beforeExecuteID[:i], r.beforeExecuteID[i+1:]...)
+			r.beforeExecuteFunc = append(r.beforeExecuteFunc[:i], r.beforeExecuteFunc[i+1:]...)
+			return
+		}
+	}
 }
 
-func (r *ToolRegistry) AddOnRegisterHook(hook func(tool *RegisteredTool)) {
+// AddAfterExecuteHook 注册 afterExecute 钩子，返回 ID
+func (r *ToolRegistry) AddAfterExecuteHook(hook func(ctx context.Context, toolName string, result schema.ToolResult, duration time.Duration)) HookID {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.hooks.onRegister = append(r.hooks.onRegister, hook)
+	r.nextHookID++
+	id := r.nextHookID
+	r.afterExecuteID = append(r.afterExecuteID, id)
+	r.afterExecuteFunc = append(r.afterExecuteFunc, hook)
+	return id
 }
 
-func (r *ToolRegistry) AddOnUnregisterHook(hook func(toolName string)) {
+// RemoveAfterExecuteHook 移除 afterExecute 钩子
+func (r *ToolRegistry) RemoveAfterExecuteHook(id HookID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.hooks.onUnregister = append(r.hooks.onUnregister, hook)
+	for i, hid := range r.afterExecuteID {
+		if hid == id {
+			r.afterExecuteID = append(r.afterExecuteID[:i], r.afterExecuteID[i+1:]...)
+			r.afterExecuteFunc = append(r.afterExecuteFunc[:i], r.afterExecuteFunc[i+1:]...)
+			return
+		}
+	}
+}
+
+// AddOnRegisterHook 注册 onRegister 钩子，返回 ID
+func (r *ToolRegistry) AddOnRegisterHook(hook func(tool *RegisteredTool)) HookID {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextHookID++
+	id := r.nextHookID
+	r.onRegisterID = append(r.onRegisterID, id)
+	r.onRegisterFunc = append(r.onRegisterFunc, hook)
+	return id
+}
+
+// RemoveOnRegisterHook 移除 onRegister 钩子
+func (r *ToolRegistry) RemoveOnRegisterHook(id HookID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, hid := range r.onRegisterID {
+		if hid == id {
+			r.onRegisterID = append(r.onRegisterID[:i], r.onRegisterID[i+1:]...)
+			r.onRegisterFunc = append(r.onRegisterFunc[:i], r.onRegisterFunc[i+1:]...)
+			return
+		}
+	}
+}
+
+// AddOnUnregisterHook 注册 onUnregister 钩子，返回 ID
+func (r *ToolRegistry) AddOnUnregisterHook(hook func(toolName string)) HookID {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextHookID++
+	id := r.nextHookID
+	r.onUnregisterID = append(r.onUnregisterID, id)
+	r.onUnregisterFunc = append(r.onUnregisterFunc, hook)
+	return id
+}
+
+// RemoveOnUnregisterHook 移除 onUnregister 钩子
+func (r *ToolRegistry) RemoveOnUnregisterHook(id HookID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, hid := range r.onUnregisterID {
+		if hid == id {
+			r.onUnregisterID = append(r.onUnregisterID[:i], r.onUnregisterID[i+1:]...)
+			r.onUnregisterFunc = append(r.onUnregisterFunc[:i], r.onUnregisterFunc[i+1:]...)
+			return
+		}
+	}
 }
 
 // ============================================================================

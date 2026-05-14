@@ -7,7 +7,6 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/google/uuid v1.6.0
 	github.com/panjf2000/ants/v2 v2.12.0
-	github.com/traefik/yaegi v0.16.1
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/gorm v1.31.1
 )
