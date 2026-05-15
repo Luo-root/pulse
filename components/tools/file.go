@@ -40,9 +40,8 @@ func safePath(baseDir, userPath string) (string, error) {
 		absUser = filepath.Join(absBase, userPath)
 	} else {
 		// 绝对路径：直接使用
-		absUser = userPath
+		absUser = filepath.Clean(userPath)
 	}
-	absUser = filepath.Clean(absUser)
 
 	// 3. 解析 userPath 中的所有符号链接，获取真实路径
 	realUser, err := filepath.EvalSymlinks(absUser)
@@ -86,24 +85,32 @@ func safePath(baseDir, userPath string) (string, error) {
 // isSubPath 检查 child 是否是 parent 的子路径（或等于 parent）
 // 使用路径分隔符确保精确匹配，防止前缀误判
 func isSubPath(parent, child string) bool {
+	// 规范化路径：清理多余的分隔符、解析 . 和 ..
+	parent = filepath.Clean(parent)
+	child = filepath.Clean(child)
+
 	// 如果两者相等，允许访问
 	if child == parent {
 		return true
 	}
 
-	// Windows 下不区分大小写
+	// Windows 下不区分大小写比较
 	if strings.EqualFold(child, parent) {
 		return true
 	}
 
-	// 统一添加尾部路径分隔符，确保 /foo 不会匹配 /foobar
+	// 确保 child 以 parent + 路径分隔符 开头
+	// 例如：parent="/a/b", child="/a/b/c" => true
+	//      parent="/a/b", child="/a/bc"  => false
 	parentWithSep := parent + string(filepath.Separator)
-	childWithSep := child + string(filepath.Separator)
 
 	// 检查 child 是否以 parent+sep 开头
-	// Windows 下不区分大小写
-	if strings.HasPrefix(strings.ToLower(childWithSep), strings.ToLower(parentWithSep)) {
-		return true
+	// Windows 下需要不区分大小写
+	if len(child) > len(parentWithSep) {
+		childPrefix := child[:len(parentWithSep)]
+		if strings.EqualFold(childPrefix, parentWithSep) {
+			return true
+		}
 	}
 
 	return false

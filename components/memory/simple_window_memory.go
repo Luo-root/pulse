@@ -25,7 +25,7 @@ func NewSimpleWindowMemory(wm *WindowManager) *SimpleWindowMemory {
 	}
 }
 
-// GetRecent 返回截断后的最新消息（不保留过期部分）
+// GetRecent 返回截断后的最新消息
 func (sm *SimpleWindowMemory) GetRecent(sessionID string) []*schema.Message {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -33,10 +33,11 @@ func (sm *SimpleWindowMemory) GetRecent(sessionID string) []*schema.Message {
 	if !ok {
 		return nil
 	}
+	// Truncate 返回新切片，安全
 	return sm.windowMgr.Truncate(sess.messages)
 }
 
-// GetContextMessages 返回构建上下文所需的消息，等于截断后的最新消息
+// GetContextMessages 返回构建上下文所需的消息
 func (sm *SimpleWindowMemory) GetContextMessages(sessionID string) []*schema.Message {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -44,9 +45,10 @@ func (sm *SimpleWindowMemory) GetContextMessages(sessionID string) []*schema.Mes
 	if !ok {
 		return nil
 	}
-	// 应用窗口截断并将结果写回存储，保持状态轻量
-	sess.messages = sm.windowMgr.Truncate(sess.messages)
-	return sess.messages
+	// Truncate 后写回，控制内存增长
+	truncated := sm.windowMgr.Truncate(sess.messages)
+	sess.messages = truncated
+	return truncated
 }
 
 // AddTurn 添加一轮对话

@@ -1,10 +1,11 @@
 package skill
 
 import (
+	"sort"
 	"sync"
 )
 
-// SkillRegistry Skill 注册表（内存索引）
+// SkillRegistry Skill 注册表
 type SkillRegistry struct {
 	mu     sync.RWMutex
 	skills map[string]*Skill
@@ -51,6 +52,7 @@ func (sr *SkillRegistry) Remove(name string) {
 	delete(sr.skills, name)
 }
 
+// Names 返回所有 Skill 名称（排序后）
 func (sr *SkillRegistry) Names() []string {
 	sr.mu.RLock()
 	defer sr.mu.RUnlock()
@@ -58,18 +60,6 @@ func (sr *SkillRegistry) Names() []string {
 	for name := range sr.skills {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
-}
-
-// GetInstructionalSkills 获取所有指令型 Skill
-func (sr *SkillRegistry) GetInstructionalSkills() []*Skill {
-	sr.mu.RLock()
-	defer sr.mu.RUnlock()
-	var result []*Skill
-	for _, s := range sr.skills {
-		if s.Type == SkillTypeInstruction {
-			result = append(result, s)
-		}
-	}
-	return result
 }

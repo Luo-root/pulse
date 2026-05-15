@@ -1,29 +1,30 @@
 package openai
 
-import (
-	"github.com/Luo-root/pulse/components/schema"
-)
+import "github.com/Luo-root/pulse/components/schema"
 
+// ChatModelResponse OpenAI 非流式响应
 type ChatModelResponse struct {
-	ID      string       `json:"id"`      // 对话ID，随便看看
-	Object  string       `json:"object"`  // 固定是 chat.completion
-	Created int64        `json:"created"` // 时间戳
-	Model   string       `json:"model"`   // 模型名
-	Choices []Choice     `json:"choices"` // ✅【最重要】AI 的回答
-	Usage   schema.Usage `json:"usage"`   // token 消耗
+	ID      string       `json:"id"`
+	Object  string       `json:"object"`
+	Created int64        `json:"created"`
+	Model   string       `json:"model"`
+	Choices []Choice     `json:"choices"`
+	Usage   schema.Usage `json:"usage"`
 }
 
+// Choice 响应选项
 type Choice struct {
-	Index        int            `json:"index"`         // 一般是 0
-	Message      schema.Message `json:"message"`       // 完整回答
-	FinishReason string         `json:"finish_reason"` // 结束原因 stop / length
+	Index        int            `json:"index"`
+	Message      schema.Message `json:"message"`
+	FinishReason string         `json:"finish_reason"`
 }
 
-// StreamResponse 流式响应最外层
+// StreamResponse 流式响应
 type StreamResponse struct {
 	Choices []StreamChoice `json:"choices"`
 }
 
+// StreamChoice 流式选项
 type StreamChoice struct {
 	Index        int           `json:"index"`
 	Delta        Delta         `json:"delta"`
@@ -31,6 +32,7 @@ type StreamChoice struct {
 	Usage        *schema.Usage `json:"usage,omitempty"`
 }
 
+// Delta 流式增量
 type Delta struct {
 	Role             string            `json:"role,omitempty"`
 	Content          string            `json:"content"`

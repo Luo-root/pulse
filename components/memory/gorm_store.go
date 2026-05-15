@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Luo-root/pulse/components/schema"
@@ -44,11 +45,33 @@ func (MessageModel) TableName() string {
 
 // ToSchemaMessage 转换为 schema.Message
 func (m *MessageModel) ToSchemaMessage() *schema.Message {
-	return &schema.Message{
+	msg := &schema.Message{
 		Role:             schema.RoleType(m.Role),
 		Content:          m.Content,
 		ReasoningContent: m.ReasoningContent,
 	}
+
+	// 从 Metadata 还原工具调用信息
+	if m.Metadata != "" {
+		var meta map[string]any
+		if err := json.Unmarshal([]byte(m.Metadata), &meta); err == nil {
+			// 还原 tool_calls
+			if tcRaw, ok := meta["tool_calls"]; ok {
+				if tcBytes, err := json.Marshal(tcRaw); err == nil {
+					var toolCalls []schema.ToolCall
+					if err := json.Unmarshal(tcBytes, &toolCalls); err == nil {
+						msg.ToolCalls = toolCalls
+					}
+				}
+			}
+			// 还原 tool_call_id
+			if tcid, ok := meta["tool_call_id"].(string); ok {
+				msg.ToolCallID = tcid
+			}
+		}
+	}
+
+	return msg
 }
 
 // GetEmbedding 获取嵌入向量
@@ -78,7 +101,7 @@ func (m *MessageModel) SetEmbedding(vec []float32) error {
 }
 
 // ============================================================================
-// GormStore 配置
+// RecallMode 和配置
 // ============================================================================
 
 // RecallMode 召回策略模式
@@ -105,7 +128,7 @@ type GormStoreConfig struct {
 	LogLevel logger.LogLevel
 	// DisableVectorSearch 禁用向量搜索（不使用嵌入时设为 true）
 	DisableVectorSearch bool
-	// EmbeddingDimension 向量维度，默认 384（all-MiniLM-L6-v2）
+	// EmbeddingDimension 向量维度，默认 768
 	EmbeddingDimension int
 	// RecallMode 召回策略模式，默认 RecallModeAuto
 	RecallMode RecallMode
@@ -142,13 +165,17 @@ func DefaultGormStoreConfig() *GormStoreConfig {
 		ConnMaxLifetime:     time.Hour,
 		LogLevel:            logger.Warn,
 		DisableVectorSearch: false,
-		EmbeddingDimension:  384,
+		EmbeddingDimension:  768,
 		RecallMode:          RecallModeAuto,
 		CombinedWeights:     DefaultCombinedWeights(),
 		ChunkSize:           512, // 大约对应 256 token
 		ChunkOverlap:        64,
 	}
 }
+
+// ============================================================================
+// 分块嵌入
+// ============================================================================
 
 // EmbeddingChunk 分块嵌入记录，用于长文本分段存储
 type EmbeddingChunk struct {
@@ -189,8 +216,13 @@ func (c *EmbeddingChunk) SetEmbedding(vec []float32) error {
 }
 
 // ============================================================================
-// GormStore 实现
+// GormStore
 // ============================================================================
+
+// EmbeddingFunc 文本嵌入函数签名
+// 将文本转换为向量，用于语义相似度搜索
+type EmbeddingFunc func(ctx context.Context, text string) ([]float32, error)
+
 // messageNode 包装 MessageModel 以实现 hnsw.Embeddable
 type messageNode struct {
 	model *MessageModel
@@ -210,11 +242,9 @@ type GormStore struct {
 	// HNSW 向量索引（线程安全）
 	vecIndex *hnsw.Graph[*messageNode]
 	vecMu    sync.RWMutex
+	// 异步索引重建的 readiness 信号
+	indexReady atomic.Bool
 }
-
-// EmbeddingFunc 文本嵌入函数签名
-// 将文本转换为向量，用于语义相似度搜索
-type EmbeddingFunc func(ctx context.Context, text string) ([]float32, error)
 
 // NewGormStore 创建 GORM 记忆存储
 func NewGormStore(config *GormStoreConfig, embedding EmbeddingFunc) (*GormStore, error) {
@@ -222,7 +252,6 @@ func NewGormStore(config *GormStoreConfig, embedding EmbeddingFunc) (*GormStore,
 		config = DefaultGormStoreConfig()
 	}
 
-	// 使用纯 Go 的 SQLite 驱动（无需 CGO）
 	db, err := gorm.Open(sqlite.Open(config.DBPath), &gorm.Config{
 		Logger: logger.Default.LogMode(config.LogLevel),
 	})
@@ -230,7 +259,6 @@ func NewGormStore(config *GormStoreConfig, embedding EmbeddingFunc) (*GormStore,
 		return nil, fmt.Errorf("gorm: open database failed: %w", err)
 	}
 
-	// 配置连接池
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, err
@@ -239,12 +267,10 @@ func NewGormStore(config *GormStoreConfig, embedding EmbeddingFunc) (*GormStore,
 	sqlDB.SetMaxIdleConns(config.MaxIdleConns)
 	sqlDB.SetConnMaxLifetime(config.ConnMaxLifetime)
 
-	// 自动迁移
 	if err := db.AutoMigrate(&MessageModel{}, &EmbeddingChunk{}); err != nil {
 		return nil, fmt.Errorf("gorm: auto migrate failed: %w", err)
 	}
 
-	// 创建额外索引（忽略已存在错误）
 	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_content ON messages(content)")
 	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_role_session ON messages(role, session_id)")
 
@@ -259,22 +285,63 @@ func NewGormStore(config *GormStoreConfig, embedding EmbeddingFunc) (*GormStore,
 		store.vecIndex.M = 16
 		store.vecIndex.Ml = 0.25
 		store.vecIndex.EfSearch = 200
-		// 距离函数默认就是 CosineDistance，无需显式设置（也可设：store.vecIndex.Distance = hnsw.CosineDistance）
 
-		go store.rebuildIndexFromDB()
+		go func() {
+			store.rebuildIndexFromDB()
+			store.indexReady.Store(true)
+		}()
+	} else {
+		store.indexReady.Store(true)
 	}
 
 	return store, nil
 }
 
+// IndexReady 返回向量索引是否就绪
+func (s *GormStore) IndexReady() bool {
+	return s.indexReady.Load()
+}
+
+// isValidVector 检查向量是否可用于 HNSW 索引
+// 排除：nil、空、全零、含 NaN、含 Inf
+func isValidVector(vec []float32) bool {
+	if len(vec) == 0 {
+		return false
+	}
+	var normSq float64
+	for _, v := range vec {
+		f := float64(v)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return false
+		}
+		normSq += f * f
+	}
+	return normSq > 0
+}
+
+// addToIndex 安全地向 HNSW 索引添加节点，捕获可能的 panic
+func (s *GormStore) addToIndex(node *messageNode) {
+	if s.vecIndex == nil || !isValidVector(node.Embedding()) {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			// HNSW Add panic，跳过此节点
+		}
+	}()
+	s.vecIndex.Add(node)
+}
+
 func (s *GormStore) rebuildIndexFromDB() {
+	defer s.indexReady.Store(true) // 确保无论成功/失败/panic 都标记就绪
+
 	var models []MessageModel
 	if err := s.db.Find(&models).Error; err != nil {
 		return
 	}
 	var chunks []EmbeddingChunk
 	if err := s.db.Find(&chunks).Error; err != nil {
-		// 忽略，可能表不存在
+		// 表可能不存在，忽略
 	}
 
 	s.vecMu.Lock()
@@ -282,18 +349,18 @@ func (s *GormStore) rebuildIndexFromDB() {
 
 	for i := range models {
 		vec, err := models[i].GetEmbedding()
-		if err != nil || len(vec) == 0 {
+		if err != nil || !isValidVector(vec) {
 			continue
 		}
-		s.vecIndex.Add(&messageNode{model: &models[i], vec: vec})
+		s.addToIndex(&messageNode{model: &models[i], vec: vec})
 	}
 
 	for i := range chunks {
 		vec, err := chunks[i].GetEmbedding()
-		if err != nil || len(vec) == 0 {
+		if err != nil || !isValidVector(vec) {
 			continue
 		}
-		s.vecIndex.Add(&messageNode{model: &MessageModel{ID: chunks[i].ID}, vec: vec})
+		s.addToIndex(&messageNode{model: &MessageModel{ID: chunks[i].ID}, vec: vec})
 	}
 }
 
@@ -308,7 +375,6 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for i, msg := range msgs {
-			// 递增时间戳：每条消息相差 1 毫秒，确保顺序
 			timestamp := baseTime + int64(i)
 
 			model := &MessageModel{
@@ -321,7 +387,7 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 				CreatedAt:        time.Now(),
 			}
 
-			// 序列化元数据（ToolCalls 等）
+			// 序列化元数据
 			if len(msg.ToolCalls) > 0 || msg.ToolCallID != "" {
 				metaData := make(map[string]any)
 				if len(msg.ToolCalls) > 0 {
@@ -334,14 +400,13 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 				model.Metadata = string(meta)
 			}
 
-			// 生成嵌入向量
+			// 嵌入生成
 			if !s.config.DisableVectorSearch && s.embedding != nil {
 				text := msg.Content
 				if msg.ReasoningContent != "" {
 					text = msg.ReasoningContent + " " + text
 				}
 
-				// 判断是否需要分块：简单以字符数估算 (1 token ≈ 2 中文字符)
 				estTokens := len([]rune(text)) / 2
 				needChunk := s.config.ChunkSize > 0 && estTokens > s.config.ChunkSize
 
@@ -349,10 +414,7 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 					chunks := SplitText(text, s.config.ChunkSize, s.config.ChunkOverlap)
 					for idx, chunkContent := range chunks {
 						vec, err := s.embedding(ctx, chunkContent)
-						if err != nil {
-							continue
-						}
-						if len(vec) == 0 {
+						if err != nil || len(vec) == 0 {
 							continue
 						}
 						chunkModel := &EmbeddingChunk{
@@ -364,25 +426,28 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 						}
 						chunkModel.SetEmbedding(vec)
 
-						// 保存分块记录
 						if err := tx.Create(chunkModel).Error; err != nil {
 							return err
 						}
-						// 加入向量索引
 						s.vecMu.Lock()
 						if s.vecIndex != nil {
-							s.vecIndex.Add(&messageNode{model: &MessageModel{ID: chunkModel.ID}, vec: vec})
+							s.addToIndex(&messageNode{
+								model: &MessageModel{ID: chunkModel.ID},
+								vec:   vec,
+							})
 						}
 						s.vecMu.Unlock()
 					}
 				} else {
-					// 不分块，保留原消息嵌入
 					vec, err := s.embedding(ctx, text)
 					if err == nil && len(vec) > 0 {
 						model.SetEmbedding(vec)
 						s.vecMu.Lock()
 						if s.vecIndex != nil {
-							s.vecIndex.Add(&messageNode{model: model, vec: vec})
+							s.addToIndex(&messageNode{
+								model: model,
+								vec:   vec,
+							})
 						}
 						s.vecMu.Unlock()
 					}
@@ -405,7 +470,6 @@ func (s *GormStore) Recall(ctx context.Context, sessionID string, query string, 
 
 	switch s.config.RecallMode {
 	case RecallModeVector:
-		// 仅向量，失败回退到混合（保证有结果）
 		results, err := s.vectorRecall(ctx, sessionID, query, topK)
 		if err != nil || len(results) == 0 {
 			return s.hybridRecall(ctx, sessionID, query, topK)
@@ -418,8 +482,8 @@ func (s *GormStore) Recall(ctx context.Context, sessionID string, query string, 
 	case RecallModeCombined:
 		return s.combinedRecall(ctx, sessionID, query, topK)
 
-	default: // RecallModeAuto 或未设置
-		if !s.config.DisableVectorSearch && s.embedding != nil {
+	default: // RecallModeAuto
+		if !s.config.DisableVectorSearch && s.embedding != nil && s.indexReady.Load() {
 			results, err := s.vectorRecall(ctx, sessionID, query, topK)
 			if err == nil && len(results) > 0 {
 				return results, nil
@@ -429,22 +493,19 @@ func (s *GormStore) Recall(ctx context.Context, sessionID string, query string, 
 	}
 }
 
+// combinedRecall 组合召回（向量 + 关键词 + 时间衰减）
 func (s *GormStore) combinedRecall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
 	queryVec, err := s.embedding(ctx, query)
 	if err != nil || len(queryVec) == 0 {
 		return s.hybridRecall(ctx, sessionID, query, topK)
 	}
 
-	// 粗筛：取 topK*10 候选
 	candidates, err := s.vectorSearch(ctx, sessionID, queryVec, topK*10)
 	if err != nil || len(candidates) == 0 {
 		return s.hybridRecall(ctx, sessionID, query, topK)
 	}
 
-	// 关键词提取
 	keywords := extractKeywords(query)
-
-	// 时间衰减参数
 	now := float64(time.Now().UnixMilli())
 	weights := s.config.CombinedWeights
 	if weights == nil {
@@ -458,10 +519,8 @@ func (s *GormStore) combinedRecall(ctx context.Context, sessionID string, query 
 	scoredList := make([]scored, 0, len(candidates))
 
 	for _, c := range candidates {
-		// 向量得分
 		vecScore := c.similarity
 
-		// 关键词得分
 		keywordScore := 0.0
 		content := strings.ToLower(c.model.Content)
 		for _, kw := range keywords {
@@ -473,7 +532,6 @@ func (s *GormStore) combinedRecall(ctx context.Context, sessionID string, query 
 			keywordScore /= float64(len(keywords))
 		}
 
-		// 时间得分
 		age := now - float64(c.model.Timestamp)
 		if age < 0 {
 			age = 0
@@ -487,19 +545,17 @@ func (s *GormStore) combinedRecall(ctx context.Context, sessionID string, query 
 		scoredList = append(scoredList, scored{model: c.model, score: total})
 	}
 
-	// 按总分降序
 	sort.Slice(scoredList, func(i, j int) bool {
 		return scoredList[i].score > scoredList[j].score
 	})
 
-	// 取 topK
 	if len(scoredList) > topK {
 		scoredList = scoredList[:topK]
 	}
 
 	results := make([]*schema.Message, len(scoredList))
-	for i, s := range scoredList {
-		results[i] = s.model.ToSchemaMessage()
+	for i, sc := range scoredList {
+		results[i] = sc.model.ToSchemaMessage()
 	}
 	return results, nil
 }
@@ -515,30 +571,39 @@ func (s *GormStore) vectorSearch(ctx context.Context, sessionID string, queryVec
 	defer s.vecMu.RUnlock()
 
 	if s.vecIndex == nil {
-		return nil, fmt.Errorf("index not initialized")
+		return nil, fmt.Errorf("vector index not initialized")
 	}
 
+	// HNSW Search 在图为空或维度不匹配时会 panic，安全捕获
 	fetchN := topK * 3
 	if fetchN < 10 {
 		fetchN = 10
 	}
-	results := s.vecIndex.Search(queryVec, fetchN)
-	if len(results) == 0 {
+
+	var nodes []*messageNode
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				nodes = nil
+			}
+		}()
+		nodes = s.vecIndex.Search(queryVec, fetchN)
+	}()
+
+	if len(nodes) == 0 {
 		return nil, nil
 	}
 
-	// 用于去重消息 ID 并保留相似度
 	msgMap := make(map[string]*vectorCandidate)
 	var orderedIDs []string
 
-	for _, node := range results {
-		// node.ID() 可能是 message ID 或 chunk ID
+	for _, node := range nodes {
 		nodeID := node.ID()
 
 		var msgID string
 		var sim float64
+
 		if strings.Contains(nodeID, "_chunk_") {
-			// 分块节点：查询对应的 EmbeddingChunk 确认 Session 和 MessageID
 			var chunk EmbeddingChunk
 			if err := s.db.WithContext(ctx).Where("id = ? AND session_id = ?", nodeID, sessionID).First(&chunk).Error; err != nil {
 				continue
@@ -546,7 +611,6 @@ func (s *GormStore) vectorSearch(ctx context.Context, sessionID string, queryVec
 			msgID = chunk.MessageID
 			sim = cosineSimilarity(queryVec, node.Embedding())
 		} else {
-			// 非分块节点：直接是 MessageModel，检查 Session
 			var msg MessageModel
 			if err := s.db.WithContext(ctx).Where("id = ? AND session_id = ?", nodeID, sessionID).First(&msg).Error; err != nil {
 				continue
@@ -562,7 +626,6 @@ func (s *GormStore) vectorSearch(ctx context.Context, sessionID string, queryVec
 			continue
 		}
 
-		// 加载完整的 MessageModel 作为候选
 		var fullMsg MessageModel
 		if err := s.db.WithContext(ctx).Where("id = ?", msgID).First(&fullMsg).Error; err != nil {
 			continue
@@ -708,7 +771,7 @@ func (s *GormStore) GetSessionWithReasoning(ctx context.Context, sessionID strin
 
 // ClearSession 清空会话（硬删除 + 同步清理向量索引）
 func (s *GormStore) ClearSession(ctx context.Context, sessionID string) error {
-	// 1. 查询该会话所有消息 ID（用于同步删除向量索引）
+	// 1. 清理向量索引中的消息节点
 	var ids []string
 	if err := s.db.WithContext(ctx).
 		Model(&MessageModel{}).
@@ -717,7 +780,6 @@ func (s *GormStore) ClearSession(ctx context.Context, sessionID string) error {
 		return err
 	}
 
-	// 2. 删除向量索引中的节点
 	if s.vecIndex != nil && len(ids) > 0 {
 		s.vecMu.Lock()
 		for _, id := range ids {
@@ -726,10 +788,12 @@ func (s *GormStore) ClearSession(ctx context.Context, sessionID string) error {
 		s.vecMu.Unlock()
 	}
 
-	// 3. 同时删除分块记录和对应的向量索引（如果有）
-	if s.vecIndex != nil {
-		var chunkIDs []string
-		if err := s.db.WithContext(ctx).Model(&EmbeddingChunk{}).Where("session_id = ?", sessionID).Pluck("id", &chunkIDs).Error; err == nil {
+	// 2. 清理分块向量索引
+	var chunkIDs []string
+	if err := s.db.WithContext(ctx).Model(&EmbeddingChunk{}).
+		Where("session_id = ?", sessionID).
+		Pluck("id", &chunkIDs).Error; err == nil && len(chunkIDs) > 0 {
+		if s.vecIndex != nil {
 			s.vecMu.Lock()
 			for _, cid := range chunkIDs {
 				s.vecIndex.Delete(cid)
@@ -737,19 +801,22 @@ func (s *GormStore) ClearSession(ctx context.Context, sessionID string) error {
 			s.vecMu.Unlock()
 		}
 	}
-	// 删除分块表数据
+
+	// 3. 删除数据
 	if err := s.db.WithContext(ctx).Where("session_id = ?", sessionID).Delete(&EmbeddingChunk{}).Error; err != nil {
 		return err
 	}
 
-	// 最后删除 messages
-	return s.db.WithContext(ctx).
-		Where("session_id = ?", sessionID).
-		Delete(&MessageModel{}).Error
+	return s.db.WithContext(ctx).Where("session_id = ?", sessionID).Delete(&MessageModel{}).Error
 }
 
 // Close 关闭存储
 func (s *GormStore) Close() error {
+	// 清理向量索引
+	s.vecMu.Lock()
+	s.vecIndex = nil
+	s.vecMu.Unlock()
+
 	sqlDB, err := s.db.DB()
 	if err != nil {
 		return err
@@ -758,7 +825,7 @@ func (s *GormStore) Close() error {
 }
 
 // ============================================================================
-// 高级查询方法（GormStore 扩展功能）
+// 高级查询
 // ============================================================================
 
 // SearchByRole 按角色搜索
@@ -811,7 +878,7 @@ func (s *GormStore) GetSessionStats(ctx context.Context, sessionID string) (map[
 	if err := s.db.WithContext(ctx).Where("session_id = ?", sessionID).Order("timestamp ASC").First(&firstMsg).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return map[string]any{
-				"message_count": 0,
+				"message_count": count,
 				"first_message": nil,
 				"last_message":  nil,
 			}, nil
@@ -871,6 +938,23 @@ func extractKeywords(text string) []string {
 		"在": true, "有": true, "和": true, "就": true, "不": true,
 		"the": true, "a": true, "an": true, "is": true, "are": true,
 		"was": true, "were": true, "be": true, "been": true, "being": true,
+		"this": true, "that": true, "it": true, "he": true, "she": true,
+		"we": true, "they": true, "me": true, "him": true, "her": true,
+		"us": true, "them": true, "my": true, "his": true, "its": true,
+		"our": true, "your": true, "their": true, "i": true, "you": true,
+		"have": true, "has": true, "had": true, "do": true, "does": true,
+		"did": true, "will": true, "would": true, "could": true, "should": true,
+		"may": true, "might": true, "can": true, "shall": true,
+		"to": true, "of": true, "in": true, "for": true, "on": true,
+		"with": true, "at": true, "by": true, "from": true, "as": true,
+		"into": true, "through": true, "during": true, "before": true,
+		"after": true, "above": true, "below": true, "between": true,
+		"and": true, "but": true, "or": true, "nor": true, "not": true,
+		"so": true, "yet": true, "both": true, "either": true, "neither": true,
+		"each": true, "every": true, "all": true, "any": true, "few": true,
+		"more": true, "most": true, "other": true, "some": true, "such": true,
+		"no": true, "only": true, "own": true, "same": true, "than": true,
+		"too": true, "very": true, "just": true, "about": true,
 	}
 
 	var keywords []string

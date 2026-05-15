@@ -47,6 +47,8 @@ var DefaultPricingTable = map[string]ModelPricing{
 	"deepseek-v4-flash": {InputPrice: 0.001, OutputPrice: 0.002},
 	"deepseek-v4-pro":   {InputPrice: 0.012, OutputPrice: 0.024},
 	"kimi-k2.6":         {InputPrice: 0.0065, OutputPrice: 0.027},
+	"gpt-4":             {InputPrice: 0.03, OutputPrice: 0.06},
+	"gpt-3.5-turbo":     {InputPrice: 0.0005, OutputPrice: 0.0015},
 }
 
 // UsageTracker Token 使用追踪器

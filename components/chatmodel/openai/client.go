@@ -1,162 +1,108 @@
 package openai
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
-
 	"net/http"
+	"strings"
 
 	"github.com/Luo-root/pulse/components/schema"
 )
 
-type Client struct {
-	cli         *http.Client
-	Header      *Header
-	RequestBody *RequestBody
-}
-
-type Header struct {
-	BaseUrl string
-	APIKey  string
-}
-
-// client.go 新增：schema.Message → openai 可发送的消息
-
+// APIMessage 发送给 OpenAI 的消息格式
 type APIMessage struct {
 	Role             string            `json:"role"`
 	Content          string            `json:"content"`
 	ReasoningContent string            `json:"reasoning_content,omitempty"`
 	Name             string            `json:"name,omitempty"`
 	ToolCalls        []schema.ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string            `json:"tool_call_id,omitempty"` // ← 新增：tool 角色时需要
+	ToolCallID       string            `json:"tool_call_id,omitempty"`
 }
 
-func toAPIMessages(messages []*schema.Message) []APIMessage {
-	result := make([]APIMessage, len(messages))
-	for i, m := range messages {
-		am := APIMessage{
-			Role:             string(m.Role),
-			Content:          m.Content,
-			ReasoningContent: m.ReasoningContent,
-			Name:             m.Name,
-		}
-
-		// assistant 有 tool_calls
-		if m.Role == schema.AssistantRole && len(m.ToolCalls) > 0 {
-			am.ToolCalls = m.ToolCalls
-		}
-
-		// tool 消息：直接用 Message 上的 ToolCallID
-		if m.Role == schema.ToolRole {
-			am.ToolCallID = m.ToolCallID
-		}
-
-		result[i] = am
-	}
-	return result
-}
-
+// RequestBody OpenAI API 请求体
 type RequestBody struct {
-	Model    string       `json:"model"`
-	Messages []APIMessage `json:"messages"`
-	// 聊天补全生成的最大 Token 数量。如果不给的话，默认给一个不错的整数比如 1024。
-	//如果结果达到最大 Token 数而未结束，finish reason 将为 "length"；否则为 "stop"。
-	//此值为期望返回的 Token 长度，而非输入加输出的总长度。如果输入加 max_completion_tokens 超出模型上下文窗口，将返回 invalid_request_error。
-	MaxCompletionTokens uint64 `json:"max_completion_tokens,omitempty"`
-	// 设置为 {"type": "json_object"} 可启用 JSON 模式，确保生成的内容为有效 JSON。设置后，需在 prompt 中明确引导模型输出 JSON 格式并指定具体格式，否则可能产生意外结果。默认值为 {"type": "text"}。
-	ResponseFormat ResponseFormatType `json:"response_format,omitempty"`
-	// 是否以流式方式返回响应，默认 false
-	Stream bool `json:"stream,omitempty"`
-	// 流式响应选项
-	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
-	// 模型可调用的工具列表, 最大长度 128
-	Tools []Tool `json:"tools,omitempty"`
-	// 用于缓存相似请求的响应以优化缓存命中率。给长系统提示词 / 长记忆做缓存,让速度变快、省钱
-	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
-	// 用于检测可能违反使用政策的用户的稳定标识符。应为唯一标识每个用户的字符串。建议对用户名或邮箱进行哈希处理以避免发送可识别信息
-	SafetyIdentifier string `json:"safety_identifier,omitempty"`
-	// 控制 kimi-k2.6 模型是否启用思考能力, 以及是否完整保留多轮对话中的 reasoning_content
-	Thinking Thinking `json:"thinking,omitempty"`
-	// 采样温度，范围 0 到 1。较高的值（如 0.7）使输出更随机，较低的值（如 0.2）使输出更集中和确定。默认值为 0.6。
-	Temperature float64 `json:"temperature,omitempty"`
-	// 另一种采样方法，模型考虑累积概率质量为 top_p 的 Token 结果。例如 0.1 表示仅考虑概率质量前 10% 的 Token。通常建议只修改此参数或 temperature 其中之一。默认值为 1.0。
-	// 0 <= x <= 1
-	TopP float64 `json:"top_p,omitempty"`
-	// 每条输入消息生成的结果数量。默认为 1，不超过 5。当温度非常接近 0 时，只能返回 1 个结果。
-	// 1 <= x <= 5
-	N uint8 `json:"n,omitempty"`
-	// 存在惩罚，范围 -2.0 到 2.0。正值会根据 Token 是否出现在文本中进行惩罚，增加模型讨论新话题的可能性
-	// -2 <= x <= 2
-	PresencePenalty float64 `json:"presence_penalty,omitempty"`
-	// 频率惩罚，范围 -2.0 到 2.0。正值会根据 Token 在文本中的现有频率进行惩罚，降低模型逐字重复相同短语的可能性
-	// -2 <= x <= 2
-	FrequencyPenalty float64 `json:"frequency_penalty,omitempty"`
+	Model               string             `json:"model"`
+	Messages            []APIMessage       `json:"messages"`
+	MaxCompletionTokens uint64             `json:"max_completion_tokens,omitempty"`
+	ResponseFormat      ResponseFormatType `json:"response_format,omitempty"`
+	Stream              bool               `json:"stream,omitempty"`
+	StreamOptions       *StreamOptions     `json:"stream_options,omitempty"`
+	Tools               []Tool             `json:"tools,omitempty"`
+	PromptCacheKey      string             `json:"prompt_cache_key,omitempty"`
+	SafetyIdentifier    string             `json:"safety_identifier,omitempty"`
+	Thinking            Thinking           `json:"thinking,omitempty"`
+	Temperature         float64            `json:"temperature,omitempty"`
+	TopP                float64            `json:"top_p,omitempty"`
+	N                   uint8              `json:"n,omitempty"`
+	PresencePenalty     float64            `json:"presence_penalty,omitempty"`
+	FrequencyPenalty    float64            `json:"frequency_penalty,omitempty"`
 }
 
-func NewClient(ctx context.Context, config *ChatModelConfig) *Client {
+// Client OpenAI 兼容 HTTP 客户端
+type Client struct {
+	cli         *http.Client
+	baseURL     string
+	apiKey      string
+	requestBody *RequestBody
+}
+
+// NewClient 创建 OpenAI 兼容客户端
+func NewClient(config *ChatModelConfig) *Client {
 	baseURL := strings.TrimRight(config.BaseUrl, "/") + "/chat/completions"
 
-	header := &Header{
-		BaseUrl: baseURL,
-		APIKey:  config.APIKey,
+	cli := config.HTTPClient
+	if cli == nil {
+		cli = &http.Client{Timeout: config.TimeOut}
 	}
 
-	reqBode := &RequestBody{
-		Model:               config.Model,
-		Messages:            toAPIMessages(config.Messages),
-		MaxCompletionTokens: config.MaxCompletionTokens,
-		ResponseFormat:      config.ResponseFormat,
-		Stream:              config.Stream,
-		StreamOptions:       config.StreamOptions,
-		Tools:               WrapTools(config.Tools),
-		PromptCacheKey:      config.PromptCacheKey,
-		SafetyIdentifier:    config.SafetyIdentifier,
-		Thinking:            config.Thinking,
-		Temperature:         config.Temperature,
-		TopP:                config.TopP,
-		N:                   config.N,
-		PresencePenalty:     config.PresencePenalty,
-		FrequencyPenalty:    config.FrequencyPenalty,
+	return &Client{
+		cli:     cli,
+		baseURL: baseURL,
+		apiKey:  config.APIKey,
+		requestBody: &RequestBody{
+			Model:               config.Model,
+			MaxCompletionTokens: config.MaxCompletionTokens,
+			ResponseFormat:      config.ResponseFormat,
+			Tools:               WrapTools(config.Tools),
+			PromptCacheKey:      config.PromptCacheKey,
+			SafetyIdentifier:    config.SafetyIdentifier,
+			Thinking:            config.Thinking,
+			Temperature:         config.Temperature,
+			TopP:                config.TopP,
+			N:                   config.N,
+			PresencePenalty:     config.PresencePenalty,
+			FrequencyPenalty:    config.FrequencyPenalty,
+		},
 	}
-
-	cli := &Client{
-		cli:         config.HTTPClient,
-		Header:      header,
-		RequestBody: reqBode,
-	}
-	return cli
 }
 
+// genRequest 生成 HTTP 请求
 func (c *Client) genRequest() (*http.Request, error) {
-	jsonData, err := json.Marshal(c.RequestBody)
+	jsonData, err := json.Marshal(c.requestBody)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest("POST", c.Header.BaseUrl, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", c.baseURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.Header.APIKey)
-
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	return req, nil
 }
 
+// Generate 非流式生成
 func (c *Client) Generate(ctx context.Context, in []*schema.Message) (*schema.Message, error) {
-	c.RequestBody.Messages = toAPIMessages(in)
-	c.RequestBody.Stream = false
+	c.requestBody.Messages = toAPIMessages(in)
+	c.requestBody.Stream = false
 
-	var modelResp ChatModelResponse
 	req, err := c.genRequest()
 	if err != nil {
 		return nil, err
 	}
-
 	req = req.WithContext(ctx)
 
 	resp, err := c.cli.Do(req)
@@ -175,8 +121,8 @@ func (c *Client) Generate(ctx context.Context, in []*schema.Message) (*schema.Me
 		return nil, err
 	}
 
-	err = json.Unmarshal(body, &modelResp)
-	if err != nil {
+	var modelResp ChatModelResponse
+	if err := json.Unmarshal(body, &modelResp); err != nil {
 		return nil, err
 	}
 
@@ -187,116 +133,19 @@ func (c *Client) Generate(ctx context.Context, in []*schema.Message) (*schema.Me
 	return &modelResp.Choices[0].Message, nil
 }
 
-// StreamReception 流式接收并返回一个 StreamReader 用于读取流式数据
-func StreamReception(resp *http.Response) (*schema.StreamReader, error) {
-	reader := schema.NewStreamReader()
-
-	go func() {
-		defer func() {
-			_ = resp.Body.Close()
-			reader.Close()
-		}()
-
-		const maxBufferSize = 1 << 20
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, maxBufferSize), maxBufferSize)
-
-		var msg schema.Message
-		var streamResp StreamResponse
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				return
-			}
-
-			streamResp = StreamResponse{}
-			// 解析JSON
-			if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
-				reader.SetError(err)
-				continue
-			}
-
-			if len(streamResp.Choices) == 0 {
-				continue
-			}
-			choice := streamResp.Choices[0]
-
-			// 设置角色（第一条有效）
-			if choice.Delta.Role != "" {
-				msg.Role = schema.RoleType(choice.Delta.Role)
-
-			}
-
-			if choice.Delta.Content != "" {
-				msg.Content = choice.Delta.Content
-			} else {
-				msg.Content = ""
-			}
-
-			if choice.Delta.ReasoningContent != "" {
-				msg.ReasoningContent = choice.Delta.ReasoningContent
-			} else {
-				msg.ReasoningContent = ""
-			}
-
-			if len(choice.Delta.ToolCalls) > 0 {
-				for _, tc := range choice.Delta.ToolCalls {
-					idx := tc.Index
-					for len(msg.ToolCalls) <= idx {
-						msg.ToolCalls = append(msg.ToolCalls, schema.ToolCall{})
-					}
-					if tc.Function.Arguments != "" {
-						msg.ToolCalls[idx].Function.Arguments += tc.Function.Arguments
-					}
-					if tc.ID != "" {
-						msg.ToolCalls[idx].ID = tc.ID
-					}
-					if tc.Type != "" {
-						msg.ToolCalls[idx].Type = tc.Type
-					}
-					if tc.Function.Name != "" {
-						msg.ToolCalls[idx].Function.Name = tc.Function.Name
-					}
-				}
-			}
-
-			// 安全赋值 usage
-			if streamResp.Choices[0].Usage != nil {
-				reader.Usage = *streamResp.Choices[0].Usage
-			}
-
-			// 发送到通道
-			reader.Send(msg.Clone())
-		}
-	}()
-
-	return reader, nil
-}
-
+// Stream 流式生成
 func (c *Client) Stream(ctx context.Context, in []*schema.Message) (*schema.StreamReader, error) {
-	c.RequestBody.Messages = toAPIMessages(in)
-	c.RequestBody.Stream = true
+	c.requestBody.Messages = toAPIMessages(in)
+	c.requestBody.Stream = true
 
-	if c.RequestBody.StreamOptions == nil {
-		c.RequestBody.StreamOptions = &StreamOptions{
-			IncludeUsage: true,
-		}
+	if c.requestBody.StreamOptions == nil {
+		c.requestBody.StreamOptions = &StreamOptions{IncludeUsage: true}
 	}
 
 	req, err := c.genRequest()
 	if err != nil {
 		return nil, err
 	}
-
 	req = req.WithContext(ctx)
 
 	resp, err := c.cli.Do(req)
@@ -306,14 +155,33 @@ func (c *Client) Stream(ctx context.Context, in []*schema.Message) (*schema.Stre
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
+		resp.Body.Close()
 		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	reader, err := StreamReception(resp)
-	if err != nil {
-		return nil, err
-	}
+	return streamResponse(resp), nil
+}
 
-	return reader, nil
+// toAPIMessages 将 schema.Message 列表转换为 OpenAI API 格式
+func toAPIMessages(messages []*schema.Message) []APIMessage {
+	result := make([]APIMessage, len(messages))
+	for i, m := range messages {
+		am := APIMessage{
+			Role:             string(m.Role),
+			Content:          m.Content,
+			ReasoningContent: m.ReasoningContent,
+			Name:             m.Name,
+		}
+
+		if m.Role == schema.AssistantRole && len(m.ToolCalls) > 0 {
+			am.ToolCalls = m.ToolCalls
+		}
+
+		if m.Role == schema.ToolRole {
+			am.ToolCallID = m.ToolCallID
+		}
+
+		result[i] = am
+	}
+	return result
 }

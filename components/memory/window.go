@@ -103,7 +103,7 @@ func (wm *WindowManager) Truncate(msgs []*schema.Message) []*schema.Message {
 		return msgs
 	}
 
-	// 分离 System 消息和对话消息
+	// 分离 System 和对话消息
 	var systemMsgs []*schema.Message
 	var convMsgs []*schema.Message
 	for _, m := range msgs {
@@ -118,53 +118,58 @@ func (wm *WindowManager) Truncate(msgs []*schema.Message) []*schema.Message {
 		return systemMsgs
 	}
 
-	// 先应用数量限制
+	// 应用数量限制
 	if wm.config.MaxHistoryMessages > 0 && len(convMsgs) > wm.config.MaxHistoryMessages {
 		convMsgs = convMsgs[len(convMsgs)-wm.config.MaxHistoryMessages:]
 	}
 
-	// 再应用 Token 限制（可能进一步截断）
+	// 应用 Token 限制
 	if wm.config.MaxHistoryTokens > 0 {
 		convMsgs = wm.truncateByTokens(convMsgs)
 	}
 
-	// 修复工具链：丢弃失去上下文的 ToolResult
-	// （如果第一条保留的是 ToolRole，说明其对应的 assistant tool_call 被截掉了）
+	// 修复工具链完整性：如果第一条是 ToolRole，丢弃它（对应 assistant tool_call 已被截断）
 	for len(convMsgs) > 0 && convMsgs[0].Role == schema.ToolRole {
 		convMsgs = convMsgs[1:]
 	}
 
-	// 合并 System + 截断后的对话
+	// 修复工具链完整性：如果末尾是 assistant + tool_calls，但对应的 tool result 已被截断
+	// 不需要处理这种情况——Agent 循环会处理未完成的工具调用
+
+	// 合并
 	result := make([]*schema.Message, 0, len(systemMsgs)+len(convMsgs))
 	result = append(result, systemMsgs...)
 	result = append(result, convMsgs...)
 	return result
 }
 
-// truncateByTokens 按 Token 数截断，保留尾部（最近的消息）
+// truncateByTokens 按 Token 数截断，保留尾部
+// 修复：从尾部向前累加，精确找到能放入的起始位置
 func (wm *WindowManager) truncateByTokens(msgs []*schema.Message) []*schema.Message {
 	maxTokens := wm.config.MaxHistoryTokens
 	if maxTokens <= 0 {
 		return msgs
 	}
 
+	// 从尾部向前累加 token，找到能装下的最早消息
 	total := 0
-	start := len(msgs) // 需要丢弃的起始索引
+	start := len(msgs)
 
-	// 从尾部往前累加，找到能装下的起始位置
 	for i := len(msgs) - 1; i >= 0; i-- {
 		tokens := wm.estimator.Estimate(msgs[i])
-		if total+tokens > maxTokens && start == len(msgs) {
+		if total+tokens > maxTokens {
 			start = i + 1
+			break
 		}
 		total += tokens
+		// 如果已经遍历到第一条，说明全部能放下
+		if i == 0 {
+			start = 0
+		}
 	}
 
-	if total <= maxTokens {
-		return msgs
-	}
 	if start >= len(msgs) {
-		// 极端情况：连一条完整消息都放不下，保留最后一条（避免空上下文）
+		// 极端情况：连一条都放不下，保留最后一条
 		return msgs[len(msgs)-1:]
 	}
 	return msgs[start:]

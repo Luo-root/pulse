@@ -3,52 +3,54 @@ package chatmodel
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Luo-root/pulse/components/schema"
-	"github.com/Luo-root/pulse/components/stream"
 )
 
-// MockResponse 定义 Mock 模型的响应行为
+// ============================================================================
+// MockResponse
+// ============================================================================
+
+// MockResponse 定义 Mock 模型的单次响应行为
 type MockResponse struct {
-	// 响应消息内容
-	Content string
-	// 推理内容（reasoning）
-	ReasoningContent string
-	// 工具调用列表
-	ToolCalls []schema.ToolCall
-	// 模拟延迟
-	Delay time.Duration
-	// 是否返回错误
-	Error error
+	Content          string            // 文本内容
+	ReasoningContent string            // 推理内容
+	ToolCalls        []schema.ToolCall // 工具调用
+	Delay            time.Duration     // 模拟延迟
+	Error            error             // 是否返回错误
 }
 
-// MockModel 是一个用于测试的模拟模型实现
-// 它不需要真实的 API Key 和网络请求，可以精确控制响应行为
+// ============================================================================
+// MockModel
+// ============================================================================
+
+// MockModel 用于测试的模拟模型
+// 不需要真实 API Key 和网络请求，可精确控制响应行为
 type MockModel struct {
 	mu sync.RWMutex
 
-	// 预设的响应队列，每次调用按顺序取出一个
+	// 预设响应队列，按顺序取出
 	responses []MockResponse
-	// 当前响应索引
+	// 当前索引
 	currentIdx int
-	// 是否循环使用响应（到达末尾后从头开始）
+	// 循环使用
 	loop bool
 
-	// 记录所有接收到的输入消息（用于断言验证）
+	// 记录所有输入消息（用于断言）
 	recordedInputs [][]*schema.Message
 
-	// 自定义响应生成函数（优先级高于 responses 队列）
-	// 如果设置了这个函数，每次调用都会使用此函数生成响应
+	// 自定义函数（优先级最高）
 	generateFunc func(ctx context.Context, input []*schema.Message) (*schema.Message, error)
 	streamFunc   func(ctx context.Context, input []*schema.Message) (*schema.StreamReader, error)
 
-	// 模型名称（用于 UsageTracker）
+	// 模型名称
 	modelName string
 }
 
-// NewMockModel 创建一个新的 Mock 模型
+// NewMockModel 创建空的 Mock 模型
 func NewMockModel() *MockModel {
 	return &MockModel{
 		responses:      make([]MockResponse, 0),
@@ -57,12 +59,16 @@ func NewMockModel() *MockModel {
 	}
 }
 
-// NewMockModelWithResponses 创建带有预设响应的 Mock 模型
+// NewMockModelWithResponses 创建带预设响应的 Mock 模型
 func NewMockModelWithResponses(responses ...MockResponse) *MockModel {
 	m := NewMockModel()
 	m.responses = responses
 	return m
 }
+
+// ============================================================================
+// 配置方法
+// ============================================================================
 
 // SetLoop 设置是否循环使用响应队列
 func (m *MockModel) SetLoop(loop bool) {
@@ -71,42 +77,47 @@ func (m *MockModel) SetLoop(loop bool) {
 	m.loop = loop
 }
 
-// AddResponse 向响应队列追加一个预设响应
+// AddResponse 追加一个预设响应
 func (m *MockModel) AddResponse(resp MockResponse) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.responses = append(m.responses, resp)
 }
 
-// SetGenerateFunc 设置自定义 Generate 函数
+// SetGenerateFunc 设置自定义 Generate 函数（优先于响应队列）
 func (m *MockModel) SetGenerateFunc(fn func(ctx context.Context, input []*schema.Message) (*schema.Message, error)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.generateFunc = fn
 }
 
-// SetStreamFunc 设置自定义 Stream 函数
+// SetStreamFunc 设置自定义 Stream 函数（优先于响应队列）
 func (m *MockModel) SetStreamFunc(fn func(ctx context.Context, input []*schema.Message) (*schema.StreamReader, error)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.streamFunc = fn
 }
 
-// SetModelName 设置模型名称（用于 UsageTracker）
+// SetModelName 设置模型名称
 func (m *MockModel) SetModelName(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.modelName = name
 }
 
-// GetRecordedInputs 获取所有记录到的输入消息（用于测试断言）
+// ============================================================================
+// 断言辅助方法
+// ============================================================================
+
+// GetRecordedInputs 获取所有记录的输入消息（深拷贝）
 func (m *MockModel) GetRecordedInputs() [][]*schema.Message {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
 	result := make([][]*schema.Message, len(m.recordedInputs))
-	for i, inputs := range m.recordedInputs {
-		copied := make([]*schema.Message, len(inputs))
-		for j, msg := range inputs {
+	for i, msgs := range m.recordedInputs {
+		copied := make([]*schema.Message, len(msgs))
+		for j, msg := range msgs {
 			cloned := msg.Clone()
 			copied[j] = &cloned
 		}
@@ -115,10 +126,11 @@ func (m *MockModel) GetRecordedInputs() [][]*schema.Message {
 	return result
 }
 
-// GetLastInput 获取最后一次接收到的输入消息
+// GetLastInput 获取最后一次输入消息
 func (m *MockModel) GetLastInput() []*schema.Message {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
 	if len(m.recordedInputs) == 0 {
 		return nil
 	}
@@ -131,14 +143,14 @@ func (m *MockModel) GetLastInput() []*schema.Message {
 	return result
 }
 
-// GetCallCount 获取被调用的次数
+// GetCallCount 获取调用次数
 func (m *MockModel) GetCallCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.recordedInputs)
 }
 
-// Reset 重置 Mock 状态（清空记录和索引）
+// Reset 重置状态
 func (m *MockModel) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -146,35 +158,22 @@ func (m *MockModel) Reset() {
 	m.recordedInputs = make([][]*schema.Message, 0)
 }
 
-// nextResponse 获取下一个响应
-func (m *MockModel) nextResponse() MockResponse {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if len(m.responses) == 0 {
-		return MockResponse{
-			Content: "mock default response",
-		}
-	}
-
-	resp := m.responses[m.currentIdx]
-	m.currentIdx++
-
-	if m.currentIdx >= len(m.responses) {
-		if m.loop {
-			m.currentIdx = 0
-		} else {
-			m.currentIdx = len(m.responses) // 保持在末尾，后续调用使用最后一个响应
-		}
-	}
-
-	return resp
+// GetModelName 返回模型名称
+func (m *MockModel) GetModelName() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.modelName
 }
 
-// recordInput 记录输入消息
+// ============================================================================
+// 内部方法
+// ============================================================================
+
+// recordInput 记录输入（深拷贝）
 func (m *MockModel) recordInput(input []*schema.Message) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	copied := make([]*schema.Message, len(input))
 	for i, msg := range input {
 		cloned := msg.Clone()
@@ -183,20 +182,58 @@ func (m *MockModel) recordInput(input []*schema.Message) {
 	m.recordedInputs = append(m.recordedInputs, copied)
 }
 
+// nextResponse 取下一个响应
+func (m *MockModel) nextResponse() MockResponse {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.responses) == 0 {
+		return MockResponse{Content: "mock default response"}
+	}
+
+	if m.currentIdx >= len(m.responses) {
+		if m.loop {
+			m.currentIdx = 0
+		} else {
+			// 超出队列后始终返回最后一个
+			return m.responses[len(m.responses)-1]
+		}
+	}
+
+	resp := m.responses[m.currentIdx]
+	m.currentIdx++
+	return resp
+}
+
+// buildMessage 从 MockResponse 构建 schema.Message
+func buildMessage(resp MockResponse) *schema.Message {
+	return &schema.Message{
+		Role:             schema.AssistantRole,
+		Content:          resp.Content,
+		ReasoningContent: resp.ReasoningContent,
+		ToolCalls:        resp.ToolCalls,
+	}
+}
+
+// ============================================================================
+// Generate / Stream 实现
+// ============================================================================
+
 // Generate 实现 BaseModel 接口
 func (m *MockModel) Generate(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
 	m.recordInput(input)
 
-	// 如果设置了自定义函数，优先使用
+	// 自定义函数优先
 	m.mu.RLock()
-	genFunc := m.generateFunc
+	fn := m.generateFunc
 	m.mu.RUnlock()
-	if genFunc != nil {
-		return genFunc(ctx, input)
+	if fn != nil {
+		return fn(ctx, input)
 	}
 
 	resp := m.nextResponse()
 
+	// 模拟延迟
 	if resp.Delay > 0 {
 		select {
 		case <-time.After(resp.Delay):
@@ -209,24 +246,19 @@ func (m *MockModel) Generate(ctx context.Context, input []*schema.Message) (*sch
 		return nil, resp.Error
 	}
 
-	return &schema.Message{
-		Role:             schema.AssistantRole,
-		Content:          resp.Content,
-		ReasoningContent: resp.ReasoningContent,
-		ToolCalls:        resp.ToolCalls,
-	}, nil
+	return buildMessage(resp), nil
 }
 
 // Stream 实现 BaseModel 接口
 func (m *MockModel) Stream(ctx context.Context, input []*schema.Message) (*schema.StreamReader, error) {
 	m.recordInput(input)
 
-	// 如果设置了自定义函数，优先使用
+	// 自定义函数优先
 	m.mu.RLock()
-	streamFn := m.streamFunc
+	fn := m.streamFunc
 	m.mu.RUnlock()
-	if streamFn != nil {
-		return streamFn(ctx, input)
+	if fn != nil {
+		return fn(ctx, input)
 	}
 
 	resp := m.nextResponse()
@@ -235,12 +267,13 @@ func (m *MockModel) Stream(ctx context.Context, input []*schema.Message) (*schem
 		return nil, resp.Error
 	}
 
-	// 创建流式读取器，模拟逐字输出
-	reader, writer := stream.PipeStreamReader()
+	// 用 schema.NewStreamReader 创建读写通道
+	reader := schema.NewStreamReader()
 
 	go func() {
-		defer writer.Close()
+		defer reader.Close()
 
+		// 模拟延迟
 		if resp.Delay > 0 {
 			select {
 			case <-time.After(resp.Delay):
@@ -249,32 +282,32 @@ func (m *MockModel) Stream(ctx context.Context, input []*schema.Message) (*schem
 			}
 		}
 
-		// 如果有 reasoning content，先发送
+		// 1. 推理内容
 		if resp.ReasoningContent != "" {
-			writer.Send(&schema.Message{
+			reader.Send(schema.Message{
 				Role:             schema.AssistantRole,
 				ReasoningContent: resp.ReasoningContent,
 			})
 		}
 
-		// 分块发送内容（模拟流式）
-		content := resp.Content
-		chunkSize := 4 // 每块4个字符
-		for i := 0; i < len(content); i += chunkSize {
-			end := i + chunkSize
-			if end > len(content) {
-				end = len(content)
+		// 2. 文本内容分块发送（模拟逐字流式）
+		if resp.Content != "" {
+			chunkSize := 4
+			for i := 0; i < len(resp.Content); i += chunkSize {
+				end := i + chunkSize
+				if end > len(resp.Content) {
+					end = len(resp.Content)
+				}
+				reader.Send(schema.Message{
+					Role:    schema.AssistantRole,
+					Content: resp.Content[i:end],
+				})
 			}
-			chunk := content[i:end]
-			writer.Send(&schema.Message{
-				Role:    schema.AssistantRole,
-				Content: chunk,
-			})
 		}
 
-		// 如果有工具调用，最后发送
+		// 3. 工具调用
 		if len(resp.ToolCalls) > 0 {
-			writer.Send(&schema.Message{
+			reader.Send(schema.Message{
 				Role:      schema.AssistantRole,
 				ToolCalls: resp.ToolCalls,
 			})
@@ -284,23 +317,16 @@ func (m *MockModel) Stream(ctx context.Context, input []*schema.Message) (*schem
 	return reader, nil
 }
 
-// GetModelName 返回模型名称（用于 UsageTracker）
-func (m *MockModel) GetModelName() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.modelName
-}
-
 // ============================================================================
-// 预设响应构建器（方便测试使用）
+// MockResponse 构建器
 // ============================================================================
 
-// MockTextResponse 创建纯文本响应
+// MockTextResponse 纯文本响应
 func MockTextResponse(content string) MockResponse {
 	return MockResponse{Content: content}
 }
 
-// MockReasoningResponse 创建带推理内容的响应
+// MockReasoningResponse 带推理的响应
 func MockReasoningResponse(content, reasoning string) MockResponse {
 	return MockResponse{
 		Content:          content,
@@ -308,25 +334,15 @@ func MockReasoningResponse(content, reasoning string) MockResponse {
 	}
 }
 
-// MockToolCallResponse 创建工具调用响应
+// MockToolCallResponse 工具调用响应
 func MockToolCallResponse(toolName string, args map[string]any) MockResponse {
 	argsJSON := "{}"
 	if args != nil {
-		// 简单 JSON 序列化
-		pairs := make([]string, 0, len(args))
+		var pairs []string
 		for k, v := range args {
 			pairs = append(pairs, fmt.Sprintf(`"%s":"%v"`, k, v))
 		}
-		if len(pairs) > 0 {
-			argsJSON = "{"
-			for i, p := range pairs {
-				if i > 0 {
-					argsJSON += ","
-				}
-				argsJSON += p
-			}
-			argsJSON += "}"
-		}
+		argsJSON = "{" + strings.Join(pairs, ",") + "}"
 	}
 
 	return MockResponse{
@@ -343,25 +359,21 @@ func MockToolCallResponse(toolName string, args map[string]any) MockResponse {
 	}
 }
 
-// MockErrorResponse 创建错误响应
+// MockErrorResponse 错误响应
 func MockErrorResponse(err error) MockResponse {
 	return MockResponse{Error: err}
 }
 
-// MockDelayedResponse 创建带延迟的响应
+// MockDelayedResponse 带延迟的响应
 func MockDelayedResponse(content string, delay time.Duration) MockResponse {
-	return MockResponse{
-		Content: content,
-		Delay:   delay,
-	}
+	return MockResponse{Content: content, Delay: delay}
 }
 
 // ============================================================================
-// 常见测试场景辅助函数
+// 预置场景
 // ============================================================================
 
-// NewWeatherMockModel 创建一个模拟天气助手的 Mock 模型
-// 第一次调用返回工具调用，第二次调用返回天气结果
+// NewWeatherMockModel 天气助手：第一次返回工具调用，第二次返回结果
 func NewWeatherMockModel() *MockModel {
 	return NewMockModelWithResponses(
 		MockToolCallResponse("get_weather", map[string]any{"city": "北京"}),
@@ -369,11 +381,10 @@ func NewWeatherMockModel() *MockModel {
 	)
 }
 
-// NewEchoMockModel 创建一个回声 Mock 模型（返回用户输入的内容）
+// NewEchoMockModel 回声模型：返回用户最后一条消息
 func NewEchoMockModel() *MockModel {
 	m := NewMockModel()
 	m.SetGenerateFunc(func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
-		// 找到最后一条用户消息并回显
 		var userContent string
 		for i := len(input) - 1; i >= 0; i-- {
 			if input[i].Role == schema.UserRole {
@@ -389,7 +400,7 @@ func NewEchoMockModel() *MockModel {
 	return m
 }
 
-// NewStreamingMockModel 创建一个模拟流式输出的 Mock 模型
+// NewStreamingMockModel 流式模型
 func NewStreamingMockModel(content string) *MockModel {
 	m := NewMockModel()
 	m.AddResponse(MockTextResponse(content))
