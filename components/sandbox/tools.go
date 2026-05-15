@@ -34,7 +34,7 @@ func RegisterSandboxTools(registry *tools.ToolRegistry, sb Sandbox) error {
 	}
 
 	if err := registry.Register(tools.ToolMetadata{
-		Name:        "sandbox/execute_code",
+		Name:        "sandbox-execute_code",
 		Description: buildExecuteDesc(sb),
 		Parameters:  executeSchema,
 		Category:    "sandbox",
@@ -60,7 +60,7 @@ func RegisterSandboxTools(registry *tools.ToolRegistry, sb Sandbox) error {
 	}
 
 	if err := registry.Register(tools.ToolMetadata{
-		Name: "sandbox/run_command",
+		Name: "sandbox-run_command",
 		Description: "在沙箱中执行 shell 命令。" +
 			"适合运行系统命令、安装依赖、文件操作等。有超时和输出大小限制。",
 		Parameters: commandSchema,

@@ -31,9 +31,11 @@ type SkillFrontmatter struct {
 	// 自定义扩展
 	Category string   `yaml:"category"`
 	Tags     []string `yaml:"tags"`
-	Timeout  int      `yaml:"timeout"` // 秒
-	Language string   `yaml:"language"`
-	EnvVars  string   `yaml:"env_vars"` // 新增：空格分隔的环境变量名，如 "SERPER_API_KEY GOOGLE_CX"
+	Timeout  int      `yaml:"timeout"`  // 秒
+	EnvVars  string   `yaml:"env_vars"` // 新增：空格分隔的环境变量名
+	// 新增：独立代码文件路径（相对于 Skill 目录）
+	Script   string `yaml:"script"`
+	Language string `yaml:"language"` // python, go, node, shell（默认 go）
 }
 
 // CodeBlock 代码块
@@ -43,7 +45,8 @@ type CodeBlock struct {
 }
 
 // ParseSkillMarkdown 解析 Skill Markdown 文档
-func ParseSkillMarkdown(content string, sb sandbox.Sandbox) (*Skill, error) {
+// skillDir 为 Skill 所在目录，用于定位 script 文件（可为空）
+func ParseSkillMarkdown(content string, sb sandbox.Sandbox, skillDir string) (*Skill, error) {
 	fm, body, err := parseFrontmatter(content)
 	if err != nil {
 		return nil, fmt.Errorf("parse frontmatter failed: %w", err)
@@ -55,32 +58,48 @@ func ParseSkillMarkdown(content string, sb sandbox.Sandbox) (*Skill, error) {
 		lang = "go"
 	}
 
-	codeBlocks := extractCodeBlocks(body)
 	var handler tools.ToolHandler
 
-	if len(codeBlocks) > 0 && sb != nil {
-		for _, cb := range codeBlocks {
-			// 支持多种语言的代码块
-			blockLang := cb.Language
-			if blockLang == "golang" {
-				blockLang = "go"
-			}
-			// frontmatter 的 language 优先，否则用代码块标记的语言
-			if blockLang == "" {
-				blockLang = lang
-			}
-
-			handler, err = compileHandler(sb, blockLang, cb.Code)
+	// 优先级1：从独立文件加载代码（script 字段）
+	if fm.Script != "" && skillDir != "" {
+		scriptPath := filepath.Join(skillDir, fm.Script)
+		codeBytes, err := os.ReadFile(scriptPath)
+		if err != nil {
+			return nil, fmt.Errorf("read script file %s: %w", fm.Script, err)
+		}
+		// 从文件扩展名推断语言，覆盖 frontmatter 的 language
+		scriptLang := langFromExt(filepath.Ext(fm.Script))
+		if scriptLang != "" {
+			lang = scriptLang
+		}
+		if sb != nil {
+			handler, err = compileHandler(sb, lang, string(codeBytes))
 			if err != nil {
-				return nil, fmt.Errorf("compile handler failed: %w", err)
+				return nil, fmt.Errorf("compile script %s: %w", fm.Script, err)
 			}
-			break
 		}
 	}
 
-	timeout := time.Duration(fm.Timeout) * time.Second
-	if timeout == 0 {
-		timeout = 30 * time.Second
+	// 优先级2：从内嵌代码块加载（向后兼容）
+	if handler == nil {
+		codeBlocks := extractCodeBlocks(body)
+		if len(codeBlocks) > 0 && sb != nil {
+			for _, cb := range codeBlocks {
+				blockLang := cb.Language
+				if blockLang == "golang" {
+					blockLang = "go"
+				}
+				// frontmatter 的 language 优先，否则用代码块标记的语言
+				if blockLang == "" {
+					blockLang = lang
+				}
+				handler, err = compileHandler(sb, blockLang, cb.Code)
+				if err != nil {
+					return nil, fmt.Errorf("compile handler failed: %w", err)
+				}
+				break
+			}
+		}
 	}
 
 	// 解析 allowed-tools
@@ -113,9 +132,11 @@ func ParseSkillMarkdown(content string, sb sandbox.Sandbox) (*Skill, error) {
 		Parameters:    params,
 		Category:      fm.Category,
 		Tags:          fm.Tags,
-		Timeout:       timeout,
+		Timeout:       time.Duration(fm.Timeout) * time.Second,
 		Handler:       handler,
 		EnvVars:       envVars,
+		Language:      lang,
+		Script:        fm.Script, // 新增
 	}
 
 	// 判断类型
@@ -131,6 +152,22 @@ func ParseSkillMarkdown(content string, sb sandbox.Sandbox) (*Skill, error) {
 	}
 
 	return skill, nil
+}
+
+// langFromExt 从文件扩展名推断语言
+func langFromExt(ext string) string {
+	switch ext {
+	case ".py":
+		return "python"
+	case ".js":
+		return "node"
+	case ".go":
+		return "go"
+	case ".sh", ".bat":
+		return "shell"
+	default:
+		return ""
+	}
 }
 
 // parseFrontmatter 解析 YAML Frontmatter
@@ -160,24 +197,72 @@ func parseFrontmatter(content string) (*SkillFrontmatter, string, error) {
 func extractCodeBlocks(content string) []CodeBlock {
 	var blocks []CodeBlock
 
-	// 正则匹配 ```lang\ncode\n```
-	// 使用 (?s) 标志使 . 匹配换行符
-	re := regexp.MustCompile("(?s)```(\\w+)?\\n(.*?)\\n```")
-	matches := re.FindAllStringSubmatch(content, -1)
+	startMarker := "```"
+	endMarker := "```"
 
-	for _, match := range matches {
-		lang := ""
-		if len(match) > 1 {
-			lang = match[1]
+	pos := 0
+	for {
+		// 找开始的 ```
+		startIdx := strings.Index(content[pos:], startMarker)
+		if startIdx == -1 {
+			break
 		}
-		code := ""
-		if len(match) > 2 {
-			code = strings.TrimSpace(match[2])
+		startIdx += pos
+
+		// 跳过开始标记
+		afterStart := startIdx + len(startMarker)
+
+		// 提取语言标识（同一行，在 ``` 之后到换行之前）
+		lineEnd := strings.IndexAny(content[afterStart:], "\r\n")
+		if lineEnd == -1 {
+			break
 		}
-		blocks = append(blocks, CodeBlock{
-			Language: lang,
-			Code:     code,
-		})
+
+		lang := strings.TrimSpace(content[afterStart : afterStart+lineEnd])
+
+		// 跳过语言标识行末的换行符（\r\n 或 \n）
+		codeStart := afterStart + lineEnd
+		for codeStart < len(content) && (content[codeStart] == '\r' || content[codeStart] == '\n') {
+			codeStart++
+		}
+
+		// 找结束的 ```
+		// 从 codeStart 开始搜索，找独占一行的 ```
+		remaining := content[codeStart:]
+		endIdx := -1
+		searchPos := 0
+		for searchPos < len(remaining) {
+			nextClose := strings.Index(remaining[searchPos:], endMarker)
+			if nextClose == -1 {
+				break
+			}
+			// 验证 ``` 独占一行（前面是行首或换行，后面是行末或换行）
+			absIdx := searchPos + nextClose
+			atLineStart := absIdx == 0 || remaining[absIdx-1] == '\n' || remaining[absIdx-1] == '\r'
+			closeEnd := absIdx + len(endMarker)
+			atLineEnd := closeEnd >= len(remaining) || remaining[closeEnd] == '\n' || remaining[closeEnd] == '\r'
+
+			if atLineStart && atLineEnd {
+				endIdx = absIdx
+				break
+			}
+			searchPos = absIdx + 1
+		}
+
+		if endIdx == -1 {
+			break
+		}
+
+		code := strings.TrimSpace(remaining[:endIdx])
+		if lang != "" || code != "" {
+			blocks = append(blocks, CodeBlock{
+				Language: lang,
+				Code:     code,
+			})
+		}
+
+		// 继续搜索下一个代码块
+		pos = codeStart + endIdx + len(endMarker)
 	}
 
 	return blocks
@@ -236,12 +321,24 @@ func parseSkillOutput(stdout string) any {
 	if stdout == "" {
 		return ""
 	}
-	// 尝试解析为 JSON
-	var parsed any
-	if err := json.Unmarshal([]byte(stdout), &parsed); err == nil {
-		return parsed
+
+	// 按行分割，逐行尝试 JSON 解析
+	lines := strings.Split(stdout, "\n")
+
+	// 只取第一个非空行尝试 JSON 解析
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var parsed any
+		if err := json.Unmarshal([]byte(line), &parsed); err == nil {
+			return parsed
+		}
+		// 第一个非空行不是 JSON，说明是纯文本，返回全部内容
+		return stdout
 	}
-	// 不是 JSON 就返回原始文本
+
 	return stdout
 }
 
@@ -371,7 +468,12 @@ func wrapPythonCode(code string) string {
 		return code
 	}
 
-	// 模式2: 有 def handler(args) → 加 main 入口
+	// 模式2: 自包含代码（自己读 SKILL_ARGS 并 print 结果）→ 直接用
+	if strings.Contains(trimmed, "SKILL_ARGS") {
+		return code
+	}
+
+	// 模式3: 有 def handler(args) → 加 main 入口
 	if strings.Contains(trimmed, "def handler") {
 		return trimmed + `
 
@@ -379,11 +481,12 @@ import json, os
 if __name__ == "__main__":
     args = json.loads(os.environ.get("SKILL_ARGS", "{}"))
     result = handler(args)
-    print(json.dumps(result) if not isinstance(result, str) else result)
+    if result is not None:
+        print(json.dumps(result) if not isinstance(result, str) else result)
 `
 	}
 
-	// 模式3: 裸代码
+	// 模式4: 裸代码 → 包装成 handler + main
 	return fmt.Sprintf(`import json, os
 def handler(args):
 %s
@@ -391,38 +494,47 @@ def handler(args):
 if __name__ == "__main__":
     args = json.loads(os.environ.get("SKILL_ARGS", "{}"))
     result = handler(args)
-    print(json.dumps(result) if not isinstance(result, str) else result)
+    if result is not None:
+        print(json.dumps(result) if not isinstance(result, str) else result)
 `, indentPython(code))
 }
 
 func wrapNodeCode(code string) string {
 	trimmed := strings.TrimSpace(code)
 
+	// 模式1: 已有 process 相关代码 → 直接用
 	if strings.Contains(trimmed, "process.argv") || strings.Contains(trimmed, "process.env") {
 		return code
 	}
 
+	// 模式2: 自包含代码（自己读 SKILL_ARGS）→ 直接用
+	if strings.Contains(trimmed, "SKILL_ARGS") {
+		return code
+	}
+
+	// 模式3: 有 function handler → 加 main 入口
 	if strings.Contains(trimmed, "function handler") || strings.Contains(trimmed, "const handler") {
 		return trimmed + `
 
 const args = JSON.parse(process.env.SKILL_ARGS || '{}');
 const result = handler(args);
 if (result instanceof Promise) {
-    result.then(r => console.log(typeof r === 'string' ? r : JSON.stringify(r)));
-} else {
+    result.then(r => { if (r != null) console.log(typeof r === 'string' ? r : JSON.stringify(r)); });
+} else if (result != null) {
     console.log(typeof result === 'string' ? result : JSON.stringify(result));
 }
 `
 	}
 
+	// 模式4: 裸代码 → 包装成 handler + main
 	return fmt.Sprintf(`function handler(args) {
 %s
 }
 const args = JSON.parse(process.env.SKILL_ARGS || '{}');
 const result = handler(args);
 if (result instanceof Promise) {
-    result.then(r => console.log(typeof r === 'string' ? r : JSON.stringify(r)));
-} else {
+    result.then(r => { if (r != null) console.log(typeof r === 'string' ? r : JSON.stringify(r)); });
+} else if (result != null) {
     console.log(typeof result === 'string' ? result : JSON.stringify(result));
 }
 `, code)
@@ -487,10 +599,27 @@ func (sl *SkillLoader) Register(skill Skill) error {
 	}
 
 	if handler != nil {
-		// 包装 handler，在执行前注入调用者身份
 		callerName := skill.Name
+		requiredEnv := skill.EnvVars // 捕获当前值
+
 		wrappedHandler := func(ctx context.Context, args map[string]any) (any, error) {
+			// 注入调用者身份（AllowedTools 钩子需要）
 			ctx = context.WithValue(ctx, SkillCallerKey, callerName)
+
+			// 检查必需的环境变量
+			if len(requiredEnv) > 0 {
+				var missing []string
+				for _, key := range requiredEnv {
+					if os.Getenv(key) == "" {
+						missing = append(missing, key)
+					}
+				}
+				if len(missing) > 0 {
+					return nil, fmt.Errorf("skill %q requires environment variables: %s",
+						callerName, strings.Join(missing, ", "))
+				}
+			}
+
 			return handler(ctx, args)
 		}
 
@@ -506,7 +635,6 @@ func (sl *SkillLoader) Register(skill Skill) error {
 			return err
 		}
 
-		// 注册 AllowedTools 钩子
 		if len(skill.AllowedTools) > 0 {
 			sl.registerAllowedToolsHook(skill.Name, skill.AllowedTools)
 		}
@@ -560,12 +688,19 @@ func (sl *SkillLoader) LoadFromFile(path string) error {
 		return fmt.Errorf("read skill file failed: %w", err)
 	}
 
-	return sl.LoadFromString(string(content))
+	// 传入 Skill 所在目录，用于定位 script 文件
+	skillDir := filepath.Dir(path)
+	return sl.LoadFromStringWithDir(string(content), skillDir)
 }
 
-// LoadFromString 从字符串加载 Skill
+// LoadFromString 从字符串加载 Skill（无目录上下文，script 字段将被忽略）
 func (sl *SkillLoader) LoadFromString(content string) error {
-	skill, err := ParseSkillMarkdown(content, sl.sandbox)
+	return sl.LoadFromStringWithDir(content, "")
+}
+
+// LoadFromStringWithDir 从字符串加载 Skill，指定目录上下文
+func (sl *SkillLoader) LoadFromStringWithDir(content string, skillDir string) error {
+	skill, err := ParseSkillMarkdown(content, sl.sandbox, skillDir)
 	if err != nil {
 		return err
 	}

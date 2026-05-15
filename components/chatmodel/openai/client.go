@@ -73,7 +73,7 @@ type RequestBody struct {
 	// 是否以流式方式返回响应，默认 false
 	Stream bool `json:"stream,omitempty"`
 	// 流式响应选项
-	StreamOptions StreamOptions `json:"stream_options,omitempty"`
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
 	// 模型可调用的工具列表, 最大长度 128
 	Tools []Tool `json:"tools,omitempty"`
 	// 用于缓存相似请求的响应以优化缓存命中率。给长系统提示词 / 长记忆做缓存,让速度变快、省钱
@@ -285,6 +285,12 @@ func StreamReception(resp *http.Response) (*schema.StreamReader, error) {
 func (c *Client) Stream(ctx context.Context, in []*schema.Message) (*schema.StreamReader, error) {
 	c.RequestBody.Messages = toAPIMessages(in)
 	c.RequestBody.Stream = true
+
+	if c.RequestBody.StreamOptions == nil {
+		c.RequestBody.StreamOptions = &StreamOptions{
+			IncludeUsage: true,
+		}
+	}
 
 	req, err := c.genRequest()
 	if err != nil {

@@ -33,7 +33,7 @@ type ChatModelConfig struct {
 	// 是否以流式方式返回响应，默认 false
 	Stream bool `json:"stream,omitempty"`
 	// 流式响应选项
-	StreamOptions StreamOptions `json:"stream_options,omitempty"`
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
 	// 模型可调用的工具列表, 最大长度 128
 	Tools []schema.Tool `json:"-"`
 	// 用于缓存相似请求的响应以优化缓存命中率。给长系统提示词 / 长记忆做缓存,让速度变快、省钱
@@ -102,8 +102,8 @@ const (
 type ThinkingKeepEnum string
 
 const (
-	Null ThinkingType = "null"
-	All  ThinkingType = "all"
+	Null ThinkingKeepEnum = "null"
+	All  ThinkingKeepEnum = "all"
 )
 
 type Thinking struct {
