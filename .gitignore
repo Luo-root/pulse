@@ -2,6 +2,7 @@
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
 #
 # Binaries for programs and plugins
+*.pptx
 *.exe
 *.exe~
 *.dll
@@ -28,5 +29,14 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
+.idea/
 # .vscode/
+
+# Database files
+*.db
+
+# Test files - do not commit test code
+*_test.go
+
+# Skills directory (if managed separately)
+skills/
