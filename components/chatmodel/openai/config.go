@@ -72,7 +72,7 @@ func WrapTools(tools []schema.Tool) []Tool {
 
 // ChatModelConfig OpenAI 兼容 API 配置
 type ChatModelConfig struct {
-	BaseUrl string
+	BaseURL string
 	APIKey  string
 	Model   string
 
