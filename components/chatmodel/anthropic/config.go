@@ -23,7 +23,7 @@ type ChatModelConfig struct {
 	Tools []schema.Tool `json:"-"`
 
 	// Thinking（扩展思考）
-	Thinking *ThinkingConfig `json:"thinking,omitempty"`
+	Thinking *Thinking `json:"thinking,omitempty"`
 
 	// 流式
 	Stream bool `json:"stream,omitempty"`
@@ -33,24 +33,32 @@ type ChatModelConfig struct {
 	HTTPClient *http.Client `json:"-"`
 }
 
-// ThinkingConfig Anthropic 扩展思考配置
-type ThinkingConfig struct {
-	Type         string `json:"type"`                    // "enabled"
-	BudgetTokens int    `json:"budget_tokens,omitempty"` // 思考预算
+// ThinkingType 思考能力开关
+type ThinkingType string
+
+const (
+	Enabled  ThinkingType = "enabled"
+	Disabled ThinkingType = "disabled"
+)
+
+// Thinking Anthropic 扩展思考配置
+type Thinking struct {
+	Type         ThinkingType `json:"type"`                    // "enabled"
+	BudgetTokens int          `json:"budget_tokens,omitempty"` // 思考预算
 }
 
 // APIRequest Anthropic API 请求结构
 type APIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []APIMessage    `json:"messages"`
-	MaxTokens   int             `json:"max_tokens"`
-	System      string          `json:"system,omitempty"` // 顶层系统提示
-	Temperature float64         `json:"temperature,omitempty"`
-	TopP        float64         `json:"top_p,omitempty"`
-	TopK        int             `json:"top_k,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Tools       []APITool       `json:"tools,omitempty"`
-	Thinking    *ThinkingConfig `json:"thinking,omitempty"`
+	Model       string       `json:"model"`
+	Messages    []APIMessage `json:"messages"`
+	MaxTokens   int          `json:"max_tokens"`
+	System      string       `json:"system,omitempty"` // 顶层系统提示
+	Temperature float64      `json:"temperature,omitempty"`
+	TopP        float64      `json:"top_p,omitempty"`
+	TopK        int          `json:"top_k,omitempty"`
+	Stream      bool         `json:"stream,omitempty"`
+	Tools       []APITool    `json:"tools,omitempty"`
+	Thinking    *Thinking    `json:"thinking,omitempty"`
 }
 
 // APIMessage Anthropic API 消息格式

@@ -5,6 +5,5 @@ func RegisterAll(registry *ToolRegistry) {
 	RegisterFileTools(registry)
 	RegisterCommandTools(registry)
 	RegisterEnvTools(registry)
-	RegisterWebTools(registry)
 	RegisterUserConfigTools(registry)
 }

@@ -53,9 +53,13 @@ type ToolResult struct {
 }
 
 type Usage struct {
-	PromptTokens uint64 `json:"prompt_tokens"`
-	Completion   uint64 `json:"completion"`
-	TotalTokens  uint64 `json:"total_tokens"`
+	PromptTokens        uint64 `json:"prompt_tokens"`
+	CompletionTokens    uint64 `json:"completion_tokens"`
+	TotalTokens         uint64 `json:"total_tokens"`
+	CachedTokens        uint64 `json:"cached_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens uint64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
 }
 
 // Clone 深拷贝
@@ -72,15 +76,27 @@ func (m *Message) Clone() Message {
 	// 深拷贝切片
 	if m.ToolCalls != nil {
 		cloned.ToolCalls = make([]ToolCall, len(m.ToolCalls))
-		copy(cloned.ToolCalls, m.ToolCalls)
+		for i, tc := range m.ToolCalls {
+			cloned.ToolCalls[i] = ToolCall{
+				ID:    tc.ID,
+				Type:  tc.Type,
+				Index: tc.Index,
+				Function: FunctionCall{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				},
+			}
+		}
 	}
 
 	// 深拷贝指针
 	if m.Usage != nil {
 		cloned.Usage = &Usage{
-			PromptTokens: m.Usage.PromptTokens,
-			Completion:   m.Usage.Completion,
-			TotalTokens:  m.Usage.TotalTokens,
+			PromptTokens:        m.Usage.PromptTokens,
+			CompletionTokens:    m.Usage.CompletionTokens,
+			TotalTokens:         m.Usage.TotalTokens,
+			CachedTokens:        m.Usage.CachedTokens,
+			PromptTokensDetails: m.Usage.PromptTokensDetails,
 		}
 	}
 
@@ -278,7 +294,7 @@ func FormatMessages(messages []*Message) string {
 
 		if msg.Usage != nil {
 			builder.WriteString(fmt.Sprintf("💰 Token 使用: 提示=%d, 完成=%d, 总计=%d\n",
-				msg.Usage.PromptTokens, msg.Usage.Completion, msg.Usage.TotalTokens))
+				msg.Usage.PromptTokens, msg.Usage.CompletionTokens, msg.Usage.TotalTokens))
 		}
 
 		builder.WriteString("\n")

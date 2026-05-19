@@ -166,7 +166,7 @@ func DefaultGormStoreConfig() *GormStoreConfig {
 		LogLevel:            logger.Warn,
 		DisableVectorSearch: false,
 		EmbeddingDimension:  768,
-		RecallMode:          RecallModeAuto,
+		RecallMode:          RecallModeCombined,
 		CombinedWeights:     DefaultCombinedWeights(),
 		ChunkSize:           512, // 大约对应 256 token
 		ChunkOverlap:        64,

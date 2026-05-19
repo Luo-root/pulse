@@ -119,9 +119,9 @@ func streamResponse(resp *http.Response) *schema.StreamReader {
 				// 消息级别更新（stop_reason, usage 等）
 				if event.Usage != nil {
 					reader.Usage = schema.Usage{
-						PromptTokens: uint64(event.Usage.InputTokens),
-						Completion:   uint64(event.Usage.OutputTokens),
-						TotalTokens:  uint64(event.Usage.InputTokens + event.Usage.OutputTokens),
+						PromptTokens:     uint64(event.Usage.InputTokens),
+						CompletionTokens: uint64(event.Usage.OutputTokens),
+						TotalTokens:      uint64(event.Usage.InputTokens + event.Usage.OutputTokens),
 					}
 				}
 

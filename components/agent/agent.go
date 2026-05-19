@@ -15,7 +15,7 @@ import (
 )
 
 // DefaultMaxToolRounds 默认最大工具调用轮次
-const DefaultMaxToolRounds = 10
+const DefaultMaxToolRounds int = 20
 
 // AgentInterface 统一接口
 type AgentInterface interface {
@@ -65,6 +65,10 @@ func NewAgent(model chatmodel.BaseModel, registry *tools.ToolRegistry, opts ...A
 	}
 	for _, opt := range opts {
 		opt(ag)
+	}
+
+	if ag.sessionID == "" {
+		ag.sessionID = "default"
 	}
 
 	if ag.memoryController == nil {
@@ -197,6 +201,16 @@ func (ag *Agent) readStream(reader *schema.StreamReader, onChunk func(msg *schem
 		}
 	}
 
+	if reader.Usage.TotalTokens > 0 {
+		fullMsg.Usage = &schema.Usage{
+			PromptTokens:        reader.Usage.PromptTokens,
+			CompletionTokens:    reader.Usage.CompletionTokens,
+			TotalTokens:         reader.Usage.TotalTokens,
+			CachedTokens:        reader.Usage.CachedTokens,
+			PromptTokensDetails: reader.Usage.PromptTokensDetails,
+		}
+	}
+
 	return fullMsg, nil
 }
 
@@ -231,9 +245,11 @@ func (ag *Agent) recordUsageFromReader(reader *schema.StreamReader, startTime ti
 		return
 	}
 	usage := schema.Usage{
-		PromptTokens: reader.Usage.PromptTokens,
-		Completion:   reader.Usage.Completion,
-		TotalTokens:  reader.Usage.TotalTokens,
+		PromptTokens:        reader.Usage.PromptTokens,
+		CompletionTokens:    reader.Usage.CompletionTokens,
+		TotalTokens:         reader.Usage.TotalTokens,
+		CachedTokens:        reader.Usage.CachedTokens,
+		PromptTokensDetails: reader.Usage.PromptTokensDetails,
 	}
 	ag.usageTracker.Record(usage, ag.getModelName(), time.Since(startTime))
 }

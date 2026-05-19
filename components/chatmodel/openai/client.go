@@ -51,7 +51,7 @@ type Client struct {
 
 // NewClient 创建 OpenAI 兼容客户端
 func NewClient(config *ChatModelConfig) *Client {
-	baseURL := strings.TrimRight(config.BaseUrl, "/") + "/chat/completions"
+	baseURL := strings.TrimRight(config.BaseURL, "/") + "/chat/completions"
 
 	cli := config.HTTPClient
 	if cli == nil {

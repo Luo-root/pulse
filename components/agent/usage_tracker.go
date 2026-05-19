@@ -84,26 +84,9 @@ func (ut *UsageTracker) Record(usage schema.Usage, model string, duration time.D
 
 	record := UsageRecord{
 		PromptTokens:     usage.PromptTokens,
-		CompletionTokens: usage.Completion,
+		CompletionTokens: usage.CompletionTokens,
 		TotalTokens:      usage.TotalTokens,
-		Model:            model,
-		Timestamp:        time.Now(),
-		Duration:         duration,
-	}
-
-	ut.records = append(ut.records, record)
-}
-
-// RecordWithCached 记录一次模型调用（含缓存信息）
-func (ut *UsageTracker) RecordWithCached(usage schema.Usage, cachedTokens uint64, model string, duration time.Duration) {
-	ut.mu.Lock()
-	defer ut.mu.Unlock()
-
-	record := UsageRecord{
-		PromptTokens:     usage.PromptTokens,
-		CompletionTokens: usage.Completion,
-		TotalTokens:      usage.TotalTokens,
-		CachedTokens:     cachedTokens,
+		CachedTokens:     usage.CachedTokens,
 		Model:            model,
 		Timestamp:        time.Now(),
 		Duration:         duration,

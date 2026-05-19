@@ -243,9 +243,9 @@ func toSchemaMessage(resp *APIResponse) *schema.Message {
 
 	// 转换 Usage
 	msg.Usage = &schema.Usage{
-		PromptTokens: uint64(resp.Usage.InputTokens),
-		Completion:   uint64(resp.Usage.OutputTokens),
-		TotalTokens:  uint64(resp.Usage.InputTokens + resp.Usage.OutputTokens),
+		PromptTokens:     uint64(resp.Usage.InputTokens),
+		CompletionTokens: uint64(resp.Usage.OutputTokens),
+		TotalTokens:      uint64(resp.Usage.InputTokens + resp.Usage.OutputTokens),
 	}
 
 	return msg
