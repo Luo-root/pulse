@@ -3,8 +3,6 @@ package flowchart
 import (
 	"context"
 	"fmt"
-	"log"
-	"sort"
 	"sync"
 
 	"github.com/Luo-root/pulse/components/flow"
@@ -83,8 +81,9 @@ func (w *Workflow) Input(key string, value any) error {
 	return nil
 }
 
-// Run 运行工作流（阻塞直到完成）
-func (w *Workflow) Run(Input map[string]any) error {
+// Run 运行工作流（阻塞直到所有节点完成）
+// 所有节点同时提交到协程池，通过 FlowContext.Wait 自行等待依赖就绪
+func (w *Workflow) Run(input map[string]any) error {
 	if err := w.prepareRun(); err != nil {
 		return err
 	}
@@ -94,21 +93,12 @@ func (w *Workflow) Run(Input map[string]any) error {
 		w.mu.Unlock()
 	}()
 
-	for k, v := range Input {
+	for k, v := range input {
 		w.ctx.Set(k, v)
 	}
 
-	// 预检 + 拓扑分层
-	layers, err := w.buildDAG()
-	if err != nil {
-		return fmt.Errorf("workflow validation failed: %w", err)
-	}
-
-	// 按层执行
-	for _, layer := range layers {
-		if err := w.runLayer(layer); err != nil {
-			return err
-		}
+	if err := w.submitAll(); err != nil {
+		return err
 	}
 
 	return w.ctx.Err()
@@ -120,31 +110,18 @@ func (w *Workflow) Start() error {
 		return err
 	}
 
-	// 预检 + 拓扑分层
-	layers, err := w.buildDAG()
-	if err != nil {
-		w.mu.Lock()
-		w.running = false
-		w.mu.Unlock()
-		return fmt.Errorf("workflow validation failed: %w", err)
-	}
-
-	go func() {
-		for _, layer := range layers {
-			if err := w.runLayer(layer); err != nil {
-				break
-			}
-		}
+	if err := w.submitAll(); err != nil {
 		w.mu.Lock()
 		w.running = false
 		w.mu.Unlock()
 		close(w.doneCh)
-	}()
+		return err
+	}
 
 	return nil
 }
 
-// Wait 阻塞等待工作流完成（事件驱动，无轮询）
+// Wait 阻塞等待工作流完成
 func (w *Workflow) Wait() error {
 	<-w.doneCh
 	return w.ctx.Err()
@@ -170,32 +147,49 @@ func (w *Workflow) prepareRun() error {
 	return nil
 }
 
-// runLayer 并行执行一层中的所有节点
-func (w *Workflow) runLayer(layer []node.Node) error {
+// submitAll 将所有节点提交到协程池，数据驱动执行顺序
+func (w *Workflow) submitAll() error {
+	if len(w.nodes) == 0 {
+		w.mu.Lock()
+		w.running = false
+		w.mu.Unlock()
+		close(w.doneCh)
+		return fmt.Errorf("workflow has no nodes")
+	}
+
 	var wg sync.WaitGroup
 
-	for _, n := range layer {
-		nodeCopy := n
+	for _, n := range w.nodes {
+		n := n
 		wg.Add(1)
 		err := w.pool.Submit(func() {
 			defer wg.Done()
-			w.RunNode(nodeCopy)
+			w.RunNode(n)
 		})
 		if err != nil {
 			wg.Done()
 			w.ctx.Cancel(flow.ErrWorkflowSubmitNodeToPool)
 			wg.Wait()
+			w.mu.Lock()
+			w.running = false
+			w.mu.Unlock()
+			close(w.doneCh)
 			return flow.ErrWorkflowSubmitNodeToPool
 		}
 	}
 
-	wg.Wait()
+	// 异步等待完成后关闭 doneCh（Start 需要），Run 直接阻塞在这里
+	go func() {
+		wg.Wait()
+		w.mu.Lock()
+		w.running = false
+		w.mu.Unlock()
+		close(w.doneCh)
+	}()
 
-	// 层间错误检查：任意节点失败，后续层不再执行
-	if err := w.ctx.Err(); err != nil {
-		return err
-	}
-
+	// Start 调用时不阻塞，Run 调用时外部通过 Wait 或直接返回前等待
+	// 但 Run 需要同步返回，所以这里阻塞
+	<-w.doneCh
 	return nil
 }
 
@@ -259,8 +253,8 @@ func (w *Workflow) RunNode(n node.Node) {
 	}
 
 	// After 阶段
-	for _, a := range traditional {
-		a.After(w.ctx, n, runErr)
+	for i := len(traditional) - 1; i >= 0; i-- {
+		traditional[i].After(w.ctx, n, runErr)
 	}
 
 	// 写入输出
@@ -269,159 +263,6 @@ func (w *Workflow) RunNode(n node.Node) {
 			w.ctx.Set(k, v)
 		}
 	}
-}
-
-// ============================================================================
-// DAG 构建与验证
-// ============================================================================
-
-// buildDAG 从节点声明的 Inputs/Outputs 构建依赖图，执行拓扑排序，返回分层结果
-// 不声明 Inputs/Outputs 的节点不参与排序，直接放入第一层（它们通过 FlowContext.Wait 自行等待）
-func (w *Workflow) buildDAG() ([][]node.Node, error) {
-	if len(w.nodes) == 0 {
-		return nil, fmt.Errorf("workflow has no nodes")
-	}
-
-	// 区分两类节点：
-	//  1. 声明了依赖的节点：参与 DAG 排序
-	//  2. 未声明依赖的节点：直接放入初始层
-	var dagNodes []node.Node
-	var freeNodes []node.Node
-
-	for _, n := range w.nodes {
-		if len(n.Inputs()) == 0 && len(n.Outputs()) == 0 {
-			freeNodes = append(freeNodes, n)
-		} else {
-			dagNodes = append(dagNodes, n)
-		}
-	}
-
-	// 如果没有声明依赖的节点，直接返回所有节点并行执行
-	if len(dagNodes) == 0 {
-		return [][]node.Node{w.nodes}, nil
-	}
-
-	// --- 构建生产者映射 ---
-	producers := make(map[string]string) // output key → node ID
-	for _, n := range dagNodes {
-		for _, out := range n.Outputs() {
-			if existing, exists := producers[out]; exists {
-				return nil, fmt.Errorf(
-					"duplicate output key %q: produced by both %q and %q",
-					out, existing, n.ID(),
-				)
-			}
-			producers[out] = n.ID()
-		}
-	}
-
-	// --- 验证依赖 ---
-	for _, n := range dagNodes {
-		for _, in := range n.Inputs() {
-			_, hasProducer := producers[in]
-			isReady := w.ctx.IsReady(in) // 已通过 Input() 设置
-			if !hasProducer && !isReady {
-				log.Printf("[workflow] warning: node %q depends on key %q, but no node produces it and it's not a provided input", n.ID(), in)
-			}
-		}
-	}
-
-	// --- 构建邻接表和入度表 ---
-	nodeMap := make(map[string]node.Node)
-	inDegree := make(map[string]int)
-	adjMap := make(map[string][]string) // node ID → 依赖的 node IDs
-
-	for _, n := range dagNodes {
-		nodeMap[n.ID()] = n
-		inDegree[n.ID()] = 0
-		adjMap[n.ID()] = []string{}
-	}
-
-	for _, n := range dagNodes {
-		for _, in := range n.Inputs() {
-			producerID, hasProducer := producers[in]
-			if hasProducer && producerID != n.ID() {
-				adjMap[n.ID()] = append(adjMap[n.ID()], producerID)
-				inDegree[n.ID()]++
-			}
-		}
-	}
-
-	// --- 拓扑排序（Kahn 算法）---
-	var queue []string
-	for _, n := range dagNodes {
-		if inDegree[n.ID()] == 0 {
-			queue = append(queue, n.ID())
-		}
-	}
-
-	var sorted []string
-	for len(queue) > 0 {
-		sort.Strings(queue) // 保证确定性
-		id := queue[0]
-		queue = queue[1:]
-		sorted = append(sorted, id)
-
-		for _, n := range dagNodes {
-			if n.ID() == id {
-				continue
-			}
-			for _, dep := range adjMap[n.ID()] {
-				if dep == id {
-					inDegree[n.ID()]--
-					if inDegree[n.ID()] == 0 {
-						queue = append(queue, n.ID())
-					}
-				}
-			}
-		}
-	}
-
-	if len(sorted) != len(dagNodes) {
-		return nil, fmt.Errorf("cycle detected in node dependencies")
-	}
-
-	// --- 分层 ---
-	depth := make(map[string]int)
-	for _, id := range sorted {
-		if len(adjMap[id]) == 0 {
-			depth[id] = 0
-			continue
-		}
-		maxDep := -1
-		for _, dep := range adjMap[id] {
-			if d, ok := depth[dep]; ok && d > maxDep {
-				maxDep = d
-			}
-		}
-		depth[id] = maxDep + 1
-	}
-
-	maxDepth := 0
-	for _, d := range depth {
-		if d > maxDepth {
-			maxDepth = d
-		}
-	}
-
-	layers := make([][]node.Node, maxDepth+1)
-	for id, d := range depth {
-		layers[d] = append(layers[d], nodeMap[id])
-	}
-
-	// freeNodes 放入第一层（并行执行，自行等待）
-	if len(freeNodes) > 0 {
-		layers[0] = append(layers[0], freeNodes...)
-	}
-
-	// 每层内按 ID 排序，保证确定性
-	for i := range layers {
-		sort.Slice(layers[i], func(a, b int) bool {
-			return layers[i][a].ID() < layers[i][b].ID()
-		})
-	}
-
-	return layers, nil
 }
 
 // ============================================================================

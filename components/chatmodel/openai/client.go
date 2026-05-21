@@ -130,7 +130,9 @@ func (c *Client) Generate(ctx context.Context, in []*schema.Message) (*schema.Me
 		return nil, fmt.Errorf("empty choices in response, body: %s", string(body))
 	}
 
-	return &modelResp.Choices[0].Message, nil
+	msg := modelResp.Choices[0].Message
+	msg.Usage = &modelResp.Usage
+	return &msg, nil
 }
 
 // Stream 流式生成

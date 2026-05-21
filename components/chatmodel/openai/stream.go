@@ -46,6 +46,10 @@ func streamResponse(resp *http.Response) *schema.StreamReader {
 				continue
 			}
 
+			if streamResp.Usage != nil {
+				reader.Usage = *streamResp.Usage
+			}
+
 			if len(streamResp.Choices) == 0 {
 				continue
 			}
@@ -88,11 +92,6 @@ func streamResponse(resp *http.Response) *schema.StreamReader {
 						msg.ToolCalls[idx].Function.Name = tc.Function.Name
 					}
 				}
-			}
-
-			// Usage
-			if streamResp.Choices[0].Usage != nil {
-				reader.Usage = *streamResp.Choices[0].Usage
 			}
 
 			reader.Send(msg.Clone())

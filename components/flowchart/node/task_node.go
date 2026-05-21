@@ -79,27 +79,36 @@ func NewTaskNode(plannerNodeID string, task Task, agent agent.AgentInterface) *S
 
 开始执行！
 `, task.ID, task.Description, inputsInfoStr, buildOutputExample(task.Outputs))
+
 			resp, err := agent.Send(*ctx.GetContext(), prompt)
 			if err != nil {
 				taskStateModifyFailed(plan, task.ID)
 				taskModifyError(plan, task.ID, err.Error())
-				// 使用 SetOrUpdate 确保计划状态变更能被正确传播
 				ctx.SetOrUpdate(planName, plan)
-				return nil, err
+				// --- FIX: 软失败，返回 nil error，不触发 ctx.Cancel ---
+				// 同时将输出 key 写 nil，防止下游节点永久阻塞在 WaitAll
+				nilOutputs := make(map[string]any, len(task.Outputs))
+				for _, out := range task.Outputs {
+					nilOutputs[out] = nil
+				}
+				return nilOutputs, nil
 			}
 
 			result, err := parseDynamicJSON(resp.Content)
 			if err != nil {
 				taskStateModifyFailed(plan, task.ID)
 				taskModifyError(plan, task.ID, err.Error())
-				// 使用 SetOrUpdate 确保计划状态变更能被正确传播
 				ctx.SetOrUpdate(planName, plan)
-				return nil, err
+				// --- FIX: 同上 ---
+				nilOutputs := make(map[string]any, len(task.Outputs))
+				for _, out := range task.Outputs {
+					nilOutputs[out] = nil
+				}
+				return nilOutputs, nil
 			}
 
 			taskModifyResult(plan, task.ID, result)
 			taskStateModifySuccess(plan, task.ID)
-			// 使用 SetOrUpdate 确保计划状态变更能被正确传播
 			ctx.SetOrUpdate(planName, plan)
 			return result, nil
 		},

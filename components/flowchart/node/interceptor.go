@@ -9,7 +9,32 @@ import (
 )
 
 // ============================================================================
-// 1. RetryInterceptor —— 重试切面
+// ErrorSwallowInterceptor —— 错误吞没兜底
+// ============================================================================
+
+// ErrorSwallowInterceptor 拦截节点（或内层拦截器）返回的 error，执行降级逻辑。
+// 作为最外层拦截器使用，确保节点级别的错误不会传播到工作流层触发 ctx.Cancel。
+type ErrorSwallowInterceptor struct {
+	FallbackFunc func(ctx *flow.FlowContext, node Node, err error) (map[string]any, error)
+}
+
+func NewErrorSwallowInterceptor(fallback func(ctx *flow.FlowContext, node Node, err error) (map[string]any, error)) *ErrorSwallowInterceptor {
+	return &ErrorSwallowInterceptor{FallbackFunc: fallback}
+}
+
+func (e *ErrorSwallowInterceptor) Before(ctx *flow.FlowContext, node Node)           {}
+func (e *ErrorSwallowInterceptor) After(ctx *flow.FlowContext, node Node, err error) {}
+
+func (e *ErrorSwallowInterceptor) Around(ctx *flow.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
+	out, err := next()
+	if err != nil && e.FallbackFunc != nil {
+		return e.FallbackFunc(ctx, node, err)
+	}
+	return out, err
+}
+
+// ============================================================================
+// RetryInterceptor —— 重试切面
 // ============================================================================
 
 // RetryInterceptor 节点失败时自动重试
@@ -52,7 +77,7 @@ func (r *RetryInterceptor) Around(ctx *flow.FlowContext, node Node, next func() 
 }
 
 // ============================================================================
-// 2. TimeoutInterceptor —— 超时控制切面
+// TimeoutInterceptor —— 超时控制切面
 // ============================================================================
 
 // TimeoutInterceptor 限制节点执行时间，超时时返回错误
@@ -91,7 +116,7 @@ func (t *TimeoutInterceptor) Around(ctx *flow.FlowContext, node Node, next func(
 }
 
 // ============================================================================
-// 3. CircuitBreakerInterceptor —— 熔断降级切面
+// CircuitBreakerInterceptor —— 熔断降级切面
 // ============================================================================
 
 // CircuitState 熔断器状态
@@ -210,7 +235,7 @@ func (cb *CircuitBreakerInterceptor) recordResult(err error) {
 }
 
 // ============================================================================
-// 4. RecoveryInterceptor —— 全局异常捕获与兜底切面
+// RecoveryInterceptor —— 全局异常捕获与兜底切面
 // ============================================================================
 
 // RecoveryInterceptor 捕获 panic 并执行兜底逻辑，防止单个节点拖垮整个工作流。

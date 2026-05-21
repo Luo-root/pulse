@@ -22,14 +22,14 @@ type Choice struct {
 // StreamResponse 流式响应
 type StreamResponse struct {
 	Choices []StreamChoice `json:"choices"`
+	Usage   *schema.Usage  `json:"usage,omitempty"`
 }
 
 // StreamChoice 流式选项
 type StreamChoice struct {
-	Index        int           `json:"index"`
-	Delta        Delta         `json:"delta"`
-	FinishReason string        `json:"finish_reason"`
-	Usage        *schema.Usage `json:"usage,omitempty"`
+	Index        int    `json:"index"`
+	Delta        Delta  `json:"delta"`
+	FinishReason string `json:"finish_reason"`
 }
 
 // Delta 流式增量

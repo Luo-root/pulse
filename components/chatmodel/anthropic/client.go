@@ -246,6 +246,7 @@ func toSchemaMessage(resp *APIResponse) *schema.Message {
 		PromptTokens:     uint64(resp.Usage.InputTokens),
 		CompletionTokens: uint64(resp.Usage.OutputTokens),
 		TotalTokens:      uint64(resp.Usage.InputTokens + resp.Usage.OutputTokens),
+		CachedTokens:     uint64(resp.Usage.CacheReadInputTokens),
 	}
 
 	return msg
