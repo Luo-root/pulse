@@ -77,12 +77,6 @@ func UserConfig(ctx context.Context, args map[string]any) (any, error) {
 	}
 }
 
-// getConfig, setConfig, listConfigKeys 不变（和你现有代码一样）
-
-// ============================================================================
-// 以下函数保持不变
-// ============================================================================
-
 func listConfigKeys(ctx context.Context, db *gorm.DB, configType string) (any, error) {
 	var configs []Config
 	result := db.WithContext(ctx).
