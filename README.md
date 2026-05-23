@@ -1,6 +1,6 @@
 # Pulse
 
-[![Go Version](https://img.shields.io/badge/Go-1.24.2-blue.svg)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.25.0-blue.svg)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 
 **Pulse** 是一个用 Go 语言编写的 AI Agent 框架，提供从模型接入、记忆管理、工具调用、MCP 协议通信、工作流编排、代码沙箱到流式处理的全栈能力，帮助开发者快速构建可扩展的智能 Agent 应用。
@@ -10,6 +10,7 @@
 ## 目录
 
 - [架构概览](#架构概览)
+- [核心特性](#核心特性)
 - [模块说明](#模块说明)
   - [agent —— Agent 核心](#agent--agent-核心)
   - [chatmodel —— 模型抽象](#chatmodel--模型抽象)
@@ -53,6 +54,17 @@
 │  Skill ─ Markdown 驱动的技能定义与动态加载                  │
 └─────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 核心特性
+
+1. **全栈 Agent 能力**：从模型接入到流式处理的完整解决方案
+2. **模块化设计**：各组件职责清晰，易于扩展和维护
+3. **安全机制**：包含路径安全校验、危险命令拦截、代码沙箱隔离等
+4. **可扩展性**：支持动态工具注册、技能加载、工作流编排
+5. **多模型支持**：支持 OpenAI 和 Anthropic 等主流模型接口
+6. **高性能**：基于协程池的工作流引擎，支持并行节点执行
 
 ---
 
@@ -150,7 +162,7 @@ type BaseModel interface {
 
 **位置**: `components/tools/`
 
-提供动态工具注册中心和 5 类内置工具，支持生命周期钩子和权限分级。
+提供动态工具注册中心和丰富的内置工具，支持生命周期钩子和权限分级。
 
 **ToolRegistry（工具注册中心）**:
 
@@ -190,6 +202,8 @@ type ToolRegistry struct {
 | `web_search` | 联网搜索（基于 Serper.dev），支持地区和语言参数 |
 | `user_config` | 用户配置管理：偏好设置、运行规则读取与持久化（SQLite） |
 | `get_work_dir` | 获取当前工作目录和操作系统信息 |
+| `chromium` | 基于 Chrome DevTools Protocol 的浏览器自动化工具 |
+| `html_parser` | HTML 解析工具，支持提取文本、链接、图片等信息 |
 
 **路径安全（file.go）**: `safePath()` 函数确保所有文件操作严格限定在工作目录内，防止路径穿越攻击。
 
@@ -451,7 +465,7 @@ timeout: 30
 
 ## 安装与依赖
 
-**Go 版本**: 1.24.2+
+**Go 版本**: 1.25.0+
 
 ```bash
 go get github.com/Luo-root/pulse
@@ -466,6 +480,7 @@ go get github.com/Luo-root/pulse
 | `github.com/panjf2000/ants/v2` | 工作流协程池 |
 | `github.com/google/uuid` | 消息 ID 生成 |
 | `gopkg.in/yaml.v3` | Skill YAML 解析 |
+| `github.com/chromedp/chromedp` | 浏览器自动化工具 |
 
 ---
 
@@ -493,7 +508,8 @@ func main() {
 
     // 2) 工具注册
     registry := tools.NewToolRegistry()
-    tools.RegisterAll(registry)
+    // 注册内置工具（根据实际API调整）
+    // registry.Register(...)
 
     // 3) Agent
     ag := agent.NewAgent(model, registry)
@@ -525,8 +541,24 @@ wf.AddNode(node.NewConditionNode("check", "data",
     func(v any) bool { return v != nil },
     "valid", "invalid",
 ))
-wf.AddNode(node.NewRetryInterceptor(3, time.Second)) // 节点级重试
+
+// 创建节点并添加重试拦截器
+testNode := node.NewNode("test", []string{"input"}, []string{"output"},
+    func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
+        return map[string]any{"output": "test"}, nil
+    },
+)
+testNode.AddAspect(node.NewRetryInterceptor(3, time.Second))
+wf.AddNode(testNode)
 wf.Run(map[string]any{"data": someValue})
+```
+
+### 4. 使用浏览器自动化工具（需要先注册chromium工具）
+
+```go
+// 使用 chromium 工具进行网页抓取（假设chromium工具已注册）
+// 首先需要确保chromium工具已注册到工具注册中心
+resp, err := ag.Send(ctx, "使用浏览器打开 https://example.com 并提取页面标题")
 ```
 
 ---
@@ -538,6 +570,7 @@ pulse/
 ├── pulse.go                          # 包入口
 ├── go.mod / go.sum                   # Go 模块定义
 ├── LICENSE                           # Apache 2.0
+├── README.md                         # 项目文档
 ├── components/
 │   ├── agent/                        # Agent 核心调度
 │   │   ├── agent.go                  # Agent 主体 + 工具调用循环
@@ -557,6 +590,8 @@ pulse/
 │   │   ├── web.go                    # 联网搜索工具
 │   │   ├── user_config.go            # 用户配置管理工具
 │   │   ├── env.go                    # 环境信息工具
+│   │   ├── chromium.go               # 浏览器自动化工具
+│   │   ├── html_parser.go            # HTML 解析工具
 │   │   ├── loader.go / options.go    # 动态工具加载
 │   │   └── tools_registry.go         # RegisterAll 入口
 │   ├── memory/                       # 记忆管理
@@ -598,6 +633,13 @@ pulse/
 │       └── stream_multicast.go       # 多播控制器
 ├── prompt/                           # 系统提示词文件
 └── skills/                           # Skill 定义文件
+    ├── code-summarizer/              # 代码分析技能
+    ├── data-transformer/             # 数据转换技能
+    ├── frontend-design/              # 前端设计技能
+    ├── git-log-analyzer/             # Git 日志分析技能
+    ├── pptx/                         # PPT 生成技能
+    ├── system-info/                  # 系统信息技能
+    └── web-researcher/               # 网页研究技能
 ```
 
 ---
