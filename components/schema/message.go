@@ -17,6 +17,43 @@ const (
 	ToolRole      RoleType = "tool"
 )
 
+// ============================================================================
+// 多模态内容类型
+// ============================================================================
+
+// ContentPart 多模态内容片段
+type ContentPart struct {
+	Type     string    `json:"type"`                // "text" 或 "image_url"
+	Text     string    `json:"text,omitempty"`      // type="text"
+	ImageURL *ImageURL `json:"image_url,omitempty"` // type="image_url"
+}
+
+// ImageURL 图片信息
+type ImageURL struct {
+	URL    string `json:"url"`              // http(s)://... 或 data:image/png;base64,...
+	Detail string `json:"detail,omitempty"` // "low", "high", "auto"
+}
+
+// TextPart 创建文本片段
+func TextPart(text string) ContentPart {
+	return ContentPart{Type: "text", Text: text}
+}
+
+// ImagePart 创建图片片段（通过 URL）
+func ImagePart(url string) ContentPart {
+	return ContentPart{Type: "image_url", ImageURL: &ImageURL{URL: url}}
+}
+
+// ImagePartBase64 创建图片片段（通过 base64 数据）
+func ImagePartBase64(mediaType, base64Data string) ContentPart {
+	return ContentPart{
+		Type: "image_url",
+		ImageURL: &ImageURL{
+			URL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64Data),
+		},
+	}
+}
+
 type Message struct {
 	Role             RoleType `json:"role"`
 	Content          string   `json:"content,omitempty"`
@@ -26,6 +63,10 @@ type Message struct {
 	// 当设置为 true 时，表示这条消息是未完成的，模型需要继续生成这条消息的剩余内容。（可选）
 	Partial   bool       `json:"partial,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+
+	// 多模态内容：当非空时，序列化由 adapter 处理，Content 字段被忽略
+	// JSON 序列化标记为 "-"，各 provider adapter 自行转换为对应格式
+	ContentParts []ContentPart `json:"-"`
 
 	// tool 消息专用：关联到哪个 ToolCall
 	ToolCallID string `json:"tool_call_id,omitempty"`
@@ -62,6 +103,40 @@ type Usage struct {
 	} `json:"prompt_tokens_details"`
 }
 
+// IsMultimodal 是否包含多模态内容
+func (m *Message) IsMultimodal() bool {
+	return len(m.ContentParts) > 0
+}
+
+// TextContent 统一获取纯文本内容
+// 优先从 ContentParts 中提取所有文本片段拼接，否则返回 Content
+func (m *Message) TextContent() string {
+	if len(m.ContentParts) > 0 {
+		var parts []string
+		for _, p := range m.ContentParts {
+			if p.Type == "text" && p.Text != "" {
+				parts = append(parts, p.Text)
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+	return m.Content
+}
+
+// ImageCount 返回消息中的图片数量
+func (m *Message) ImageCount() int {
+	count := 0
+	for _, p := range m.ContentParts {
+		if p.Type == "image_url" {
+			count++
+		}
+	}
+	return count
+}
+
+// Clone 深拷贝
 // Clone 深拷贝
 func (m *Message) Clone() Message {
 	cloned := Message{
@@ -73,7 +148,6 @@ func (m *Message) Clone() Message {
 		ToolCallID:       m.ToolCallID,
 	}
 
-	// 深拷贝切片
 	if m.ToolCalls != nil {
 		cloned.ToolCalls = make([]ToolCall, len(m.ToolCalls))
 		for i, tc := range m.ToolCalls {
@@ -89,7 +163,20 @@ func (m *Message) Clone() Message {
 		}
 	}
 
-	// 深拷贝指针
+	if m.ContentParts != nil {
+		cloned.ContentParts = make([]ContentPart, len(m.ContentParts))
+		for i, p := range m.ContentParts {
+			cp := ContentPart{Type: p.Type, Text: p.Text}
+			if p.ImageURL != nil {
+				cp.ImageURL = &ImageURL{
+					URL:    p.ImageURL.URL,
+					Detail: p.ImageURL.Detail,
+				}
+			}
+			cloned.ContentParts[i] = cp
+		}
+	}
+
 	if m.Usage != nil {
 		cloned.Usage = &Usage{
 			PromptTokens:        m.Usage.PromptTokens,
@@ -117,6 +204,16 @@ func UserMessage(content string) *Message {
 		Role:    UserRole,
 		Content: content,
 	}
+}
+
+// UserMultimodalMessage 创建包含图片/文本混合内容的用户消息
+//
+//	msg := UserMultimodalMessage(
+//	    TextPart("请描述这张图片"),
+//	    ImagePartBase64("image/png", screenshotBase64),
+//	)
+func UserMultimodalMessage(parts ...ContentPart) *Message {
+	return &Message{Role: UserRole, ContentParts: parts}
 }
 
 // AssistantMessage 返回一个role为assistant的信息
@@ -263,11 +360,36 @@ func FormatMessages(messages []*Message) string {
 		}
 		builder.WriteString("\n")
 
-		content := msg.Content
-		if content == "" {
-			content = "(空)"
+		// 多模态内容
+		if msg.IsMultimodal() {
+			builder.WriteString("📎 多模态内容:\n")
+			for j, part := range msg.ContentParts {
+				switch part.Type {
+				case "text":
+					builder.WriteString(fmt.Sprintf("  [%d] 文本: %s\n", j, indentString(part.Text, "      ")))
+				case "image_url":
+					if part.ImageURL != nil {
+						url := part.ImageURL.URL
+						if len(url) > 80 {
+							url = url[:80] + "..."
+						}
+						builder.WriteString(fmt.Sprintf("  [%d] 图片: %s", j, url))
+						if part.ImageURL.Detail != "" {
+							builder.WriteString(fmt.Sprintf(" (detail=%s)", part.ImageURL.Detail))
+						}
+						builder.WriteString("\n")
+					}
+				default:
+					builder.WriteString(fmt.Sprintf("  [%d] %s\n", j, part.Type))
+				}
+			}
+		} else {
+			content := msg.Content
+			if content == "" {
+				content = "(空)"
+			}
+			builder.WriteString(fmt.Sprintf("📝 内容:\n%s\n", indentString(content, "  ")))
 		}
-		builder.WriteString(fmt.Sprintf("📝 内容:\n%s\n", indentString(content, "  ")))
 
 		if msg.ReasoningContent != "" {
 			builder.WriteString(fmt.Sprintf("💭 思考内容:\n%s\n", indentString(msg.ReasoningContent, "  ")))
@@ -304,12 +426,10 @@ func FormatMessages(messages []*Message) string {
 	return builder.String()
 }
 
-// PrintMessages 标准化打印 []*Message
 func PrintMessages(messages []*Message) {
 	fmt.Println(FormatMessages(messages))
 }
 
-// indentString 为多行字符串的每一行添加指定前缀（用于缩进）
 func indentString(s, prefix string) string {
 	if s == "" {
 		return prefix + "(空)"

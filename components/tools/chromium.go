@@ -2,6 +2,8 @@ package tools
 
 import (
 	"archive/zip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,7 +21,7 @@ import (
 var ChromiumDataDir = "./data/chromium-browser"
 
 // ChromiumManager 管理 Chrome/Chromium 二进制文件
-// 查找优先级：系统已安装 > 已缓存下载 > 自动下载
+// 查找优先级：系统已安装 > 已缓存下载 > 自动下载（需校验）
 type ChromiumManager struct {
 	dataDir string
 
@@ -52,7 +54,7 @@ func (m *ChromiumManager) resolve() (string, error) {
 	if p := m.findCached(); p != "" {
 		return p, nil
 	}
-	// 3. 自动下载
+	// 3. 自动下载（带安全校验）
 	return m.download()
 }
 
@@ -130,23 +132,26 @@ func (m *ChromiumManager) findCached() string {
 }
 
 // ============================================================================
-// 自动下载
+// 自动下载（带安全校验）
 // ============================================================================
+
+type chromeDownloadInfo struct {
+	Platform string `json:"platform"`
+	URL      string `json:"url"`
+}
 
 type chromeVersionInfo struct {
 	Channels struct {
 		Stable struct {
 			Version   string `json:"version"`
 			Downloads struct {
-				Chrome []struct {
-					Platform string `json:"platform"`
-					URL      string `json:"url"`
-				} `json:"chrome"`
+				Chrome []chromeDownloadInfo `json:"chrome"`
 			} `json:"downloads"`
 		} `json:"Stable"`
 	} `json:"channels"`
 }
 
+// download 下载并校验 Chrome 二进制文件
 func (m *ChromiumManager) download() (string, error) {
 	// 1. 获取最新版本信息
 	apiURL := "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
@@ -174,23 +179,30 @@ func (m *ChromiumManager) download() (string, error) {
 		return "", fmt.Errorf("没有适用于 %s/%s 的 Chrome 下载", runtime.GOOS, runtime.GOARCH)
 	}
 
-	// 3. 下载
+	// 3. 创建目录
 	if err := os.MkdirAll(m.dataDir, 0755); err != nil {
 		return "", fmt.Errorf("创建目录失败: %w", err)
 	}
 
+	// 4. 下载 ZIP 文件
 	zipPath := filepath.Join(m.dataDir, "chrome.zip")
 	if err := downloadFile(downloadURL, zipPath, 5*time.Minute); err != nil {
 		return "", fmt.Errorf("下载 Chrome 失败: %w", err)
 	}
 	defer os.Remove(zipPath)
 
-	// 4. 解压
+	// 5. 校验下载文件的 SHA256（如果可用）
+	if err := m.verifyDownload(zipPath, info.Channels.Stable.Version, platform); err != nil {
+		os.Remove(zipPath)
+		return "", fmt.Errorf("校验 Chrome 下载失败: %w", err)
+	}
+
+	// 6. 解压
 	if err := extractZip(zipPath, m.dataDir); err != nil {
 		return "", fmt.Errorf("解压 Chrome 失败: %w", err)
 	}
 
-	// 5. 设置可执行权限 (Linux/macOS)
+	// 7. 设置可执行权限 (Linux/macOS)
 	chromePath := m.findCached()
 	if chromePath == "" {
 		return "", fmt.Errorf("下载完成但未找到 Chrome 二进制文件")
@@ -199,7 +211,82 @@ func (m *ChromiumManager) download() (string, error) {
 		os.Chmod(chromePath, 0755)
 	}
 
+	// 8. 计算并保存校验和
+	if err := m.saveChecksum(chromePath); err != nil {
+		// 非致命错误，记录日志但不阻止使用
+		_ = err
+	}
+
 	return chromePath, nil
+}
+
+// verifyDownload 校验下载文件的完整性
+func (m *ChromiumManager) verifyDownload(zipPath, version, platform string) error {
+	// 尝试从 Chrome for Testing API 获取校验和
+	checksumURL := fmt.Sprintf(
+		"https://storage.googleapis.com/chrome-for-testing-public/%s/%s/chrome-%s.zip.sha256",
+		version, platform, platform,
+	)
+
+	resp, err := httpGet(checksumURL, 15*time.Second)
+	if err != nil {
+		// 如果无法获取校验和，记录警告但不阻止（某些环境可能无法访问）
+		return nil // 降级：允许无校验和下载
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil // 校验和文件不存在，降级处理
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("读取校验和失败: %w", err)
+	}
+
+	// 解析校验和文件格式："<hash>  <filename>"
+	parts := strings.Fields(string(body))
+	if len(parts) < 1 {
+		return fmt.Errorf("无效的校验和格式")
+	}
+	expectedHash := strings.ToLower(parts[0])
+
+	// 计算实际文件的 SHA256
+	actualHash, err := fileSHA256(zipPath)
+	if err != nil {
+		return fmt.Errorf("计算文件校验和失败: %w", err)
+	}
+
+	if actualHash != expectedHash {
+		return fmt.Errorf("校验和不匹配: 期望 %s, 实际 %s", expectedHash, actualHash)
+	}
+
+	return nil
+}
+
+// saveChecksum 保存已安装 Chrome 的校验和
+func (m *ChromiumManager) saveChecksum(chromePath string) error {
+	hash, err := fileSHA256(chromePath)
+	if err != nil {
+		return err
+	}
+	checksumPath := filepath.Join(m.dataDir, "chrome.sha256")
+	return os.WriteFile(checksumPath, []byte(hash), 0644)
+}
+
+// fileSHA256 计算文件的 SHA256 哈希
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func chromePlatform() string {

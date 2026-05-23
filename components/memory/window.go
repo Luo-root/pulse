@@ -40,26 +40,53 @@ type TokenEstimator interface {
 
 // defaultEstimator 默认估算器
 // 混合文本保守估算：平均 1 token ≈ 1.8 个 rune（中英文混合偏保守）
+// defaultEstimator 默认估算器
 type defaultEstimator struct{}
 
 func (e *defaultEstimator) Estimate(msg *schema.Message) int {
-	total := 0
-	total += len([]rune(msg.Content))
-	total += len([]rune(msg.ReasoningContent))
+	// ---- 文本 Token ----
+	textLen := 0
+	textLen += len([]rune(msg.Content))
+	textLen += len([]rune(msg.ReasoningContent))
 	for _, tc := range msg.ToolCalls {
-		total += len([]rune(tc.Function.Name))
-		total += len([]rune(tc.Function.Arguments))
+		textLen += len([]rune(tc.Function.Name))
+		textLen += len([]rune(tc.Function.Arguments))
 	}
-
 	if msg.ToolCallID != "" {
-		total += len([]rune(msg.ToolCallID))
+		textLen += len([]rune(msg.ToolCallID))
 	}
 
-	tokens := int(float64(total) / 1.8)
-	if tokens < 1 && total > 0 {
+	// ContentParts 中的文本也要计入
+	for _, part := range msg.ContentParts {
+		if part.Type == "text" {
+			textLen += len([]rune(part.Text))
+		}
+	}
+
+	textTokens := int(float64(textLen) / 1.8)
+
+	// ---- 图片 Token ----
+	// OpenAI 图片 Token 估算：
+	// - low detail: ~85 tokens/图
+	// - high detail: ~765+ tokens/图
+	// - base64 数据越大 → 越可能是高分辨率 → 越多 token
+	// 保守按 base64 长度 / 100 估算，最低 85
+	imageTokens := 0
+	for _, part := range msg.ContentParts {
+		if part.Type == "image_url" && part.ImageURL != nil {
+			perImage := len(part.ImageURL.URL) / 100
+			if perImage < 85 {
+				perImage = 85
+			}
+			imageTokens += perImage
+		}
+	}
+
+	total := textTokens + imageTokens
+	if total < 1 && (textLen > 0 || imageTokens > 0) {
 		return 1
 	}
-	return tokens
+	return total
 }
 
 // WindowManager 对话窗口管理器

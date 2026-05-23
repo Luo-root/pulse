@@ -2,10 +2,10 @@ package tools
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -63,12 +63,14 @@ func WebFetch(ctx context.Context, args map[string]any) (any, error) {
 		}
 		result["headers"] = h
 	default:
-		result["content"] = htmlToText(string(body))
+		result["content"] = htmlToTextV2(string(body))
 	}
 
 	return result, nil
 }
 
+// htmlToText 使用正则表达式和字符串操作将 HTML 转换为纯文本
+// 已弃用：请使用 htmlToTextV2（基于 golang.org/x/net/html 解析器）
 func htmlToText(s string) string {
 	// 去掉 script / style / noscript 块
 	lower := strings.ToLower(s)
@@ -226,9 +228,34 @@ func WebBrowse(ctx context.Context, args map[string]any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		result["screenshot"] = base64.StdEncoding.EncodeToString(buf)
-		result["format"] = "png"
-		result["encoding"] = "base64"
+
+		var tmpFile *os.File
+		outputPath, hasOutputPath := args["output_path"].(string)
+
+		if hasOutputPath && outputPath != "" {
+			tmpFile, err = os.Create(outputPath)
+			if err != nil {
+				return nil, fmt.Errorf("create output file: %w", err)
+			}
+		} else {
+			tmpFile, err = os.CreateTemp("", "pulse-screenshot-*.png")
+			if err != nil {
+				return nil, fmt.Errorf("save screenshot: %w", err)
+			}
+		}
+
+		if _, err := tmpFile.Write(buf); err != nil {
+			tmpFile.Close()
+			if !hasOutputPath || outputPath == "" {
+				os.Remove(tmpFile.Name())
+			}
+			return nil, err
+		}
+		tmpFile.Close()
+
+		result["screenshot_path"] = tmpFile.Name()
+		result["size_bytes"] = len(buf)
+		result["content_type"] = "image/png"
 
 	case "click":
 		selector := args["selector"].(string)
@@ -334,6 +361,10 @@ var webBrowseParams = map[string]any{
 			"type":        "boolean",
 			"description": "screenshot 是否截取全页（默认 false）",
 		},
+		"output_path": map[string]any{
+			"type":        "string",
+			"description": "screenshot 输出文件路径（可选，不指定则自动生成临时文件）",
+		},
 		"submit": map[string]any{
 			"type":        "boolean",
 			"description": "type 后是否回车提交（默认 false）",
@@ -381,6 +412,7 @@ func RegisterWebTools(registry *ToolRegistry) {
 // session 管理
 // ============================================================================
 
+// browserSession 浏览器会话，支持上下文取消和超时控制
 type browserSession struct {
 	allocCtx    context.Context
 	allocCancel context.CancelFunc
@@ -388,6 +420,9 @@ type browserSession struct {
 	browCancel  context.CancelFunc
 	lastUsed    time.Time
 	url         string
+
+	// 会话级别的互斥锁，防止并发操作同一个 session
+	mu sync.Mutex
 }
 
 var (
@@ -403,8 +438,7 @@ func init() {
 			sessionsMu.Lock()
 			for id, s := range sessions {
 				if time.Since(s.lastUsed) > sessionTTL {
-					s.browCancel()
-					s.allocCancel()
+					s.close()
 					delete(sessions, id)
 				}
 			}
@@ -413,19 +447,40 @@ func init() {
 	}()
 }
 
-// runWithTimeout 直接在 session 的 browserCtx 上执行 chromedp 操作
-// 不创建子 context，避免 cancel 时干扰 chromedp 内部状态
-func (s *browserSession) runWithTimeout(timeout time.Duration, actions ...chromedp.Action) error {
-	done := make(chan error, 1)
-	go func() {
-		done <- chromedp.Run(s.browserCtx, actions...)
-	}()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(timeout):
-		return fmt.Errorf("browser operation timed out after %v", timeout)
+// close 安全关闭会话的所有资源
+func (s *browserSession) close() {
+	if s.browCancel != nil {
+		s.browCancel()
 	}
+	if s.allocCancel != nil {
+		s.allocCancel()
+	}
+}
+
+// runWithTimeout 在指定的超时时间内执行 chromedp 操作
+// 修复：使用 chromedp 内置的超时机制，避免 goroutine 泄漏
+func (s *browserSession) runWithTimeout(timeout time.Duration, actions ...chromedp.Action) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 使用 chromedp 的 RunResponse 配合 context 超时
+	// 这样超时后 chromedp 会正确清理内部资源
+	ctx, cancel := context.WithTimeout(s.browserCtx, timeout)
+	defer cancel()
+
+	// 包装 actions 为任务列表
+	tasks := chromedp.Tasks(actions)
+
+	// 直接运行，context 超时后会自动取消
+	err := chromedp.Run(ctx, tasks)
+	if err != nil {
+		// 检查是否是超时错误
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("browser operation timed out after %v", timeout)
+		}
+		return err
+	}
+	return nil
 }
 
 func getOrCreateSession(sessionID string, chromePath string, parentCtx context.Context) (*browserSession, string, error) {
@@ -440,8 +495,6 @@ func getOrCreateSession(sessionID string, chromePath string, parentCtx context.C
 		return nil, "", fmt.Errorf("session %s 已过期或不存在", sessionID)
 	}
 
-	// 关键修复：用 Background 而非 parentCtx
-	// session 的生命周期由 session 管理器控制，不受单次操作的 context 影响
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(),
 		append(chromedp.DefaultExecAllocatorOptions[:],
 			chromedp.ExecPath(chromePath),
@@ -458,6 +511,12 @@ func getOrCreateSession(sessionID string, chromePath string, parentCtx context.C
 	)
 
 	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
+
+	if err := chromedp.Run(browserCtx); err != nil {
+		cancelBrowser()
+		cancelAlloc()
+		return nil, "", fmt.Errorf("启动浏览器失败 (path=%s): %w", chromePath, err)
+	}
 
 	id := fmt.Sprintf("sess_%d", time.Now().UnixNano())
 	s := &browserSession{
@@ -476,8 +535,7 @@ func closeSession(sessionID string) {
 	defer sessionsMu.Unlock()
 
 	if s, ok := sessions[sessionID]; ok {
-		s.browCancel()
-		s.allocCancel()
+		s.close()
 		delete(sessions, sessionID)
 	}
 }

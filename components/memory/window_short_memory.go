@@ -141,7 +141,11 @@ func buildSummaryPrompt(messages []*schema.Message) string {
 	for _, m := range messages {
 		switch m.Role {
 		case schema.UserRole:
-			sb.WriteString(fmt.Sprintf("用户: %s\n", m.Content))
+			content := m.TextContent() // 用 TextContent() 而非 Content
+			if m.IsMultimodal() {
+				content += fmt.Sprintf(" [附带 %d 张图片]", m.ImageCount())
+			}
+			sb.WriteString(fmt.Sprintf("用户: %s\n", content))
 		case schema.AssistantRole:
 			content := m.Content
 			if m.ReasoningContent != "" {

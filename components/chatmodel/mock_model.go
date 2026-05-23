@@ -16,11 +16,12 @@ import (
 
 // MockResponse 定义 Mock 模型的单次响应行为
 type MockResponse struct {
-	Content          string            // 文本内容
-	ReasoningContent string            // 推理内容
-	ToolCalls        []schema.ToolCall // 工具调用
-	Delay            time.Duration     // 模拟延迟
-	Error            error             // 是否返回错误
+	Content          string               // 文本内容
+	ReasoningContent string               // 推理内容
+	ContentParts     []schema.ContentPart // 多模态内容（优先于 Content）
+	ToolCalls        []schema.ToolCall    // 工具调用
+	Delay            time.Duration        // 模拟延迟
+	Error            error                // 是否返回错误
 }
 
 // ============================================================================
@@ -106,7 +107,7 @@ func (m *MockModel) SetModelName(name string) {
 }
 
 // ============================================================================
-// 断言辅助方法
+// 断言辅助方法 — 输入记录
 // ============================================================================
 
 // GetRecordedInputs 获取所有记录的输入消息（深拷贝）
@@ -166,6 +167,81 @@ func (m *MockModel) GetModelName() string {
 }
 
 // ============================================================================
+// 断言辅助方法 — 多模态输入
+// ============================================================================
+
+// HasMultimodalInput 检查最后一次输入是否包含多模态内容
+func (m *MockModel) HasMultimodalInput() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.recordedInputs) == 0 {
+		return false
+	}
+	for _, msg := range m.recordedInputs[len(m.recordedInputs)-1] {
+		if msg.IsMultimodal() {
+			return true
+		}
+	}
+	return false
+}
+
+// GetLastInputImages 获取最后一次输入中的所有图片 URL（base64 data URL 或 http URL）
+func (m *MockModel) GetLastInputImages() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.recordedInputs) == 0 {
+		return nil
+	}
+
+	var images []string
+	for _, msg := range m.recordedInputs[len(m.recordedInputs)-1] {
+		for _, part := range msg.ContentParts {
+			if part.Type == "image_url" && part.ImageURL != nil {
+				images = append(images, part.ImageURL.URL)
+			}
+		}
+	}
+	return images
+}
+
+// GetMultimodalCallCount 获取包含多模态输入的调用次数
+func (m *MockModel) GetMultimodalCallCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	count := 0
+	for _, input := range m.recordedInputs {
+		for _, msg := range input {
+			if msg.IsMultimodal() {
+				count++
+				break // 每次调用只计一次
+			}
+		}
+	}
+	return count
+}
+
+// GetLastInputTextContent 获取最后一次输入的纯文本内容（多模态消息也能正确返回）
+func (m *MockModel) GetLastInputTextContent() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.recordedInputs) == 0 {
+		return ""
+	}
+
+	var texts []string
+	for _, msg := range m.recordedInputs[len(m.recordedInputs)-1] {
+		if t := msg.TextContent(); t != "" {
+			texts = append(texts, t)
+		}
+	}
+	return strings.Join(texts, "\n")
+}
+
+// ============================================================================
 // 内部方法
 // ============================================================================
 
@@ -195,7 +271,6 @@ func (m *MockModel) nextResponse() MockResponse {
 		if m.loop {
 			m.currentIdx = 0
 		} else {
-			// 超出队列后始终返回最后一个
 			return m.responses[len(m.responses)-1]
 		}
 	}
@@ -207,12 +282,23 @@ func (m *MockModel) nextResponse() MockResponse {
 
 // buildMessage 从 MockResponse 构建 schema.Message
 func buildMessage(resp MockResponse) *schema.Message {
-	return &schema.Message{
+	msg := &schema.Message{
 		Role:             schema.AssistantRole,
 		Content:          resp.Content,
 		ReasoningContent: resp.ReasoningContent,
 		ToolCalls:        resp.ToolCalls,
 	}
+
+	// 多模态内容优先：设置 ContentParts 时 Content 由 adapter 决定如何处理
+	if len(resp.ContentParts) > 0 {
+		msg.ContentParts = resp.ContentParts
+		// 如果没有显式设置 Content，从 ContentParts 中提取文本
+		if msg.Content == "" {
+			msg.Content = msg.TextContent()
+		}
+	}
+
+	return msg
 }
 
 // ============================================================================
@@ -223,7 +309,6 @@ func buildMessage(resp MockResponse) *schema.Message {
 func (m *MockModel) Generate(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
 	m.recordInput(input)
 
-	// 自定义函数优先
 	m.mu.RLock()
 	fn := m.generateFunc
 	m.mu.RUnlock()
@@ -233,7 +318,6 @@ func (m *MockModel) Generate(ctx context.Context, input []*schema.Message) (*sch
 
 	resp := m.nextResponse()
 
-	// 模拟延迟
 	if resp.Delay > 0 {
 		select {
 		case <-time.After(resp.Delay):
@@ -253,7 +337,6 @@ func (m *MockModel) Generate(ctx context.Context, input []*schema.Message) (*sch
 func (m *MockModel) Stream(ctx context.Context, input []*schema.Message) (*schema.StreamReader, error) {
 	m.recordInput(input)
 
-	// 自定义函数优先
 	m.mu.RLock()
 	fn := m.streamFunc
 	m.mu.RUnlock()
@@ -267,13 +350,11 @@ func (m *MockModel) Stream(ctx context.Context, input []*schema.Message) (*schem
 		return nil, resp.Error
 	}
 
-	// 用 schema.NewStreamReader 创建读写通道
 	reader := schema.NewStreamReader()
 
 	go func() {
 		defer reader.Close()
 
-		// 模拟延迟
 		if resp.Delay > 0 {
 			select {
 			case <-time.After(resp.Delay):
@@ -290,7 +371,17 @@ func (m *MockModel) Stream(ctx context.Context, input []*schema.Message) (*schem
 			})
 		}
 
-		// 2. 文本内容分块发送（模拟逐字流式）
+		// 2. 多模态内容：一次性发送（图片不适合分块）
+		if len(resp.ContentParts) > 0 {
+			reader.Send(schema.Message{
+				Role:         schema.AssistantRole,
+				Content:      resp.Content,
+				ContentParts: resp.ContentParts,
+			})
+			return
+		}
+
+		// 3. 纯文本内容分块发送
 		if resp.Content != "" {
 			chunkSize := 4
 			for i := 0; i < len(resp.Content); i += chunkSize {
@@ -298,6 +389,13 @@ func (m *MockModel) Stream(ctx context.Context, input []*schema.Message) (*schem
 				if end > len(resp.Content) {
 					end = len(resp.Content)
 				}
+
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
 				reader.Send(schema.Message{
 					Role:    schema.AssistantRole,
 					Content: resp.Content[i:end],
@@ -305,7 +403,7 @@ func (m *MockModel) Stream(ctx context.Context, input []*schema.Message) (*schem
 			}
 		}
 
-		// 3. 工具调用
+		// 4. 工具调用
 		if len(resp.ToolCalls) > 0 {
 			reader.Send(schema.Message{
 				Role:      schema.AssistantRole,
@@ -369,6 +467,29 @@ func MockDelayedResponse(content string, delay time.Duration) MockResponse {
 	return MockResponse{Content: content, Delay: delay}
 }
 
+// MockMultimodalResponse 多模态响应（模型返回文本 + 图片）
+func MockMultimodalResponse(text string, imageURLs ...string) MockResponse {
+	parts := []schema.ContentPart{schema.TextPart(text)}
+	for _, url := range imageURLs {
+		parts = append(parts, schema.ImagePart(url))
+	}
+	return MockResponse{
+		Content:      text,
+		ContentParts: parts,
+	}
+}
+
+// MockMultimodalBase64Response 多模态响应（模型返回文本 + base64 图片）
+func MockMultimodalBase64Response(text string, mediaType, base64Data string) MockResponse {
+	return MockResponse{
+		Content: text,
+		ContentParts: []schema.ContentPart{
+			schema.TextPart(text),
+			schema.ImagePartBase64(mediaType, base64Data),
+		},
+	}
+}
+
 // ============================================================================
 // 预置场景
 // ============================================================================
@@ -381,14 +502,15 @@ func NewWeatherMockModel() *MockModel {
 	)
 }
 
-// NewEchoMockModel 回声模型：返回用户最后一条消息
+// NewEchoMockModel 回声模型：返回用户最后一条文本内容
 func NewEchoMockModel() *MockModel {
 	m := NewMockModel()
 	m.SetGenerateFunc(func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
 		var userContent string
 		for i := len(input) - 1; i >= 0; i-- {
 			if input[i].Role == schema.UserRole {
-				userContent = input[i].Content
+				// 修复：用 TextContent() 而非 Content，支持多模态消息
+				userContent = input[i].TextContent()
 				break
 			}
 		}

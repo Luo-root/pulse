@@ -7,6 +7,7 @@ import (
 
 	"github.com/Luo-root/pulse/components/agent"
 	"github.com/Luo-root/pulse/components/flow"
+	"github.com/Luo-root/pulse/components/schema"
 )
 
 // BatchNewTaskNode 批量创建任务节点（保留兼容）
@@ -80,7 +81,7 @@ func NewTaskNode(plannerNodeID string, task Task, agent agent.AgentInterface) *S
 开始执行！
 `, task.ID, task.Description, inputsInfoStr, buildOutputExample(task.Outputs))
 
-			resp, err := agent.Send(*ctx.GetContext(), prompt)
+			resp, err := agent.SendMessage(*ctx.GetContext(), schema.UserMessage(prompt))
 			if err != nil {
 				taskStateModifyFailed(plan, task.ID)
 				taskModifyError(plan, task.ID, err.Error())

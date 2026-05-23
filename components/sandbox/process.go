@@ -218,14 +218,19 @@ type cappedBuffer struct {
 }
 
 func (b *cappedBuffer) Write(p []byte) (int, error) {
+	origLen := len(p)
 	if b.buf.Len() >= b.max {
-		return len(p), nil // 静默丢弃
+		return origLen, nil // 缓冲区已满，静默丢弃
 	}
 	remaining := b.max - b.buf.Len()
 	if len(p) > remaining {
 		p = p[:remaining]
 	}
-	return b.buf.Write(p)
+	_, err := b.buf.Write(p)
+	if err != nil {
+		return 0, err
+	}
+	return origLen, nil // 始终报告完整长度，静默截断溢出部分
 }
 
 func (b *cappedBuffer) String() string {

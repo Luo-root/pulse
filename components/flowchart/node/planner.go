@@ -10,6 +10,7 @@ import (
 
 	"github.com/Luo-root/pulse/components/agent"
 	"github.com/Luo-root/pulse/components/flow"
+	"github.com/Luo-root/pulse/components/schema"
 )
 
 // NewPlannerNode 创建规划节点
@@ -203,7 +204,7 @@ func Planning(ctx context.Context, goal string, agent agent.AgentInterface) (*Pl
 ## 执行指令
 请严格按上述规则输出拆解后的任务序列JSON，无需额外说明。`, goal)
 
-	resp, err := agent.Send(ctx, prompt)
+	resp, err := agent.SendMessage(ctx, schema.UserMessage(prompt))
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +291,7 @@ func RePlan(ctx context.Context, plan *Plan, failedTask *Task, agent agent.Agent
 	)
 
 	// 调用模型生成重规划结果
-	resp, err := agent.Send(ctx, prompt)
+	resp, err := agent.SendMessage(ctx, schema.UserMessage(prompt))
 	if err != nil {
 		return nil, fmt.Errorf("replan failed for task %s: %w", failedTask.ID, err)
 	}

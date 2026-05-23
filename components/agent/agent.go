@@ -19,8 +19,8 @@ const DefaultMaxToolRounds int = 20
 
 // AgentInterface 统一接口
 type AgentInterface interface {
-	Send(ctx context.Context, userContent string) (*schema.Message, error)
-	SendStream(ctx context.Context, userContent string, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error)
+	SendMessage(ctx context.Context, msg *schema.Message) (*schema.Message, error)
+	SendMessageStream(ctx context.Context, msg *schema.Message, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error)
 }
 
 // AgentOption Agent 配置选项
@@ -76,6 +76,95 @@ func NewAgent(model chatmodel.BaseModel, registry *tools.ToolRegistry, opts ...A
 	}
 
 	return ag
+}
+
+// SendMessage 发送完整消息（支持多模态内容）
+func (ag *Agent) SendMessage(ctx context.Context, msg *schema.Message) (*schema.Message, error) {
+	ag.mu.Lock()
+	defer ag.mu.Unlock()
+
+	if err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{msg}); err != nil {
+		return nil, err
+	}
+
+	query := msg.TextContent() // 记忆召回用纯文本
+
+	for round := 0; round < ag.maxToolRounds; round++ {
+		startTime := time.Now()
+
+		msgs, err := ag.memoryController.BuildContext(ctx, ag.sessionID, query)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := ag.model.Generate(ctx, msgs)
+		if err != nil {
+			return nil, err
+		}
+
+		ag.recordUsage(resp.Usage, startTime)
+
+		if len(resp.ToolCalls) == 0 {
+			if err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{resp}); err != nil {
+				return nil, err
+			}
+			return resp, nil
+		}
+
+		if err := ag.handleToolCalls(ctx, resp); err != nil {
+			return nil, err
+		}
+		query = ""
+	}
+
+	return nil, fmt.Errorf("tool call loop exceeded maximum rounds (%d)", ag.maxToolRounds)
+}
+
+// SendMessageStream 流式发送完整消息（支持多模态内容）
+func (ag *Agent) SendMessageStream(ctx context.Context, msg *schema.Message, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error) {
+	ag.mu.Lock()
+	defer ag.mu.Unlock()
+
+	if err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{msg}); err != nil {
+		return nil, err
+	}
+
+	query := msg.TextContent()
+
+	for round := 0; round < ag.maxToolRounds; round++ {
+		startTime := time.Now()
+
+		msgs, err := ag.memoryController.BuildContext(ctx, ag.sessionID, query)
+		if err != nil {
+			return nil, err
+		}
+
+		reader, err := ag.model.Stream(ctx, msgs)
+		if err != nil {
+			return nil, err
+		}
+
+		fullMsg, err := ag.readStream(reader, onChunk)
+		if err != nil {
+			return nil, err
+		}
+
+		ag.recordUsageFromReader(reader, startTime)
+
+		if len(fullMsg.ToolCalls) == 0 {
+			if err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{fullMsg}); err != nil {
+				return nil, err
+			}
+			return fullMsg, nil
+		}
+
+		if err := ag.handleToolCalls(ctx, fullMsg); err != nil {
+			return nil, err
+		}
+		query = ""
+	}
+
+	return nil, fmt.Errorf("tool call loop exceeded maximum rounds (%d)", ag.maxToolRounds)
 }
 
 // Send 非流式

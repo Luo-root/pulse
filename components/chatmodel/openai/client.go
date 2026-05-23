@@ -15,7 +15,7 @@ import (
 // APIMessage 发送给 OpenAI 的消息格式
 type APIMessage struct {
 	Role             string            `json:"role"`
-	Content          string            `json:"content"`
+	Content          any               `json:"content"` // string 或 []schema.ContentPart
 	ReasoningContent string            `json:"reasoning_content,omitempty"`
 	Name             string            `json:"name,omitempty"`
 	ToolCalls        []schema.ToolCall `json:"tool_calls,omitempty"`

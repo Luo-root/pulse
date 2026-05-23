@@ -377,41 +377,52 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 		for i, msg := range msgs {
 			timestamp := baseTime + int64(i)
 
+			// 提取文本内容（多模态消息也要保存文本部分）
+			content := msg.Content
+			if msg.IsMultimodal() && content == "" {
+				content = msg.TextContent()
+			}
+
 			model := &MessageModel{
 				ID:               fmt.Sprintf("%s_%s", sessionID, uuid.New().String()),
 				SessionID:        sessionID,
 				Role:             string(msg.Role),
-				Content:          msg.Content,
+				Content:          content,
 				ReasoningContent: msg.ReasoningContent,
 				Timestamp:        timestamp,
 				CreatedAt:        time.Now(),
 			}
 
-			// 序列化元数据
-			if len(msg.ToolCalls) > 0 || msg.ToolCallID != "" {
-				metaData := make(map[string]any)
-				if len(msg.ToolCalls) > 0 {
-					metaData["tool_calls"] = msg.ToolCalls
-				}
-				if msg.ToolCallID != "" {
-					metaData["tool_call_id"] = msg.ToolCallID
-				}
+			// 序列化元数据（包含工具调用和多模态标记）
+			metaData := make(map[string]any)
+			if len(msg.ToolCalls) > 0 {
+				metaData["tool_calls"] = msg.ToolCalls
+			}
+			if msg.ToolCallID != "" {
+				metaData["tool_call_id"] = msg.ToolCallID
+			}
+			// 记录多模态信息（不存储图片数据，只存元数据）
+			if msg.IsMultimodal() {
+				metaData["multimodal"] = true
+				metaData["image_count"] = msg.ImageCount()
+			}
+			if len(metaData) > 0 {
 				meta, _ := json.Marshal(metaData)
 				model.Metadata = string(meta)
 			}
 
-			// 嵌入生成
+			// 嵌入生成（只对文本部分做嵌入，不嵌入图片）
 			if !s.config.DisableVectorSearch && s.embedding != nil {
-				text := msg.Content
+				embedText := content
 				if msg.ReasoningContent != "" {
-					text = msg.ReasoningContent + " " + text
+					embedText = msg.ReasoningContent + " " + embedText
 				}
 
-				estTokens := len([]rune(text)) / 2
+				estTokens := len([]rune(embedText)) / 2
 				needChunk := s.config.ChunkSize > 0 && estTokens > s.config.ChunkSize
 
 				if needChunk {
-					chunks := SplitText(text, s.config.ChunkSize, s.config.ChunkOverlap)
+					chunks := SplitText(embedText, s.config.ChunkSize, s.config.ChunkOverlap)
 					for idx, chunkContent := range chunks {
 						vec, err := s.embedding(ctx, chunkContent)
 						if err != nil || len(vec) == 0 {
@@ -439,7 +450,7 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 						s.vecMu.Unlock()
 					}
 				} else {
-					vec, err := s.embedding(ctx, text)
+					vec, err := s.embedding(ctx, embedText)
 					if err == nil && len(vec) > 0 {
 						model.SetEmbedding(vec)
 						s.vecMu.Lock()
@@ -495,8 +506,16 @@ func (s *GormStore) Recall(ctx context.Context, sessionID string, query string, 
 
 // combinedRecall 组合召回（向量 + 关键词 + 时间衰减）
 func (s *GormStore) combinedRecall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
+	if s.embedding == nil {
+		return s.hybridRecall(ctx, sessionID, query, topK)
+	}
+
 	queryVec, err := s.embedding(ctx, query)
 	if err != nil || len(queryVec) == 0 {
+		return s.hybridRecall(ctx, sessionID, query, topK)
+	}
+
+	if s.vecIndex == nil {
 		return s.hybridRecall(ctx, sessionID, query, topK)
 	}
 
