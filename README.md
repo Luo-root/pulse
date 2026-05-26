@@ -323,13 +323,13 @@ type Sandbox interface {
 
 **位置**: `components/flowchart/`
 
-提供基于 DAG 拓扑排序的工作流引擎，支持并行节点执行和 AOP 切面。
+基于声明式依赖的工作流引擎，支持并行节点执行和 AOP 切面。
 
 **核心类型**:
 
 | 类型 | 说明 |
 |------|------|
-| `Workflow` | 工作流引擎：基于 `FlowContext` 的 DAG 有向无环图执行 |
+| `Workflow` | 工作流引擎：基于 `FlowContext` 的声明式依赖工作流引擎 |
 | `Node` (interface) | 节点接口：`ID()` / `Inputs()` / `Outputs()` / `Run()` / `Aspects()` |
 | `SimpleNode` | 通用节点实现（函数式） |
 | `TopologicalNode` | 拓扑排序节点包装器，自动按依赖分层并行执行 |
@@ -356,6 +356,7 @@ type Sandbox interface {
 | `TimeoutInterceptor` | 超时控制（goroutine + timer 模式） |
 | `CircuitBreakerInterceptor` | 熔断降级（Closed → Open → HalfOpen 三态转换） |
 | `RecoveryInterceptor` | Panic 捕获与兜底逻辑 |
+| `ErrorSwallowInterceptor` | 作为外层拦截器使用，避免Error触发工作流层的 `ctx.Cancel` |
 
 **工作流执行流程**:
 
@@ -499,17 +500,21 @@ import (
 )
 
 func main() {
-    // 1) 模型
-    model, _ := openai.NewChatModel(&openai.ChatModelConfig{
-        Model:   "gpt-4o",
-        APIKey:  "sk-xxx",
-        BaseURL: "https://api.openai.com/v1",
-    })
-
-    // 2) 工具注册
+    // 1) 工具注册
     registry := tools.NewToolRegistry()
     // 注册内置工具（根据实际API调整）
     // registry.Register(...)
+    
+    // 2) 模型
+    model, _ := openai.NewChatModel(&openai.ChatModelConfig{
+			BaseURL: m.config.API.BaseURL,
+			APIKey:  m.config.API.APIKey,
+			Model:   m.config.Model.ModelID,
+			Thinking: openai.Thinking{
+				Type: thinkingType,
+			},
+        	Tools: registry.GetEnabledTools(),
+		})
 
     // 3) Agent
     ag := agent.NewAgent(model, registry)
