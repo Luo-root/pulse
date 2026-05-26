@@ -26,6 +26,7 @@
 - [安装与依赖](#安装与依赖)
 - [快速开始](#快速开始)
 - [项目结构](#项目结构)
+- [项目参考](#应用的项目)
 - [许可证](#许可证)
 
 ---
@@ -576,77 +577,72 @@ pulse/
 ├── go.mod / go.sum                   # Go 模块定义
 ├── LICENSE                           # Apache 2.0
 ├── README.md                         # 项目文档
-├── components/
-│   ├── agent/                        # Agent 核心调度
-│   │   ├── agent.go                  # Agent 主体 + 工具调用循环
-│   │   └── usage_tracker.go          # Token 使用追踪
-│   ├── chatmodel/                    # 模型抽象层
-│   │   ├── base_model.go             # BaseModel 接口
-│   │   ├── mock_model.go             # 测试用 Mock 模型
-│   │   ├── openai/                   # OpenAI 兼容实现
-│   │   └── anthropic/                # Anthropic 实现
-│   ├── schema/                       # 数据结构定义
-│   │   ├── message.go                # Message / ToolCall / StreamReader
-│   │   └── tool.go                   # Tool 定义
-│   ├── tools/                        # 工具系统
-│   │   ├── registry.go               # 动态工具注册中心
-│   │   ├── file.go                   # 文件操作工具 + 安全路径
-│   │   ├── command.go                # 系统命令工具 + 危险命令拦截
-│   │   ├── web.go                    # 联网搜索工具
-│   │   ├── user_config.go            # 用户配置管理工具
-│   │   ├── env.go                    # 环境信息工具
-│   │   ├── chromium.go               # 浏览器自动化工具
-│   │   ├── html_parser.go            # HTML 解析工具
-│   │   ├── loader.go / options.go    # 动态工具加载
-│   │   └── tools_registry.go         # RegisterAll 入口
-│   ├── memory/                       # 记忆管理
-│   │   ├── controller.go             # 记忆控制器
-│   │   ├── short_memory_manager.go   # 短期记忆接口
-│   │   ├── simple_window_memory.go   # 滑动窗口实现
-│   │   ├── window.go                 # 窗口管理器（数量/Token 限制）
-│   │   ├── long_term_store.go        # 长期记忆接口
-│   │   ├── gorm_store.go             # GORM + HNSW 存储
-│   │   ├── embedder.go               # 向量化接口
-│   │   └── ollama_embedder.go        # Ollama 向量化实现
-│   ├── mcp/                          # MCP 客户端
-│   │   ├── client.go                 # JSON-RPC 2.0 客户端
-│   │   ├── transport.go              # Stdio 传输层
-│   │   ├── manager.go                # 多服务器管理器
-│   │   ├── types.go                  # 协议类型定义
-│   │   └── config.go                 # 配置文件加载
-│   ├── sandbox/                      # 代码沙箱
-│   │   ├── sandbox.go                # Sandbox 接口 + 配置
-│   │   ├── process.go                # 子进程沙箱实现
-│   │   └── tools.go                  # 沙箱工具注册
-│   ├── flowchart/                    # 工作流引擎
-│   │   ├── workflow.go               # 工作流主引擎（DAG + 拓扑分层）
-│   │   └── node/
-│   │       ├── node.go               # Node 接口 + SimpleNode
-│   │       ├── planner.go            # Plan / Task 定义
-│   │       ├── react_planner.go      # ReAct 规划器 + 重规划
-│   │       ├── task_node.go          # 任务执行节点
-│   │       ├── topological_node.go   # 拓扑排序节点
-│   │       ├── functional_node.go    # 内置功能节点
-│   │       ├── aspect.go             # Aspect 接口 + 简易实现
-│   │       └── interceptor.go        # 拦截器（重试/超时/熔断/兜底）
-│   ├── skill/                        # Skill 管理
-│   │   ├── skill.go                  # Skill 定义
-│   │   ├── loader.go                 # 加载器（文件/字符串/目录）
-│   │   └── registry.go               # Skill 注册表
-│   └── stream/                       # 流式处理
-│       ├── stream_writer.go          # 流式写入器
-│       └── stream_multicast.go       # 多播控制器
-├── prompt/                           # 系统提示词文件
-└── skills/                           # Skill 定义文件
-    ├── code-summarizer/              # 代码分析技能
-    ├── data-transformer/             # 数据转换技能
-    ├── frontend-design/              # 前端设计技能
-    ├── git-log-analyzer/             # Git 日志分析技能
-    ├── pptx/                         # PPT 生成技能
-    ├── system-info/                  # 系统信息技能
-    └── web-researcher/               # 网页研究技能
-```
+└── components/
+    ├── agent/                        # Agent 核心调度
+    │   ├── agent.go                  # Agent 主体 + 工具调用循环
+    │   └── usage_tracker.go          # Token 使用追踪
+    ├── chatmodel/                    # 模型抽象层
+    │   ├── base_model.go             # BaseModel 接口
+    │   ├── mock_model.go             # 测试用 Mock 模型
+    │   ├── openai/                   # OpenAI 兼容实现
+    │   └── anthropic/                # Anthropic 实现
+    ├── schema/                       # 数据结构定义
+    │   ├── message.go                # Message / ToolCall / StreamReader
+    │   └── tool.go                   # Tool 定义
+    ├── tools/                        # 工具系统
+    │   ├── registry.go               # 动态工具注册中心
+    │   ├── file.go                   # 文件操作工具 + 安全路径
+    │   ├── command.go                # 系统命令工具 + 危险命令拦截
+    │   ├── web.go                    # 联网搜索工具
+    │   ├── user_config.go            # 用户配置管理工具
+    │   ├── env.go                    # 环境信息工具
+    │   ├── chromium.go               # 浏览器自动化工具
+    │   ├── html_parser.go            # HTML 解析工具
+    │   ├── loader.go / options.go    # 动态工具加载
+    │   └── tools_registry.go         # RegisterAll 入口
+    ├── memory/                       # 记忆管理
+    │   ├── controller.go             # 记忆控制器
+    │   ├── short_memory_manager.go   # 短期记忆接口
+    │   ├── simple_window_memory.go   # 滑动窗口实现
+    │   ├── window.go                 # 窗口管理器（数量/Token 限制）
+    │   ├── long_term_store.go        # 长期记忆接口
+    │   ├── gorm_store.go             # GORM + HNSW 存储
+    │   ├── embedder.go               # 向量化接口
+    │   └── ollama_embedder.go        # Ollama 向量化实现
+    ├── mcp/                          # MCP 客户端
+    │   ├── client.go                 # JSON-RPC 2.0 客户端
+    │   ├── transport.go              # Stdio 传输层
+    │   ├── manager.go                # 多服务器管理器
+    │   ├── types.go                  # 协议类型定义
+    │   └── config.go                 # 配置文件加载
+    ├── sandbox/                      # 代码沙箱
+    │   ├── sandbox.go                # Sandbox 接口 + 配置
+    │   ├── process.go                # 子进程沙箱实现
+    │   └── tools.go                  # 沙箱工具注册
+    ├── flowchart/                    # 工作流引擎
+    │   ├── workflow.go               # 工作流主引擎（DAG + 拓扑分层）
+    │   └── node/
+    │       ├── node.go               # Node 接口 + SimpleNode
+    │       ├── planner.go            # Plan / Task 定义
+    │       ├── react_planner.go      # ReAct 规划器 + 重规划
+    │       ├── task_node.go          # 任务执行节点
+    │       ├── topological_node.go   # 拓扑排序节点
+    │       ├── functional_node.go    # 内置功能节点
+    │       ├── aspect.go             # Aspect 接口 + 简易实现
+    │       └── interceptor.go        # 拦截器（重试/超时/熔断/兜底）
+    ├── skill/                        # Skill 管理
+    │   ├── skill.go                  # Skill 定义
+    │   ├── loader.go                 # 加载器（文件/字符串/目录）
+    │   └── registry.go               # Skill 注册表
+    └── stream/                       # 流式处理
+        ├── stream_writer.go          # 流式写入器
+        └── stream_multicast.go       # 多播控制器
 
+```
+# 应用的项目
+## Pulse-TUI
+项目链接: [pulse-tui](https://github.com/Luo-root/pulse-tui)
+![pulse](static/pulse-tui.gif)
 ---
 
 ## 许可证
