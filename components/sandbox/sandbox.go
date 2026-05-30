@@ -55,4 +55,5 @@ type ProcessConfig struct {
 	DefaultTimeout time.Duration         // 默认超时（默认 30s）
 	MaxOutputBytes int                   // 最大输出字节数（默认 1MB）
 	AllowedLangs   map[string]LangConfig // 语言配置（nil = 使用默认值）
+	PreloadEnv     map[string]string     // 新增：每次执行都注入的环境变量
 }

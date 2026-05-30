@@ -111,6 +111,18 @@ func (s *ProcessSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecRes
 	cmd := exec.CommandContext(ctx, lang.Command, args...)
 	cmd.Dir = workDir
 
+	cmd.Env = os.Environ()
+
+	// 先注入预置环境变量（token 等敏感信息）
+	for k, v := range s.config.PreloadEnv {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+
+	// 再注入请求级环境变量（请求级可覆盖预置）
+	for k, v := range req.Env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+
 	// ====== 关键修复: Windows 进程组管理 ======
 	if runtime.GOOS == "windows" {
 		cmd.SysProcAttr = &syscall.SysProcAttr{
