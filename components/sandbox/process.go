@@ -7,10 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -33,17 +31,6 @@ func NewProcessSandbox(config ProcessConfig) *ProcessSandbox {
 }
 
 func DefaultLangs() map[string]LangConfig {
-	if runtime.GOOS == "windows" {
-		return map[string]LangConfig{
-			"python": {Command: "python", Ext: ".py"},
-			"node":   {Command: "node", Ext: ".js"},
-			"go": {
-				Command: "go", Args: []string{"run"}, Ext: ".go",
-				InitFiles: map[string]string{"go.mod": "module sandbox\ngo 1.21\n"},
-			},
-			"shell": {Command: "cmd", Args: []string{"/C"}},
-		}
-	}
 	return map[string]LangConfig{
 		"python": {Command: "python3", Ext: ".py"},
 		"node":   {Command: "node", Ext: ".js"},
@@ -123,25 +110,8 @@ func (s *ProcessSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecRes
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 
-	// ====== 关键修复: Windows 进程组管理 ======
-	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			// 创建独立的 Job 对象, 使得子进程能被一并清理
-			CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
-		}
-		// 自定义 Cancel: 杀掉整棵进程树, 而非仅 go.exe
-		cmd.Cancel = func() error {
-			killProcessTree(cmd.Process)
-			return cmd.Process.Kill()
-		}
-		// 安全兜底: 如果 Cancel 后 I/O 仍未结束, 最多再等 3 秒就放弃
-		cmd.WaitDelay = 3 * time.Second
-	}
-
-	cmd.Env = os.Environ()
-	for k, v := range req.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	// ====== 跨平台进程管理 ======
+	setupProcess(cmd)
 
 	stdout := &cappedBuffer{max: s.config.MaxOutputBytes}
 	stderr := &cappedBuffer{max: s.config.MaxOutputBytes}
@@ -175,16 +145,6 @@ func (s *ProcessSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecRes
 	}
 
 	return result, nil
-}
-
-// killProcessTree 在 Windows 上用 taskkill 杀掉整个进程树
-func killProcessTree(p *os.Process) {
-	if p == nil {
-		return
-	}
-	cmd := exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", p.Pid))
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	cmd.Run() // 忽略错误, 进程可能已退出
 }
 
 // CheckLang 检查语言是否可用
