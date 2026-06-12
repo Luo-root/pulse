@@ -154,9 +154,15 @@ func toAPIMessages(messages []*schema.Message) (string, []APIMessage) {
 			}
 
 		case schema.UserRole:
+			var blocks []ContentBlock
+			if len(msg.ContentParts) > 0 {
+				blocks = convertToContentBlocks(msg.ContentParts)
+			} else {
+				blocks = []ContentBlock{{Type: "text", Text: msg.Content}}
+			}
 			apiMessages = append(apiMessages, APIMessage{
 				Role:    "user",
-				Content: []ContentBlock{{Type: "text", Text: msg.Content}},
+				Content: blocks,
 			})
 
 		case schema.AssistantRole:
@@ -198,20 +204,125 @@ func toAPIMessages(messages []*schema.Message) (string, []APIMessage) {
 
 		case schema.ToolRole:
 			// Anthropic 的 tool_result 要放在 user 消息里
+			resultBlock := ContentBlock{
+				Type:      "tool_result",
+				ToolUseID: msg.ToolCallID,
+			}
+
+			// 多模态工具结果
+			if len(msg.ContentParts) > 0 {
+				resultBlock.CntBlocks = convertToContentBlocks(msg.ContentParts)
+				if msg.Content != "" {
+					resultBlock.Content = msg.Content
+				}
+			} else {
+				resultBlock.Content = msg.Content
+			}
+
 			apiMessages = append(apiMessages, APIMessage{
-				Role: "user",
-				Content: []ContentBlock{
-					{
-						Type:      "tool_result",
-						ToolUseID: msg.ToolCallID,
-						Content:   msg.Content,
-					},
-				},
+				Role:    "user",
+				Content: []ContentBlock{resultBlock},
 			})
 		}
 	}
 
 	return systemPrompt, apiMessages
+}
+
+// convertToContentBlocks 将 schema.ContentPart 列表转换为 Anthropic ContentBlock 列表
+func convertToContentBlocks(parts []schema.ContentPart) []ContentBlock {
+	result := make([]ContentBlock, 0, len(parts))
+	for _, p := range parts {
+		switch p.Type {
+		case schema.ContentTypeText:
+			result = append(result, ContentBlock{Type: "text", Text: p.Text})
+
+		case schema.ContentTypeImageURL:
+			if p.ImageURL != nil {
+				block := ContentBlock{Type: "image"}
+				if strings.HasPrefix(p.ImageURL.URL, "data:") {
+					// base64 data URI → 解析出 media_type 和 data
+					mediaType, data := parseDataURI(p.ImageURL.URL)
+					block.Source = &ContentSource{Type: "base64", MediaType: mediaType, Data: data}
+				} else {
+					block.Source = &ContentSource{Type: "url", URL: p.ImageURL.URL}
+				}
+				result = append(result, block)
+			}
+
+		case schema.ContentTypeInputAudio:
+			if p.InputAudio != nil {
+				result = append(result, ContentBlock{
+					Type: "audio",
+					Source: &ContentSource{
+						Type:      "base64",
+						MediaType: "audio/" + p.InputAudio.Format,
+						Data:      p.InputAudio.Data,
+					},
+				})
+			}
+
+		case schema.ContentTypeVideoURL:
+			if p.VideoURL != nil {
+				block := ContentBlock{Type: "video"}
+				if strings.HasPrefix(p.VideoURL.URL, "data:") {
+					mediaType, data := parseDataURI(p.VideoURL.URL)
+					block.Source = &ContentSource{Type: "base64", MediaType: mediaType, Data: data}
+				} else {
+					block.Source = &ContentSource{Type: "url", URL: p.VideoURL.URL}
+				}
+				result = append(result, block)
+			}
+
+		case schema.ContentTypeFileURL:
+			if p.FileURL != nil {
+				block := ContentBlock{Type: "document"}
+				if strings.HasPrefix(p.FileURL.URL, "data:") {
+					mediaType, data := parseDataURI(p.FileURL.URL)
+					block.Source = &ContentSource{Type: "base64", MediaType: mediaType, Data: data}
+				} else {
+					block.Source = &ContentSource{Type: "url", URL: p.FileURL.URL}
+				}
+				result = append(result, block)
+			}
+
+		case schema.ContentTypeInlineData:
+			if p.InlineData != nil {
+				blockType := "document"
+				if strings.HasPrefix(p.InlineData.MediaType, "image/") {
+					blockType = "image"
+				} else if strings.HasPrefix(p.InlineData.MediaType, "audio/") {
+					blockType = "audio"
+				} else if strings.HasPrefix(p.InlineData.MediaType, "video/") {
+					blockType = "video"
+				}
+				result = append(result, ContentBlock{
+					Type: blockType,
+					Source: &ContentSource{
+						Type:      "base64",
+						MediaType: p.InlineData.MediaType,
+						Data:      p.InlineData.Data,
+					},
+				})
+			}
+		}
+	}
+	return result
+}
+
+// parseDataURI 解析 data:xxx;base64,xxx 格式的 URI
+func parseDataURI(uri string) (mediaType, data string) {
+	// 格式: data:<media_type>;base64,<data>
+	const prefix = "data:"
+	if !strings.HasPrefix(uri, prefix) {
+		return "", uri
+	}
+	rest := uri[len(prefix):]
+	idx := strings.Index(rest, ";base64,")
+	if idx < 0 {
+		return "", rest
+	}
+	return rest[:idx], rest[idx+8:]
 }
 
 // toSchemaMessage 将 Anthropic 响应转换为 schema.Message

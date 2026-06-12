@@ -232,6 +232,25 @@ func (m *MockAgent) SendMessageStream(ctx context.Context, msg *schema.Message, 
 		return fullMsg, nil
 	}
 
+	// 多模态响应：一次性发送（图片/音频不适合分块）
+	if len(resp.ContentParts) > 0 || len(resp.OutputImages) > 0 || resp.OutputAudio != nil {
+		chunk := &schema.Message{
+			Role:         resp.Role,
+			Content:      resp.Content,
+			ContentParts: resp.ContentParts,
+			OutputImages: resp.OutputImages,
+			OutputAudio:  resp.OutputAudio,
+		}
+		if !onChunk(chunk, false) {
+			return fullMsg, fmt.Errorf("user cancelled stream")
+		}
+		fullMsg.Content = resp.Content
+		fullMsg.ContentParts = resp.ContentParts
+		fullMsg.OutputImages = resp.OutputImages
+		fullMsg.OutputAudio = resp.OutputAudio
+		return fullMsg, nil
+	}
+
 	// 文本逐 chunk 发送
 	content := resp.Content
 	if content == "" {

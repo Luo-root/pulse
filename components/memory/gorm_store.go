@@ -51,7 +51,7 @@ func (m *MessageModel) ToSchemaMessage() *schema.Message {
 		ReasoningContent: m.ReasoningContent,
 	}
 
-	// 从 Metadata 还原工具调用信息
+	// 从 Metadata 还原工具调用和多模态信息
 	if m.Metadata != "" {
 		var meta map[string]any
 		if err := json.Unmarshal([]byte(m.Metadata), &meta); err == nil {
@@ -68,6 +68,8 @@ func (m *MessageModel) ToSchemaMessage() *schema.Message {
 			if tcid, ok := meta["tool_call_id"].(string); ok {
 				msg.ToolCallID = tcid
 			}
+			// 标记曾为多模态消息（元数据已在 metaData 中记录，ContentParts 不恢复）
+			// 注意：从 DB 恢复的消息只有纯文本 Content，原始多模态数据（图片等）不持久化
 		}
 	}
 
@@ -378,10 +380,7 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 			timestamp := baseTime + int64(i)
 
 			// 提取文本内容（多模态消息也要保存文本部分）
-			content := msg.Content
-			if msg.IsMultimodal() && content == "" {
-				content = msg.TextContent()
-			}
+			content := msg.TextContent()
 
 			model := &MessageModel{
 				ID:               fmt.Sprintf("%s_%s", sessionID, uuid.New().String()),
@@ -405,6 +404,18 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 			if msg.IsMultimodal() {
 				metaData["multimodal"] = true
 				metaData["image_count"] = msg.ImageCount()
+				// 记录内容类型分布
+				typeCounts := make(map[string]int)
+				for _, p := range msg.ContentParts {
+					typeCounts[p.Type]++
+				}
+				metaData["content_types"] = typeCounts
+			}
+			if len(msg.OutputImages) > 0 {
+				metaData["output_images"] = len(msg.OutputImages)
+			}
+			if msg.OutputAudio != nil {
+				metaData["output_audio"] = msg.OutputAudio.Format
 			}
 			if len(metaData) > 0 {
 				meta, _ := json.Marshal(metaData)

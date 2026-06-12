@@ -23,15 +23,59 @@ const (
 
 // ContentPart 多模态内容片段
 type ContentPart struct {
-	Type     string    `json:"type"`                // "text" 或 "image_url"
-	Text     string    `json:"text,omitempty"`      // type="text"
-	ImageURL *ImageURL `json:"image_url,omitempty"` // type="image_url"
+	Type       string      `json:"type"`                  // 内容类型，见 ContentType* 常量
+	Text       string      `json:"text,omitempty"`        // type="text"
+	ImageURL   *ImageURL   `json:"image_url,omitempty"`   // type="image_url"
+	InputAudio *InputAudio `json:"input_audio,omitempty"` // type="input_audio"
+	VideoURL   *MediaURL   `json:"video_url,omitempty"`   // type="video_url"
+	FileURL    *MediaURL   `json:"file_url,omitempty"`    // type="file_url"
+	InlineData *InlineData `json:"inline_data,omitempty"` // type="inline_data"
 }
+
+// 内容类型常量
+const (
+	ContentTypeText       = "text"
+	ContentTypeImageURL   = "image_url"
+	ContentTypeInputAudio = "input_audio"
+	ContentTypeVideoURL   = "video_url"
+	ContentTypeFileURL    = "file_url"
+	ContentTypeInlineData = "inline_data"
+)
 
 // ImageURL 图片信息
 type ImageURL struct {
 	URL    string `json:"url"`              // http(s)://... 或 data:image/png;base64,...
 	Detail string `json:"detail,omitempty"` // "low", "high", "auto"
+}
+
+// InputAudio 用户输入的音频数据
+type InputAudio struct {
+	Data   string `json:"data"`   // base64 编码的音频数据
+	Format string `json:"format"` // 音频格式："wav", "mp3"
+}
+
+// MediaURL 通用媒体资源引用（视频、文件等）
+type MediaURL struct {
+	URL string `json:"url"` // http(s)://... 或 data:xxx;base64,...
+}
+
+// InlineData 内联二进制数据（通用 base64 编码）
+type InlineData struct {
+	MediaType string `json:"media_type"` // MIME 类型："image/png", "audio/mp3", "video/mp4", "application/pdf"
+	Data      string `json:"data"`       // base64 编码的数据
+}
+
+// OutputImage 模型输出的图片
+type OutputImage struct {
+	URL           string `json:"url,omitempty"`            // 图片 URL
+	Base64        string `json:"base64,omitempty"`         // base64 编码的图片数据
+	RevisedPrompt string `json:"revised_prompt,omitempty"` // 模型修订后的 prompt（如 DALL·E）
+}
+
+// OutputAudio 模型输出的音频
+type OutputAudio struct {
+	Data   string `json:"data"`   // base64 编码的音频数据
+	Format string `json:"format"` // 音频格式："mp3", "wav", "opus"
 }
 
 // TextPart 创建文本片段
@@ -54,6 +98,38 @@ func ImagePartBase64(mediaType, base64Data string) ContentPart {
 	}
 }
 
+// AudioPart 创建音频片段（通过 base64 数据）
+func AudioPart(format, base64Data string) ContentPart {
+	return ContentPart{
+		Type:       ContentTypeInputAudio,
+		InputAudio: &InputAudio{Data: base64Data, Format: format},
+	}
+}
+
+// VideoPart 创建视频片段（通过 URL）
+func VideoPart(url string) ContentPart {
+	return ContentPart{
+		Type:     ContentTypeVideoURL,
+		VideoURL: &MediaURL{URL: url},
+	}
+}
+
+// FilePart 创建文件片段（通过 URL）
+func FilePart(url string) ContentPart {
+	return ContentPart{
+		Type:    ContentTypeFileURL,
+		FileURL: &MediaURL{URL: url},
+	}
+}
+
+// InlineDataPart 创建内联数据片段（通用 base64）
+func InlineDataPart(mediaType, base64Data string) ContentPart {
+	return ContentPart{
+		Type:       ContentTypeInlineData,
+		InlineData: &InlineData{MediaType: mediaType, Data: base64Data},
+	}
+}
+
 type Message struct {
 	Role             RoleType `json:"role"`
 	Content          string   `json:"content,omitempty"`
@@ -67,6 +143,10 @@ type Message struct {
 	// 多模态内容：当非空时，序列化由 adapter 处理，Content 字段被忽略
 	// JSON 序列化标记为 "-"，各 provider adapter 自行转换为对应格式
 	ContentParts []ContentPart `json:"-"`
+
+	// 输出侧多模态：模型生成的非文本内容
+	OutputImages []OutputImage `json:"output_images,omitempty"`
+	OutputAudio  *OutputAudio  `json:"output_audio,omitempty"`
 
 	// tool 消息专用：关联到哪个 ToolCall
 	ToolCallID string `json:"tool_call_id,omitempty"`
@@ -88,9 +168,10 @@ type FunctionCall struct {
 
 // ToolResult 工具执行结果（仅用于工具执行层内部传递，不作为 Message 字段）
 type ToolResult struct {
-	CallID  string `json:"call_id"`
-	Content string `json:"content"`
-	IsError bool   `json:"is_error"`
+	CallID       string        `json:"call_id"`
+	Content      string        `json:"content"`
+	IsError      bool          `json:"is_error"`
+	ContentParts []ContentPart `json:"content_parts,omitempty"` // 多模态工具结果
 }
 
 type Usage struct {
@@ -129,14 +210,23 @@ func (m *Message) TextContent() string {
 func (m *Message) ImageCount() int {
 	count := 0
 	for _, p := range m.ContentParts {
-		if p.Type == "image_url" {
+		if p.Type == ContentTypeImageURL {
 			count++
 		}
 	}
 	return count
 }
 
-// Clone 深拷贝
+// HasOutputImages 是否包含输出图片
+func (m *Message) HasOutputImages() bool {
+	return len(m.OutputImages) > 0
+}
+
+// HasOutputAudio 是否包含输出音频
+func (m *Message) HasOutputAudio() bool {
+	return m.OutputAudio != nil
+}
+
 // Clone 深拷贝
 func (m *Message) Clone() Message {
 	cloned := Message{
@@ -168,12 +258,39 @@ func (m *Message) Clone() Message {
 		for i, p := range m.ContentParts {
 			cp := ContentPart{Type: p.Type, Text: p.Text}
 			if p.ImageURL != nil {
-				cp.ImageURL = &ImageURL{
-					URL:    p.ImageURL.URL,
-					Detail: p.ImageURL.Detail,
-				}
+				cp.ImageURL = &ImageURL{URL: p.ImageURL.URL, Detail: p.ImageURL.Detail}
+			}
+			if p.InputAudio != nil {
+				cp.InputAudio = &InputAudio{Data: p.InputAudio.Data, Format: p.InputAudio.Format}
+			}
+			if p.VideoURL != nil {
+				cp.VideoURL = &MediaURL{URL: p.VideoURL.URL}
+			}
+			if p.FileURL != nil {
+				cp.FileURL = &MediaURL{URL: p.FileURL.URL}
+			}
+			if p.InlineData != nil {
+				cp.InlineData = &InlineData{MediaType: p.InlineData.MediaType, Data: p.InlineData.Data}
 			}
 			cloned.ContentParts[i] = cp
+		}
+	}
+
+	if m.OutputImages != nil {
+		cloned.OutputImages = make([]OutputImage, len(m.OutputImages))
+		for i, img := range m.OutputImages {
+			cloned.OutputImages[i] = OutputImage{
+				URL:           img.URL,
+				Base64:        img.Base64,
+				RevisedPrompt: img.RevisedPrompt,
+			}
+		}
+	}
+
+	if m.OutputAudio != nil {
+		cloned.OutputAudio = &OutputAudio{
+			Data:   m.OutputAudio.Data,
+			Format: m.OutputAudio.Format,
 		}
 	}
 
@@ -229,15 +346,27 @@ func AssistantMessage(content, reasoningContent string) *Message {
 func ToolResultsMessage(results []ToolResult) []*Message {
 	msgs := make([]*Message, 0, len(results))
 	for _, r := range results {
-		content := r.Content
-		if r.IsError {
-			content = "[Error] " + content
-		}
-		msgs = append(msgs, &Message{
+		msg := &Message{
 			Role:       ToolRole,
-			Content:    content,
 			ToolCallID: r.CallID,
-		})
+		}
+
+		if len(r.ContentParts) > 0 {
+			msg.ContentParts = r.ContentParts
+			if r.Content != "" {
+				msg.Content = r.Content
+			}
+			if r.IsError {
+				msg.Content = "[Error] " + msg.Content
+			}
+		} else {
+			msg.Content = r.Content
+			if r.IsError {
+				msg.Content = "[Error] " + msg.Content
+			}
+		}
+
+		msgs = append(msgs, msg)
 	}
 	return msgs
 }
@@ -365,9 +494,9 @@ func FormatMessages(messages []*Message) string {
 			builder.WriteString("📎 多模态内容:\n")
 			for j, part := range msg.ContentParts {
 				switch part.Type {
-				case "text":
+				case ContentTypeText:
 					builder.WriteString(fmt.Sprintf("  [%d] 文本: %s\n", j, indentString(part.Text, "      ")))
-				case "image_url":
+				case ContentTypeImageURL:
 					if part.ImageURL != nil {
 						url := part.ImageURL.URL
 						if len(url) > 80 {
@@ -378,6 +507,32 @@ func FormatMessages(messages []*Message) string {
 							builder.WriteString(fmt.Sprintf(" (detail=%s)", part.ImageURL.Detail))
 						}
 						builder.WriteString("\n")
+					}
+				case ContentTypeInputAudio:
+					if part.InputAudio != nil {
+						builder.WriteString(fmt.Sprintf("  [%d] 音频: format=%s, data=%d bytes\n",
+							j, part.InputAudio.Format, len(part.InputAudio.Data)))
+					}
+				case ContentTypeVideoURL:
+					if part.VideoURL != nil {
+						url := part.VideoURL.URL
+						if len(url) > 80 {
+							url = url[:80] + "..."
+						}
+						builder.WriteString(fmt.Sprintf("  [%d] 视频: %s\n", j, url))
+					}
+				case ContentTypeFileURL:
+					if part.FileURL != nil {
+						url := part.FileURL.URL
+						if len(url) > 80 {
+							url = url[:80] + "..."
+						}
+						builder.WriteString(fmt.Sprintf("  [%d] 文件: %s\n", j, url))
+					}
+				case ContentTypeInlineData:
+					if part.InlineData != nil {
+						builder.WriteString(fmt.Sprintf("  [%d] 内联数据: type=%s, data=%d bytes\n",
+							j, part.InlineData.MediaType, len(part.InlineData.Data)))
 					}
 				default:
 					builder.WriteString(fmt.Sprintf("  [%d] %s\n", j, part.Type))
@@ -393,6 +548,29 @@ func FormatMessages(messages []*Message) string {
 
 		if msg.ReasoningContent != "" {
 			builder.WriteString(fmt.Sprintf("💭 思考内容:\n%s\n", indentString(msg.ReasoningContent, "  ")))
+		}
+
+		if len(msg.OutputImages) > 0 {
+			builder.WriteString("🖼️ 输出图片:\n")
+			for j, img := range msg.OutputImages {
+				if img.URL != "" {
+					url := img.URL
+					if len(url) > 80 {
+						url = url[:80] + "..."
+					}
+					builder.WriteString(fmt.Sprintf("  [%d] URL: %s\n", j, url))
+				} else if img.Base64 != "" {
+					builder.WriteString(fmt.Sprintf("  [%d] Base64: %d bytes\n", j, len(img.Base64)))
+				}
+				if img.RevisedPrompt != "" {
+					builder.WriteString(fmt.Sprintf("      修订Prompt: %s\n", img.RevisedPrompt))
+				}
+			}
+		}
+
+		if msg.OutputAudio != nil {
+			builder.WriteString(fmt.Sprintf("🔊 输出音频: format=%s, data=%d bytes\n",
+				msg.OutputAudio.Format, len(msg.OutputAudio.Data)))
 		}
 
 		if len(msg.ToolCalls) > 0 {

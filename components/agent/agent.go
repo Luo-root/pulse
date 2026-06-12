@@ -282,6 +282,15 @@ func (ag *Agent) readStream(reader *schema.StreamReader, onChunk func(msg *schem
 		if len(msg.ToolCalls) > 0 {
 			fullMsg.ToolCalls = msg.ToolCalls
 		}
+		if len(msg.ContentParts) > 0 {
+			fullMsg.ContentParts = append(fullMsg.ContentParts, msg.ContentParts...)
+		}
+		if len(msg.OutputImages) > 0 {
+			fullMsg.OutputImages = append(fullMsg.OutputImages, msg.OutputImages...)
+		}
+		if msg.OutputAudio != nil {
+			fullMsg.OutputAudio = msg.OutputAudio
+		}
 
 		// 当前 chunk 是否包含工具调用
 		isToolCall := len(msg.ToolCalls) > 0
@@ -313,6 +322,9 @@ func (ag *Agent) handleToolCalls(ctx context.Context, assistantMsg *schema.Messa
 			Content:          assistantMsg.Content,
 			ReasoningContent: assistantMsg.ReasoningContent,
 			ToolCalls:        assistantMsg.ToolCalls,
+			ContentParts:     assistantMsg.ContentParts,
+			OutputImages:     assistantMsg.OutputImages,
+			OutputAudio:      assistantMsg.OutputAudio,
 		},
 	}
 	msgs = append(msgs, schema.ToolResultsMessage(results)...)

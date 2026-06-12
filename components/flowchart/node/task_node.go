@@ -95,7 +95,7 @@ func NewTaskNode(plannerNodeID string, task Task, agent agent.AgentInterface) *S
 				return nilOutputs, nil
 			}
 
-			result, err := parseDynamicJSON(resp.Content)
+			result, err := parseDynamicJSON(resp.TextContent())
 			if err != nil {
 				taskStateModifyFailed(plan, task.ID)
 				taskModifyError(plan, task.ID, err.Error())

@@ -100,7 +100,7 @@ func (c *Controller) buildRecallMessage(ctx context.Context, sessionID string, q
 	var sb strings.Builder
 	sb.WriteString("以下是与当前问题相关的历史记忆：\n")
 	for i, m := range mems {
-		sb.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, m.Role, m.Content))
+		sb.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, m.Role, m.TextContent()))
 	}
 
 	return schema.SystemMessage(sb.String()), nil

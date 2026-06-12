@@ -223,7 +223,7 @@ func (s *MemNetAIStore) Save(ctx context.Context, sessionID string, msgs []*sche
 	for _, msg := range msgs {
 		mm := memNetAIMessage{
 			Role:    string(msg.Role),
-			Content: msg.Content,
+			Content: msg.TextContent(),
 		}
 		// role=user 时，若 Message.Name 有值，则作为 character（发言者）
 		if msg.Role == schema.UserRole && msg.Name != "" {

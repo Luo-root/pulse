@@ -170,9 +170,15 @@ func toAPIMessages(messages []*schema.Message) []APIMessage {
 	for i, m := range messages {
 		am := APIMessage{
 			Role:             string(m.Role),
-			Content:          m.Content,
 			ReasoningContent: m.ReasoningContent,
 			Name:             m.Name,
+		}
+
+		// 多模态内容优先：ContentParts 非空时转为 content 数组
+		if len(m.ContentParts) > 0 {
+			am.Content = convertContentParts(m.ContentParts)
+		} else {
+			am.Content = m.Content
 		}
 
 		if m.Role == schema.AssistantRole && len(m.ToolCalls) > 0 {
@@ -184,6 +190,61 @@ func toAPIMessages(messages []*schema.Message) []APIMessage {
 		}
 
 		result[i] = am
+	}
+	return result
+}
+
+// convertContentParts 将 schema.ContentPart 列表转换为 OpenAI content 数组格式
+func convertContentParts(parts []schema.ContentPart) []map[string]any {
+	result := make([]map[string]any, 0, len(parts))
+	for _, p := range parts {
+		switch p.Type {
+		case schema.ContentTypeText:
+			result = append(result, map[string]any{
+				"type": "text",
+				"text": p.Text,
+			})
+
+		case schema.ContentTypeImageURL:
+			if p.ImageURL != nil {
+				result = append(result, map[string]any{
+					"type":      "image_url",
+					"image_url": map[string]any{"url": p.ImageURL.URL, "detail": p.ImageURL.Detail},
+				})
+			}
+
+		case schema.ContentTypeInputAudio:
+			if p.InputAudio != nil {
+				result = append(result, map[string]any{
+					"type":        "input_audio",
+					"input_audio": map[string]any{"data": p.InputAudio.Data, "format": p.InputAudio.Format},
+				})
+			}
+
+		case schema.ContentTypeVideoURL:
+			if p.VideoURL != nil {
+				result = append(result, map[string]any{
+					"type":      "video_url",
+					"video_url": map[string]any{"url": p.VideoURL.URL},
+				})
+			}
+
+		case schema.ContentTypeFileURL:
+			if p.FileURL != nil {
+				result = append(result, map[string]any{
+					"type":     "file_url",
+					"file_url": map[string]any{"url": p.FileURL.URL},
+				})
+			}
+
+		case schema.ContentTypeInlineData:
+			if p.InlineData != nil {
+				result = append(result, map[string]any{
+					"type":        "input_audio",
+					"input_audio": map[string]any{"data": p.InlineData.Data, "format": p.InlineData.MediaType},
+				})
+			}
+		}
 	}
 	return result
 }

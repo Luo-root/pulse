@@ -211,9 +211,9 @@ func Planning(ctx context.Context, goal string, agent agent.AgentInterface) (*Pl
 
 	// 解析 Agent 返回的计划
 	plan := NewPlan(goal)
-	resp.Content = TrimJSONWrapper(resp.Content)
-	if err := json.Unmarshal([]byte(resp.Content), plan); err != nil {
-		extracted, extractErr := extractPlan(resp.Content, goal)
+	planContent := TrimJSONWrapper(resp.TextContent())
+	if err := json.Unmarshal([]byte(planContent), plan); err != nil {
+		extracted, extractErr := extractPlan(planContent, goal)
 		if extractErr != nil {
 			return plan, fmt.Errorf("failed to parse plan: %w", extractErr)
 		}
@@ -298,8 +298,8 @@ func RePlan(ctx context.Context, plan *Plan, failedTask *Task, agent agent.Agent
 
 	// 解析JSON结果
 	newPlan := NewPlan(plan.Goal)
-	resp.Content = TrimJSONWrapper(resp.Content)
-	if err := json.Unmarshal([]byte(resp.Content), newPlan); err != nil {
+	replanContent := TrimJSONWrapper(resp.TextContent())
+	if err := json.Unmarshal([]byte(replanContent), newPlan); err != nil {
 		mu := &sync.Mutex{}
 		newPlan = &Plan{
 			Goal:         plan.Goal,

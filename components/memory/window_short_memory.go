@@ -147,7 +147,7 @@ func buildSummaryPrompt(messages []*schema.Message) string {
 			}
 			sb.WriteString(fmt.Sprintf("用户: %s\n", content))
 		case schema.AssistantRole:
-			content := m.Content
+			content := m.TextContent()
 			if m.ReasoningContent != "" {
 				content = m.ReasoningContent + " " + content
 			}
@@ -163,7 +163,7 @@ func buildSummaryPrompt(messages []*schema.Message) string {
 }
 
 func summarizeToolResult(msg *schema.Message) string {
-	content := msg.Content
+	content := msg.TextContent()
 	if content == "" {
 		return "(空)"
 	}
@@ -184,7 +184,7 @@ func fallbackSummary(messages []*schema.Message) string {
 	var parts []string
 	for _, m := range messages {
 		if m.Role == schema.UserRole || m.Role == schema.AssistantRole {
-			text := m.Content
+			text := m.TextContent()
 			if len([]rune(text)) > 100 {
 				text = string([]rune(text)[:100]) + "..."
 			}

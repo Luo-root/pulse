@@ -19,6 +19,8 @@ type MockResponse struct {
 	Content          string               // 文本内容
 	ReasoningContent string               // 推理内容
 	ContentParts     []schema.ContentPart // 多模态内容（优先于 Content）
+	OutputImages     []schema.OutputImage // 输出图片
+	OutputAudio      *schema.OutputAudio  // 输出音频
 	ToolCalls        []schema.ToolCall    // 工具调用
 	Delay            time.Duration        // 模拟延迟
 	Error            error                // 是否返回错误
@@ -287,6 +289,8 @@ func buildMessage(resp MockResponse) *schema.Message {
 		Content:          resp.Content,
 		ReasoningContent: resp.ReasoningContent,
 		ToolCalls:        resp.ToolCalls,
+		OutputImages:     resp.OutputImages,
+		OutputAudio:      resp.OutputAudio,
 	}
 
 	// 多模态内容优先：设置 ContentParts 时 Content 由 adapter 决定如何处理
@@ -372,11 +376,13 @@ func (m *MockModel) Stream(ctx context.Context, input []*schema.Message) (*schem
 		}
 
 		// 2. 多模态内容：一次性发送（图片不适合分块）
-		if len(resp.ContentParts) > 0 {
+		if len(resp.ContentParts) > 0 || len(resp.OutputImages) > 0 || resp.OutputAudio != nil {
 			reader.Send(schema.Message{
 				Role:         schema.AssistantRole,
 				Content:      resp.Content,
 				ContentParts: resp.ContentParts,
+				OutputImages: resp.OutputImages,
+				OutputAudio:  resp.OutputAudio,
 			})
 			return
 		}
