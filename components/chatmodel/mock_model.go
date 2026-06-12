@@ -200,12 +200,50 @@ func (m *MockModel) GetLastInputImages() []string {
 	var images []string
 	for _, msg := range m.recordedInputs[len(m.recordedInputs)-1] {
 		for _, part := range msg.ContentParts {
-			if part.Type == "image_url" && part.ImageURL != nil {
+			if part.Type == schema.ContentTypeImageURL && part.ImageURL != nil {
 				images = append(images, part.ImageURL.URL)
 			}
 		}
 	}
 	return images
+}
+
+// GetLastInputAudioParts 获取最后一次输入中的所有音频部分
+func (m *MockModel) GetLastInputAudioParts() []schema.InputAudio {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.recordedInputs) == 0 {
+		return nil
+	}
+
+	var audios []schema.InputAudio
+	for _, msg := range m.recordedInputs[len(m.recordedInputs)-1] {
+		for _, part := range msg.ContentParts {
+			if part.Type == schema.ContentTypeInputAudio && part.InputAudio != nil {
+				audios = append(audios, *part.InputAudio)
+			}
+		}
+	}
+	return audios
+}
+
+// GetLastInputContentTypes 获取最后一次输入中所有 ContentPart 的类型
+func (m *MockModel) GetLastInputContentTypes() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.recordedInputs) == 0 {
+		return nil
+	}
+
+	var types []string
+	for _, msg := range m.recordedInputs[len(m.recordedInputs)-1] {
+		for _, part := range msg.ContentParts {
+			types = append(types, part.Type)
+		}
+	}
+	return types
 }
 
 // GetMultimodalCallCount 获取包含多模态输入的调用次数
@@ -493,6 +531,26 @@ func MockMultimodalBase64Response(text string, mediaType, base64Data string) Moc
 			schema.TextPart(text),
 			schema.ImagePartBase64(mediaType, base64Data),
 		},
+	}
+}
+
+// MockOutputImagesResponse 输出图片响应（如 DALL·E 图像生成）
+func MockOutputImagesResponse(text string, imageURLs ...string) MockResponse {
+	var images []schema.OutputImage
+	for _, url := range imageURLs {
+		images = append(images, schema.OutputImage{URL: url})
+	}
+	return MockResponse{
+		Content:      text,
+		OutputImages: images,
+	}
+}
+
+// MockOutputAudioResponse 输出音频响应（如 TTS）
+func MockOutputAudioResponse(text string, format, base64Data string) MockResponse {
+	return MockResponse{
+		Content:     text,
+		OutputAudio: &schema.OutputAudio{Data: base64Data, Format: format},
 	}
 }
 
