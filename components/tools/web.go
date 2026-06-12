@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Luo-root/pulse/components/schema"
 	"github.com/chromedp/chromedp"
 )
 
@@ -229,33 +231,27 @@ func WebBrowse(ctx context.Context, args map[string]any) (any, error) {
 			return nil, err
 		}
 
-		var tmpFile *os.File
 		outputPath, hasOutputPath := args["output_path"].(string)
 
+		// 保存到文件（仅指定了 output_path 时）
 		if hasOutputPath && outputPath != "" {
-			tmpFile, err = os.Create(outputPath)
-			if err != nil {
-				return nil, fmt.Errorf("create output file: %w", err)
-			}
-		} else {
-			tmpFile, err = os.CreateTemp("", "pulse-screenshot-*.png")
-			if err != nil {
+			if err := os.WriteFile(outputPath, buf, 0644); err != nil {
 				return nil, fmt.Errorf("save screenshot: %w", err)
 			}
+			result["screenshot_path"] = outputPath
 		}
 
-		if _, err := tmpFile.Write(buf); err != nil {
-			tmpFile.Close()
-			if !hasOutputPath || outputPath == "" {
-				os.Remove(tmpFile.Name())
-			}
-			return nil, err
-		}
-		tmpFile.Close()
-
-		result["screenshot_path"] = tmpFile.Name()
 		result["size_bytes"] = len(buf)
-		result["content_type"] = "image/png"
+
+		// 返回 base64 图片作为 ContentPart
+		b64 := base64.StdEncoding.EncodeToString(buf)
+		return &schema.ToolResultContent{
+			Content: fmt.Sprintf("截图完成 (%d bytes)", len(buf)),
+			ContentParts: []schema.ContentPart{
+				schema.TextPart(fmt.Sprintf("截图完成 (%d bytes)", len(buf))),
+				schema.ImagePartBase64("image/png", b64),
+			},
+		}, nil
 
 	case "click":
 		selector := args["selector"].(string)

@@ -174,6 +174,25 @@ type ToolResult struct {
 	ContentParts []ContentPart `json:"content_parts,omitempty"` // 多模态工具结果
 }
 
+// ToolResultContent 工具返回多模态结果时使用的结构体
+// 工具 Handler 返回此类型时，Execute() 会将其 ContentParts 填充到 ToolResult 中
+//
+// 用法：
+//
+//	func MyTool(ctx context.Context, args map[string]any) (any, error) {
+//	    return &schema.ToolResultContent{
+//	        Content: "截图已保存",
+//	        ContentParts: []schema.ContentPart{
+//	            schema.TextPart("截图已保存"),
+//	            schema.ImagePartBase64("image/png", base64Data),
+//	        },
+//	    }, nil
+//	}
+type ToolResultContent struct {
+	Content      string        // 文本内容
+	ContentParts []ContentPart // 多模态内容片段
+}
+
 type Usage struct {
 	PromptTokens        uint64 `json:"prompt_tokens"`
 	CompletionTokens    uint64 `json:"completion_tokens"`

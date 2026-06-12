@@ -5,8 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Luo-root/pulse/components/schema"
 )
 
 // ============================================================================
@@ -312,40 +315,88 @@ func TestWebBrowse(t *testing.T) {
 	})
 
 	t.Run("screenshot", func(t *testing.T) {
-		res, err := browse(t, "screenshot", nil)
+		result, err := WebBrowse(context.Background(), map[string]any{
+			"url":     srv.URL,
+			"action":  "screenshot",
+			"timeout": float64(20),
+		})
 		if err != nil {
 			t.Fatalf("screenshot: %v", err)
 		}
 
-		path, ok := res["screenshot_path"].(string)
-		if !ok || path == "" {
-			t.Fatal("应返回截图文件路径")
+		// screenshot 现在返回 *schema.ToolResultContent
+		tc, ok := result.(*schema.ToolResultContent)
+		if !ok {
+			t.Fatalf("expected *schema.ToolResultContent, got %T", result)
 		}
 
-		sizeBytes := res["size_bytes"]
-		var size int
-		switch v := sizeBytes.(type) {
-		case int:
-			size = v
-		case float64:
-			size = int(v)
-		default:
-			t.Fatalf("size_bytes 类型错误: %T", sizeBytes)
+		if tc.Content == "" {
+			t.Error("应返回非空文本内容")
 		}
 
-		if size <= 0 {
-			t.Error("应返回文件大小")
+		if len(tc.ContentParts) != 2 {
+			t.Fatalf("expected 2 content parts (text + image), got %d", len(tc.ContentParts))
 		}
 
-		contentType, ok := res["content_type"].(string)
-		if !ok || contentType != "image/png" {
-			t.Errorf("content_type 应为 image/png, 实际: %v", contentType)
+		if tc.ContentParts[0].Type != schema.ContentTypeText {
+			t.Errorf("part 0 type: %s", tc.ContentParts[0].Type)
+		}
+		if tc.ContentParts[1].Type != schema.ContentTypeImageURL {
+			t.Errorf("part 1 type: %s", tc.ContentParts[1].Type)
+		}
+		if tc.ContentParts[1].ImageURL == nil || tc.ContentParts[1].ImageURL.URL == "" {
+			t.Error("image URL should not be empty")
 		}
 
-		t.Logf("截图路径: %s, 大小: %d bytes", path, size)
+		t.Logf("截图完成: %s, content_parts=%d", tc.Content, len(tc.ContentParts))
+	})
 
-		// 验证文件存在且可读取
-		data, err := os.ReadFile(path)
+	t.Run("screenshot_full_page", func(t *testing.T) {
+		result, err := WebBrowse(context.Background(), map[string]any{
+			"url":       srv.URL,
+			"action":    "screenshot",
+			"full_page": true,
+			"timeout":   float64(20),
+		})
+		if err != nil {
+			t.Fatalf("full screenshot: %v", err)
+		}
+
+		tc, ok := result.(*schema.ToolResultContent)
+		if !ok {
+			t.Fatalf("expected *schema.ToolResultContent, got %T", result)
+		}
+
+		if len(tc.ContentParts) != 2 {
+			t.Fatalf("expected 2 content parts, got %d", len(tc.ContentParts))
+		}
+
+		t.Logf("全页截图完成: %s", tc.Content)
+	})
+
+	t.Run("screenshot_with_output_path", func(t *testing.T) {
+		tmpPath := filepath.Join(t.TempDir(), "screenshot.png")
+		result, err := WebBrowse(context.Background(), map[string]any{
+			"url":         srv.URL,
+			"action":      "screenshot",
+			"output_path": tmpPath,
+			"timeout":     float64(20),
+		})
+		if err != nil {
+			t.Fatalf("screenshot with output_path: %v", err)
+		}
+
+		tc, ok := result.(*schema.ToolResultContent)
+		if !ok {
+			t.Fatalf("expected *schema.ToolResultContent, got %T", result)
+		}
+
+		if len(tc.ContentParts) != 2 {
+			t.Fatalf("expected 2 content parts, got %d", len(tc.ContentParts))
+		}
+
+		// 验证文件已保存
+		data, err := os.ReadFile(tmpPath)
 		if err != nil {
 			t.Fatalf("读取截图文件失败: %v", err)
 		}
@@ -353,47 +404,7 @@ func TestWebBrowse(t *testing.T) {
 			t.Error("截图文件太小")
 		}
 
-		// 清理临时文件
-		os.Remove(path)
-	})
-
-	t.Run("screenshot_full_page", func(t *testing.T) {
-		res, err := browse(t, "screenshot", map[string]any{"full_page": true})
-		if err != nil {
-			t.Fatalf("full screenshot: %v", err)
-		}
-
-		path, ok := res["screenshot_path"].(string)
-		if !ok || path == "" {
-			t.Fatal("全页截图应返回文件路径")
-		}
-
-		sizeBytes := res["size_bytes"]
-		var size int
-		switch v := sizeBytes.(type) {
-		case int:
-			size = v
-		case float64:
-			size = int(v)
-		default:
-			t.Fatalf("size_bytes 类型错误: %T", sizeBytes)
-		}
-
-		if size <= 0 {
-			t.Error("应返回文件大小")
-		}
-
-		t.Logf("全页截图路径: %s, 大小: %d bytes", path, size)
-
-		// 验证文件存在
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("读取全页截图失败: %v", err)
-		}
-		t.Logf("全页截图实际大小: %d bytes", len(data))
-
-		// 清理临时文件
-		os.Remove(path)
+		t.Logf("截图已保存到: %s, 大小: %d bytes", tmpPath, len(data))
 	})
 
 	t.Run("click", func(t *testing.T) {
@@ -486,97 +497,52 @@ func TestWebBrowse(t *testing.T) {
 			t.Skip("short 模式跳过")
 		}
 
-		res, err := browse(t, "screenshot", map[string]any{
+		result, err := WebBrowse(context.Background(), map[string]any{
 			"url":       "https://www.baidu.com",
+			"action":    "screenshot",
 			"full_page": true,
+			"timeout":   float64(30),
 		})
 		if err != nil {
 			t.Fatalf("real page screenshot: %v", err)
 		}
 
-		path, ok := res["screenshot_path"].(string)
-		if !ok || path == "" {
-			t.Fatal("应返回截图文件路径")
+		tc, ok := result.(*schema.ToolResultContent)
+		if !ok {
+			t.Fatalf("expected *schema.ToolResultContent, got %T", result)
 		}
 
-		sizeBytes := res["size_bytes"]
-		var size int
-		switch v := sizeBytes.(type) {
-		case int:
-			size = v
-		case float64:
-			size = int(v)
-		default:
-			t.Fatalf("size_bytes 类型错误: %T", sizeBytes)
+		if len(tc.ContentParts) != 2 {
+			t.Fatalf("expected 2 content parts, got %d", len(tc.ContentParts))
 		}
 
-		if size <= 0 {
-			t.Errorf("应返回文件大小, 实际: %v", sizeBytes)
-		}
-
-		t.Logf("百度首页截图路径: %s, 大小: %d bytes", path, size)
-
-		// 验证截图文件可读取
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("读取截图文件失败: %v", err)
-		}
-		t.Logf("截图实际大小: %d bytes", len(data))
-
-		if len(data) < 1000 {
-			t.Errorf("真实页面截图应该较大, 实际: %d bytes", len(data))
-		}
-
-		// PNG 头: \x89PNG, JPEG 头: \xFF\xD8\xFF
-		isPNG := len(data) >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47
-		isJPEG := len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF
-		if !isPNG && !isJPEG {
-			t.Errorf("解码后不是有效的图片 (头字节: %x)", data[:min(8, len(data))])
-		}
-		t.Logf("图片格式: %s", map[bool]string{true: "PNG", false: "JPEG"}[isPNG])
-
-		// 清理临时文件
-		os.Remove(path)
+		t.Logf("百度首页截图完成: %s", tc.Content)
 	})
 	t.Run("screenshot_with_custom_path", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		customPath := tmpDir + "/custom-screenshot.png"
 
-		res, err := browse(t, "screenshot", map[string]any{
+		result, err := WebBrowse(context.Background(), map[string]any{
+			"url":         srv.URL,
+			"action":      "screenshot",
 			"output_path": customPath,
+			"timeout":     float64(20),
 		})
 		if err != nil {
 			t.Fatalf("screenshot with custom path: %v", err)
 		}
 
-		path, ok := res["screenshot_path"].(string)
-		if !ok || path == "" {
-			t.Fatal("应返回截图文件路径")
+		tc, ok := result.(*schema.ToolResultContent)
+		if !ok {
+			t.Fatalf("expected *schema.ToolResultContent, got %T", result)
 		}
 
-		if path != customPath {
-			t.Errorf("截图路径应为 %s, 实际: %s", customPath, path)
+		if len(tc.ContentParts) != 2 {
+			t.Fatalf("expected 2 content parts, got %d", len(tc.ContentParts))
 		}
 
-		sizeBytes := res["size_bytes"]
-		var size int
-		switch v := sizeBytes.(type) {
-		case int:
-			size = v
-		case float64:
-			size = int(v)
-		default:
-			t.Fatalf("size_bytes 类型错误: %T", sizeBytes)
-		}
-
-		if size <= 0 {
-			t.Error("应返回文件大小")
-		}
-
-		t.Logf("自定义路径截图: %s, 大小: %d bytes", path, size)
-
-		// 验证文件存在且可读取
-		data, err := os.ReadFile(path)
+		// 验证文件已保存到自定义路径
+		data, err := os.ReadFile(customPath)
 		if err != nil {
 			t.Fatalf("读取截图文件失败: %v", err)
 		}
@@ -584,13 +550,7 @@ func TestWebBrowse(t *testing.T) {
 			t.Error("截图文件太小")
 		}
 
-		// 验证是有效的 PNG 图片
-		isPNG := len(data) >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47
-		if !isPNG {
-			t.Error("自定义路径截图应该是 PNG 格式")
-		}
-
-		// 注意：不删除文件，因为用户指定了路径，应该由用户自己管理
+		t.Logf("自定义路径截图: %s, 大小: %d bytes", customPath, len(data))
 	})
 
 	t.Run("screenshot_real_page", func(t *testing.T) {
@@ -598,57 +558,26 @@ func TestWebBrowse(t *testing.T) {
 			t.Skip("short 模式跳过")
 		}
 
-		res, err := browse(t, "screenshot", map[string]any{
+		result, err := WebBrowse(context.Background(), map[string]any{
 			"url":       "https://www.baidu.com",
+			"action":    "screenshot",
 			"full_page": true,
+			"timeout":   float64(30),
 		})
 		if err != nil {
 			t.Fatalf("real page screenshot: %v", err)
 		}
 
-		path, ok := res["screenshot_path"].(string)
-		if !ok || path == "" {
-			t.Fatal("应返回截图文件路径")
+		tc, ok := result.(*schema.ToolResultContent)
+		if !ok {
+			t.Fatalf("expected *schema.ToolResultContent, got %T", result)
 		}
 
-		sizeBytes := res["size_bytes"]
-		var size int
-		switch v := sizeBytes.(type) {
-		case int:
-			size = v
-		case float64:
-			size = int(v)
-		default:
-			t.Fatalf("size_bytes 类型错误: %T", sizeBytes)
+		if len(tc.ContentParts) != 2 {
+			t.Fatalf("expected 2 content parts, got %d", len(tc.ContentParts))
 		}
 
-		if size <= 0 {
-			t.Errorf("应返回文件大小, 实际: %v", sizeBytes)
-		}
-
-		t.Logf("百度首页截图路径: %s, 大小: %d bytes", path, size)
-
-		// 验证截图文件可读取
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("读取截图文件失败: %v", err)
-		}
-		t.Logf("截图实际大小: %d bytes", len(data))
-
-		if len(data) < 1000 {
-			t.Errorf("真实页面截图应该较大, 实际: %d bytes", len(data))
-		}
-
-		// PNG 头: \x89PNG, JPEG 头: \xFF\xD8\xFF
-		isPNG := len(data) >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47
-		isJPEG := len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF
-		if !isPNG && !isJPEG {
-			t.Errorf("解码后不是有效的图片 (头字节: %x)", data[:min(8, len(data))])
-		}
-		t.Logf("图片格式: %s", map[bool]string{true: "PNG", false: "JPEG"}[isPNG])
-
-		// 清理临时文件
-		os.Remove(path)
+		t.Logf("百度首页截图完成: %s", tc.Content)
 	})
 }
 

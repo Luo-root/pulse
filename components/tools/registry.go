@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -324,8 +325,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 	if err != nil {
 		result = schema.NewToolResult(call.ID, fmt.Sprintf(`{"error": "%s"}`, err.Error()), true)
 	} else {
-		content := marshalOutput(output)
-		result = schema.NewToolResult(call.ID, content, false)
+		result = buildToolResult(call.ID, output)
 	}
 
 	for _, hook := range r.afterExecuteFunc {
@@ -492,4 +492,29 @@ func marshalOutput(output any) string {
 		}
 		return string(data)
 	}
+}
+
+// buildToolResult 从工具输出构建 ToolResult，支持多模态内容
+func buildToolResult(callID string, output any) schema.ToolResult {
+	if tc, ok := output.(*schema.ToolResultContent); ok {
+		result := schema.ToolResult{
+			CallID:       callID,
+			Content:      tc.Content,
+			ContentParts: tc.ContentParts,
+		}
+		// 如果没有显式 Content，从 ContentParts 提取文本
+		if result.Content == "" && len(tc.ContentParts) > 0 {
+			var texts []string
+			for _, p := range tc.ContentParts {
+				if p.Type == schema.ContentTypeText && p.Text != "" {
+					texts = append(texts, p.Text)
+				}
+			}
+			if len(texts) > 0 {
+				result.Content = strings.Join(texts, "\n")
+			}
+		}
+		return result
+	}
+	return schema.NewToolResult(callID, marshalOutput(output), false)
 }

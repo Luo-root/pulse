@@ -322,3 +322,127 @@ func TestToolRegistryBatchExecute(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// 多模态工具结果
+// ============================================================================
+
+func TestExecute_ToolResultContent_Multimodal(t *testing.T) {
+	registry := NewToolRegistry()
+
+	registry.Register(ToolMetadata{
+		Name:       "screenshot_tool",
+		Parameters: map[string]any{},
+		Timeout:    5 * time.Second,
+	}, func(ctx context.Context, args map[string]any) (any, error) {
+		return &schema.ToolResultContent{
+			Content: "截图完成",
+			ContentParts: []schema.ContentPart{
+				schema.TextPart("截图完成"),
+				schema.ImagePartBase64("image/png", "iVBORw0KGgo="),
+			},
+		}, nil
+	})
+
+	call := schema.ToolCall{
+		ID:       "call_1",
+		Type:     "function",
+		Function: schema.FunctionCall{Name: "screenshot_tool", Arguments: "{}"},
+	}
+
+	result := registry.Execute(context.Background(), call)
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content)
+	}
+	if result.Content != "截图完成" {
+		t.Errorf("content: %s", result.Content)
+	}
+	if len(result.ContentParts) != 2 {
+		t.Fatalf("expected 2 content parts, got %d", len(result.ContentParts))
+	}
+	if result.ContentParts[0].Type != schema.ContentTypeText {
+		t.Errorf("part 0 type: %s", result.ContentParts[0].Type)
+	}
+	if result.ContentParts[1].Type != schema.ContentTypeImageURL {
+		t.Errorf("part 1 type: %s", result.ContentParts[1].Type)
+	}
+}
+
+func TestExecute_ToolResultContent_TextOnly(t *testing.T) {
+	registry := NewToolRegistry()
+
+	registry.Register(ToolMetadata{
+		Name:       "text_tool",
+		Parameters: map[string]any{},
+		Timeout:    5 * time.Second,
+	}, func(ctx context.Context, args map[string]any) (any, error) {
+		return &schema.ToolResultContent{
+			Content: "纯文本结果",
+		}, nil
+	})
+
+	call := schema.ToolCall{
+		ID:       "call_1",
+		Type:     "function",
+		Function: schema.FunctionCall{Name: "text_tool", Arguments: "{}"},
+	}
+
+	result := registry.Execute(context.Background(), call)
+
+	if result.Content != "纯文本结果" {
+		t.Errorf("content: %s", result.Content)
+	}
+	if len(result.ContentParts) != 0 {
+		t.Errorf("expected 0 content parts, got %d", len(result.ContentParts))
+	}
+}
+
+func TestExecute_NormalResult(t *testing.T) {
+	registry := NewToolRegistry()
+
+	registry.Register(ToolMetadata{
+		Name:       "normal_tool",
+		Parameters: map[string]any{},
+		Timeout:    5 * time.Second,
+	}, func(ctx context.Context, args map[string]any) (any, error) {
+		return map[string]string{"status": "ok"}, nil
+	})
+
+	call := schema.ToolCall{
+		ID:       "call_1",
+		Type:     "function",
+		Function: schema.FunctionCall{Name: "normal_tool", Arguments: "{}"},
+	}
+
+	result := registry.Execute(context.Background(), call)
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content)
+	}
+	if result.Content == "" {
+		t.Error("expected non-empty content")
+	}
+	if len(result.ContentParts) != 0 {
+		t.Errorf("expected 0 content parts for normal result, got %d", len(result.ContentParts))
+	}
+}
+
+func TestBuildToolResult_ToolResultContent_AutoText(t *testing.T) {
+	// ContentParts 有文本但 Content 为空 → 自动提取
+	tc := &schema.ToolResultContent{
+		ContentParts: []schema.ContentPart{
+			schema.TextPart("自动提取的文本"),
+			schema.ImagePartBase64("image/png", "data"),
+		},
+	}
+
+	result := buildToolResult("call_1", tc)
+
+	if result.Content != "自动提取的文本" {
+		t.Errorf("expected auto-extracted text, got: %s", result.Content)
+	}
+	if len(result.ContentParts) != 2 {
+		t.Errorf("expected 2 content parts, got %d", len(result.ContentParts))
+	}
+}
