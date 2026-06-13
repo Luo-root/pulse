@@ -113,7 +113,6 @@ const SkillCallerKey skillCallKey = "skill_caller"
 
 // SkillLoader Skill 加载器
 type SkillLoader struct {
-	loader       *tools.DynamicToolLoader
 	registry     *SkillRegistry
 	toolRegistry *tools.ToolRegistry
 	hookIDs      map[string][]tools.HookID
@@ -122,7 +121,6 @@ type SkillLoader struct {
 // NewSkillLoader 创建 Skill 加载器
 func NewSkillLoader(registry *SkillRegistry, toolRegistry *tools.ToolRegistry) *SkillLoader {
 	return &SkillLoader{
-		loader:       tools.NewDynamicToolLoader(toolRegistry),
 		registry:     registry,
 		toolRegistry: toolRegistry,
 		hookIDs:      make(map[string][]tools.HookID),
@@ -165,14 +163,14 @@ func (sl *SkillLoader) Register(skill Skill) error {
 		return handler(ctx, args)
 	}
 
-	if err := sl.loader.Load(
+	if err := sl.toolRegistry.RegisterSimple(
 		skill.Name,
 		skill.Description,
 		wrappedHandler,
-		skill.Parameters,
 		tools.WithCategory(skill.Category),
 		tools.WithTimeout(skill.Timeout),
 		tools.WithTags(skill.Tags...),
+		tools.WithParameters(skill.Parameters),
 	); err != nil {
 		return err
 	}

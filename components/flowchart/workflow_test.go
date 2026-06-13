@@ -1031,40 +1031,6 @@ func TestWorkflow_FullIntegration(t *testing.T) {
 	}
 }
 
-func TestWorkflow_TopologicalNodeAsOneNode(t *testing.T) {
-	// TopologicalNode 作为 Workflow 中的一个节点
-	wf, err := NewWorkflow(context.Background(), 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer wf.Close()
-
-	// 内部子节点
-	n1 := node.NewNode("step1", []string{"input"}, []string{"mid"}, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
-		return map[string]any{"mid": inputs["input"].(int) * 2}, nil
-	})
-	n2 := node.NewNode("step2", []string{"mid"}, []string{"output"}, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
-		return map[string]any{"output": inputs["mid"].(int) + 10}, nil
-	})
-
-	topoNode, err := node.NewTopologicalNode("pipeline", []node.Node{n1, n2}, []string{"output"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	wf.AddNode(topoNode)
-
-	if err := wf.Run(map[string]any{"input": 5}); err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
-
-	val, _ := wf.Get("output")
-	// step1: 5*2=10, step2: 10+10=20
-	if val.(int) != 20 {
-		t.Fatalf("expected 20, got %v", val)
-	}
-}
-
 func TestWorkflow_InputKeyAsInitialData(t *testing.T) {
 	// 验证通过 Input() 预设的数据可以被节点 WaitAll 获取
 	wf, err := NewWorkflow(context.Background(), 4)

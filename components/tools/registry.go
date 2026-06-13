@@ -138,6 +138,24 @@ func (r *ToolRegistry) MustRegister(meta ToolMetadata, handler ToolHandler) {
 	}
 }
 
+// RegisterSimple 简化注册：只需 name、description、handler，其余用默认值
+// 默认：PermReadOnly、category="dynamic"、timeout=30s
+func (r *ToolRegistry) RegisterSimple(name, description string, handler ToolHandler, opts ...ToolOption) error {
+	meta := ToolMetadata{
+		Name:        name,
+		Description: description,
+		Permission:  PermReadOnly,
+		Category:    "dynamic",
+		Version:     "1.0.0",
+		Tags:        []string{"dynamic"},
+		Timeout:     30 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(&meta)
+	}
+	return r.Register(meta, handler)
+}
+
 // Unregister 注销工具
 func (r *ToolRegistry) Unregister(toolName string) error {
 	r.mu.Lock()

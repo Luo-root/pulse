@@ -6,7 +6,7 @@ import (
 )
 
 // ============================================================================
-// htmlToTextV2 测试
+// htmlToText 测试
 // ============================================================================
 
 func TestHTMLToTextV2(t *testing.T) {
@@ -114,7 +114,7 @@ func TestHTMLToTextV2(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := htmlToTextV2(tt.input)
+			result := htmlToText(tt.input)
 
 			if len(tt.contains) == 0 && len(tt.excludes) == 0 {
 				return
@@ -134,8 +134,8 @@ func TestHTMLToTextV2(t *testing.T) {
 	}
 }
 
-// TestHTMLToTextV2vsV1 对比新旧版本的输出
-func TestHTMLToTextV2vsV1(t *testing.T) {
+// TestHTMLToTextV2_ComplexHTML 测试复杂 HTML 的解析
+func TestHTMLToTextV2_ComplexHTML(t *testing.T) {
 	input := `<!DOCTYPE html>
 <html>
 <head><title>测试</title></head>
@@ -148,19 +148,28 @@ func TestHTMLToTextV2vsV1(t *testing.T) {
 </body>
 </html>`
 
-	v1Result := htmlToText(input)
-	v2Result := htmlToTextV2(input)
+	result := htmlToText(input)
 
-	t.Logf("V1 结果:\n%s", v1Result)
-	t.Logf("V2 结果:\n%s", v2Result)
-
-	// V2 应该能正确处理 HTML 实体
-	if strings.Contains(v2Result, "&lt;") || strings.Contains(v2Result, "&gt;") {
-		t.Error("V2 应该解码 HTML 实体")
+	// 应该能正确处理 HTML 实体
+	if strings.Contains(result, "&lt;") || strings.Contains(result, "&gt;") {
+		t.Error("应该解码 HTML 实体")
 	}
 
-	// V2 应该提取图片 alt 文本
-	if !strings.Contains(v2Result, "[图片: 测试图片]") {
-		t.Error("V2 应该提取图片 alt 文本")
+	// 应该提取图片 alt 文本
+	if !strings.Contains(result, "[图片: 测试图片]") {
+		t.Error("应该提取图片 alt 文本")
+	}
+
+	// 不应包含 script 内容
+	if strings.Contains(result, "console.log") {
+		t.Error("不应包含 script 内容")
+	}
+
+	// 应该包含标题和段落文本
+	if !strings.Contains(result, "主标题") {
+		t.Error("应包含主标题")
+	}
+	if !strings.Contains(result, "加粗") {
+		t.Error("应包含加粗文本")
 	}
 }

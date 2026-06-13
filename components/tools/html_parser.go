@@ -6,17 +6,18 @@ import (
 	"golang.org/x/net/html"
 )
 
-// htmlToTextV2 使用 golang.org/x/net/html 解析器将 HTML 转换为纯文本
-// 相比字符串操作版本，能正确处理：
+// htmlToText 将 HTML 转换为纯文本
+// 使用 golang.org/x/net/html 解析器，能正确处理：
 // - 嵌套标签
 // - HTML 实体（&lt;, &gt;, &amp; 等）
 // - 注释和 CDATA
 // - 属性中的特殊字符
-func htmlToTextV2(s string) string {
+// - 畸形 HTML（容错解析）
+func htmlToText(s string) string {
 	doc, err := html.Parse(strings.NewReader(s))
 	if err != nil {
-		// 解析失败时回退到简单处理
-		return htmlToText(s)
+		// 解析失败时返回原始字符串
+		return s
 	}
 
 	var buf strings.Builder

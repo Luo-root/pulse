@@ -65,59 +65,10 @@ func WebFetch(ctx context.Context, args map[string]any) (any, error) {
 		}
 		result["headers"] = h
 	default:
-		result["content"] = htmlToTextV2(string(body))
+		result["content"] = htmlToText(string(body))
 	}
 
 	return result, nil
-}
-
-// htmlToText 使用正则表达式和字符串操作将 HTML 转换为纯文本
-// 已弃用：请使用 htmlToTextV2（基于 golang.org/x/net/html 解析器）
-func htmlToText(s string) string {
-	// 去掉 script / style / noscript 块
-	lower := strings.ToLower(s)
-	for _, tag := range []string{"script", "style", "noscript"} {
-		for {
-			start := strings.Index(lower, "<"+tag)
-			if start == -1 {
-				break
-			}
-			end := strings.Index(lower[start:], "</"+tag+">")
-			if end == -1 {
-				s = s[:start]
-				lower = strings.ToLower(s)
-				break
-			}
-			s = s[:start] + s[start+end+len("</"+tag+">"):]
-			lower = strings.ToLower(s)
-		}
-	}
-
-	// 去标签
-	var buf strings.Builder
-	inTag := false
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '<':
-			inTag = true
-		case '>':
-			inTag = false
-			buf.WriteByte(' ')
-		default:
-			if !inTag {
-				buf.WriteByte(s[i])
-			}
-		}
-	}
-
-	// 合并多余空白行
-	var lines []string
-	for _, line := range strings.Split(buf.String(), "\n") {
-		if s := strings.TrimSpace(line); s != "" {
-			lines = append(lines, s)
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 // ============================================================================

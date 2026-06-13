@@ -683,6 +683,10 @@ func (s *Store) vectorSearch(ctx context.Context, sessionID string, queryVec []f
 
 // vectorRecall 向量语义召回
 func (s *Store) vectorRecall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
+	if s.embedding == nil {
+		return nil, fmt.Errorf("vector recall: embedding function is nil")
+	}
+
 	queryVec, err := s.embedding(ctx, query)
 	if err != nil || len(queryVec) == 0 {
 		return s.hybridRecall(ctx, sessionID, query, topK)
