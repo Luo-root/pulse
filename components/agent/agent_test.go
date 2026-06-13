@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Luo-root/pulse/components/chatmodel"
+	"github.com/Luo-root/pulse/components/chatmodel/mock"
 	"github.com/Luo-root/pulse/components/schema"
 	"github.com/Luo-root/pulse/components/tools"
 )
@@ -18,7 +18,7 @@ import (
 // ============================================================================
 
 // newTestAgent 创建用于测试的 Agent
-func newTestAgent(model *chatmodel.MockModel, registry *tools.ToolRegistry) *Agent {
+func newTestAgent(model *mock.MockModel, registry *tools.ToolRegistry) *Agent {
 	if registry == nil {
 		registry = tools.NewToolRegistry()
 	}
@@ -28,7 +28,7 @@ func newTestAgent(model *chatmodel.MockModel, registry *tools.ToolRegistry) *Age
 }
 
 // newTestAgentWithTracker 创建带 UsageTracker 的 Agent
-func newTestAgentWithTracker(model *chatmodel.MockModel, registry *tools.ToolRegistry) (*Agent, *UsageTracker) {
+func newTestAgentWithTracker(model *mock.MockModel, registry *tools.ToolRegistry) (*Agent, *UsageTracker) {
 	tracker := NewUsageTracker()
 	ag := newTestAgent(model, registry)
 	ag.usageTracker = tracker
@@ -40,8 +40,8 @@ func newTestAgentWithTracker(model *chatmodel.MockModel, registry *tools.ToolReg
 // ============================================================================
 
 func TestAgent_Send_BasicResponse(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("你好！有什么可以帮助你的？"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("你好！有什么可以帮助你的？"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -59,9 +59,9 @@ func TestAgent_Send_BasicResponse(t *testing.T) {
 }
 
 func TestAgent_Send_MultipleRounds(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("第一轮回复"),
-		chatmodel.MockTextResponse("第二轮回复"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("第一轮回复"),
+		mock.MockTextResponse("第二轮回复"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -96,11 +96,11 @@ func TestAgent_Send_WithToolCall(t *testing.T) {
 		return map[string]any{"result": 42}, nil
 	})
 
-	model := chatmodel.NewMockModelWithResponses(
+	model := mock.NewMockModelWithResponses(
 		// 第 1 轮：请求调用 calculator
-		chatmodel.MockToolCallResponse("calculator", map[string]any{"expression": "6*7"}),
+		mock.MockToolCallResponse("calculator", map[string]any{"expression": "6*7"}),
 		// 第 2 轮：基于工具结果返回最终答案
-		chatmodel.MockTextResponse("计算结果是 42"),
+		mock.MockTextResponse("计算结果是 42"),
 	)
 
 	agent := newTestAgent(model, registry)
@@ -135,7 +135,7 @@ func TestAgent_Send_MultipleToolCalls(t *testing.T) {
 	})
 
 	// 用自定义函数，一次返回两个工具调用
-	model := chatmodel.NewMockModel()
+	model := mock.NewMockModel()
 	callIdx := 0
 	model.SetGenerateFunc(func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
 		callIdx++
@@ -181,8 +181,8 @@ func TestAgent_Send_MultipleToolCalls(t *testing.T) {
 // ============================================================================
 
 func TestAgent_SendStream_Basic(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("流式回复内容测试"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("流式回复内容测试"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -218,9 +218,9 @@ func TestAgent_SendStream_WithToolCalls(t *testing.T) {
 		return "found", nil
 	})
 
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockToolCallResponse("lookup", nil),
-		chatmodel.MockTextResponse("查找完成"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockToolCallResponse("lookup", nil),
+		mock.MockTextResponse("查找完成"),
 	)
 
 	agent := newTestAgent(model, registry)
@@ -249,8 +249,8 @@ func TestAgent_SendStream_WithToolCalls(t *testing.T) {
 }
 
 func TestAgent_SendStream_CancelByUser(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("这是一段很长的回复内容用于测试取消功能"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("这是一段很长的回复内容用于测试取消功能"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -277,8 +277,8 @@ func TestAgent_SendStream_CancelByUser(t *testing.T) {
 // ============================================================================
 
 func TestAgent_Send_ModelError(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockErrorResponse(fmt.Errorf("model overloaded")),
+	model := mock.NewMockModelWithResponses(
+		mock.MockErrorResponse(fmt.Errorf("model overloaded")),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -297,7 +297,7 @@ func TestAgent_Send_ModelError(t *testing.T) {
 // ============================================================================
 
 func TestAgent_WithSessionID(t *testing.T) {
-	model := chatmodel.NewMockModel()
+	model := mock.NewMockModel()
 	agent := NewAgent(model, nil, WithSessionID("my_session"))
 
 	if agent.sessionID != "my_session" {
@@ -306,7 +306,7 @@ func TestAgent_WithSessionID(t *testing.T) {
 }
 
 func TestAgent_WithMaxToolRounds(t *testing.T) {
-	model := chatmodel.NewMockModel()
+	model := mock.NewMockModel()
 	agent := NewAgent(model, nil, WithMaxToolRounds(5))
 
 	if agent.maxToolRounds != 5 {
@@ -315,7 +315,7 @@ func TestAgent_WithMaxToolRounds(t *testing.T) {
 }
 
 func TestAgent_WithMaxToolRounds_ZeroIgnored(t *testing.T) {
-	model := chatmodel.NewMockModel()
+	model := mock.NewMockModel()
 	agent := NewAgent(model, nil, WithMaxToolRounds(0))
 
 	if agent.maxToolRounds != DefaultMaxToolRounds {
@@ -328,9 +328,9 @@ func TestAgent_WithMaxToolRounds_ZeroIgnored(t *testing.T) {
 // ============================================================================
 
 func TestAgent_GetHistory(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("回复一"),
-		chatmodel.MockTextResponse("回复二"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("回复一"),
+		mock.MockTextResponse("回复二"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -363,9 +363,9 @@ func TestAgent_GetHistory(t *testing.T) {
 }
 
 func TestAgent_ClearHistory(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("ok"),
-		chatmodel.MockTextResponse("ok"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("ok"),
+		mock.MockTextResponse("ok"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -380,11 +380,11 @@ func TestAgent_ClearHistory(t *testing.T) {
 }
 
 func TestAgent_ChangeModel(t *testing.T) {
-	model1 := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("model1"),
+	model1 := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("model1"),
 	)
-	model2 := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("model2"),
+	model2 := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("model2"),
 	)
 
 	agent := newTestAgent(model1, nil)
@@ -409,12 +409,12 @@ func TestAgent_ChangeModel(t *testing.T) {
 
 func TestAgent_ConcurrentSend(t *testing.T) {
 	// 循环模式，5 个 goroutine 各发一条
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("r1"),
-		chatmodel.MockTextResponse("r2"),
-		chatmodel.MockTextResponse("r3"),
-		chatmodel.MockTextResponse("r4"),
-		chatmodel.MockTextResponse("r5"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("r1"),
+		mock.MockTextResponse("r2"),
+		mock.MockTextResponse("r3"),
+		mock.MockTextResponse("r4"),
+		mock.MockTextResponse("r5"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -449,7 +449,7 @@ func TestAgent_ConcurrentSend(t *testing.T) {
 // ============================================================================
 
 func TestAgent_UsageTracking(t *testing.T) {
-	model := chatmodel.NewMockModel()
+	model := mock.NewMockModel()
 	model.SetGenerateFunc(func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
 		return &schema.Message{
 			Role:    schema.AssistantRole,
@@ -483,8 +483,8 @@ func TestAgent_UsageTracking(t *testing.T) {
 // ============================================================================
 
 func TestAgent_ModelRecordsInputs(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("ok"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("ok"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -517,7 +517,7 @@ func TestAgent_ModelRecordsInputs(t *testing.T) {
 // ============================================================================
 
 func TestAgent_WithEchoModel(t *testing.T) {
-	model := chatmodel.NewEchoMockModel()
+	model := mock.NewEchoMockModel()
 
 	agent := newTestAgent(model, nil)
 
@@ -535,8 +535,8 @@ func TestAgent_WithEchoModel(t *testing.T) {
 // ============================================================================
 
 func TestAgent_Send_WithDelay(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockDelayedResponse("ok", 100*time.Millisecond),
+	model := mock.NewMockModelWithResponses(
+		mock.MockDelayedResponse("ok", 100*time.Millisecond),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -557,8 +557,8 @@ func TestAgent_Send_WithDelay(t *testing.T) {
 }
 
 func TestAgent_Send_ContextTimeout(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockDelayedResponse("ok", 5*time.Second),
+	model := mock.NewMockModelWithResponses(
+		mock.MockDelayedResponse("ok", 5*time.Second),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -577,8 +577,8 @@ func TestAgent_Send_ContextTimeout(t *testing.T) {
 // ============================================================================
 
 func TestAgent_Send_Multimodal(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("我看到了一张截图，页面上有一个标题和一段文字"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("我看到了一张截图，页面上有一个标题和一段文字"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -611,8 +611,8 @@ func TestAgent_Send_Multimodal(t *testing.T) {
 }
 
 func TestAgent_Send_MultipleImages(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("两张图片都收到了"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("两张图片都收到了"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -644,8 +644,8 @@ func TestAgent_Send_MultipleImages(t *testing.T) {
 }
 
 func TestAgent_SendStream_Multimodal(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("流式多模态回复"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("流式多模态回复"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -684,9 +684,9 @@ func TestAgent_Send_MultimodalWithToolCall(t *testing.T) {
 		return map[string]any{"objects": []string{"text", "button"}}, nil
 	})
 
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockToolCallResponse("analyze_image", map[string]any{"image": "screenshot"}),
-		chatmodel.MockTextResponse("页面包含文本和按钮"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockToolCallResponse("analyze_image", map[string]any{"image": "screenshot"}),
+		mock.MockTextResponse("页面包含文本和按钮"),
 	)
 
 	agent := newTestAgent(model, registry)
@@ -711,10 +711,10 @@ func TestAgent_Send_MultimodalWithToolCall(t *testing.T) {
 }
 
 func TestAgent_Send_MultimodalRecording(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("图1"),
-		chatmodel.MockTextResponse("普通"),
-		chatmodel.MockTextResponse("图2"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("图1"),
+		mock.MockTextResponse("普通"),
+		mock.MockTextResponse("图2"),
 	)
 
 	// 使用独立的 session ID，确保每次测试都是全新的记忆
@@ -758,8 +758,8 @@ func TestAgent_Send_MultimodalRecording(t *testing.T) {
 }
 
 func TestAgent_Send_PureTextNotMultimodal(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("ok"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("ok"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -777,8 +777,8 @@ func TestAgent_Send_PureTextNotMultimodal(t *testing.T) {
 // 新增：测试模型返回多模态响应
 func TestAgent_Send_MultimodalResponse(t *testing.T) {
 	// 模型返回文本 + 图片（如图片生成场景）
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockMultimodalResponse(
+	model := mock.NewMockModelWithResponses(
+		mock.MockMultimodalResponse(
 			"这是生成的图片",
 			"https://example.com/generated.png",
 		),
@@ -817,8 +817,8 @@ func TestAgent_Send_MultimodalResponse(t *testing.T) {
 
 // 新增：测试流式返回多模态响应
 func TestAgent_SendStream_MultimodalResponse(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockMultimodalResponse(
+	model := mock.NewMockModelWithResponses(
+		mock.MockMultimodalResponse(
 			"生成的图表",
 			"https://example.com/chart.png",
 		),
@@ -856,8 +856,8 @@ func TestAgent_SendStream_MultimodalResponse(t *testing.T) {
 // ============================================================================
 
 func TestAgent_Send_MultimodalInput_AudioVideo(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("已分析媒体"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("已分析媒体"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -884,8 +884,8 @@ func TestAgent_Send_MultimodalInput_AudioVideo(t *testing.T) {
 }
 
 func TestAgent_Send_MultimodalInput_InlineData(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("已处理文档"),
+	model := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("已处理文档"),
 	)
 
 	agent := newTestAgent(model, nil)
@@ -909,7 +909,7 @@ func TestAgent_Send_MultimodalInput_InlineData(t *testing.T) {
 // ============================================================================
 
 func TestAgent_Send_OutputImages(t *testing.T) {
-	model := chatmodel.NewMockModel()
+	model := mock.NewMockModel()
 	model.SetGenerateFunc(func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
 		return &schema.Message{
 			Role:    schema.AssistantRole,
@@ -938,7 +938,7 @@ func TestAgent_Send_OutputImages(t *testing.T) {
 }
 
 func TestAgent_Send_OutputAudio(t *testing.T) {
-	model := chatmodel.NewMockModel()
+	model := mock.NewMockModel()
 	model.SetGenerateFunc(func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
 		return &schema.Message{
 			Role:        schema.AssistantRole,
@@ -962,8 +962,8 @@ func TestAgent_Send_OutputAudio(t *testing.T) {
 }
 
 func TestAgent_SendStream_OutputImages(t *testing.T) {
-	model := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockResponse{
+	model := mock.NewMockModelWithResponses(
+		mock.MockResponse{
 			Content: "图片已生成",
 			OutputImages: []schema.OutputImage{
 				{URL: "https://example.com/gen.png"},

@@ -1,4 +1,4 @@
-package chatmodel
+package mock
 
 import (
 	"context"

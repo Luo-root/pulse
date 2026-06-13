@@ -10,6 +10,7 @@ import (
 
 	"github.com/Luo-root/pulse/components/chatmodel"
 	"github.com/Luo-root/pulse/components/memory"
+	"github.com/Luo-root/pulse/components/memory/window"
 	"github.com/Luo-root/pulse/components/schema"
 	"github.com/Luo-root/pulse/components/tools"
 )
@@ -17,28 +18,28 @@ import (
 // DefaultMaxToolRounds 默认最大工具调用轮次
 const DefaultMaxToolRounds int = 20
 
-// AgentInterface 统一接口
-type AgentInterface interface {
+// Interface 统一接口
+type Interface interface {
 	SendMessage(ctx context.Context, msg *schema.Message) (*schema.Message, error)
 	SendMessageStream(ctx context.Context, msg *schema.Message, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error)
 }
 
-// AgentOption Agent 配置选项
-type AgentOption func(*Agent)
+// Option Agent 配置选项
+type Option func(*Agent)
 
-func WithMemoryController(mc *memory.Controller) AgentOption {
+func WithMemoryController(mc *memory.Controller) Option {
 	return func(a *Agent) { a.memoryController = mc }
 }
 
-func WithUsageTracker(tracker *UsageTracker) AgentOption {
+func WithUsageTracker(tracker *UsageTracker) Option {
 	return func(a *Agent) { a.usageTracker = tracker }
 }
 
-func WithSessionID(id string) AgentOption {
+func WithSessionID(id string) Option {
 	return func(a *Agent) { a.sessionID = id }
 }
 
-func WithMaxToolRounds(n int) AgentOption {
+func WithMaxToolRounds(n int) Option {
 	return func(a *Agent) {
 		if n > 0 {
 			a.maxToolRounds = n
@@ -57,7 +58,7 @@ type Agent struct {
 	mu               sync.Mutex // 保护 send 循环的并发安全
 }
 
-func NewAgent(model chatmodel.BaseModel, registry *tools.ToolRegistry, opts ...AgentOption) *Agent {
+func NewAgent(model chatmodel.BaseModel, registry *tools.ToolRegistry, opts ...Option) *Agent {
 	ag := &Agent{
 		model:         model,
 		registry:      registry,
@@ -373,7 +374,7 @@ func (ag *Agent) AddMessages(ctx context.Context, msgs []*schema.Message) error 
 func (ag *Agent) AddSystemMessage(content string) {
 	ag.mu.Lock()
 	defer ag.mu.Unlock()
-	ag.memoryController.SystemPrompt = append(ag.memoryController.SystemPrompt, schema.SystemMessage(content))
+	ag.memoryController.AddSystemPrompt(schema.SystemMessage(content))
 }
 
 func (ag *Agent) ClearAgentHistory(ctx context.Context) error {
@@ -387,7 +388,7 @@ func (ag *Agent) GetHistory(ctx context.Context) ([]*schema.Message, error) {
 func (ag *Agent) GetRawMessages() []*schema.Message {
 	ag.mu.Lock()
 	defer ag.mu.Unlock()
-	msgs := ag.memoryController.ShortMemory.GetContextMessages(ag.sessionID)
+	msgs := ag.memoryController.GetShortMemory().GetContextMessages(ag.sessionID)
 	result := make([]*schema.Message, len(msgs))
 	for i, m := range msgs {
 		cloned := m.Clone()
@@ -450,8 +451,8 @@ func defaultMemoryController(model chatmodel.BaseModel) *memory.Controller {
 	workDir := tools.GetWorkDir()
 	return memory.NewController(
 		defaultSystemPrompt(workDir),
-		memory.NewSimpleWindowMemory(
-			memory.NewWindowManager(memory.WindowConfig{
+		window.NewSimpleWindowMemory(
+			window.NewManager(window.Config{
 				MaxHistoryMessages: 200,
 				ReserveTokens:      8000,
 			}, model, nil),

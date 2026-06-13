@@ -20,7 +20,7 @@ import (
 // 规划的结果会存到: ID_plan 中
 func NewPlannerNode(
 	id string,
-	agent agent.AgentInterface,
+	agent agent.Interface,
 ) *SimpleNode {
 	userGoal := "user_goal"
 	planName := fmt.Sprintf("%s_plan", id)
@@ -59,7 +59,7 @@ func NewPlannerNode(
 // 最终结果会存到: final_answer 中
 func NewScheduleLoopNode(
 	plannerNodeID string,
-	agent agent.AgentInterface,
+	agent agent.Interface,
 ) *SimpleNode {
 	finalAnswer := "final_answer"
 	id := fmt.Sprintf("%s_schedule_loop", plannerNodeID)
@@ -154,7 +154,7 @@ func NewScheduleLoopNode(
 	)
 }
 
-func Planning(ctx context.Context, goal string, agent agent.AgentInterface) (*Plan, error) {
+func Planning(ctx context.Context, goal string, agent agent.Interface) (*Plan, error) {
 	prompt := fmt.Sprintf(`
 # 角色
 你是专业的任务规划专家，擅长将复杂目标拆解为可执行、可验证的任务序列。
@@ -225,7 +225,7 @@ func Planning(ctx context.Context, goal string, agent agent.AgentInterface) (*Pl
 	return plan, nil
 }
 
-func RePlan(ctx context.Context, plan *Plan, failedTask *Task, agent agent.AgentInterface) (*Plan, error) {
+func RePlan(ctx context.Context, plan *Plan, failedTask *Task, agent agent.Interface) (*Plan, error) {
 	planState := planStateJSON(plan)
 
 	prompt := fmt.Sprintf(`

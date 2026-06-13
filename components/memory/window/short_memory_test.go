@@ -1,4 +1,4 @@
-package memory
+package window
 
 import (
 	"testing"
@@ -8,8 +8,8 @@ import (
 )
 
 func TestWindowShortMemory_AddAndGetRecent(t *testing.T) {
-	wm := NewWindowManager(WindowConfig{MaxHistoryMessages: 100}, nil, nil)
-	mem := NewWindowShortMemory(wm, nil, nil)
+	wm := NewManager(Config{MaxHistoryMessages: 100}, nil, nil)
+	mem := NewShortMemory(wm, nil, nil)
 
 	mem.AddTurn("session1", []*schema.Message{
 		schema.UserMessage("hello"),
@@ -26,8 +26,8 @@ func TestWindowShortMemory_AddAndGetRecent(t *testing.T) {
 }
 
 func TestWindowShortMemory_GetRecent_EmptySession(t *testing.T) {
-	wm := NewWindowManager(WindowConfig{MaxHistoryMessages: 100}, nil, nil)
-	mem := NewWindowShortMemory(wm, nil, nil)
+	wm := NewManager(Config{MaxHistoryMessages: 100}, nil, nil)
+	mem := NewShortMemory(wm, nil, nil)
 
 	recent := mem.GetRecent("nonexistent")
 	if recent != nil {
@@ -36,8 +36,8 @@ func TestWindowShortMemory_GetRecent_EmptySession(t *testing.T) {
 }
 
 func TestWindowShortMemory_GetRecent_Truncated(t *testing.T) {
-	wm := NewWindowManager(WindowConfig{MaxHistoryMessages: 2}, nil, nil)
-	mem := NewWindowShortMemory(wm, nil, nil)
+	wm := NewManager(Config{MaxHistoryMessages: 2}, nil, nil)
+	mem := NewShortMemory(wm, nil, nil)
 
 	mem.AddTurn("session1", []*schema.Message{
 		schema.UserMessage("msg1"),
@@ -56,8 +56,8 @@ func TestWindowShortMemory_GetRecent_Truncated(t *testing.T) {
 }
 
 func TestWindowShortMemory_GetContextMessages_NoSummary(t *testing.T) {
-	wm := NewWindowManager(WindowConfig{MaxHistoryMessages: 100}, nil, nil)
-	mem := NewWindowShortMemory(wm, nil, nil) // 无 summarizer
+	wm := NewManager(Config{MaxHistoryMessages: 100}, nil, nil)
+	mem := NewShortMemory(wm, nil, nil) // 无 summarizer
 
 	mem.AddTurn("session1", []*schema.Message{
 		schema.UserMessage("hello"),
@@ -71,14 +71,14 @@ func TestWindowShortMemory_GetContextMessages_NoSummary(t *testing.T) {
 }
 
 func TestWindowShortMemory_GetContextMessages_WithSummary(t *testing.T) {
-	wm := NewWindowManager(WindowConfig{MaxHistoryMessages: 2}, nil, nil)
+	wm := NewManager(Config{MaxHistoryMessages: 2}, nil, nil)
 
 	// 简单的摘要函数：返回消息数量
 	summarizer := func(messages []*schema.Message, model chatmodel.BaseModel) string {
 		return "summary of messages"
 	}
 
-	mem := NewWindowShortMemory(wm, nil, summarizer)
+	mem := NewShortMemory(wm, nil, summarizer)
 
 	// 添加 4 条消息，窗口只保留 2 条
 	mem.AddTurn("session1", []*schema.Message{
@@ -115,8 +115,8 @@ func TestWindowShortMemory_GetContextMessages_WithSummary(t *testing.T) {
 }
 
 func TestWindowShortMemory_Clear(t *testing.T) {
-	wm := NewWindowManager(WindowConfig{MaxHistoryMessages: 100}, nil, nil)
-	mem := NewWindowShortMemory(wm, nil, nil)
+	wm := NewManager(Config{MaxHistoryMessages: 100}, nil, nil)
+	mem := NewShortMemory(wm, nil, nil)
 
 	mem.AddTurn("session1", []*schema.Message{
 		schema.UserMessage("hello"),
@@ -131,8 +131,8 @@ func TestWindowShortMemory_Clear(t *testing.T) {
 }
 
 func TestWindowShortMemory_MultipleSessions(t *testing.T) {
-	wm := NewWindowManager(WindowConfig{MaxHistoryMessages: 100}, nil, nil)
-	mem := NewWindowShortMemory(wm, nil, nil)
+	wm := NewManager(Config{MaxHistoryMessages: 100}, nil, nil)
+	mem := NewShortMemory(wm, nil, nil)
 
 	mem.AddTurn("session1", []*schema.Message{schema.UserMessage("s1 msg")})
 	mem.AddTurn("session2", []*schema.Message{schema.UserMessage("s2 msg")})
@@ -149,8 +149,8 @@ func TestWindowShortMemory_MultipleSessions(t *testing.T) {
 }
 
 func TestWindowShortMemory_AddTurn_Appends(t *testing.T) {
-	wm := NewWindowManager(WindowConfig{MaxHistoryMessages: 100}, nil, nil)
-	mem := NewWindowShortMemory(wm, nil, nil)
+	wm := NewManager(Config{MaxHistoryMessages: 100}, nil, nil)
+	mem := NewShortMemory(wm, nil, nil)
 
 	mem.AddTurn("session1", []*schema.Message{schema.UserMessage("msg1")})
 	mem.AddTurn("session1", []*schema.Message{schema.AssistantMessage("msg2", "")})
@@ -162,7 +162,7 @@ func TestWindowShortMemory_AddTurn_Appends(t *testing.T) {
 }
 
 func TestWindowShortMemory_ContextMessages_MultipleSummaries(t *testing.T) {
-	wm := NewWindowManager(WindowConfig{MaxHistoryMessages: 1}, nil, nil)
+	wm := NewManager(Config{MaxHistoryMessages: 1}, nil, nil)
 
 	callCount := 0
 	summarizer := func(messages []*schema.Message, model chatmodel.BaseModel) string {
@@ -170,7 +170,7 @@ func TestWindowShortMemory_ContextMessages_MultipleSummaries(t *testing.T) {
 		return "summary of messages"
 	}
 
-	mem := NewWindowShortMemory(wm, nil, summarizer)
+	mem := NewShortMemory(wm, nil, summarizer)
 
 	// 第一轮：2 条消息，窗口只保留 1 条 → 触发摘要
 	mem.AddTurn("s1", []*schema.Message{

@@ -1,4 +1,4 @@
-package memory
+package memnetai
 
 import (
 	"bytes"
@@ -15,8 +15,8 @@ const (
 	defaultMemNetAIBaseURL = "https://api.memnetai.com"
 )
 
-// MemNetAIConfig MemNetAI 存储配置
-type MemNetAIConfig struct {
+// Config MemNetAI 存储配置
+type Config struct {
 	// APIKey MemNetAI 平台颁发的 API Key（必填）
 	APIKey string
 
@@ -41,11 +41,11 @@ type MemNetAIConfig struct {
 	HTTPClient *http.Client
 }
 
-// MemNetAIStore 基于 MemNetAI 长记忆服务的 Store 实现。
+// Store 基于 MemNetAI 长记忆服务的 Store 实现。
 //
 // MemNetAI 是一个 AI 智能体长记忆服务平台，通过「记忆→回忆→思考→做梦」
 // 的完整认知周期，为智能体提供接近人类记忆机制的长期记忆能力。
-type MemNetAIStore struct {
+type Store struct {
 	apiKey    string
 	baseURL   string
 	namespace string
@@ -56,15 +56,15 @@ type MemNetAIStore struct {
 	httpClient    *http.Client
 }
 
-// NewMemNetAIStore 创建 MemNetAI 记忆存储实例。
+// NewStore 创建 MemNetAI 记忆存储实例。
 //
 // 示例:
 //
-//	store, err := memory.NewMemNetAIStore(&memory.MemNetAIConfig{
+//	store, err := memory.NewStore(&memory.Config{
 //	    APIKey:    "your-memnetai-api-key",
 //	    Namespace: "user_123",
 //	})
-func NewMemNetAIStore(cfg *MemNetAIConfig) (*MemNetAIStore, error) {
+func NewStore(cfg *Config) (*Store, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("memnetai: api key is required")
 	}
@@ -91,7 +91,7 @@ func NewMemNetAIStore(cfg *MemNetAIConfig) (*MemNetAIStore, error) {
 		ns = "default"
 	}
 
-	return &MemNetAIStore{
+	return &Store{
 		apiKey:        cfg.APIKey,
 		baseURL:       baseURL,
 		namespace:     ns,
@@ -106,9 +106,9 @@ func NewMemNetAIStore(cfg *MemNetAIConfig) (*MemNetAIStore, error) {
 // 内部数据结构（与 MemNetAI API 对应）
 // ============================================================================
 
-// memNetAIMessage 是 MemNetAI 的对话消息格式，基于 OpenAI 格式增强，
+// message 是 MemNetAI 的对话消息格式，基于 OpenAI 格式增强，
 // 每条 user 消息可额外携带 character 字段标识发言者。
-type memNetAIMessage struct {
+type message struct {
 	Role      string `json:"role"`
 	Content   string `json:"content"`
 	Character string `json:"character,omitempty"`
@@ -116,13 +116,13 @@ type memNetAIMessage struct {
 
 // memoriesRequest POST /v1/memories 请求体
 type memoriesRequest struct {
-	MemoryAgentName string            `json:"memoryAgentName"`
-	Messages        []memNetAIMessage `json:"messages"`
-	Namespace       string            `json:"namespace"`
-	Language        string            `json:"language"`
-	IsThirdPerson   int               `json:"isThirdPerson"`
-	Metadata        string            `json:"metadata,omitempty"`
-	AsyncMode       int               `json:"asyncMode"`
+	MemoryAgentName string    `json:"memoryAgentName"`
+	Messages        []message `json:"messages"`
+	Namespace       string    `json:"namespace"`
+	Language        string    `json:"language"`
+	IsThirdPerson   int       `json:"isThirdPerson"`
+	Metadata        string    `json:"metadata,omitempty"`
+	AsyncMode       int       `json:"asyncMode"`
 }
 
 // memoriesResponse POST /v1/memories 响应体
@@ -213,15 +213,15 @@ type recallResponse struct {
 //
 // 最佳实践：推荐以 16 条对话为单位触发记忆，且记忆完成后不要立即从会话中移除上下文，
 // 待若干轮对话后再移除，可获得更自然稳定的交互效果。
-func (s *MemNetAIStore) Save(ctx context.Context, sessionID string, msgs []*schema.Message) error {
+func (s *Store) Save(ctx context.Context, sessionID string, msgs []*schema.Message) error {
 	if len(msgs) == 0 {
 		return nil
 	}
 
 	// 将 pulse Message 转换为 MemNetAI 消息格式
-	memMsgs := make([]memNetAIMessage, 0, len(msgs))
+	memMsgs := make([]message, 0, len(msgs))
 	for _, msg := range msgs {
-		mm := memNetAIMessage{
+		mm := message{
 			Role:    string(msg.Role),
 			Content: msg.TextContent(),
 		}
@@ -285,7 +285,7 @@ func (s *MemNetAIStore) Save(ctx context.Context, sessionID string, msgs []*sche
 //
 // 返回的 memoryPrompt 已封装为可直接注入 System 提示词的记忆内容。
 // 如果 topK > 0，会对 memorySummaryList 做切片限制。
-func (s *MemNetAIStore) Recall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
+func (s *Store) Recall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
 	reqBody := recallRequest{
 		MemoryAgentName:                       sessionID,
 		Query:                                 query,
@@ -362,7 +362,7 @@ func (s *MemNetAIStore) Recall(ctx context.Context, sessionID string, query stri
 
 // GetSession MemNetAI 目前未提供获取完整会话历史的独立接口。
 // 该方法返回空列表，如需历史回溯请通过 Recall 实现。
-func (s *MemNetAIStore) GetSession(ctx context.Context, sessionID string) ([]*schema.Message, error) {
+func (s *Store) GetSession(ctx context.Context, sessionID string) ([]*schema.Message, error) {
 	// MemNetAI 的设计理念是「记忆→回忆」，不暴露原始对话历史存储。
 	// 若需要获取某 session 的相关记忆，可调用 Recall(ctx, sessionID, "", 0)。
 	return []*schema.Message{}, nil
@@ -370,13 +370,13 @@ func (s *MemNetAIStore) GetSession(ctx context.Context, sessionID string) ([]*sc
 
 // ClearSession MemNetAI 目前未提供公开的清空记忆接口。
 // 该方法返回 nil，如需清理请在 MemNetAI 后台操作。
-func (s *MemNetAIStore) ClearSession(ctx context.Context, sessionID string) error {
+func (s *Store) ClearSession(ctx context.Context, sessionID string) error {
 	// TODO: 若 MemNetAI 后续开放记忆清除或任务管理相关接口，可在此实现。
 	return nil
 }
 
 // Close MemNetAI 基于 HTTP 服务，无需额外关闭资源。
-func (s *MemNetAIStore) Close() error {
+func (s *Store) Close() error {
 	return nil
 }
 

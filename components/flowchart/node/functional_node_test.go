@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Luo-root/pulse/components/chatmodel"
+	"github.com/Luo-root/pulse/components/chatmodel/mock"
 	"github.com/Luo-root/pulse/components/flow"
 	"github.com/Luo-root/pulse/components/schema"
 )
@@ -363,8 +363,8 @@ func TestParallelNode_EmptyInputs(t *testing.T) {
 // ============================================================
 
 func TestLLMStreamNode_BasicStreaming(t *testing.T) {
-	mockModel := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("Hello World"),
+	mockModel := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("Hello World"),
 	)
 
 	node := NewLLMStreamNode(
@@ -412,8 +412,8 @@ func TestLLMStreamNode_BasicStreaming(t *testing.T) {
 }
 
 func TestLLMStreamNode_InvalidPromptType(t *testing.T) {
-	mockModel := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("response"),
+	mockModel := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("response"),
 	)
 
 	node := NewLLMStreamNode(
@@ -437,7 +437,7 @@ func TestLLMStreamNode_InvalidPromptType(t *testing.T) {
 }
 
 func TestLLMStreamNode_ModelError(t *testing.T) {
-	mockModel := chatmodel.NewMockModel()
+	mockModel := mock.NewMockModel()
 	mockModel.SetStreamFunc(func(ctx context.Context, input []*schema.Message) (*schema.StreamReader, error) {
 		return nil, errors.New("model stream error")
 	})
@@ -463,8 +463,8 @@ func TestLLMStreamNode_ModelError(t *testing.T) {
 }
 
 func TestLLMStreamNode_MultipleCopiesIndependent(t *testing.T) {
-	mockModel := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("ABC"),
+	mockModel := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("ABC"),
 	)
 
 	node := NewLLMStreamNode(

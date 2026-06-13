@@ -90,8 +90,8 @@ func (m *mockAgentAdapter) SendMessageStream(ctx context.Context, msg *schema.Me
 	return resp, nil
 }
 
-// Ensure mockAgentAdapter implements AgentInterface
-var _ agent.AgentInterface = (*mockAgentAdapter)(nil)
+// Ensure mockAgentAdapter implements Interface
+var _ agent.Interface = (*mockAgentAdapter)(nil)
 
 // ============================================================================
 // PlannerNode

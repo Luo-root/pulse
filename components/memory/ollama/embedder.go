@@ -1,5 +1,4 @@
-// ollama_embedder.go
-package memory
+package ollama
 
 import (
 	"bytes"
@@ -9,14 +8,14 @@ import (
 	"time"
 )
 
-type OllamaEmbedder struct {
+type Embedder struct {
 	baseURL string
 	model   string
 	client  *http.Client
 }
 
-func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
-	return &OllamaEmbedder{
+func NewEmbedder(baseURL, model string) *Embedder {
+	return &Embedder{
 		baseURL: baseURL,
 		model:   model,
 		client:  &http.Client{Timeout: 60 * time.Second},
@@ -32,7 +31,7 @@ type ollamaEmbedResponse struct {
 	Embedding []float64 `json:"embedding"` // Ollama 返回 float64
 }
 
-func (e *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	reqBody, _ := json.Marshal(ollamaEmbedRequest{
 		Model:  e.model,
 		Prompt: text,

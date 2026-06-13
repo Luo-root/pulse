@@ -1,4 +1,4 @@
-package memory
+package gorm
 
 import (
 	"context"
@@ -39,7 +39,7 @@ type MessageModel struct {
 }
 
 // TableName 指定表名
-func (MessageModel) TableName() string {
+func (m *MessageModel) TableName() string {
 	return "messages"
 }
 
@@ -116,8 +116,8 @@ const (
 	RecallModeCombined                   // 向量 + 关键词 + 时间组合权重
 )
 
-// GormStoreConfig GORM 存储配置
-type GormStoreConfig struct {
+// Config GORM 存储配置
+type Config struct {
 	// DBPath 数据库路径
 	DBPath string
 	// MaxOpenConns 最大连接数，默认 10
@@ -158,9 +158,9 @@ func DefaultCombinedWeights() *CombinedWeights {
 	}
 }
 
-// DefaultGormStoreConfig 默认配置
-func DefaultGormStoreConfig() *GormStoreConfig {
-	return &GormStoreConfig{
+// DefaultConfig 默认配置
+func DefaultConfig() *Config {
+	return &Config{
 		DBPath:              "./chat.db",
 		MaxOpenConns:        10,
 		MaxIdleConns:        5,
@@ -189,7 +189,7 @@ type EmbeddingChunk struct {
 	Embedding  string `gorm:"type:text"`               // 嵌入向量 JSON
 }
 
-func (EmbeddingChunk) TableName() string {
+func (c *EmbeddingChunk) TableName() string {
 	return "embedding_chunks"
 }
 
@@ -218,7 +218,7 @@ func (c *EmbeddingChunk) SetEmbedding(vec []float32) error {
 }
 
 // ============================================================================
-// GormStore
+// Store
 // ============================================================================
 
 // EmbeddingFunc 文本嵌入函数签名
@@ -234,11 +234,11 @@ type messageNode struct {
 func (n *messageNode) ID() string           { return n.model.ID }
 func (n *messageNode) Embedding() []float32 { return n.vec }
 
-// GormStore 基于 GORM 的高级记忆存储
-// 完全兼容 Store 接口，可替代 LocalStore/SqliteStore
-type GormStore struct {
+// Store 基于 GORM 的高级记忆存储
+// 完全兼容 Store 接口
+type Store struct {
 	db        *gorm.DB
-	config    *GormStoreConfig
+	config    *Config
 	embedding EmbeddingFunc // 嵌入函数（可选）
 
 	// HNSW 向量索引（线程安全）
@@ -248,10 +248,10 @@ type GormStore struct {
 	indexReady atomic.Bool
 }
 
-// NewGormStore 创建 GORM 记忆存储
-func NewGormStore(config *GormStoreConfig, embedding EmbeddingFunc) (*GormStore, error) {
+// NewStore 创建 GORM 记忆存储
+func NewStore(config *Config, embedding EmbeddingFunc) (*Store, error) {
 	if config == nil {
-		config = DefaultGormStoreConfig()
+		config = DefaultConfig()
 	}
 
 	db, err := gorm.Open(sqlite.Open(config.DBPath), &gorm.Config{
@@ -276,7 +276,7 @@ func NewGormStore(config *GormStoreConfig, embedding EmbeddingFunc) (*GormStore,
 	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_content ON messages(content)")
 	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_role_session ON messages(role, session_id)")
 
-	store := &GormStore{
+	store := &Store{
 		db:        db,
 		config:    config,
 		embedding: embedding,
@@ -300,7 +300,7 @@ func NewGormStore(config *GormStoreConfig, embedding EmbeddingFunc) (*GormStore,
 }
 
 // IndexReady 返回向量索引是否就绪
-func (s *GormStore) IndexReady() bool {
+func (s *Store) IndexReady() bool {
 	return s.indexReady.Load()
 }
 
@@ -322,7 +322,7 @@ func isValidVector(vec []float32) bool {
 }
 
 // addToIndex 安全地向 HNSW 索引添加节点，捕获可能的 panic
-func (s *GormStore) addToIndex(node *messageNode) {
+func (s *Store) addToIndex(node *messageNode) {
 	if s.vecIndex == nil || !isValidVector(node.Embedding()) {
 		return
 	}
@@ -334,7 +334,7 @@ func (s *GormStore) addToIndex(node *messageNode) {
 	s.vecIndex.Add(node)
 }
 
-func (s *GormStore) rebuildIndexFromDB() {
+func (s *Store) rebuildIndexFromDB() {
 	defer s.indexReady.Store(true) // 确保无论成功/失败/panic 都标记就绪
 
 	var models []MessageModel
@@ -368,7 +368,7 @@ func (s *GormStore) rebuildIndexFromDB() {
 
 // Save 保存消息（支持批量 + 嵌入生成）
 // 每条消息使用递增时间戳，确保同一轮对话内的顺序正确
-func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.Message) error {
+func (s *Store) Save(ctx context.Context, sessionID string, msgs []*schema.Message) error {
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -485,7 +485,7 @@ func (s *GormStore) Save(ctx context.Context, sessionID string, msgs []*schema.M
 }
 
 // Recall 智能召回（多策略混合）
-func (s *GormStore) Recall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
+func (s *Store) Recall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
 	if topK <= 0 {
 		topK = 3
 	}
@@ -516,7 +516,7 @@ func (s *GormStore) Recall(ctx context.Context, sessionID string, query string, 
 }
 
 // combinedRecall 组合召回（向量 + 关键词 + 时间衰减）
-func (s *GormStore) combinedRecall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
+func (s *Store) combinedRecall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
 	if s.embedding == nil {
 		return s.hybridRecall(ctx, sessionID, query, topK)
 	}
@@ -596,7 +596,7 @@ type vectorCandidate struct {
 }
 
 // vectorSearch 执行 HNSW 搜索并返回带相似度的候选，限定 sessionID
-func (s *GormStore) vectorSearch(ctx context.Context, sessionID string, queryVec []float32, topK int) ([]vectorCandidate, error) {
+func (s *Store) vectorSearch(ctx context.Context, sessionID string, queryVec []float32, topK int) ([]vectorCandidate, error) {
 	s.vecMu.RLock()
 	defer s.vecMu.RUnlock()
 
@@ -682,7 +682,7 @@ func (s *GormStore) vectorSearch(ctx context.Context, sessionID string, queryVec
 }
 
 // vectorRecall 向量语义召回
-func (s *GormStore) vectorRecall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
+func (s *Store) vectorRecall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
 	queryVec, err := s.embedding(ctx, query)
 	if err != nil || len(queryVec) == 0 {
 		return s.hybridRecall(ctx, sessionID, query, topK)
@@ -701,7 +701,7 @@ func (s *GormStore) vectorRecall(ctx context.Context, sessionID string, query st
 }
 
 // hybridRecall 混合召回（关键词 + 时间衰减）
-func (s *GormStore) hybridRecall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
+func (s *Store) hybridRecall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
 	// 分词提取关键词
 	keywords := extractKeywords(query)
 
@@ -776,7 +776,7 @@ func (s *GormStore) hybridRecall(ctx context.Context, sessionID string, query st
 }
 
 // GetSession 获取完整会话历史
-func (s *GormStore) GetSession(ctx context.Context, sessionID string) ([]*schema.Message, error) {
+func (s *Store) GetSession(ctx context.Context, sessionID string) ([]*schema.Message, error) {
 	var models []MessageModel
 	if err := s.db.WithContext(ctx).
 		Where("session_id = ?", sessionID).
@@ -795,12 +795,12 @@ func (s *GormStore) GetSession(ctx context.Context, sessionID string) ([]*schema
 // GetSessionWithReasoning 获取完整会话历史（含推理内容）
 // 当前实现与 GetSession 相同，因为 MessageModel.ToSchemaMessage 已包含 ReasoningContent
 // 如需扩展（如返回 ToolCalls），可在此添加额外处理
-func (s *GormStore) GetSessionWithReasoning(ctx context.Context, sessionID string) ([]*schema.Message, error) {
+func (s *Store) GetSessionWithReasoning(ctx context.Context, sessionID string) ([]*schema.Message, error) {
 	return s.GetSession(ctx, sessionID)
 }
 
 // ClearSession 清空会话（硬删除 + 同步清理向量索引）
-func (s *GormStore) ClearSession(ctx context.Context, sessionID string) error {
+func (s *Store) ClearSession(ctx context.Context, sessionID string) error {
 	// 1. 清理向量索引中的消息节点
 	var ids []string
 	if err := s.db.WithContext(ctx).
@@ -841,7 +841,7 @@ func (s *GormStore) ClearSession(ctx context.Context, sessionID string) error {
 }
 
 // Close 关闭存储
-func (s *GormStore) Close() error {
+func (s *Store) Close() error {
 	// 清理向量索引
 	s.vecMu.Lock()
 	s.vecIndex = nil
@@ -859,7 +859,7 @@ func (s *GormStore) Close() error {
 // ============================================================================
 
 // SearchByRole 按角色搜索
-func (s *GormStore) SearchByRole(ctx context.Context, sessionID string, role schema.RoleType, limit int) ([]*schema.Message, error) {
+func (s *Store) SearchByRole(ctx context.Context, sessionID string, role schema.RoleType, limit int) ([]*schema.Message, error) {
 	var models []MessageModel
 	if err := s.db.WithContext(ctx).
 		Where("session_id = ? AND role = ?", sessionID, string(role)).
@@ -877,7 +877,7 @@ func (s *GormStore) SearchByRole(ctx context.Context, sessionID string, role sch
 }
 
 // SearchByTimeRange 按时间范围搜索
-func (s *GormStore) SearchByTimeRange(ctx context.Context, sessionID string, start, end time.Time) ([]*schema.Message, error) {
+func (s *Store) SearchByTimeRange(ctx context.Context, sessionID string, start, end time.Time) ([]*schema.Message, error) {
 	var models []MessageModel
 	if err := s.db.WithContext(ctx).
 		Where("session_id = ? AND timestamp >= ? AND timestamp <= ?",
@@ -895,7 +895,7 @@ func (s *GormStore) SearchByTimeRange(ctx context.Context, sessionID string, sta
 }
 
 // GetSessionStats 获取会话统计
-func (s *GormStore) GetSessionStats(ctx context.Context, sessionID string) (map[string]any, error) {
+func (s *Store) GetSessionStats(ctx context.Context, sessionID string) (map[string]any, error) {
 	var count int64
 	if err := s.db.WithContext(ctx).
 		Model(&MessageModel{}).

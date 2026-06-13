@@ -12,7 +12,7 @@ import (
 
 // BatchNewTaskNode 批量创建任务节点（保留兼容）
 // 注意：返回的节点列表可直接用于 Workflow.AddNode，也可传入 NewTopologicalNode 进行拓扑排序执行
-func BatchNewTaskNode(plannerNodeID string, plan *Plan, agent agent.AgentInterface) []*SimpleNode {
+func BatchNewTaskNode(plannerNodeID string, plan *Plan, agent agent.Interface) []*SimpleNode {
 	if plan == nil {
 		return nil
 	}
@@ -36,7 +36,7 @@ func buildOutputExample(outputs []string) string {
 	return example
 }
 
-func NewTaskNode(plannerNodeID string, task Task, agent agent.AgentInterface) *SimpleNode {
+func NewTaskNode(plannerNodeID string, task Task, agent agent.Interface) *SimpleNode {
 	planName := fmt.Sprintf("%s_plan", plannerNodeID)
 	allInputs := append(task.Inputs, planName)
 	return NewNode(

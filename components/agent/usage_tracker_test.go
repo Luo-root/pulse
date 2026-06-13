@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Luo-root/pulse/components/chatmodel"
+	"github.com/Luo-root/pulse/components/chatmodel/mock"
 	"github.com/Luo-root/pulse/components/schema"
 )
 
@@ -215,7 +215,7 @@ func TestUsageTrackerFormatStats(t *testing.T) {
 
 func TestUsageTrackerWithAgent(t *testing.T) {
 	// 创建 MockModel（支持 Usage 返回）
-	mock := chatmodel.NewMockModel()
+	mock := mock.NewMockModel()
 	mock.SetGenerateFunc(func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
 		return &schema.Message{
 			Role:    schema.AssistantRole,

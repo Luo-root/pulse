@@ -1,4 +1,4 @@
-package memory
+package window
 
 import (
 	"context"
@@ -13,12 +13,12 @@ import (
 // SummaryFunc 摘要生成函数类型
 type SummaryFunc func(messages []*schema.Message, model chatmodel.BaseModel) string
 
-// WindowShortMemory 结合滑动窗口与摘要的短期记忆实现
-type WindowShortMemory struct {
+// ShortMemory 结合滑动窗口与摘要的短期记忆实现
+type ShortMemory struct {
 	mu       sync.RWMutex
 	sessions map[string]*sessionBuffer
 
-	windowMgr  *WindowManager
+	windowMgr  *Manager
 	model      chatmodel.BaseModel
 	summarizer SummaryFunc
 }
@@ -28,8 +28,8 @@ type sessionBuffer struct {
 	summary  string
 }
 
-func NewWindowShortMemory(wm *WindowManager, model chatmodel.BaseModel, summarizer SummaryFunc) *WindowShortMemory {
-	return &WindowShortMemory{
+func NewShortMemory(wm *Manager, model chatmodel.BaseModel, summarizer SummaryFunc) *ShortMemory {
+	return &ShortMemory{
 		sessions:   make(map[string]*sessionBuffer),
 		windowMgr:  wm,
 		model:      model,
@@ -37,7 +37,7 @@ func NewWindowShortMemory(wm *WindowManager, model chatmodel.BaseModel, summariz
 	}
 }
 
-func (ws *WindowShortMemory) GetRecent(sessionID string) []*schema.Message {
+func (ws *ShortMemory) GetRecent(sessionID string) []*schema.Message {
 	ws.mu.RLock()
 	defer ws.mu.RUnlock()
 	sess, ok := ws.sessions[sessionID]
@@ -49,7 +49,7 @@ func (ws *WindowShortMemory) GetRecent(sessionID string) []*schema.Message {
 
 // GetContextMessages 返回构建上下文所需的短期记忆
 // 修复：RLock → Lock（因为会修改 sess.messages 和 sess.summary）
-func (ws *WindowShortMemory) GetContextMessages(sessionID string) []*schema.Message {
+func (ws *ShortMemory) GetContextMessages(sessionID string) []*schema.Message {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
@@ -87,7 +87,7 @@ func (ws *WindowShortMemory) GetContextMessages(sessionID string) []*schema.Mess
 	return result
 }
 
-func (ws *WindowShortMemory) AddTurn(sessionID string, msgs []*schema.Message) {
+func (ws *ShortMemory) AddTurn(sessionID string, msgs []*schema.Message) {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	sess := ws.sessions[sessionID]
@@ -98,7 +98,7 @@ func (ws *WindowShortMemory) AddTurn(sessionID string, msgs []*schema.Message) {
 	sess.messages = append(sess.messages, msgs...)
 }
 
-func (ws *WindowShortMemory) Clear(sessionID string) {
+func (ws *ShortMemory) Clear(sessionID string) {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	delete(ws.sessions, sessionID)

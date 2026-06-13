@@ -17,8 +17,8 @@ import (
 // ============================================================================
 
 func TestMockAgent_InterfaceCompliance(t *testing.T) {
-	var _ AgentInterface = NewMockAgent()
-	var _ AgentInterface = (*MockAgent)(nil)
+	var _ Interface = NewMockAgent()
+	var _ Interface = (*MockAgent)(nil)
 }
 
 // ============================================================================

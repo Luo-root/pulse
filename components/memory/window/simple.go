@@ -1,4 +1,4 @@
-package memory
+package window
 
 import (
 	"fmt"
@@ -11,7 +11,7 @@ import (
 type SimpleWindowMemory struct {
 	mu        sync.RWMutex
 	sessions  map[string]*simpleSession
-	windowMgr *WindowManager
+	windowMgr *Manager
 }
 
 type simpleSession struct {
@@ -20,7 +20,7 @@ type simpleSession struct {
 }
 
 // NewSimpleWindowMemory 创建纯滑动窗口短期记忆
-func NewSimpleWindowMemory(wm *WindowManager) *SimpleWindowMemory {
+func NewSimpleWindowMemory(wm *Manager) *SimpleWindowMemory {
 	return &SimpleWindowMemory{
 		sessions:  make(map[string]*simpleSession),
 		windowMgr: wm,

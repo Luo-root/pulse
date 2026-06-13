@@ -1,13 +1,13 @@
-package memory
+package window
 
 import (
 	"github.com/Luo-root/pulse/components/chatmodel"
 	"github.com/Luo-root/pulse/components/schema"
 )
 
-// WindowConfig 对话窗口配置
+// Config 对话窗口配置
 // 提供手动限制和自动计算两种模式，两者可同时启用，取更严格的限制
-type WindowConfig struct {
+type Config struct {
 	// MaxHistoryMessages 最大保留的历史消息数（不包括 System 消息）
 	// 例如设置为 20，则只保留最近的 20 条 user/assistant/tool 消息
 	// 0 表示不限制（默认，兼容旧行为）
@@ -20,14 +20,14 @@ type WindowConfig struct {
 
 	// ReserveTokens 自动模式下为模型输出预留的 Token 数
 	// 如果设置了此值且 model 实现了 ModelContextWindow 接口，
-	// WindowManager 会自动计算 MaxHistoryTokens = ContextWindow - ReserveTokens
+	// Manager 会自动计算 MaxHistoryTokens = ContextWindow - ReserveTokens
 	// 例如：模型 128k 上下文，预留 8k 给输出+缓冲，则历史限制为 120k
 	ReserveTokens int
 }
 
 // ModelContextWindow 模型上下文窗口信息接口
 // 各模型实现（如 OpenAI/Gemini/Claude）可实现此接口暴露上下文长度
-// WindowManager 会通过类型断言自动识别
+// Manager 会通过类型断言自动识别
 type ModelContextWindow interface {
 	ContextWindow() int
 }
@@ -89,17 +89,17 @@ func (e *defaultEstimator) Estimate(msg *schema.Message) int {
 	return total
 }
 
-// WindowManager 对话窗口管理器
+// Manager 对话窗口管理器
 // 在每次模型调用前截断消息列表，防止工作记忆无限增长导致 Token 爆炸
-type WindowManager struct {
-	config    WindowConfig
+type Manager struct {
+	config    Config
 	estimator TokenEstimator
 }
 
-// NewWindowManager 创建窗口管理器
+// NewManager 创建窗口管理器
 // model 用于自动获取上下文长度（可选，实现 ModelContextWindow 接口即可）
 // estimator 可自定义 Token 计算方式，传 nil 使用默认估算
-func NewWindowManager(config WindowConfig, model chatmodel.BaseModel, estimator TokenEstimator) *WindowManager {
+func NewManager(config Config, model chatmodel.BaseModel, estimator TokenEstimator) *Manager {
 	if estimator == nil {
 		estimator = &defaultEstimator{}
 	}
@@ -114,7 +114,7 @@ func NewWindowManager(config WindowConfig, model chatmodel.BaseModel, estimator 
 		}
 	}
 
-	return &WindowManager{
+	return &Manager{
 		config:    config,
 		estimator: estimator,
 	}
@@ -125,7 +125,7 @@ func NewWindowManager(config WindowConfig, model chatmodel.BaseModel, estimator 
 //  1. 始终保留所有 System 消息（置于开头）
 //  2. 保留最近的历史消息，从旧消息开始丢弃
 //  3. 如果截断导致 ToolResult 失去对应的 ToolCall，丢弃该孤立的 ToolResult
-func (wm *WindowManager) Truncate(msgs []*schema.Message) []*schema.Message {
+func (wm *Manager) Truncate(msgs []*schema.Message) []*schema.Message {
 	if wm == nil || len(msgs) == 0 {
 		return msgs
 	}
@@ -172,7 +172,7 @@ func (wm *WindowManager) Truncate(msgs []*schema.Message) []*schema.Message {
 
 // truncateByTokens 按 Token 数截断，保留尾部
 // 修复：从尾部向前累加，精确找到能放入的起始位置
-func (wm *WindowManager) truncateByTokens(msgs []*schema.Message) []*schema.Message {
+func (wm *Manager) truncateByTokens(msgs []*schema.Message) []*schema.Message {
 	maxTokens := wm.config.MaxHistoryTokens
 	if maxTokens <= 0 {
 		return msgs
@@ -203,6 +203,6 @@ func (wm *WindowManager) truncateByTokens(msgs []*schema.Message) []*schema.Mess
 }
 
 // GetConfig 返回当前生效的配置（便于调试）
-func (wm *WindowManager) GetConfig() WindowConfig {
+func (wm *Manager) GetConfig() Config {
 	return wm.config
 }

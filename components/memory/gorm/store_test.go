@@ -1,4 +1,4 @@
-package memory
+package gorm
 
 import (
 	"context"
@@ -23,7 +23,7 @@ func TestGormStoreBasic(t *testing.T) {
 	dbPath := "./test_gorm.db"
 	defer os.Remove(dbPath)
 
-	config := &GormStoreConfig{
+	config := &Config{
 		DBPath:              dbPath,
 		MaxOpenConns:        5,
 		MaxIdleConns:        2,
@@ -31,7 +31,7 @@ func TestGormStoreBasic(t *testing.T) {
 		DisableVectorSearch: true,
 	}
 
-	store, err := NewGormStore(config, nil)
+	store, err := NewStore(config, nil)
 	if err != nil {
 		t.Fatalf("create store failed: %v", err)
 	}
@@ -73,13 +73,13 @@ func TestGormStoreWithVector(t *testing.T) {
 	dbPath := "./test_gorm_vector.db"
 	defer os.Remove(dbPath)
 
-	config := &GormStoreConfig{
+	config := &Config{
 		DBPath:              dbPath,
 		DisableVectorSearch: false,
 		EmbeddingDimension:  384,
 	}
 
-	store, err := NewGormStore(config, mockEmbedding)
+	store, err := NewStore(config, mockEmbedding)
 	if err != nil {
 		t.Fatalf("create store failed: %v", err)
 	}
@@ -113,10 +113,10 @@ func TestGormStoreClearSession(t *testing.T) {
 	dbPath := "./test_gorm_clear.db"
 	defer os.Remove(dbPath)
 
-	config := DefaultGormStoreConfig()
+	config := DefaultConfig()
 	config.DBPath = dbPath
 
-	store, err := NewGormStore(config, nil)
+	store, err := NewStore(config, nil)
 	if err != nil {
 		t.Fatalf("create store failed: %v", err)
 	}
@@ -149,10 +149,10 @@ func TestGormStoreTimeRange(t *testing.T) {
 	dbPath := "./test_gorm_time.db"
 	defer os.Remove(dbPath)
 
-	config := DefaultGormStoreConfig()
+	config := DefaultConfig()
 	config.DBPath = dbPath
 
-	store, err := NewGormStore(config, nil)
+	store, err := NewStore(config, nil)
 	if err != nil {
 		t.Fatalf("create store failed: %v", err)
 	}
@@ -189,10 +189,10 @@ func TestGormStoreStats(t *testing.T) {
 	dbPath := "./test_gorm_stats.db"
 	defer os.Remove(dbPath)
 
-	config := DefaultGormStoreConfig()
+	config := DefaultConfig()
 	config.DBPath = dbPath
 
-	store, err := NewGormStore(config, nil)
+	store, err := NewStore(config, nil)
 	if err != nil {
 		t.Fatalf("create store failed: %v", err)
 	}

@@ -18,6 +18,8 @@ import (
 
 	"github.com/Luo-root/pulse/components/chatmodel"
 	"github.com/Luo-root/pulse/components/memory"
+	"github.com/Luo-root/pulse/components/memory/gorm"
+	"github.com/Luo-root/pulse/components/memory/window"
 	"github.com/Luo-root/pulse/components/schema"
 )
 
@@ -74,7 +76,7 @@ func (e *mockEmbedder) Embed(ctx context.Context, text string) ([]float32, error
 	return vec, nil
 }
 
-func (e *mockEmbedder) Embedder() memory.EmbeddingFunc {
+func (e *mockEmbedder) Embedder() gorm.EmbeddingFunc {
 	return func(ctx context.Context, text string) ([]float32, error) {
 		return e.Embed(ctx, text)
 	}
@@ -120,7 +122,7 @@ func withToolCalls(content string, calls ...schema.ToolCall) *schema.Message {
 // ============================================================================
 
 func TestMemory_WindowManager_NilSafe(t *testing.T) {
-	var wm *memory.WindowManager
+	var wm *window.Manager
 	msgs := msgs(userMsg("hello"), asstMsg("hi"))
 	result := wm.Truncate(msgs)
 	if len(result) != 2 {
@@ -129,7 +131,7 @@ func TestMemory_WindowManager_NilSafe(t *testing.T) {
 }
 
 func TestMemory_WindowManager_NoLimit(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{}, nil, nil)
+	wm := window.NewManager(window.Config{}, nil, nil)
 
 	var msgs []*schema.Message
 	for i := 0; i < 100; i++ {
@@ -143,7 +145,7 @@ func TestMemory_WindowManager_NoLimit(t *testing.T) {
 }
 
 func TestMemory_WindowManager_MaxHistoryMessages(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 5,
 	}, nil, nil)
 
@@ -166,7 +168,7 @@ func TestMemory_WindowManager_MaxHistoryMessages(t *testing.T) {
 }
 
 func TestMemory_WindowManager_SystemPreserved(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 3,
 	}, nil, nil)
 
@@ -198,7 +200,7 @@ func TestMemory_WindowManager_SystemPreserved(t *testing.T) {
 }
 
 func TestMemory_WindowManager_TokenLimit(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryTokens: 20, // 非常小的 token 限制
 	}, nil, nil)
 
@@ -222,7 +224,7 @@ func TestMemory_WindowManager_TokenLimit(t *testing.T) {
 }
 
 func TestMemory_WindowManager_ToolChainRepair(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 4,
 	}, nil, nil)
 
@@ -250,7 +252,7 @@ func TestMemory_WindowManager_ToolChainRepair(t *testing.T) {
 }
 
 func TestMemory_WindowManager_TokenAndMessageCombined(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 10,
 		MaxHistoryTokens:   5, // 极小，强制按 token 截断
 	}, nil, nil)
@@ -272,10 +274,10 @@ func TestMemory_WindowManager_TokenAndMessageCombined(t *testing.T) {
 // ============================================================================
 
 func TestMemory_SimpleWindowMemory_BasicFlow(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 5,
 	}, nil, nil)
-	sm := memory.NewSimpleWindowMemory(wm)
+	sm := window.NewSimpleWindowMemory(wm)
 
 	sessionID := "test-session-1"
 
@@ -290,10 +292,10 @@ func TestMemory_SimpleWindowMemory_BasicFlow(t *testing.T) {
 }
 
 func TestMemory_SimpleWindowMemory_WindowTruncation(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 3,
 	}, nil, nil)
-	sm := memory.NewSimpleWindowMemory(wm)
+	sm := window.NewSimpleWindowMemory(wm)
 
 	sessionID := "test-trunc"
 	for i := 0; i < 10; i++ {
@@ -307,8 +309,8 @@ func TestMemory_SimpleWindowMemory_WindowTruncation(t *testing.T) {
 }
 
 func TestMemory_SimpleWindowMemory_Clear(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{}, nil, nil)
-	sm := memory.NewSimpleWindowMemory(wm)
+	wm := window.NewManager(window.Config{}, nil, nil)
+	sm := window.NewSimpleWindowMemory(wm)
 
 	sessionID := "test-clear"
 	sm.AddTurn(sessionID, msgs(userMsg("hello")))
@@ -321,10 +323,10 @@ func TestMemory_SimpleWindowMemory_Clear(t *testing.T) {
 }
 
 func TestMemory_SimpleWindowMemory_MultiSession(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 3,
 	}, nil, nil)
-	sm := memory.NewSimpleWindowMemory(wm)
+	sm := window.NewSimpleWindowMemory(wm)
 
 	sm.AddTurn("s1", msgs(userMsg("s1-hello")))
 	sm.AddTurn("s2", msgs(userMsg("s2-hello"), asstMsg("s2-reply")))
@@ -341,10 +343,10 @@ func TestMemory_SimpleWindowMemory_MultiSession(t *testing.T) {
 }
 
 func TestMemory_SimpleWindowMemory_GetContextMessages_WritesBack(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 3,
 	}, nil, nil)
-	sm := memory.NewSimpleWindowMemory(wm)
+	sm := window.NewSimpleWindowMemory(wm)
 
 	sessionID := "test-writeback"
 	for i := 0; i < 10; i++ {
@@ -368,11 +370,11 @@ func TestMemory_SimpleWindowMemory_GetContextMessages_WritesBack(t *testing.T) {
 // ============================================================================
 
 func TestMemory_WindowShortMemory_NoOverflow(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 10,
 	}, nil, nil)
 	model := &mockModel{}
-	wsm := memory.NewWindowShortMemory(wm, model, nil)
+	wsm := window.NewShortMemory(wm, model, nil)
 
 	sessionID := "no-overflow"
 	wsm.AddTurn(sessionID, msgs(userMsg("hello"), asstMsg("hi")))
@@ -384,11 +386,11 @@ func TestMemory_WindowShortMemory_NoOverflow(t *testing.T) {
 }
 
 func TestMemory_WindowShortMemory_WithSummary(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 2,
 	}, nil, nil)
 	model := &mockModel{}
-	wsm := memory.NewWindowShortMemory(wm, model, memory.DefaultSummaryFunc())
+	wsm := window.NewShortMemory(wm, model, window.DefaultSummaryFunc())
 
 	sessionID := "with-summary"
 	// 添加 6 条消息，窗口只保留 2 条
@@ -417,12 +419,12 @@ func TestMemory_WindowShortMemory_WithSummary(t *testing.T) {
 }
 
 func TestMemory_WindowShortMemory_FallbackSummary(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 2,
 	}, nil, nil)
 	// model 返回错误 → 触发 fallbackSummary
 	errModel := &errorModel{}
-	wsm := memory.NewWindowShortMemory(wm, errModel, memory.DefaultSummaryFunc())
+	wsm := window.NewShortMemory(wm, errModel, window.DefaultSummaryFunc())
 
 	sessionID := "fallback"
 	for i := 0; i < 6; i++ {
@@ -447,10 +449,10 @@ func (m *errorModel) Stream(ctx context.Context, input []*schema.Message) (*sche
 }
 
 func TestMemory_WindowShortMemory_Concurrent(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 5,
 	}, nil, nil)
-	wsm := memory.NewWindowShortMemory(wm, &mockModel{}, nil)
+	wsm := window.NewShortMemory(wm, &mockModel{}, nil)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
@@ -495,10 +497,10 @@ func TestMemory_Controller_NoStores(t *testing.T) {
 }
 
 func TestMemory_Controller_WithShortMemory(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 20,
 	}, nil, nil)
-	sm := memory.NewSimpleWindowMemory(wm)
+	sm := window.NewSimpleWindowMemory(wm)
 
 	c := memory.NewController(
 		msgs(sysMsg("系统提示")),
@@ -528,8 +530,8 @@ func TestMemory_Controller_WithShortMemory(t *testing.T) {
 }
 
 func TestMemory_Controller_Clear(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{}, nil, nil)
-	sm := memory.NewSimpleWindowMemory(wm)
+	wm := window.NewManager(window.Config{}, nil, nil)
+	sm := window.NewSimpleWindowMemory(wm)
 
 	c := memory.NewController(msgs(sysMsg("sys")), sm, nil)
 
@@ -570,17 +572,17 @@ func TestMemory_Controller_Close_NilStore(t *testing.T) {
 }
 
 // ============================================================================
-// 5. GormStore 测试
+// 5. Store 测试
 // ============================================================================
 
-func newTestGormStore(t *testing.T) *memory.GormStore {
+func newTestGormStore(t *testing.T) *gorm.Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	config := memory.DefaultGormStoreConfig()
+	config := gorm.DefaultConfig()
 	config.DBPath = dbPath
 	config.DisableVectorSearch = true // 先测非向量场景
 
-	store, err := memory.NewGormStore(config, nil)
+	store, err := gorm.NewStore(config, nil)
 	if err != nil {
 		t.Fatalf("NewGormStore: %v", err)
 	}
@@ -588,17 +590,17 @@ func newTestGormStore(t *testing.T) *memory.GormStore {
 	return store
 }
 
-func newTestGormStoreWithVector(t *testing.T) (*memory.GormStore, *mockEmbedder) {
+func newTestGormStoreWithVector(t *testing.T) (*gorm.Store, *mockEmbedder) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test_vec.db")
-	config := memory.DefaultGormStoreConfig()
+	config := gorm.DefaultConfig()
 	config.DBPath = dbPath
 	config.DisableVectorSearch = false
 	config.EmbeddingDimension = 64
-	config.RecallMode = memory.RecallModeAuto // 改回 Auto：优先向量，失败回退混合
+	config.RecallMode = gorm.RecallModeAuto // 改回 Auto：优先向量，失败回退混合
 
 	emb := newMockEmbedder(64)
-	store, err := memory.NewGormStore(config, emb.Embedder())
+	store, err := gorm.NewStore(config, emb.Embedder())
 	if err != nil {
 		t.Fatalf("NewGormStore with vector: %v", err)
 	}
@@ -765,7 +767,7 @@ func TestMemory_GormStore_ReasoningContent(t *testing.T) {
 }
 
 // ============================================================================
-// 6. GormStore 召回测试
+// 6. Store 召回测试
 // ============================================================================
 
 func TestMemory_GormStore_HybridRecall(t *testing.T) {
@@ -903,7 +905,7 @@ func TestMemory_GormStore_VectorRecall(t *testing.T) {
 }
 
 // ============================================================================
-// 7. GormStore 高级查询测试
+// 7. Store 高级查询测试
 // ============================================================================
 
 func TestMemory_GormStore_SearchByRole(t *testing.T) {
@@ -1001,7 +1003,7 @@ func TestMemory_GormStore_SessionStats_Empty(t *testing.T) {
 // ============================================================================
 
 func TestMemory_SplitText_Short(t *testing.T) {
-	chunks := memory.SplitText("短文本", 512, 64)
+	chunks := gorm.SplitText("短文本", 512, 64)
 	if len(chunks) != 1 {
 		t.Errorf("短文本应不分块, got %d", len(chunks))
 	}
@@ -1017,7 +1019,7 @@ func TestMemory_SplitText_Long(t *testing.T) {
 		sb.WriteString(fmt.Sprintf("这是第 %d 个句子。", i))
 	}
 
-	chunks := memory.SplitText(sb.String(), 100, 20)
+	chunks := gorm.SplitText(sb.String(), 100, 20)
 	if len(chunks) < 2 {
 		t.Errorf("长文本应分为多块, got %d", len(chunks))
 	}
@@ -1036,7 +1038,7 @@ func TestMemory_SplitText_Long(t *testing.T) {
 }
 
 func TestMemory_SplitText_ZeroChunkSize(t *testing.T) {
-	chunks := memory.SplitText("test", 0, 0)
+	chunks := gorm.SplitText("test", 0, 0)
 	if len(chunks) != 1 {
 		t.Errorf("chunkSize=0 应不分块, got %d", len(chunks))
 	}
@@ -1045,7 +1047,7 @@ func TestMemory_SplitText_ZeroChunkSize(t *testing.T) {
 func TestMemory_SplitText_BoundaryDetection(t *testing.T) {
 	// 应在句号处断开
 	text := "第一句话。第二句话。第三句话。第四句话。第五句话。"
-	chunks := memory.SplitText(text, 15, 2)
+	chunks := gorm.SplitText(text, 15, 2)
 
 	// 验证块不是在句子中间断开的
 	for _, chunk := range chunks {
@@ -1068,11 +1070,11 @@ func TestMemory_SplitText_BoundaryDetection(t *testing.T) {
 
 func TestMemory_Integration_FullFlow(t *testing.T) {
 	// 模拟完整的 Agent 记忆流程
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 10,
 		ReserveTokens:      8000,
 	}, nil, nil)
-	sm := memory.NewSimpleWindowMemory(wm)
+	sm := window.NewSimpleWindowMemory(wm)
 
 	store := newTestGormStore(t)
 
@@ -1189,10 +1191,10 @@ func TestMemory_GormStore_ConcurrentSave(t *testing.T) {
 }
 
 func TestMemory_Controller_ConcurrentAccess(t *testing.T) {
-	wm := memory.NewWindowManager(memory.WindowConfig{
+	wm := window.NewManager(window.Config{
 		MaxHistoryMessages: 100,
 	}, nil, nil)
-	sm := memory.NewSimpleWindowMemory(wm)
+	sm := window.NewSimpleWindowMemory(wm)
 	c := memory.NewController(msgs(sysMsg("sys")), sm, nil)
 
 	ctx := context.Background()
@@ -1332,8 +1334,8 @@ func TestMemory_GormStore_NonexistentSession(t *testing.T) {
 
 func TestMemory_Controller_RecallDegradation(t *testing.T) {
 	// LongStore 为 nil 时，BuildContext 不应报错
-	wm := memory.NewWindowManager(memory.WindowConfig{}, nil, nil)
-	sm := memory.NewSimpleWindowMemory(wm)
+	wm := window.NewManager(window.Config{}, nil, nil)
+	sm := window.NewSimpleWindowMemory(wm)
 
 	c := memory.NewController(msgs(sysMsg("sys")), sm, nil)
 
@@ -1377,11 +1379,11 @@ func TestMemory_GormStore_IndexReady(t *testing.T) {
 func TestMemory_GormStore_IndexReady_Disabled(t *testing.T) {
 	// 禁用向量搜索时，IndexReady 应立即为 true
 	dbPath := filepath.Join(t.TempDir(), "no_vec.db")
-	config := memory.DefaultGormStoreConfig()
+	config := gorm.DefaultConfig()
 	config.DBPath = dbPath
 	config.DisableVectorSearch = true
 
-	store, err := memory.NewGormStore(config, nil)
+	store, err := gorm.NewStore(config, nil)
 	if err != nil {
 		t.Fatalf("NewGormStore: %v", err)
 	}
@@ -1397,9 +1399,9 @@ func TestMemory_GormStore_IndexReady_Disabled(t *testing.T) {
 // ============================================================================
 
 // 编译期接口检查
-var _ memory.LongTermStore = (*memory.GormStore)(nil)
-var _ memory.ShortMemoryManager = (*memory.SimpleWindowMemory)(nil)
-var _ memory.ShortMemoryManager = (*memory.WindowShortMemory)(nil)
+var _ memory.LongTermStore = (*gorm.Store)(nil)
+var _ memory.ShortMemoryManager = (*window.SimpleWindowMemory)(nil)
+var _ memory.ShortMemoryManager = (*window.ShortMemory)(nil)
 var _ chatmodel.BaseModel = (*mockModel)(nil)
 var _ chatmodel.BaseModel = (*errorModel)(nil)
 

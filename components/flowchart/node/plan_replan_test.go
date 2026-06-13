@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Luo-root/pulse/components/agent"
-	"github.com/Luo-root/pulse/components/chatmodel"
+	"github.com/Luo-root/pulse/components/chatmodel/mock"
 	"github.com/Luo-root/pulse/components/tools"
 )
 
@@ -18,8 +18,8 @@ import (
 // ============================================================
 
 func TestRePlan_WithValidJSON(t *testing.T) {
-	mockModel := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse(`{"tasks":[
+	mockModel := mock.NewMockModelWithResponses(
+		mock.MockTextResponse(`{"tasks":[
 			{"id":"task_1","description":"fixed task","inputs":[],"outputs":["result"]}
 		]}`),
 	)
@@ -60,8 +60,8 @@ func TestRePlan_WithValidJSON(t *testing.T) {
 }
 
 func TestRePlan_WithInvalidJSON_FallbackReset(t *testing.T) {
-	mockModel := chatmodel.NewMockModelWithResponses(
-		chatmodel.MockTextResponse("not valid json at all"),
+	mockModel := mock.NewMockModelWithResponses(
+		mock.MockTextResponse("not valid json at all"),
 	)
 
 	reg := tools.NewToolRegistry()
