@@ -384,3 +384,132 @@ func (m *mockContextWindowModel) Stream(ctx context.Context, input []*schema.Mes
 func (m *mockContextWindowModel) ContextWindow() int {
 	return m.contextWindow
 }
+
+// ============================================================================
+// CalibratedEstimator 测试
+// ============================================================================
+
+func TestCalibratedEstimator_BeforeCalibration(t *testing.T) {
+	ce := NewCalibratedEstimator()
+	msg := schema.UserMessage("hello world")
+
+	// 校准前（样本数 < minSamples），应该和默认估算一致
+	defaultEst := &defaultEstimator{}
+	raw := defaultEst.Estimate(msg)
+	calibrated := ce.Estimate(msg)
+
+	if calibrated != raw {
+		t.Errorf("before calibration: calibrated=%d, raw=%d (should be equal)", calibrated, raw)
+	}
+}
+
+func TestCalibratedEstimator_AfterCalibration(t *testing.T) {
+	ce := NewCalibratedEstimator()
+	msg := schema.UserMessage("hello world this is a test message with some length")
+
+	raw := ce.Estimate(msg)
+
+	// 模拟 5 次校准：每次估算值是 raw，实际值是 raw 的 1.5 倍
+	for i := 0; i < 5; i++ {
+		ce.Feed(raw, uint64(float64(raw)*1.5))
+	}
+
+	calibrated := ce.Estimate(msg)
+
+	// 校准后估算值应该接近原始值的 1.5 倍
+	expectedRatio := 1.5
+	actualRatio := float64(calibrated) / float64(raw)
+	if actualRatio < expectedRatio-0.1 || actualRatio > expectedRatio+0.1 {
+		t.Errorf("ratio: expected ~%.1f, got %.2f (raw=%d, calibrated=%d)", expectedRatio, actualRatio, raw, calibrated)
+	}
+}
+
+func TestCalibratedEstimator_RatioBounds(t *testing.T) {
+	ce := NewCalibratedEstimator()
+	msg := schema.UserMessage("test")
+	raw := ce.Estimate(msg)
+
+	// 喂入极端值：实际是估算的 10 倍
+	for i := 0; i < 5; i++ {
+		ce.Feed(raw, uint64(raw*10))
+	}
+
+	// ratio 应该被限制在 3.0
+	if ce.GetRatio() > 3.0 {
+		t.Errorf("ratio should be capped at 3.0, got %f", ce.GetRatio())
+	}
+
+	// 喂入极端值：实际是估算的 0.1 倍
+	ce2 := NewCalibratedEstimator()
+	for i := 0; i < 5; i++ {
+		ce2.Feed(raw*10, uint64(raw))
+	}
+
+	if ce2.GetRatio() < 0.3 {
+		t.Errorf("ratio should be floored at 0.3, got %f", ce2.GetRatio())
+	}
+}
+
+func TestCalibratedEstimator_FeedInvalidInput(t *testing.T) {
+	ce := NewCalibratedEstimator()
+
+	// 无效输入应该被忽略
+	ce.Feed(0, 100)
+	ce.Feed(100, 0)
+	ce.Feed(-1, 100)
+
+	if ce.GetSampleCount() != 0 {
+		t.Errorf("expected 0 samples, got %d", ce.GetSampleCount())
+	}
+}
+
+func TestCalibratedEstimator_GetSampleCount(t *testing.T) {
+	ce := NewCalibratedEstimator()
+
+	for i := 0; i < 10; i++ {
+		ce.Feed(100, 120)
+	}
+
+	if ce.GetSampleCount() != 10 {
+		t.Errorf("expected 10, got %d", ce.GetSampleCount())
+	}
+}
+
+func TestCalibratedEstimator_ImplementsInterfaces(t *testing.T) {
+	ce := NewCalibratedEstimator()
+
+	// 验证实现了 TokenEstimator 和 CalibrationFeed
+	var _ TokenEstimator = ce
+	var _ CalibrationFeed = ce
+}
+
+func TestCalibratedEstimator_WithTruncation(t *testing.T) {
+	// 验证校准后的估算器影响 Truncate 行为
+	ce := NewCalibratedEstimator()
+	msg := schema.UserMessage("this is a moderately long message for testing token estimation")
+
+	raw := ce.Estimate(msg)
+
+	// 校准：实际 token 是估算的 2 倍（估算偏低）
+	for i := 0; i < 5; i++ {
+		ce.Feed(raw, uint64(raw*2))
+	}
+
+	// 用校准后的估算器创建 Manager
+	wm := NewManager(Config{MaxHistoryTokens: raw * 3}, nil, ce)
+
+	msgs := []*schema.Message{
+		msg,
+		msg,
+		msg,
+		msg,
+	}
+
+	result := wm.Truncate(msgs)
+
+	// 校准后每条消息的 token 估算翻倍，4 条消息总 token ≈ raw*2*4 = raw*8
+	// 限制是 raw*3，所以应该截断到只剩 1 条
+	if len(result) > 2 {
+		t.Errorf("expected truncation to <= 2 messages, got %d (raw=%d, ratio=%.2f)", len(result), raw, ce.GetRatio())
+	}
+}

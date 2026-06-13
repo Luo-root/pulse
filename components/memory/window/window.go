@@ -38,6 +38,15 @@ type TokenEstimator interface {
 	Estimate(msg *schema.Message) int
 }
 
+// CalibrationFeed 校准数据输入接口
+// Agent 在每次模型调用后，将估算值和实际值喂入，用于动态校准估算比例
+type CalibrationFeed interface {
+	// Feed 输入一次校准数据点
+	// estimated: 估算的 token 数（调用前）
+	// actual: 实际的 token 数（模型返回的 prompt_tokens）
+	Feed(estimated int, actual uint64)
+}
+
 // defaultEstimator 默认估算器
 // 混合文本保守估算：平均 1 token ≈ 1.8 个 rune（中英文混合偏保守）
 // defaultEstimator 默认估算器
@@ -87,6 +96,81 @@ func (e *defaultEstimator) Estimate(msg *schema.Message) int {
 		return 1
 	}
 	return total
+}
+
+// CalibratedEstimator 基于历史数据校准的 Token 估算器
+// 包装 defaultEstimator，用模型返回的实际 prompt_tokens 动态调整估算比例
+//
+// 原理：
+//   - defaultEstimator 用固定比例（1 token ≈ 1.8 runes）估算
+//   - 模型返回的实际 prompt_tokens 是真实值
+//   - 校准比例 = Σ(actual) / Σ(estimated)
+//   - 后续估算 = 原始估算 × 校准比例
+//
+// 使用方式：
+//
+//	ce := NewCalibratedEstimator()
+//	wm := window.NewManager(config, model, ce)
+//	// 每次模型调用后，Agent 喂入校准数据：
+//	ce.Feed(estimatedTokens, actualPromptTokens)
+type CalibratedEstimator struct {
+	base        *defaultEstimator
+	ratio       float64 // 校准比例（初始 1.0）
+	totalEst    int64   // 累计估算值
+	totalActual int64   // 累计实际值
+	count       int     // 数据点数量
+	minSamples  int     // 最少样本数才开始校准
+}
+
+func NewCalibratedEstimator() *CalibratedEstimator {
+	return &CalibratedEstimator{
+		base:       &defaultEstimator{},
+		ratio:      1.0,
+		minSamples: 3,
+	}
+}
+
+// Estimate 实现 TokenEstimator 接口
+func (ce *CalibratedEstimator) Estimate(msg *schema.Message) int {
+	raw := ce.base.Estimate(msg)
+	if ce.count < ce.minSamples {
+		return raw
+	}
+	return int(float64(raw) * ce.ratio)
+}
+
+// Feed 实现 CalibrationFeed 接口
+// estimated: 调用前估算的总 token 数
+// actual: 模型返回的 prompt_tokens
+func (ce *CalibratedEstimator) Feed(estimated int, actual uint64) {
+	if estimated <= 0 || actual == 0 {
+		return
+	}
+
+	ce.totalEst += int64(estimated)
+	ce.totalActual += int64(actual)
+	ce.count++
+
+	if ce.totalEst > 0 {
+		ce.ratio = float64(ce.totalActual) / float64(ce.totalEst)
+		// 限制 ratio 范围，防止极端值
+		if ce.ratio < 0.3 {
+			ce.ratio = 0.3
+		}
+		if ce.ratio > 3.0 {
+			ce.ratio = 3.0
+		}
+	}
+}
+
+// GetRatio 获取当前校准比例（用于调试）
+func (ce *CalibratedEstimator) GetRatio() float64 {
+	return ce.ratio
+}
+
+// GetSampleCount 获取校准样本数
+func (ce *CalibratedEstimator) GetSampleCount() int {
+	return ce.count
 }
 
 // Manager 对话窗口管理器
