@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Luo-root/pulse/components/chatmodel/mock"
-	"github.com/Luo-root/pulse/components/flow"
+	"github.com/Luo-root/pulse/components/flowchart/flow"
 	"github.com/Luo-root/pulse/components/schema"
 )
 
@@ -134,14 +134,14 @@ func TestLoopNode_CompletedNormally(t *testing.T) {
 		t.Errorf("expected counter=%d, got %d", maxCount, counter)
 	}
 
-	loopResult, ok := result["result"].(*flow.LoopResult)
+	loopResult, ok := result["result"].(*LoopResult)
 	if !ok {
-		t.Fatalf("expected *flow.LoopResult, got %T", result["result"])
+		t.Fatalf("expected *	LoopResult, got %T", result["result"])
 	}
 	if loopResult.Iterations != maxCount {
 		t.Errorf("expected iterations=%d, got %d", maxCount, loopResult.Iterations)
 	}
-	if loopResult.Status != flow.LoopStatusCompleted {
+	if loopResult.Status != LoopStatusCompleted {
 		t.Errorf("expected status=completed, got %s", loopResult.Status)
 	}
 }
@@ -175,11 +175,11 @@ func TestLoopNode_MaxIterationsReached(t *testing.T) {
 		t.Errorf("expected counter=%d, got %d", maxIter, counter)
 	}
 
-	loopResult, ok := result["result"].(*flow.LoopResult)
+	loopResult, ok := result["result"].(*LoopResult)
 	if !ok {
-		t.Fatalf("expected *flow.LoopResult, got %T", result["result"])
+		t.Fatalf("expected *	LoopResult, got %T", result["result"])
 	}
-	if loopResult.Status != flow.LoopStatusMaxIterations {
+	if loopResult.Status != LoopStatusMaxIterations {
 		t.Errorf("expected status=max_iterations, got %s", loopResult.Status)
 	}
 }
@@ -212,14 +212,14 @@ func TestLoopNode_ConditionExit(t *testing.T) {
 		t.Errorf("expected counter=4, got %d", counter)
 	}
 
-	loopResult, ok := result["result"].(*flow.LoopResult)
+	loopResult, ok := result["result"].(*LoopResult)
 	if !ok {
-		t.Fatalf("expected *flow.LoopResult, got %T", result["result"])
+		t.Fatalf("expected *	LoopResult, got %T", result["result"])
 	}
 	if loopResult.Iterations != 3 {
 		t.Errorf("expected iterations=3, got %d", loopResult.Iterations)
 	}
-	if loopResult.Status != flow.LoopStatusCompleted {
+	if loopResult.Status != LoopStatusCompleted {
 		t.Errorf("expected status=completed, got %s", loopResult.Status)
 	}
 }
@@ -248,7 +248,7 @@ func TestLoopNode_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if !errors.Is(err, flow.ErrLoopTimeout) {
+	if !errors.Is(err, ErrLoopTimeout) {
 		t.Errorf("expected ErrLoopTimeout, got %v", err)
 	}
 
@@ -289,7 +289,7 @@ func TestLoopNode_ContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected cancellation error")
 	}
-	if !errors.Is(err, flow.ErrLoopCancelled) {
+	if !errors.Is(err, ErrLoopCancelled) {
 		t.Errorf("expected ErrLoopCancelled, got %v", err)
 	}
 }

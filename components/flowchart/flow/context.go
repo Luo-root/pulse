@@ -24,8 +24,8 @@ func NewFlowContext(ctx context.Context) *FlowContext {
 	}
 }
 
-func (c *FlowContext) GetContext() *context.Context {
-	return &c.ctx
+func (c *FlowContext) GetContext() context.Context {
+	return c.ctx
 }
 
 // slot 原子获取或创建，无竞态
@@ -60,11 +60,30 @@ func (c *FlowContext) Wait(key string) (any, error) {
 	return c.slot(key).Get(c.ctx)
 }
 
+// WaitWithContext 使用指定 context 等待数据就绪
+// 用于切面级超时控制：传入切面的 context 而非工作流的 context
+func (c *FlowContext) WaitWithContext(ctx context.Context, key string) (any, error) {
+	return c.slot(key).Get(ctx)
+}
+
 // WaitAll 等待多个数据全部就绪
 func (c *FlowContext) WaitAll(keys ...string) (map[string]any, error) {
 	result := make(map[string]any, len(keys))
 	for _, k := range keys {
 		val, err := c.Wait(k)
+		if err != nil {
+			return nil, err
+		}
+		result[k] = val
+	}
+	return result, nil
+}
+
+// WaitAllWithContext 使用指定 context 等待多个数据全部就绪
+func (c *FlowContext) WaitAllWithContext(ctx context.Context, keys ...string) (map[string]any, error) {
+	result := make(map[string]any, len(keys))
+	for _, k := range keys {
+		val, err := c.WaitWithContext(ctx, k)
 		if err != nil {
 			return nil, err
 		}

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/Luo-root/pulse/components/flow"
+	"github.com/Luo-root/pulse/components/flowchart/flow"
 )
 
 // TopologicalNode 拓扑排序节点包装器

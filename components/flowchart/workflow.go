@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/Luo-root/pulse/components/flow"
+	"github.com/Luo-root/pulse/components/flowchart/flow"
 	"github.com/Luo-root/pulse/components/flowchart/node"
 	"github.com/panjf2000/ants/v2"
 )
@@ -48,7 +48,7 @@ func (w *Workflow) AddNode(n node.Node) error {
 	defer w.mu.Unlock()
 
 	if w.closed {
-		return flow.ErrWorkflowClosed
+		return ErrWorkflowClosed
 	}
 
 	w.nodes = append(w.nodes, n)
@@ -61,7 +61,7 @@ func (w *Workflow) AddAspect(aspect node.Aspect) error {
 	defer w.mu.Unlock()
 
 	if w.closed {
-		return flow.ErrWorkflowClosed
+		return ErrWorkflowClosed
 	}
 
 	w.aspects = append(w.aspects, aspect)
@@ -74,7 +74,7 @@ func (w *Workflow) Input(key string, value any) error {
 	defer w.mu.Unlock()
 
 	if w.closed {
-		return flow.ErrWorkflowClosed
+		return ErrWorkflowClosed
 	}
 
 	w.ctx.Set(key, value)
@@ -82,7 +82,6 @@ func (w *Workflow) Input(key string, value any) error {
 }
 
 // Run 运行工作流（阻塞直到所有节点完成）
-// 所有节点同时提交到协程池，通过 FlowContext.Wait 自行等待依赖就绪
 func (w *Workflow) Run(input map[string]any) error {
 	if err := w.prepareRun(); err != nil {
 		return err
@@ -97,20 +96,20 @@ func (w *Workflow) Run(input map[string]any) error {
 		w.ctx.Set(k, v)
 	}
 
-	if err := w.submitAll(); err != nil {
+	if err := w.submitAll(true); err != nil {
 		return err
 	}
 
 	return w.ctx.Err()
 }
 
-// Start 异步启动工作流
+// Start 异步启动工作流（立即返回，通过 Wait 等待完成）
 func (w *Workflow) Start() error {
 	if err := w.prepareRun(); err != nil {
 		return err
 	}
 
-	if err := w.submitAll(); err != nil {
+	if err := w.submitAll(false); err != nil {
 		w.mu.Lock()
 		w.running = false
 		w.mu.Unlock()
@@ -137,10 +136,10 @@ func (w *Workflow) prepareRun() error {
 	defer w.mu.Unlock()
 
 	if w.closed {
-		return flow.ErrWorkflowClosed
+		return ErrWorkflowClosed
 	}
 	if w.running {
-		return flow.ErrWorkflowRunning
+		return ErrWorkflowRunning
 	}
 	w.running = true
 	w.doneCh = make(chan struct{})
@@ -148,7 +147,8 @@ func (w *Workflow) prepareRun() error {
 }
 
 // submitAll 将所有节点提交到协程池，数据驱动执行顺序
-func (w *Workflow) submitAll() error {
+// wait=true 时阻塞直到所有节点完成（Run 用），wait=false 时立即返回（Start 用）
+func (w *Workflow) submitAll(wait bool) error {
 	if len(w.nodes) == 0 {
 		w.mu.Lock()
 		w.running = false
@@ -168,17 +168,16 @@ func (w *Workflow) submitAll() error {
 		})
 		if err != nil {
 			wg.Done()
-			w.ctx.Cancel(flow.ErrWorkflowSubmitNodeToPool)
+			w.ctx.Cancel(ErrWorkflowSubmitNodeToPool)
 			wg.Wait()
 			w.mu.Lock()
 			w.running = false
 			w.mu.Unlock()
 			close(w.doneCh)
-			return flow.ErrWorkflowSubmitNodeToPool
+			return ErrWorkflowSubmitNodeToPool
 		}
 	}
 
-	// 异步等待完成后关闭 doneCh（Start 需要），Run 直接阻塞在这里
 	go func() {
 		wg.Wait()
 		w.mu.Lock()
@@ -187,15 +186,15 @@ func (w *Workflow) submitAll() error {
 		close(w.doneCh)
 	}()
 
-	// Start 调用时不阻塞，Run 调用时外部通过 Wait 或直接返回前等待
-	// 但 Run 需要同步返回，所以这里阻塞
-	<-w.doneCh
+	if wait {
+		<-w.doneCh
+	}
 	return nil
 }
 
 // RunNode 执行单个节点（包含切面 + 拦截器调用链）
 func (w *Workflow) RunNode(n node.Node) {
-	// 收集切面
+	// 收集切面（全局 + 节点级）
 	var aspects []node.Aspect
 	for _, a := range w.aspects {
 		if a != nil {
@@ -208,53 +207,28 @@ func (w *Workflow) RunNode(n node.Node) {
 		}
 	}
 
-	// 分离传统切面和拦截器
-	var traditional []node.Aspect
-	var interceptors []node.Interceptor
-	for _, a := range aspects {
-		if ic, ok := a.(node.Interceptor); ok {
-			interceptors = append(interceptors, ic)
-		} else {
-			traditional = append(traditional, a)
-		}
-	}
-
-	// Before 阶段
-	for _, a := range traditional {
-		a.Before(w.ctx, n)
-	}
-
-	// 构建调用链
-	invoker := func() (map[string]any, error) {
+	// 构建切面链：核心逻辑在最内层
+	// core 接收 AspectContext，使用切面级 context 等待数据
+	// 这样超时切面取消 ac.ctx 时，WaitAll 能立即感知
+	core := func(ac *node.AspectContext) (map[string]any, error) {
 		if err := w.ctx.Err(); err != nil {
 			return nil, err
 		}
-		inputs, err := w.ctx.WaitAll(n.Inputs()...)
+		inputs, err := w.ctx.WaitAllWithContext(ac.Context(), n.Inputs()...)
 		if err != nil {
 			return nil, err
 		}
 		return n.Run(w.ctx, inputs)
 	}
 
-	for i := len(interceptors) - 1; i >= 0; i-- {
-		ic := interceptors[i]
-		next := invoker
-		invoker = func(ic node.Interceptor, next func() (map[string]any, error)) func() (map[string]any, error) {
-			return func() (map[string]any, error) {
-				return ic.Around(w.ctx, n, next)
-			}
-		}(ic, next)
-	}
+	chain := node.BuildNodeChain(aspects, n, core)
 
-	outputs, runErr := invoker()
+	// 创建切面上下文，执行切面链
+	ac := node.NewAspectContext(w.ctx, w.ctx.GetContext())
+	outputs, runErr := chain(ac)
 
 	if runErr != nil {
 		w.ctx.Cancel(runErr)
-	}
-
-	// After 阶段
-	for i := len(traditional) - 1; i >= 0; i-- {
-		traditional[i].After(w.ctx, n, runErr)
 	}
 
 	// 写入输出
@@ -274,10 +248,10 @@ func (w *Workflow) Reset(ctx context.Context) error {
 	defer w.mu.Unlock()
 
 	if w.closed {
-		return flow.ErrWorkflowClosed
+		return ErrWorkflowClosed
 	}
 	if w.running {
-		return flow.ErrWorkflowResetRunning
+		return ErrWorkflowResetRunning
 	}
 
 	w.ctx = flow.NewFlowContext(ctx)
@@ -331,10 +305,10 @@ func (w *Workflow) ResizePool(newSize int) error {
 	defer w.mu.Unlock()
 
 	if w.closed {
-		return flow.ErrWorkflowClosed
+		return ErrWorkflowClosed
 	}
 	if w.running {
-		return flow.ErrWorkflowRunning
+		return ErrWorkflowRunning
 	}
 	if newSize <= 0 {
 		newSize = ants.DefaultAntsPoolSize

@@ -348,3 +348,106 @@ func TestFlowContext_ConcurrentSlotCreation(t *testing.T) {
 		t.Fatalf("expected %d goroutines to receive value, got %d", goroutines, receivedCount.Load())
 	}
 }
+
+// ============================================================================
+// WaitWithContext / WaitAllWithContext
+// ============================================================================
+
+func TestWaitWithContext_UsesExternalContext(t *testing.T) {
+	fc := NewFlowContext(context.Background())
+
+	// 用一个独立的、带超时的 context 等待
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	// key 从未被设置，应该在 50ms 后超时
+	_, err := fc.WaitWithContext(ctx, "never_set")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("expected external context to be cancelled")
+	}
+}
+
+func TestWaitWithContext_DataArrivesBeforeTimeout(t *testing.T) {
+	fc := NewFlowContext(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		fc.Set("key", "value")
+	}()
+
+	val, err := fc.WaitWithContext(ctx, "key")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "value" {
+		t.Errorf("expected 'value', got %v", val)
+	}
+}
+
+func TestWaitWithContext_WorkflowCancelled_DoesNotAffectExternalContext(t *testing.T) {
+	fc := NewFlowContext(context.Background())
+
+	// 外部 context 有 500ms 超时
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	// 50ms 后取消工作流
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		fc.Cancel(fmt.Errorf("workflow cancelled"))
+	}()
+
+	// WaitWithContext 用的是外部 ctx，工作流取消不应影响它
+	// 但 DataSlot.Get 会检查传入的 ctx，而传入的是外部 ctx
+	// 所以它应该等到 500ms 超时，而非 50ms 工作流取消
+	_, err := fc.WaitWithContext(ctx, "never_set")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	// 外部 ctx 应该是超时而非工作流取消
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Errorf("expected DeadlineExceeded, got %v", ctx.Err())
+	}
+}
+
+func TestWaitAllWithContext_MultipleKeys(t *testing.T) {
+	fc := NewFlowContext(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		fc.Set("a", 1)
+		fc.Set("b", 2)
+	}()
+
+	result, err := fc.WaitAllWithContext(ctx, "a", "b")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result["a"] != 1 || result["b"] != 2 {
+		t.Errorf("unexpected result: %v", result)
+	}
+}
+
+func TestWaitAllWithContext_PartialTimeout(t *testing.T) {
+	fc := NewFlowContext(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	// 只设置 "a"，不设置 "b"
+	fc.Set("a", 1)
+
+	_, err := fc.WaitAllWithContext(ctx, "a", "b")
+	if err == nil {
+		t.Fatal("expected timeout error for missing key 'b'")
+	}
+}

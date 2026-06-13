@@ -7,11 +7,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Luo-root/pulse/components/flow"
+	"github.com/Luo-root/pulse/components/flowchart/flow"
 )
 
-func TestRetryInterceptor_SuccessOnThirdAttempt(t *testing.T) {
-	r := NewRetryInterceptor(3, 10*time.Millisecond)
+func newTestAspectCtx() *AspectContext {
+	return NewAspectContext(flow.NewFlowContext(context.Background()), context.Background())
+}
+
+func TestRetryAspect_SuccessOnThirdAttempt(t *testing.T) {
+	r := NewRetryAspect(3, 10*time.Millisecond)
 	var count atomic.Int32
 
 	next := func() (map[string]any, error) {
@@ -22,8 +26,8 @@ func TestRetryInterceptor_SuccessOnThirdAttempt(t *testing.T) {
 		return map[string]any{"ok": true}, nil
 	}
 
-	ctx := flow.NewFlowContext(context.Background())
-	out, err := r.Around(ctx, mockNode("test"), next)
+	ac := newTestAspectCtx()
+	out, err := r.Around(ac, mockNode("test"), next)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,10 +39,10 @@ func TestRetryInterceptor_SuccessOnThirdAttempt(t *testing.T) {
 	}
 }
 
-func TestRetryInterceptor_ShouldRetryFalse(t *testing.T) {
-	r := NewRetryInterceptor(5, 10*time.Millisecond)
+func TestRetryAspect_ShouldRetryFalse(t *testing.T) {
+	r := NewRetryAspect(5, 10*time.Millisecond)
 	r.ShouldRetry = func(err error) bool {
-		return err.Error() != "fatal" // "fatal" 不重试
+		return err.Error() != "fatal"
 	}
 
 	var count atomic.Int32
@@ -47,8 +51,8 @@ func TestRetryInterceptor_ShouldRetryFalse(t *testing.T) {
 		return nil, fmt.Errorf("fatal")
 	}
 
-	ctx := flow.NewFlowContext(context.Background())
-	_, err := r.Around(ctx, mockNode("test"), next)
+	ac := newTestAspectCtx()
+	_, err := r.Around(ac, mockNode("test"), next)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -58,21 +62,19 @@ func TestRetryInterceptor_ShouldRetryFalse(t *testing.T) {
 }
 
 func TestCircuitBreaker_OpensOnThreshold(t *testing.T) {
-	cb := NewCircuitBreakerInterceptor(3, 1*time.Second)
+	cb := NewCircuitBreakerAspect(3, 1*time.Second)
 
-	ctx := flow.NewFlowContext(context.Background())
+	ac := newTestAspectCtx()
 	node := mockNode("test")
 	failing := func() (map[string]any, error) {
 		return nil, fmt.Errorf("fail")
 	}
 
-	// 失败 3 次，触发熔断
 	for i := 0; i < 3; i++ {
-		cb.Around(ctx, node, failing)
+		cb.Around(ac, node, failing)
 	}
 
-	// 第 4 次应该被熔断
-	_, err := cb.Around(ctx, node, func() (map[string]any, error) {
+	_, err := cb.Around(ac, node, func() (map[string]any, error) {
 		t.Fatal("should not execute when circuit is open")
 		return nil, nil
 	})
@@ -82,24 +84,21 @@ func TestCircuitBreaker_OpensOnThreshold(t *testing.T) {
 }
 
 func TestCircuitBreaker_HalfOpen_Recovers(t *testing.T) {
-	cb := NewCircuitBreakerInterceptor(2, 50*time.Millisecond)
+	cb := NewCircuitBreakerAspect(2, 50*time.Millisecond)
 	cb.HalfOpenMaxCalls = 1
 
-	ctx := flow.NewFlowContext(context.Background())
+	ac := newTestAspectCtx()
 	node := mockNode("test")
 
-	// 触发熔断
 	for i := 0; i < 2; i++ {
-		cb.Around(ctx, node, func() (map[string]any, error) {
+		cb.Around(ac, node, func() (map[string]any, error) {
 			return nil, fmt.Errorf("fail")
 		})
 	}
 
-	// 等待进入半开
 	time.Sleep(100 * time.Millisecond)
 
-	// 半开状态下成功一次
-	_, err := cb.Around(ctx, node, func() (map[string]any, error) {
+	_, err := cb.Around(ac, node, func() (map[string]any, error) {
 		return map[string]any{"ok": true}, nil
 	})
 	if err != nil {
@@ -107,13 +106,13 @@ func TestCircuitBreaker_HalfOpen_Recovers(t *testing.T) {
 	}
 }
 
-func TestRecoveryInterceptor_CatchesPanic(t *testing.T) {
-	r := NewRecoveryInterceptor(nil)
+func TestRecoveryAspect_CatchesPanic(t *testing.T) {
+	r := NewRecoveryAspect(nil)
 
-	ctx := flow.NewFlowContext(context.Background())
+	ac := newTestAspectCtx()
 	node := mockNode("test")
 
-	_, err := r.Around(ctx, node, func() (map[string]any, error) {
+	_, err := r.Around(ac, node, func() (map[string]any, error) {
 		panic("boom")
 	})
 	if err == nil {
@@ -121,15 +120,15 @@ func TestRecoveryInterceptor_CatchesPanic(t *testing.T) {
 	}
 }
 
-func TestRecoveryInterceptor_FallbackFunc(t *testing.T) {
-	r := NewRecoveryInterceptor(func(ctx *flow.FlowContext, node Node, recoverVal any) (map[string]any, error) {
+func TestRecoveryAspect_FallbackFunc(t *testing.T) {
+	r := NewRecoveryAspect(func(ctx *AspectContext, node Node, recoverVal any) (map[string]any, error) {
 		return map[string]any{"recovered": true, "panic": recoverVal}, nil
 	})
 
-	ctx := flow.NewFlowContext(context.Background())
+	ac := newTestAspectCtx()
 	node := mockNode("test")
 
-	out, err := r.Around(ctx, node, func() (map[string]any, error) {
+	out, err := r.Around(ac, node, func() (map[string]any, error) {
 		panic("boom")
 	})
 	if err != nil {
@@ -140,13 +139,13 @@ func TestRecoveryInterceptor_FallbackFunc(t *testing.T) {
 	}
 }
 
-func TestRecoveryInterceptor_NoPanic(t *testing.T) {
-	r := NewRecoveryInterceptor(nil)
+func TestRecoveryAspect_NoPanic(t *testing.T) {
+	r := NewRecoveryAspect(nil)
 
-	ctx := flow.NewFlowContext(context.Background())
+	ac := newTestAspectCtx()
 	node := mockNode("test")
 
-	out, err := r.Around(ctx, node, func() (map[string]any, error) {
+	out, err := r.Around(ac, node, func() (map[string]any, error) {
 		return map[string]any{"ok": true}, nil
 	})
 	if err != nil {

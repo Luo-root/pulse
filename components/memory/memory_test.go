@@ -479,7 +479,6 @@ func TestMemory_Controller_NoStores(t *testing.T) {
 	c := memory.NewController(
 		msgs(sysMsg("你是助手")),
 		nil,
-		nil,
 	)
 
 	ctx := context.Background()
@@ -505,7 +504,6 @@ func TestMemory_Controller_WithShortMemory(t *testing.T) {
 	c := memory.NewController(
 		msgs(sysMsg("系统提示")),
 		sm,
-		nil,
 	)
 
 	ctx := context.Background()
@@ -533,7 +531,7 @@ func TestMemory_Controller_Clear(t *testing.T) {
 	wm := window.NewManager(window.Config{}, nil, nil)
 	sm := window.NewSimpleWindowMemory(wm)
 
-	c := memory.NewController(msgs(sysMsg("sys")), sm, nil)
+	c := memory.NewController(msgs(sysMsg("sys")), sm)
 
 	ctx := context.Background()
 	sessionID := "clear-test"
@@ -552,7 +550,7 @@ func TestMemory_Controller_Clear(t *testing.T) {
 }
 
 func TestMemory_Controller_GetHistory_NilStore(t *testing.T) {
-	c := memory.NewController(msgs(sysMsg("sys")), nil, nil)
+	c := memory.NewController(msgs(sysMsg("sys")), nil)
 
 	// 不应 panic
 	history, err := c.GetHistory(context.Background(), "s1")
@@ -565,7 +563,7 @@ func TestMemory_Controller_GetHistory_NilStore(t *testing.T) {
 }
 
 func TestMemory_Controller_Close_NilStore(t *testing.T) {
-	c := memory.NewController(nil, nil, nil)
+	c := memory.NewController(nil, nil)
 	if err := c.Close(); err != nil {
 		t.Errorf("Close nil store 不应报错: %v", err)
 	}
@@ -1084,7 +1082,7 @@ func TestMemory_Integration_FullFlow(t *testing.T) {
 			sysMsg("工作目录: /home/user"),
 		),
 		sm,
-		store,
+		memory.WithLongStore(store),
 	)
 
 	ctx := context.Background()
@@ -1195,7 +1193,7 @@ func TestMemory_Controller_ConcurrentAccess(t *testing.T) {
 		MaxHistoryMessages: 100,
 	}, nil, nil)
 	sm := window.NewSimpleWindowMemory(wm)
-	c := memory.NewController(msgs(sysMsg("sys")), sm, nil)
+	c := memory.NewController(msgs(sysMsg("sys")), sm)
 
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -1337,7 +1335,7 @@ func TestMemory_Controller_RecallDegradation(t *testing.T) {
 	wm := window.NewManager(window.Config{}, nil, nil)
 	sm := window.NewSimpleWindowMemory(wm)
 
-	c := memory.NewController(msgs(sysMsg("sys")), sm, nil)
+	c := memory.NewController(msgs(sysMsg("sys")), sm)
 
 	ctx := context.Background()
 	c.SaveTurn(ctx, "s1", msgs(userMsg("hello")))

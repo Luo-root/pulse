@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Luo-root/pulse/components/flow"
+	"github.com/Luo-root/pulse/components/flowchart/flow"
 	"github.com/Luo-root/pulse/components/flowchart/node"
 )
 
@@ -294,7 +294,7 @@ func TestWorkflow_NodePanicRecovered(t *testing.T) {
 	}
 	defer wf.Close()
 
-	recovery := node.NewRecoveryInterceptor(func(ctx *flow.FlowContext, n node.Node, recoverVal any) (map[string]any, error) {
+	recovery := node.NewRecoveryAspect(func(ctx *node.AspectContext, n node.Node, recoverVal any) (map[string]any, error) {
 		return map[string]any{"result": true}, nil
 	})
 	wf.AddAspect(recovery)
@@ -336,14 +336,12 @@ func TestWorkflow_BeforeAfterAspect(t *testing.T) {
 	}
 
 	// 全局切面
-	wf.AddAspect(&node.AroundAspect{
-		BeforeFn: func(ctx *flow.FlowContext, n node.Node) {
-			record("global_before:" + n.ID())
-		},
-		AfterFn: func(ctx *flow.FlowContext, n node.Node, err error) {
-			record("global_after:" + n.ID())
-		},
-	})
+	wf.AddAspect(node.AroundFunc(func(ctx *node.AspectContext, n node.Node, next func() (map[string]any, error)) (map[string]any, error) {
+		record("global_before:" + n.ID())
+		result, err := next()
+		record("global_after:" + n.ID())
+		return result, err
+	}))
 
 	n1 := node.NewNode("task1", nil, []string{"x"}, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
 		record("run:task1")
@@ -351,14 +349,12 @@ func TestWorkflow_BeforeAfterAspect(t *testing.T) {
 	})
 
 	// 节点级切面
-	n1.AddAspect(&node.AroundAspect{
-		BeforeFn: func(ctx *flow.FlowContext, n node.Node) {
-			record("node_before:" + n.ID())
-		},
-		AfterFn: func(ctx *flow.FlowContext, n node.Node, err error) {
-			record("node_after:" + n.ID())
-		},
-	})
+	n1.AddAspect(node.AroundFunc(func(ctx *node.AspectContext, n node.Node, next func() (map[string]any, error)) (map[string]any, error) {
+		record("node_before:" + n.ID())
+		result, err := next()
+		record("node_after:" + n.ID())
+		return result, err
+	}))
 
 	wf.AddNode(n1)
 
@@ -398,13 +394,11 @@ func TestWorkflow_AspectOnError(t *testing.T) {
 
 	var gotErr atomic.Value
 
-	wf.AddAspect(&node.AfterAspect{
-		Fn: func(ctx *flow.FlowContext, n node.Node, err error) {
-			if err != nil {
-				gotErr.Store(err.Error())
-			}
-		},
-	})
+	wf.AddAspect(node.AfterFunc(func(ctx *node.AspectContext, n node.Node, err error) {
+		if err != nil {
+			gotErr.Store(err.Error())
+		}
+	}))
 
 	n := node.NewNode("fail", nil, nil, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
 		return nil, errors.New("node failed")
@@ -435,22 +429,18 @@ func TestWorkflow_GlobalAndNodeAspectOrder(t *testing.T) {
 		mu.Unlock()
 	}
 
-	wf.AddAspect(&node.BeforeAspect{
-		Fn: func(ctx *flow.FlowContext, n node.Node) {
-			record("global:" + n.ID())
-		},
-	})
+	wf.AddAspect(node.BeforeFunc(func(ctx *node.AspectContext, n node.Node) {
+		record("global:" + n.ID())
+	}))
 
 	n := node.NewNode("mytask", nil, nil, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
 		record("exec")
 		return nil, nil
 	})
 
-	n.AddAspect(&node.BeforeAspect{
-		Fn: func(ctx *flow.FlowContext, n node.Node) {
-			record("local:" + n.ID())
-		},
-	})
+	n.AddAspect(node.BeforeFunc(func(ctx *node.AspectContext, n node.Node) {
+		record("local:" + n.ID())
+	}))
 
 	wf.AddNode(n)
 	wf.Run(nil)
@@ -492,8 +482,8 @@ func TestWorkflow_ErrorSwallow_Continues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wf.AddAspect(node.NewErrorSwallowInterceptor(
-		func(_ *flow.FlowContext, _ node.Node, _ error) (map[string]any, error) {
+	wf.AddAspect(node.NewErrorSwallowAspect(
+		func(_ *node.AspectContext, _ node.Node, _ error) (map[string]any, error) {
 			return map[string]any{"x": 0}, nil // 降级输出
 		},
 	))
@@ -540,7 +530,7 @@ func TestWorkflow_RetryInterceptor(t *testing.T) {
 
 	var attempts atomic.Int32
 
-	retry := node.NewRetryInterceptor(3, 10*time.Millisecond)
+	retry := node.NewRetryAspect(3, 10*time.Millisecond)
 	wf.AddAspect(retry)
 
 	n := node.NewNode("flaky", nil, []string{"result"}, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
@@ -576,7 +566,7 @@ func TestWorkflow_RetryInterceptor_Exhausted(t *testing.T) {
 
 	var attempts atomic.Int32
 
-	retry := node.NewRetryInterceptor(3, 5*time.Millisecond)
+	retry := node.NewRetryAspect(3, 5*time.Millisecond)
 	wf.AddAspect(retry)
 
 	n := node.NewNode("always_fail", nil, nil, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
@@ -602,7 +592,7 @@ func TestWorkflow_TimeoutInterceptor(t *testing.T) {
 	}
 	defer wf.Close()
 
-	timeout := node.NewTimeoutInterceptor(100 * time.Millisecond)
+	timeout := node.NewTimeoutAspect(100 * time.Millisecond)
 	wf.AddAspect(timeout)
 
 	n := node.NewNode("slow", nil, []string{"result"}, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
@@ -618,46 +608,51 @@ func TestWorkflow_TimeoutInterceptor(t *testing.T) {
 	}
 }
 
-func TestWorkflow_CircuitBreakerInterceptor(t *testing.T) {
+func TestWorkflow_TimeoutCancelsWaitAll(t *testing.T) {
+	// 验证超时切面能正确取消节点的 WaitAll 等待
+	// 场景：节点 A 依赖 "input"，但 "input" 永远不会被设置
+	// TimeoutAspect 应该在超时后让 WaitAll 返回，而非永久阻塞
 	wf, err := NewWorkflow(context.Background(), 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer wf.Close()
 
-	var execCount atomic.Int32
+	timeout := node.NewTimeoutAspect(100 * time.Millisecond)
+	wf.AddAspect(timeout)
 
-	cb := node.NewCircuitBreakerInterceptor(2, 5*time.Second)
-	cb.FallbackFunc = func(ctx *flow.FlowContext, n node.Node) (map[string]any, error) {
-		return map[string]any{"result": "cb_fallback"}, nil
-	}
+	var nodeStarted atomic.Bool
+	var nodeFinished atomic.Bool
 
-	// 用 ErrorSwallowInterceptor 包裹 CircuitBreaker，吞掉 error
-	errorSwallow := node.NewErrorSwallowInterceptor(func(ctx *flow.FlowContext, n node.Node, err error) (map[string]any, error) {
-		// 调用 CircuitBreaker 的 Fallback
-		return cb.FallbackFunc(ctx, n)
+	// 节点依赖 "input"，但没有任何节点产出 "input"
+	n := node.NewNode("waiter", []string{"input"}, []string{"result"}, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
+		nodeFinished.Store(true)
+		return map[string]any{"result": "done"}, nil
 	})
 
-	wf.AddAspect(errorSwallow)
-	wf.AddAspect(cb)
-
-	n := node.NewNode("breaker_test", nil, []string{"result"}, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
-		execCount.Add(1)
-		return nil, errors.New("fail")
-	})
+	wf.AddAspect(node.BeforeFunc(func(ctx *node.AspectContext, node node.Node) {
+		nodeStarted.Store(true)
+	}))
 
 	wf.AddNode(n)
 
-	err = wf.Run(nil)
-	if err != nil {
-		t.Fatalf("workflow should not fail: %v", err)
+	start := time.Now()
+	runErr := wf.Run(nil)
+	elapsed := time.Since(start)
+
+	if runErr == nil {
+		t.Fatal("expected timeout error")
 	}
 
-	count := execCount.Load()
-	t.Logf("Execution count: %d", count)
+	// 应该在 ~100ms 超时，而非永久阻塞
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected timeout within 500ms, took %v", elapsed)
+	}
 
-	val, _ := wf.Get("result")
-	t.Logf("Final result: %v", val)
+	// 节点的核心逻辑不应该被执行（因为 WaitAll 在超时后返回了错误）
+	if nodeFinished.Load() {
+		t.Fatal("node core should not have executed — WaitAll should have been cancelled by timeout")
+	}
 }
 
 func TestWorkflow_TimeoutThenRetry(t *testing.T) {
@@ -671,8 +666,8 @@ func TestWorkflow_TimeoutThenRetry(t *testing.T) {
 	var attempts atomic.Int32
 
 	// 拦截器链：先重试（外层），再超时（内层）
-	retry := node.NewRetryInterceptor(2, 10*time.Millisecond)
-	timeout := node.NewTimeoutInterceptor(50 * time.Millisecond)
+	retry := node.NewRetryAspect(2, 10*time.Millisecond)
+	timeout := node.NewTimeoutAspect(50 * time.Millisecond)
 	wf.AddAspect(retry)
 	wf.AddAspect(timeout)
 
@@ -710,8 +705,8 @@ func TestWorkflow_AllInterceptorsCombined(t *testing.T) {
 	}
 	var execCount atomic.Int32
 
-	errorSwallow := node.NewErrorSwallowInterceptor(
-		func(_ *flow.FlowContext, _ node.Node, err error) (map[string]any, error) {
+	errorSwallow := node.NewErrorSwallowAspect(
+		func(_ *node.AspectContext, _ node.Node, err error) (map[string]any, error) {
 			return map[string]any{"result": "final_fallback"}, nil
 		})
 
@@ -721,10 +716,10 @@ func TestWorkflow_AllInterceptorsCombined(t *testing.T) {
 			return nil, errors.New("always fail")
 		})
 
-	n.AddAspect(errorSwallow)                                      // 最外
-	n.AddAspect(node.NewCircuitBreakerInterceptor(3, time.Second)) // 次外
-	n.AddAspect(node.NewRetryInterceptor(2, 10*time.Millisecond))  // 内
-	n.AddAspect(node.NewRecoveryInterceptor(nil))                  // 最内
+	n.AddAspect(errorSwallow)                                 // 最外
+	n.AddAspect(node.NewCircuitBreakerAspect(3, time.Second)) // 次外
+	n.AddAspect(node.NewRetryAspect(2, 10*time.Millisecond))  // 内
+	n.AddAspect(node.NewRecoveryAspect(nil))                  // 最内
 
 	wf.AddNode(n)
 
@@ -775,7 +770,7 @@ func TestWorkflow_DoubleRunRejected(t *testing.T) {
 
 	// 第二次 Run 应该被拒绝
 	runErr := wf.Run(nil)
-	if runErr != flow.ErrWorkflowRunning {
+	if runErr != ErrWorkflowRunning {
 		t.Fatalf("expected ErrWorkflowRunning, got %v", runErr)
 	}
 
@@ -791,7 +786,7 @@ func TestWorkflow_CloseRejectsAddNode(t *testing.T) {
 	wf.Close()
 
 	n := node.NewNode("late", nil, nil, nil)
-	if err := wf.AddNode(n); err != flow.ErrWorkflowClosed {
+	if err := wf.AddNode(n); err != ErrWorkflowClosed {
 		t.Fatalf("expected ErrWorkflowClosed, got %v", err)
 	}
 }
@@ -805,7 +800,7 @@ func TestWorkflow_CloseRejectsRun(t *testing.T) {
 	wf.Close()
 
 	runErr := wf.Run(nil)
-	if runErr != flow.ErrWorkflowClosed {
+	if runErr != ErrWorkflowClosed {
 		t.Fatalf("expected ErrWorkflowClosed, got %v", runErr)
 	}
 }
@@ -931,18 +926,16 @@ func TestWorkflow_FullIntegration(t *testing.T) {
 	}
 
 	// 全局切面：记录每个节点的生命周期
-	wf.AddAspect(&node.AroundAspect{
-		BeforeFn: func(ctx *flow.FlowContext, n node.Node) {
-			logEvent("before:" + n.ID())
-		},
-		AfterFn: func(ctx *flow.FlowContext, n node.Node, err error) {
-			if err != nil {
-				logEvent("after_error:" + n.ID())
-			} else {
-				logEvent("after_ok:" + n.ID())
-			}
-		},
-	})
+	wf.AddAspect(node.AroundFunc(func(ctx *node.AspectContext, n node.Node, next func() (map[string]any, error)) (map[string]any, error) {
+		logEvent("before:" + n.ID())
+		result, err := next()
+		if err != nil {
+			logEvent("after_error:" + n.ID())
+		} else {
+			logEvent("after_ok:" + n.ID())
+		}
+		return result, err
+	}))
 
 	// 节点 1：产生初始数据
 	source := node.NewNode("source", nil, []string{"raw_data"}, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
