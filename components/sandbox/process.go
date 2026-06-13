@@ -27,6 +27,9 @@ func NewProcessSandbox(config ProcessConfig) *ProcessSandbox {
 	if config.AllowedLangs == nil {
 		config.AllowedLangs = DefaultLangs()
 	}
+	if config.EnvMode == "" {
+		config.EnvMode = EnvModeBlacklist
+	}
 	return &ProcessSandbox{config: config}
 }
 
@@ -58,11 +61,29 @@ func (s *ProcessSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecRes
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	workDir, err := os.MkdirTemp("", "pulse-sandbox-*")
-	if err != nil {
-		return nil, fmt.Errorf("sandbox: 创建工作目录: %w", err)
+	// 使用指定工作目录或创建临时目录
+	var workDir string
+	var needCleanup bool
+	if req.WorkDir != "" {
+		absDir, err := filepath.Abs(req.WorkDir)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox: 解析工作目录: %w", err)
+		}
+		if err := os.MkdirAll(absDir, 0755); err != nil {
+			return nil, fmt.Errorf("sandbox: 创建工作目录: %w", err)
+		}
+		workDir = absDir
+	} else {
+		var err error
+		workDir, err = os.MkdirTemp("", "pulse-sandbox-*")
+		if err != nil {
+			return nil, fmt.Errorf("sandbox: 创建工作目录: %w", err)
+		}
+		needCleanup = true
 	}
-	defer os.RemoveAll(workDir)
+	if needCleanup {
+		defer os.RemoveAll(workDir)
+	}
 
 	for name, content := range lang.InitFiles {
 		if err := os.WriteFile(filepath.Join(workDir, name), []byte(content), 0644); err != nil {
@@ -72,6 +93,12 @@ func (s *ProcessSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecRes
 
 	for _, f := range req.Files {
 		fpath := filepath.Join(workDir, filepath.FromSlash(f.Path))
+		// 路径安全校验：确保文件在工作目录内
+		absPath, _ := filepath.Abs(fpath)
+		absWorkDir, _ := filepath.Abs(workDir)
+		if !strings.HasPrefix(absPath, absWorkDir+string(os.PathSeparator)) && absPath != absWorkDir {
+			return nil, fmt.Errorf("sandbox: 文件路径 %q 超出工作目录范围", f.Path)
+		}
 		if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
 			return nil, fmt.Errorf("sandbox: 创建文件目录: %w", err)
 		}
@@ -98,17 +125,8 @@ func (s *ProcessSandbox) Execute(ctx context.Context, req ExecRequest) (*ExecRes
 	cmd := exec.CommandContext(ctx, lang.Command, args...)
 	cmd.Dir = workDir
 
-	cmd.Env = os.Environ()
-
-	// 先注入预置环境变量（token 等敏感信息）
-	for k, v := range s.config.PreloadEnv {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-
-	// 再注入请求级环境变量（请求级可覆盖预置）
-	for k, v := range req.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	// 安全环境变量：根据 EnvMode 过滤
+	cmd.Env = s.buildSafeEnv(req.Env)
 
 	// ====== 跨平台进程管理 ======
 	setupProcess(cmd)
@@ -177,6 +195,97 @@ func (s *ProcessSandbox) AddLang(name string, config LangConfig) {
 // Close 关闭沙箱
 func (s *ProcessSandbox) Close() error {
 	return nil
+}
+
+// ============================================================================
+// 环境变量安全处理
+// ============================================================================
+
+// defaultBlockedPrefixes 默认黑名单：已知敏感环境变量前缀
+var defaultBlockedPrefixes = []string{
+	"API_KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL",
+	"AWS_SECRET", "AWS_ACCESS_KEY", "AZURE_", "GOOGLE_",
+	"DATABASE_URL", "DB_", "REDIS_", "MONGO_",
+	"PRIVATE_KEY", "SSH_", "GPG_",
+}
+
+// buildSafeEnv 根据 EnvMode 构建环境变量列表
+// PreloadEnv 和 request Env 始终注入（不受 mode 影响）
+func (s *ProcessSandbox) buildSafeEnv(request map[string]string) []string {
+	preload := s.config.PreloadEnv
+
+	switch s.config.EnvMode {
+	case EnvModePassthrough:
+		// 透传模式：继承宿主全部环境变量
+		env := os.Environ()
+		for k, v := range preload {
+			env = append(env, k+"="+v)
+		}
+		for k, v := range request {
+			env = append(env, k+"="+v)
+		}
+		return env
+
+	case EnvModeWhitelist:
+		// 白名单模式：只保留 EnvAllowList 中的变量
+		allowed := make(map[string]bool, len(s.config.EnvAllowList))
+		for _, k := range s.config.EnvAllowList {
+			allowed[strings.ToUpper(k)] = true
+		}
+
+		env := make([]string, 0, len(allowed)+len(preload)+len(request))
+		for _, entry := range os.Environ() {
+			idx := strings.IndexByte(entry, '=')
+			if idx < 0 {
+				continue
+			}
+			key := strings.ToUpper(entry[:idx])
+			if allowed[key] {
+				env = append(env, entry)
+			}
+		}
+		for k, v := range preload {
+			env = append(env, k+"="+v)
+		}
+		for k, v := range request {
+			env = append(env, k+"="+v)
+		}
+		return env
+
+	default:
+		// 黑名单模式（默认）：过滤敏感变量，其余放行
+		// 合并默认黑名单 + 用户自定义黑名单
+		blocked := append([]string{}, defaultBlockedPrefixes...)
+		blocked = append(blocked, s.config.EnvBlockList...)
+
+		env := make([]string, 0, 32)
+		for _, entry := range os.Environ() {
+			idx := strings.IndexByte(entry, '=')
+			if idx < 0 {
+				continue
+			}
+			key := entry[:idx]
+			upperKey := strings.ToUpper(key)
+
+			isBlocked := false
+			for _, prefix := range blocked {
+				if strings.HasPrefix(upperKey, strings.ToUpper(prefix)) {
+					isBlocked = true
+					break
+				}
+			}
+			if !isBlocked {
+				env = append(env, entry)
+			}
+		}
+		for k, v := range preload {
+			env = append(env, k+"="+v)
+		}
+		for k, v := range request {
+			env = append(env, k+"="+v)
+		}
+		return env
+	}
 }
 
 // ============================================================================

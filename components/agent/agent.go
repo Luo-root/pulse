@@ -371,6 +371,8 @@ func (ag *Agent) AddMessages(ctx context.Context, msgs []*schema.Message) error 
 }
 
 func (ag *Agent) AddSystemMessage(content string) {
+	ag.mu.Lock()
+	defer ag.mu.Unlock()
 	ag.memoryController.SystemPrompt = append(ag.memoryController.SystemPrompt, schema.SystemMessage(content))
 }
 
@@ -383,6 +385,8 @@ func (ag *Agent) GetHistory(ctx context.Context) ([]*schema.Message, error) {
 }
 
 func (ag *Agent) GetRawMessages() []*schema.Message {
+	ag.mu.Lock()
+	defer ag.mu.Unlock()
 	msgs := ag.memoryController.ShortMemory.GetContextMessages(ag.sessionID)
 	result := make([]*schema.Message, len(msgs))
 	for i, m := range msgs {
@@ -397,6 +401,8 @@ func (ag *Agent) GetUsageTracker() *UsageTracker {
 }
 
 func (ag *Agent) ChangeModel(model chatmodel.BaseModel) {
+	ag.mu.Lock()
+	defer ag.mu.Unlock()
 	ag.model = model
 }
 

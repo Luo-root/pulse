@@ -1,6 +1,9 @@
 package flow
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 // SafeMap 泛型并发安全 Map
 // K: 键类型（必须可比较）
@@ -40,7 +43,7 @@ func (s *SafeMap[K, V]) GetOrSet(key K, createFn func() V) V {
 func (s *SafeMap[K, V]) MustGet(key K) V {
 	val, ok := s.m.Load(key)
 	if !ok {
-		panic("SafeMap: key not found: " + any(key).(string))
+		panic(fmt.Sprintf("SafeMap: key not found: %v", key))
 	}
 	return val.(V)
 }

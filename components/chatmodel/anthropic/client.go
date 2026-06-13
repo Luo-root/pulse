@@ -207,6 +207,7 @@ func toAPIMessages(messages []*schema.Message) (string, []APIMessage) {
 			resultBlock := ContentBlock{
 				Type:      "tool_result",
 				ToolUseID: msg.ToolCallID,
+				IsError:   msg.IsError,
 			}
 
 			// 多模态工具结果

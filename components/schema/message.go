@@ -151,6 +151,9 @@ type Message struct {
 	// tool 消息专用：关联到哪个 ToolCall
 	ToolCallID string `json:"tool_call_id,omitempty"`
 
+	// tool 消息专用：标记工具执行是否出错（Anthropic API 原生支持 is_error）
+	IsError bool `json:"is_error,omitempty"`
+
 	Usage *Usage `json:"-"`
 }
 
@@ -255,6 +258,7 @@ func (m *Message) Clone() Message {
 		Name:             m.Name,
 		Partial:          m.Partial,
 		ToolCallID:       m.ToolCallID,
+		IsError:          m.IsError,
 	}
 
 	if m.ToolCalls != nil {
@@ -368,6 +372,7 @@ func ToolResultsMessage(results []ToolResult) []*Message {
 		msg := &Message{
 			Role:       ToolRole,
 			ToolCallID: r.CallID,
+			IsError:    r.IsError,
 		}
 
 		if len(r.ContentParts) > 0 {
@@ -609,6 +614,10 @@ func FormatMessages(messages []*Message) string {
 
 		if msg.ToolCallID != "" {
 			builder.WriteString(fmt.Sprintf("🔗 工具调用ID: %s\n", msg.ToolCallID))
+		}
+
+		if msg.IsError {
+			builder.WriteString("❌ 工具执行出错\n")
 		}
 
 		if msg.Usage != nil {

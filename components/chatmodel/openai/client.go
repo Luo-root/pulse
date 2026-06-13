@@ -43,10 +43,10 @@ type RequestBody struct {
 
 // Client OpenAI 兼容 HTTP 客户端
 type Client struct {
-	cli         *http.Client
-	baseURL     string
-	apiKey      string
-	requestBody *RequestBody
+	cli     *http.Client
+	baseURL string
+	apiKey  string
+	config  *ChatModelConfig
 }
 
 // NewClient 创建 OpenAI 兼容客户端
@@ -62,26 +62,34 @@ func NewClient(config *ChatModelConfig) *Client {
 		cli:     cli,
 		baseURL: baseURL,
 		apiKey:  config.APIKey,
-		requestBody: &RequestBody{
-			Model:               config.Model,
-			MaxCompletionTokens: config.MaxCompletionTokens,
-			ResponseFormat:      config.ResponseFormat,
-			Tools:               WrapTools(config.Tools),
-			PromptCacheKey:      config.PromptCacheKey,
-			SafetyIdentifier:    config.SafetyIdentifier,
-			Thinking:            config.Thinking,
-			Temperature:         config.Temperature,
-			TopP:                config.TopP,
-			N:                   config.N,
-			PresencePenalty:     config.PresencePenalty,
-			FrequencyPenalty:    config.FrequencyPenalty,
-		},
+		config:  config,
+	}
+}
+
+// buildRequestBody 根据配置和消息构建请求体（每次调用独立，无竞争）
+func (c *Client) buildRequestBody(messages []APIMessage, stream bool) *RequestBody {
+	return &RequestBody{
+		Model:               c.config.Model,
+		Messages:            messages,
+		MaxCompletionTokens: c.config.MaxCompletionTokens,
+		ResponseFormat:      c.config.ResponseFormat,
+		Stream:              stream,
+		StreamOptions:       &StreamOptions{IncludeUsage: true},
+		Tools:               WrapTools(c.config.Tools),
+		PromptCacheKey:      c.config.PromptCacheKey,
+		SafetyIdentifier:    c.config.SafetyIdentifier,
+		Thinking:            c.config.Thinking,
+		Temperature:         c.config.Temperature,
+		TopP:                c.config.TopP,
+		N:                   c.config.N,
+		PresencePenalty:     c.config.PresencePenalty,
+		FrequencyPenalty:    c.config.FrequencyPenalty,
 	}
 }
 
 // genRequest 生成 HTTP 请求
-func (c *Client) genRequest() (*http.Request, error) {
-	jsonData, err := json.Marshal(c.requestBody)
+func (c *Client) genRequest(body *RequestBody) (*http.Request, error) {
+	jsonData, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
@@ -96,10 +104,9 @@ func (c *Client) genRequest() (*http.Request, error) {
 
 // Generate 非流式生成
 func (c *Client) Generate(ctx context.Context, in []*schema.Message) (*schema.Message, error) {
-	c.requestBody.Messages = toAPIMessages(in)
-	c.requestBody.Stream = false
+	body := c.buildRequestBody(toAPIMessages(in), false)
 
-	req, err := c.genRequest()
+	req, err := c.genRequest(body)
 	if err != nil {
 		return nil, err
 	}
@@ -116,18 +123,18 @@ func (c *Client) Generate(ctx context.Context, in []*schema.Message) (*schema.Me
 		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
 	var modelResp ChatModelResponse
-	if err := json.Unmarshal(body, &modelResp); err != nil {
+	if err := json.Unmarshal(respBody, &modelResp); err != nil {
 		return nil, err
 	}
 
 	if len(modelResp.Choices) == 0 {
-		return nil, fmt.Errorf("empty choices in response, body: %s", string(body))
+		return nil, fmt.Errorf("empty choices in response, body: %s", string(respBody))
 	}
 
 	msg := modelResp.Choices[0].Message
@@ -137,14 +144,9 @@ func (c *Client) Generate(ctx context.Context, in []*schema.Message) (*schema.Me
 
 // Stream 流式生成
 func (c *Client) Stream(ctx context.Context, in []*schema.Message) (*schema.StreamReader, error) {
-	c.requestBody.Messages = toAPIMessages(in)
-	c.requestBody.Stream = true
+	body := c.buildRequestBody(toAPIMessages(in), true)
 
-	if c.requestBody.StreamOptions == nil {
-		c.requestBody.StreamOptions = &StreamOptions{IncludeUsage: true}
-	}
-
-	req, err := c.genRequest()
+	req, err := c.genRequest(body)
 	if err != nil {
 		return nil, err
 	}
