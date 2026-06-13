@@ -457,6 +457,5 @@ func defaultMemoryController(model chatmodel.BaseModel) *memory.Controller {
 				ReserveTokens:      8000,
 			}, model, nil),
 		),
-		nil,
 	)
 }
