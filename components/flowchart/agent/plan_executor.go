@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Luo-root/pulse/components/chatmodel"
@@ -24,6 +27,7 @@ type PlanExecutor struct {
 	maxReplans       int
 	maxRoundsPerStep int
 	maxPlanRounds    int
+	persistPath      string // 持久化文件路径（空 = 不持久化）
 	systemPrompt     string
 	onStep           func(step *ExecStep)
 	onPlan           func(steps []PlanStep)
@@ -115,6 +119,12 @@ func WithPlanCallback(fn func(steps []PlanStep)) PlanOption {
 	}
 }
 
+func WithPlanPersistPath(path string) PlanOption {
+	return func(pe *PlanExecutor) {
+		pe.persistPath = path
+	}
+}
+
 // NewPlanExecutor 创建 Plan-and-Execute 引擎
 func NewPlanExecutor(model chatmodel.BaseModel, registry *tools.ToolRegistry, opts ...PlanOption) *PlanExecutor {
 	pe := &PlanExecutor{
@@ -135,35 +145,71 @@ func NewPlanExecutor(model chatmodel.BaseModel, registry *tools.ToolRegistry, op
 func (pe *PlanExecutor) Run(ctx context.Context, goal string) (*PlanResult, error) {
 	result := &PlanResult{}
 
-	// Phase 1: 规划
-	planSteps, err := pe.plan(ctx, goal)
-	if err != nil {
-		return nil, fmt.Errorf("planning failed: %w", err)
-	}
-	result.PlanSteps = planSteps
-
-	if pe.onPlan != nil {
-		pe.onPlan(planSteps)
-	}
-
-	// Phase 2: 验证
-	if err := validateSteps(planSteps); err != nil {
-		return nil, fmt.Errorf("plan validation failed: %w", err)
-	}
-
-	// Phase 3: 执行 + Phase 4: 重规划
+	// 尝试加载持久化状态（断点续跑）
+	var planSteps []PlanStep
 	stepResults := make(map[string]*ExecStep)
-	for _, ps := range planSteps {
-		stepResults[ps.ID] = &ExecStep{PlanStep: ps, Status: StepPending}
+
+	if pe.persistPath != "" {
+		if ps, sr, ok := pe.loadPersist(); ok {
+			planSteps = ps
+			stepResults = sr
+			result.PlanSteps = planSteps
+
+			// 统计已完成的步骤
+			for _, es := range stepResults {
+				if es.Status == StepSuccess && es.AgentResult != nil {
+					result.Rounds += es.AgentResult.Rounds
+					result.Usage.PromptTokens += es.AgentResult.Usage.PromptTokens
+					result.Usage.CompletionTokens += es.AgentResult.Usage.CompletionTokens
+					result.Usage.TotalTokens += es.AgentResult.Usage.TotalTokens
+				}
+			}
+
+			if pe.onPlan != nil {
+				pe.onPlan(planSteps)
+			}
+			goto execute
+		}
 	}
+
+	// Phase 1: 规划
+	{
+		var err error
+		planSteps, err = pe.plan(ctx, goal)
+		if err != nil {
+			return nil, fmt.Errorf("planning failed: %w", err)
+		}
+		result.PlanSteps = planSteps
+
+		if pe.onPlan != nil {
+			pe.onPlan(planSteps)
+		}
+
+		// Phase 2: 验证
+		if err := validateSteps(planSteps); err != nil {
+			return nil, fmt.Errorf("plan validation failed: %w", err)
+		}
+
+		for _, ps := range planSteps {
+			stepResults[ps.ID] = &ExecStep{PlanStep: ps, Status: StepPending}
+		}
+
+		pe.persist(planSteps, stepResults)
+	}
+
+execute:
+	// Phase 3: 执行 + Phase 4: 重规划
 
 	for replanCount := 0; replanCount <= pe.maxReplans; replanCount++ {
 		result.Replans = replanCount
 
 		// 按依赖顺序执行
 		failedSteps := pe.executeSteps(ctx, goal, planSteps, stepResults, result)
+		pe.persist(planSteps, stepResults)
+
 		if len(failedSteps) == 0 {
-			break // 全部成功
+			pe.clearPersist() // 全部成功，清除持久化文件
+			break
 		}
 
 		if replanCount >= pe.maxReplans {
@@ -247,21 +293,20 @@ func (pe *PlanExecutor) plan(ctx context.Context, goal string) ([]PlanStep, erro
 	return parsePlanSteps(agentResult.Answer)
 }
 
-// executeSteps 按依赖顺序执行所有步骤
+// executeSteps 按依赖顺序并行执行所有步骤
+// 同一批次中无依赖关系的步骤并行执行
 func (pe *PlanExecutor) executeSteps(ctx context.Context, goal string, planSteps []PlanStep, stepResults map[string]*ExecStep, result *PlanResult) []string {
-	executed := make(map[string]bool)
 	var failedSteps []string
 
 	for {
-		// 找到所有可执行的步骤（依赖已满足）
-		ready := false
+		// 找到本批次所有可执行的步骤（依赖已满足）
+		var ready []*ExecStep
 		for _, ps := range planSteps {
 			es := stepResults[ps.ID]
 			if es.Status != StepPending {
 				continue
 			}
 
-			// 检查依赖是否全部完成
 			depsReady := true
 			for _, dep := range ps.DependsOn {
 				if depResult, ok := stepResults[dep]; !ok || depResult.Status != StepSuccess {
@@ -269,44 +314,53 @@ func (pe *PlanExecutor) executeSteps(ctx context.Context, goal string, planSteps
 					break
 				}
 			}
-			if !depsReady {
-				continue
-			}
-
-			ready = true
-			es.Status = StepRunning
-
-			// 构建上下文：目标 + 前序步骤结果
-			stepContext := pe.buildStepContext(goal, ps, stepResults)
-
-			// 用 ReAct 循环执行单步
-			loop := NewAgentLoop(pe.model, pe.registry,
-				WithMaxRounds(pe.maxRoundsPerStep),
-				WithSystemPrompt(pe.systemPrompt),
-			)
-
-			agentResult, err := loop.Run(ctx, stepContext)
-			es.Duration = time.Duration(0) // 已在 AgentResult 中记录
-
-			if err != nil {
-				es.Status = StepFailed
-				es.Error = err.Error()
-				failedSteps = append(failedSteps, ps.ID)
-			} else {
-				es.Status = StepSuccess
-				es.AgentResult = agentResult
-			}
-
-			executed[ps.ID] = true
-
-			if pe.onStep != nil {
-				pe.onStep(es)
+			if depsReady {
+				es.Status = StepRunning
+				ready = append(ready, es)
 			}
 		}
 
-		if !ready {
-			break // 没有更多可执行的步骤
+		if len(ready) == 0 {
+			break
 		}
+
+		// 并行执行本批次所有步骤
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+
+		for _, es := range ready {
+			es := es
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				stepContext := pe.buildStepContext(goal, es.PlanStep, stepResults)
+
+				loop := NewAgentLoop(pe.model, pe.registry,
+					WithMaxRounds(pe.maxRoundsPerStep),
+					WithSystemPrompt(pe.systemPrompt),
+				)
+
+				agentResult, err := loop.Run(ctx, stepContext)
+
+				mu.Lock()
+				if err != nil {
+					es.Status = StepFailed
+					es.Error = err.Error()
+					failedSteps = append(failedSteps, es.PlanStep.ID)
+				} else {
+					es.Status = StepSuccess
+					es.AgentResult = agentResult
+				}
+				mu.Unlock()
+
+				if pe.onStep != nil {
+					pe.onStep(es)
+				}
+			}()
+		}
+
+		wg.Wait()
 	}
 
 	return failedSteps
@@ -388,6 +442,82 @@ func (pe *PlanExecutor) getToolList() string {
 		parts = append(parts, fmt.Sprintf("- %s: %s", t.Name, t.Description))
 	}
 	return strings.Join(parts, "\n")
+}
+
+// ============================================================================
+// 持久化
+// ============================================================================
+
+type persistData struct {
+	PlanSteps    []PlanStep
+	StepStatuses map[string]StepStatus
+	StepErrors   map[string]string
+	// 注意：AgentResult 不持久化（含不可序列化的字段）
+}
+
+func (pe *PlanExecutor) persist(planSteps []PlanStep, stepResults map[string]*ExecStep) {
+	if pe.persistPath == "" {
+		return
+	}
+
+	data := persistData{
+		PlanSteps:    planSteps,
+		StepStatuses: make(map[string]StepStatus),
+		StepErrors:   make(map[string]string),
+	}
+
+	for id, es := range stepResults {
+		data.StepStatuses[id] = es.Status
+		if es.Error != "" {
+			data.StepErrors[id] = es.Error
+		}
+	}
+
+	f, err := os.Create(pe.persistPath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	gob.NewEncoder(f).Encode(data)
+}
+
+func (pe *PlanExecutor) loadPersist() ([]PlanStep, map[string]*ExecStep, bool) {
+	if pe.persistPath == "" {
+		return nil, nil, false
+	}
+
+	f, err := os.Open(pe.persistPath)
+	if err != nil {
+		return nil, nil, false
+	}
+	defer f.Close()
+
+	var data persistData
+	if err := gob.NewDecoder(f).Decode(&data); err != nil {
+		return nil, nil, false
+	}
+
+	stepResults := make(map[string]*ExecStep)
+	for _, ps := range data.PlanSteps {
+		status := data.StepStatuses[ps.ID]
+		if status == "" {
+			status = StepPending
+		}
+		stepResults[ps.ID] = &ExecStep{
+			PlanStep: ps,
+			Status:   status,
+			Error:    data.StepErrors[ps.ID],
+		}
+	}
+
+	return data.PlanSteps, stepResults, true
+}
+
+func (pe *PlanExecutor) clearPersist() {
+	if pe.persistPath != "" {
+		os.Remove(pe.persistPath)
+	}
 }
 
 // ============================================================================

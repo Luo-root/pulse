@@ -573,14 +573,14 @@ func TestMemory_Controller_Close_NilStore(t *testing.T) {
 // 5. Store 测试
 // ============================================================================
 
-func newTestGormStore(t *testing.T) *gorm.Store {
+func newTestGormStore(t *testing.T) *gorm.GORMStore {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	config := gorm.DefaultConfig()
 	config.DBPath = dbPath
 	config.DisableVectorSearch = true // 先测非向量场景
 
-	store, err := gorm.NewStore(config, nil)
+	store, err := gorm.NewGORMStore(config, nil)
 	if err != nil {
 		t.Fatalf("NewGormStore: %v", err)
 	}
@@ -588,7 +588,42 @@ func newTestGormStore(t *testing.T) *gorm.Store {
 	return store
 }
 
-func newTestGormStoreWithVector(t *testing.T) (*gorm.Store, *mockEmbedder) {
+type testCompositeStore struct {
+	store     *gorm.GORMStore
+	retriever *gorm.HNSWRetriever
+	emb       *mockEmbedder
+}
+
+func (c *testCompositeStore) Save(ctx context.Context, sessionID string, msgs []*schema.Message) error {
+	return c.store.Save(ctx, sessionID, msgs)
+}
+
+func (c *testCompositeStore) Recall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
+	return c.retriever.Recall(ctx, sessionID, query, topK)
+}
+
+func (c *testCompositeStore) GetSession(ctx context.Context, sessionID string) ([]*schema.Message, error) {
+	return c.store.GetSession(ctx, sessionID)
+}
+
+func (c *testCompositeStore) ClearSession(ctx context.Context, sessionID string) error {
+	return c.store.ClearSession(ctx, sessionID)
+}
+
+func (c *testCompositeStore) IndexReady() bool {
+	return c.retriever.IndexReady()
+}
+
+func (c *testCompositeStore) Close() error {
+	err1 := c.retriever.Close()
+	err2 := c.store.Close()
+	if err1 != nil {
+		return err1
+	}
+	return err2
+}
+
+func newTestGormStoreWithVector(t *testing.T) (*testCompositeStore, *mockEmbedder) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test_vec.db")
 	config := gorm.DefaultConfig()
@@ -598,12 +633,29 @@ func newTestGormStoreWithVector(t *testing.T) (*gorm.Store, *mockEmbedder) {
 	config.RecallMode = gorm.RecallModeAuto // 改回 Auto：优先向量，失败回退混合
 
 	emb := newMockEmbedder(64)
-	store, err := gorm.NewStore(config, emb.Embedder())
+	store, err := gorm.NewGORMStore(config, emb.Embedder())
 	if err != nil {
 		t.Fatalf("NewGormStore with vector: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
-	return store, emb
+	retriever := gorm.NewHNSWRetriever(store.GetDB(), emb.Embedder(), config)
+	t.Cleanup(func() { retriever.Close(); store.Close() })
+	return &testCompositeStore{store: store, retriever: retriever, emb: emb}, emb
+}
+
+func newTestLongTermStore(t *testing.T) *testCompositeStore {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "test_lts.db")
+	config := gorm.DefaultConfig()
+	config.DBPath = dbPath
+	config.DisableVectorSearch = true
+
+	store, err := gorm.NewGORMStore(config, nil)
+	if err != nil {
+		t.Fatalf("NewGormStore: %v", err)
+	}
+	retriever := gorm.NewHNSWRetriever(store.GetDB(), nil, config)
+	t.Cleanup(func() { retriever.Close(); store.Close() })
+	return &testCompositeStore{store: store, retriever: retriever}
 }
 
 func TestMemory_GormStore_SaveAndRetrieve(t *testing.T) {
@@ -769,7 +821,7 @@ func TestMemory_GormStore_ReasoningContent(t *testing.T) {
 // ============================================================================
 
 func TestMemory_GormStore_HybridRecall(t *testing.T) {
-	store := newTestGormStore(t)
+	store := newTestLongTermStore(t)
 	ctx := context.Background()
 	sessionID := "hybrid-test"
 
@@ -806,7 +858,7 @@ func TestMemory_GormStore_HybridRecall(t *testing.T) {
 }
 
 func TestMemory_GormStore_RecallTopK(t *testing.T) {
-	store := newTestGormStore(t)
+	store := newTestLongTermStore(t)
 	ctx := context.Background()
 	sessionID := "topk-test"
 
@@ -821,7 +873,7 @@ func TestMemory_GormStore_RecallTopK(t *testing.T) {
 }
 
 func TestMemory_GormStore_RecallEmpty(t *testing.T) {
-	store := newTestGormStore(t)
+	store := newTestLongTermStore(t)
 	ctx := context.Background()
 
 	results, err := store.Recall(ctx, "nonexistent", "query", 3)
@@ -849,6 +901,9 @@ func TestMemory_GormStore_VectorRecall(t *testing.T) {
 	for _, topic := range topics {
 		store.Save(ctx, sessionID, msgs(userMsg(topic)))
 	}
+
+	// 重建索引以包含新保存的消息
+	store.retriever.RebuildIndex()
 
 	// 等待向量索引就绪
 	deadline := time.Now().Add(3 * time.Second)
@@ -1074,7 +1129,7 @@ func TestMemory_Integration_FullFlow(t *testing.T) {
 	}, nil, nil)
 	sm := window.NewSimpleWindowMemory(wm)
 
-	store := newTestGormStore(t)
+	store := newTestLongTermStore(t)
 
 	c := memory.NewController(
 		msgs(
@@ -1219,7 +1274,7 @@ func TestMemory_Controller_ConcurrentAccess(t *testing.T) {
 // extractKeywords 不在 memory 包中导出，通过 Recall 间接测试
 // ==== 替换 TestMemory_Keywords_ThroughRecall ====
 func TestMemory_Keywords_ThroughRecall(t *testing.T) {
-	store := newTestGormStore(t)
+	store := newTestLongTermStore(t)
 	ctx := context.Background()
 	sessionID := "kw-test"
 
@@ -1381,13 +1436,16 @@ func TestMemory_GormStore_IndexReady_Disabled(t *testing.T) {
 	config.DBPath = dbPath
 	config.DisableVectorSearch = true
 
-	store, err := gorm.NewStore(config, nil)
+	store, err := gorm.NewGORMStore(config, nil)
 	if err != nil {
 		t.Fatalf("NewGormStore: %v", err)
 	}
 	defer store.Close()
 
-	if !store.IndexReady() {
+	retriever := gorm.NewHNSWRetriever(store.GetDB(), nil, config)
+	defer retriever.Close()
+
+	if !retriever.IndexReady() {
 		t.Error("禁用向量搜索时 IndexReady 应立即为 true")
 	}
 }
@@ -1397,7 +1455,7 @@ func TestMemory_GormStore_IndexReady_Disabled(t *testing.T) {
 // ============================================================================
 
 // 编译期接口检查
-var _ memory.LongTermStore = (*gorm.Store)(nil)
+var _ memory.Store = (*gorm.GORMStore)(nil)
 var _ memory.ShortMemoryManager = (*window.SimpleWindowMemory)(nil)
 var _ memory.ShortMemoryManager = (*window.ShortMemory)(nil)
 var _ chatmodel.BaseModel = (*mockModel)(nil)

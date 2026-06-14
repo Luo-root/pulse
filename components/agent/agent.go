@@ -46,6 +46,22 @@ func WithMaxToolRounds(n int) Option {
 	}
 }
 
+func WithMaxRetries(n int) Option {
+	return func(a *Agent) {
+		if n >= 0 {
+			a.maxRetries = n
+		}
+	}
+}
+
+func WithRetryBackoffBase(d time.Duration) Option {
+	return func(a *Agent) {
+		if d > 0 {
+			a.retryBackoffBase = d
+		}
+	}
+}
+
 type Agent struct {
 	model            chatmodel.BaseModel
 	registry         *tools.ToolRegistry
@@ -53,14 +69,18 @@ type Agent struct {
 	sessionID        string
 	usageTracker     *UsageTracker
 	maxToolRounds    int
+	maxRetries       int           // API 重试次数，默认 3
+	retryBackoffBase time.Duration // 重试退避基数，默认 1s
 	mu               sync.Mutex
 }
 
 func NewAgent(model chatmodel.BaseModel, registry *tools.ToolRegistry, opts ...Option) *Agent {
 	ag := &Agent{
-		model:         model,
-		registry:      registry,
-		maxToolRounds: DefaultMaxToolRounds,
+		model:            model,
+		registry:         registry,
+		maxToolRounds:    DefaultMaxToolRounds,
+		maxRetries:       3,
+		retryBackoffBase: time.Second,
 	}
 	for _, opt := range opts {
 		opt(ag)
@@ -186,21 +206,20 @@ func retryableError(err error) bool {
 
 // generateWithRetry 带指数退避重试的 Generate
 func (ag *Agent) generateWithRetry(ctx context.Context, msgs []*schema.Message) (*schema.Message, error) {
-	const maxRetries = 3
 	var lastErr error
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt <= ag.maxRetries; attempt++ {
 		resp, err := ag.model.Generate(ctx, msgs)
 		if err == nil {
 			return resp, nil
 		}
 		lastErr = err
 
-		if !retryableError(err) || attempt == maxRetries {
+		if !retryableError(err) || attempt == ag.maxRetries {
 			return nil, err
 		}
 
-		backoff := time.Duration(math.Pow(2, float64(attempt))) * time.Second
+		backoff := time.Duration(math.Pow(2, float64(attempt))) * ag.retryBackoffBase
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -212,21 +231,20 @@ func (ag *Agent) generateWithRetry(ctx context.Context, msgs []*schema.Message) 
 
 // streamWithRetry 带指数退避重试的 Stream
 func (ag *Agent) streamWithRetry(ctx context.Context, msgs []*schema.Message) (*schema.StreamReader, error) {
-	const maxRetries = 3
 	var lastErr error
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt <= ag.maxRetries; attempt++ {
 		reader, err := ag.model.Stream(ctx, msgs)
 		if err == nil {
 			return reader, nil
 		}
 		lastErr = err
 
-		if !retryableError(err) || attempt == maxRetries {
+		if !retryableError(err) || attempt == ag.maxRetries {
 			return nil, err
 		}
 
-		backoff := time.Duration(math.Pow(2, float64(attempt))) * time.Second
+		backoff := time.Duration(math.Pow(2, float64(attempt))) * ag.retryBackoffBase
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()

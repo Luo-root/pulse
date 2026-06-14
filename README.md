@@ -80,6 +80,8 @@ ag := agent.NewAgent(model, registry,
     agent.WithSessionID("session-001"),
     agent.WithUsageTracker(tracker),
     agent.WithMaxToolRounds(5),
+    agent.WithMaxRetries(3),              // API 瞬态错误重试次数
+    agent.WithRetryBackoffBase(time.Second), // 指数退避基数
 )
 resp, err := ag.SendMessage(ctx, schema.UserMessage("你好"))
 ```
@@ -186,14 +188,90 @@ registered := tools.RegisterAll(registry)
 
 提供三层记忆架构：系统提示词（永久）、短期记忆（滑动窗口）、长期记忆（持久化 + 向量检索）。
 
-**核心类型**:
+**架构设计**:
 
-| 类型 | 说明 |
-|------|------|
-| `Controller` | 记忆控制器，支持 functional options 配置 |
-| `ShortMemoryManager` | 短期记忆接口 |
-| `LongTermStore` | 长期记忆存储接口 |
-| `OpenAIEmbedder` | OpenAI 兼容 Embedding 实现（支持 OpenAI、Ollama /v1/embeddings、vLLM 等） |
+长期记忆采用 **Store + Retriever 分离架构**，通过 `CompositeLongTermStore` 组合：
+
+```
+┌─────────────────────────────────────────────────────┐
+│              CompositeLongTermStore                  │
+│  ┌──────────┐    hooks    ┌──────────────┐          │
+│  │  Store    │ ──────────→│  Retriever    │          │
+│  │(存储层)    │  onSave    │(检索层)       │          │
+│  └──────────┘  onClear   └──────────────┘          │
+│       │                         │                   │
+│       └───── Indexer ───────────┘                   │
+│            (索引管理)                                │
+└─────────────────────────────────────────────────────┘
+```
+
+**Store 实现**（数据持久化）：
+
+| 实现 | 位置 | 说明 |
+|------|------|------|
+| `gorm.GORMStore` | `memory/gorm/` | SQLite 持久化，支持 embedding 生成 + 分块 |
+| `redis.Store` | `memory/redis/` | Redis Hash 存储 |
+| `milvus.Store` | `memory/milvus/` | Milvus collection 存储，支持认证（Username/Password/APIKey/TLS） |
+
+**Retriever 实现**（向量/关键词检索）：
+
+| 实现 | 位置 | 说明 |
+|------|------|------|
+| `gorm.HNSWRetriever` | `memory/gorm/` | 内存 HNSW 向量索引，4 种召回模式（Auto/Vector/Hybrid/Combined） |
+| `redis.Retriever` | `memory/redis/` | RediSearch 向量 + 关键词检索（需 Redis Stack） |
+| `milvus.Retriever` | `memory/milvus/` | Milvus 原生向量检索，支持认证 |
+
+**Embedder**（文本转向量）：
+
+| 实现 | 位置 | 说明 |
+|------|------|------|
+| `embedder.NewOpenAI` | `memory/embedder/` | OpenAI/vLLM/LocalAI 兼容 |
+| `embedder.NewOllama` | `memory/embedder/` | Ollama 原生 /api/embeddings |
+
+**组合示例**:
+
+```go
+// GORM + HNSW（本地开发，全内存向量索引）
+store, _ := gorm.NewGORMStore(gormCfg, embeddingFunc)
+retriever := gorm.NewHNSWRetriever(store.GetDB(), embeddingFunc, gormCfg)
+composite := memory.NewCompositeLongTermStore(store, retriever)
+composite.AttachIndexer(retriever)
+
+// Redis + RediSearch（分布式一体化）
+store, _ := redis.NewStore(redisCfg)
+retriever, _ := redis.NewRetrieverFromStore(store, retCfg, embeddingFunc)
+composite := memory.NewCompositeLongTermStore(store, retriever)
+
+// GORM + Milvus（SQLite 存储 + Milvus 检索）
+store, _ := gorm.NewGORMStore(gormCfg, embeddingFunc)
+retriever, _ := milvus.NewRetriever(milvusCfg, embeddingFunc)
+composite := memory.NewCompositeLongTermStore(store, retriever)
+
+// Milvus 一体化
+store, _ := milvus.NewStore(milvusCfg)
+retriever, _ := milvus.NewRetrieverFromStore(store, embeddingFunc)
+composite := memory.NewCompositeLongTermStore(store, retriever)
+
+controller := memory.NewController(systemPrompts, shortMemory,
+    memory.WithLongStore(composite),
+    memory.WithTopK(3),
+)
+```
+
+**Hook 通知机制**:
+
+Store 的 Save/Clear 操作自动触发 Hook，通知 Retriever 更新索引：
+
+```go
+composite.AddHook(func(event memory.StoreEvent) {
+    switch event.Type {
+    case memory.StoreEventSave:
+        // 新消息保存，更新向量索引
+    case memory.StoreEventClear:
+        // 会话清空，移除索引
+    }
+})
+```
 
 **短期记忆 - 窗口策略**:
 
@@ -201,23 +279,18 @@ registered := tools.RegisterAll(registry)
 - `window.CalibratedEstimator`: 基于模型实际返回的 prompt_tokens 动态校准估算比例
 - `window.Config.ReserveTokens`: 设置预留 Token 数，自动计算 `MaxHistoryTokens`
 
-**长期记忆 - GormStore**:
+**集成测试**:
 
-- 基于 SQLite + HNSW 向量索引
-- 4 种召回模式：Auto、Vector、Hybrid、Combined（默认，向量+关键词+时间衰减权重 0.5/0.3/0.2）
-- 长文本自动分块 + 自然边界断句
+```bash
+# 启动 Docker 容器
+docker compose -f components/memory/docker-compose.yml up -d
 
-```go
-store, _ := gorm.NewStore(&gorm.Config{
-    DBPath:     "./chat.db",
-    RecallMode: gorm.RecallModeCombined,
-}, memory.NewOpenAIEmbedder(&memory.OpenAIEmbedderConfig{
-    BaseURL: "https://api.openai.com/v1",
-    APIKey:  os.Getenv("OPENAI_API_KEY"),
-    Model:   "text-embedding-3-small",
-}).Embed)
+# 运行全部记忆测试（含集成测试）
+go test ./components/memory/... -tags integration -v
 
-controller := memory.NewController(systemPrompts, shortMemory, store)
+# 测试矩阵覆盖：
+# GORM+HNSW | GORM+RediSearch | Redis+RediSearch
+# GORM+Milvus | Milvus+Milvus | Redis+Milvus
 ```
 
 ---
@@ -240,15 +313,48 @@ controller := memory.NewController(systemPrompts, shortMemory, store)
 
 **位置**: `components/sandbox/`
 
-提供安全的代码执行环境，支持 Python、Node.js、Go、Shell 等语言。
+纯子进程执行器：临时目录隔离 + 超时 + 输出限制 + 环境变量过滤。语言配置由调用方决定。
 
-**特性**:
+**核心接口**:
 
-- 语言自动检测（有 Python 环境就能用 Python，有 Node 就能用 JS）
+```go
+type Sandbox interface {
+    Execute(ctx context.Context, req ExecRequest) (*ExecResult, error)
+    Close() error
+}
+```
+
+**ExecRequest**:
+
+| 字段 | 说明 |
+|------|------|
+| `Command` | 要执行的命令（如 `python3`、`node`） |
+| `Args` | 命令参数 |
+| `Timeout` | 超时（默认 30s） |
+| `Files` | 执行前注入的文件 |
+| `WorkDir` | 工作目录（空 = 临时目录） |
+| `Env` | 额外环境变量 |
+
+**语言配置示例**:
+
+```go
+// 调用方决定支持哪些语言
+langs := map[string]sandbox.LangDef{
+    "python": {Command: "python3", Ext: ".py"},
+    "node":   {Command: "node", Ext: ".js"},
+    "go":     {Command: "go", Args: []string{"run"}, Ext: ".go"},
+    "shell":  {Command: "sh", Args: []string{"-c"}},
+}
+
+sb := sandbox.NewProcessSandbox(sandbox.ProcessConfig{})
+sandbox.RegisterSandboxTools(registry, sb, langs)
+```
+
+**安全特性**:
+
 - 环境变量三种模式：黑名单（默认）/ 白名单 / 透传
-- `ExecRequest.WorkDir` 支持指定工作目录（空则使用临时目录）
 - 输入文件路径穿越校验
-- 超时控制（默认 30s）+ 输出截断（默认 1MB）
+- 超时控制 + 输出截断
 
 ---
 
@@ -378,8 +484,10 @@ go get github.com/Luo-root/pulse
 
 | 依赖 | 用途 |
 |------|------|
-| `gorm.io/gorm` + `github.com/glebarez/sqlite` | 长期记忆持久化 + 用户配置存储 |
+| `gorm.io/gorm` + `github.com/glebarez/sqlite` | GORM 长期记忆持久化 |
 | `github.com/coder/hnsw` | HNSW 向量索引 |
+| `github.com/redis/go-redis/v9` | Redis 存储 + RediSearch 检索 |
+| `github.com/milvus-io/milvus-sdk-go/v2` | Milvus 向量数据库 |
 | `github.com/panjf2000/ants/v2` | 工作流协程池 |
 | `github.com/google/uuid` | 消息 ID 生成 |
 | `gopkg.in/yaml.v3` | Skill YAML 解析 |
@@ -469,22 +577,24 @@ pulse/
     ├── memory/                       # 记忆管理
     │   ├── controller.go             # Controller + functional options
     │   ├── short_memory_manager.go   # 短期记忆接口
-    │   ├── long_term_store.go        # 长期记忆接口
-    │   ├── embedder.go               # Embedder 接口
-    │   ├── openai_embedder.go        # OpenAI 兼容 Embedding
+    │   ├── long_term_store.go        # Store + Retriever + Indexer + CompositeLongTermStore
+    │   ├── embedder/                 # Embedder 接口 + OpenAI/Ollama 实现
     │   ├── window/                   # 窗口管理器 + CalibratedEstimator
-    │   ├── gorm/                     # GORM + HNSW 长期记忆存储
+    │   ├── gorm/                     # GORMStore + HNSWRetriever
+    │   ├── redis/                    # RedisStore + RediSearchRetriever
+    │   ├── milvus/                   # MilvusStore + MilvusRetriever
     │   ├── memnetai/                 # MemNetAI 长期记忆
-    │   └── ollama/                   # Ollama Embedding
+    │   └── integration/              # 跨后端组合集成测试
     ├── mcp/                          # MCP 协议客户端
     │   ├── client.go                 # JSON-RPC 2.0 客户端
     │   ├── transport.go              # Stdio 传输层
     │   ├── manager.go                # 多服务器管理器
     │   └── config.go                 # 配置文件加载
     ├── sandbox/                      # 代码沙箱
-    │   ├── sandbox.go                # Sandbox 接口 + 配置
-    │   ├── process.go                # 子进程沙箱 + 环境变量过滤
-    │   └── tools.go                  # 沙箱工具注册
+    │   ├── sandbox.go                # Sandbox 接口 + ExecRequest + 配置
+    │   ├── tools.go                  # 沙箱工具注册 + 语言配置（LangDef）
+    │   ├── process_unix.go           # Unix 进程管理
+    │   └── process_windows.go        # Windows 进程管理
     ├── flowchart/                    # 工作流引擎
     │   ├── workflow.go               # Workflow 引擎（协程池 + 切面链）
     │   ├── error.go                  # 工作流级错误
@@ -570,23 +680,29 @@ fmt.Printf("共 %d 轮，消耗 %d tokens\n", result.Rounds, result.Usage.TotalT
 
 ### Plan-and-Execute 规划执行
 
-先让 LLM 拆解任务为步骤，再逐步执行：
+先让 LLM 拆解任务为步骤，再逐步执行（同批次无依赖的步骤并行执行）：
 
 ```go
 executor := flowagent.NewPlanExecutor(model, registry,
     flowagent.WithPlanMaxSteps(8),
     flowagent.WithPlanMaxReplans(2),
+    flowagent.WithPlanMaxPlanRounds(5),      // 规划阶段最大轮数
+    flowagent.WithPlanMaxRoundsPerStep(10),  // 每步执行最大轮数
+    flowagent.WithPlanPersistPath("./plan.gob"), // 断点持久化
     flowagent.WithPlanCallback(func(steps []flowagent.PlanStep) {
         for _, s := range steps {
             log.Printf("计划步骤: %s - %s", s.ID, s.Description)
         }
+    }),
+    flowagent.WithPlanStepCallback(func(step *flowagent.ExecStep) {
+        log.Printf("步骤 %s: %s", step.PlanStep.ID, step.Status)
     }),
 )
 
 result, _ := executor.Run(ctx, "分析销售数据并生成季度报告")
 ```
 
-自动处理：依赖排序 → 验证无环 → 按序执行 → 失败重规划。
+自动处理：依赖排序 → 验证无环 → 按批次并行执行 → 失败重规划 → 断点持久化（可选）。
 
 ### 工具返回多模态结果
 

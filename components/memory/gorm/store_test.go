@@ -3,6 +3,7 @@ package gorm
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -20,6 +21,47 @@ func mockEmbedding(ctx context.Context, text string) ([]float32, error) {
 	return vec, nil
 }
 
+// mockEmbedderBagOfChars 字符频率嵌入器（确定性，相同文本=相同向量）
+type mockEmbedderBagOfChars struct {
+	dim int
+}
+
+func (e *mockEmbedderBagOfChars) Embed(ctx context.Context, text string) ([]float32, error) {
+	vec := make([]float32, e.dim)
+	runes := []rune(text)
+	for _, r := range runes {
+		idx := int(uint32(r)) % e.dim
+		vec[idx] += 1.0
+	}
+	allZero := true
+	for _, v := range vec {
+		if v != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		vec[0] = 1.0
+	}
+	var normSq float64
+	for _, v := range vec {
+		normSq += float64(v) * float64(v)
+	}
+	if normSq > 0 {
+		norm := math.Sqrt(normSq)
+		for i := range vec {
+			vec[i] = float32(float64(vec[i]) / norm)
+		}
+	}
+	return vec, nil
+}
+
+func (e *mockEmbedderBagOfChars) Embedder() EmbeddingFunc {
+	return func(ctx context.Context, text string) ([]float32, error) {
+		return e.Embed(ctx, text)
+	}
+}
+
 func TestGormStoreBasic(t *testing.T) {
 	dbPath := "./test_gorm.db"
 	defer os.Remove(dbPath)
@@ -32,7 +74,7 @@ func TestGormStoreBasic(t *testing.T) {
 		DisableVectorSearch: true,
 	}
 
-	store, err := NewStore(config, nil)
+	store, err := NewGORMStore(config, nil)
 	if err != nil {
 		t.Fatalf("create store failed: %v", err)
 	}
@@ -59,15 +101,6 @@ func TestGormStoreBasic(t *testing.T) {
 	if len(history) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(history))
 	}
-
-	// 召回
-	recalled, err := store.Recall(ctx, sessionID, "Hello", 3)
-	if err != nil {
-		t.Fatalf("recall failed: %v", err)
-	}
-	if len(recalled) == 0 {
-		t.Error("expected recalled messages, got none")
-	}
 }
 
 func TestGormStoreWithVector(t *testing.T) {
@@ -80,11 +113,13 @@ func TestGormStoreWithVector(t *testing.T) {
 		EmbeddingDimension:  384,
 	}
 
-	store, err := NewStore(config, mockEmbedding)
+	store, err := NewGORMStore(config, mockEmbedding)
 	if err != nil {
 		t.Fatalf("create store failed: %v", err)
 	}
-	defer store.Close()
+
+	retriever := NewHNSWRetriever(store.GetDB(), mockEmbedding, config)
+	t.Cleanup(func() { retriever.Close(); store.Close() })
 
 	ctx := context.Background()
 	sessionID := "test-vector"
@@ -100,8 +135,14 @@ func TestGormStoreWithVector(t *testing.T) {
 		t.Fatalf("save failed: %v", err)
 	}
 
+	// 等待索引就绪
+	deadline := time.Now().Add(3 * time.Second)
+	for !retriever.IndexReady() && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+
 	// 向量召回
-	recalled, err := store.Recall(ctx, sessionID, "Go programming", 2)
+	recalled, err := retriever.Recall(ctx, sessionID, "Go programming", 2)
 	if err != nil {
 		t.Fatalf("recall failed: %v", err)
 	}
@@ -117,7 +158,7 @@ func TestGormStoreClearSession(t *testing.T) {
 	config := DefaultConfig()
 	config.DBPath = dbPath
 
-	store, err := NewStore(config, nil)
+	store, err := NewGORMStore(config, nil)
 	if err != nil {
 		t.Fatalf("create store failed: %v", err)
 	}
@@ -153,7 +194,7 @@ func TestGormStoreTimeRange(t *testing.T) {
 	config := DefaultConfig()
 	config.DBPath = dbPath
 
-	store, err := NewStore(config, nil)
+	store, err := NewGORMStore(config, nil)
 	if err != nil {
 		t.Fatalf("create store failed: %v", err)
 	}
@@ -193,7 +234,7 @@ func TestGormStoreStats(t *testing.T) {
 	config := DefaultConfig()
 	config.DBPath = dbPath
 
-	store, err := NewStore(config, nil)
+	store, err := NewGORMStore(config, nil)
 	if err != nil {
 		t.Fatalf("create store failed: %v", err)
 	}
@@ -248,14 +289,14 @@ func TestCosineSimilarity(t *testing.T) {
 // 召回模式测试
 // ============================================================================
 
-func setupStore(t *testing.T, config *Config, embedding EmbeddingFunc) *Store {
+func setupStore(t *testing.T, config *Config, embedding EmbeddingFunc) *GORMStore {
 	t.Helper()
 	if config == nil {
 		config = DefaultConfig()
 	}
 	tmpDir := t.TempDir()
 	config.DBPath = tmpDir + "/test.db"
-	store, err := NewStore(config, embedding)
+	store, err := NewGORMStore(config, embedding)
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
@@ -263,7 +304,40 @@ func setupStore(t *testing.T, config *Config, embedding EmbeddingFunc) *Store {
 	return store
 }
 
-func seedMessages(t *testing.T, store *Store, sessionID string, count int) {
+func setupCompositeStore(t *testing.T, config *Config, embedding EmbeddingFunc) *retrieverTestHelper {
+	t.Helper()
+	if config == nil {
+		config = DefaultConfig()
+	}
+	tmpDir := t.TempDir()
+	config.DBPath = tmpDir + "/test.db"
+	store, err := NewGORMStore(config, embedding)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	retriever := NewHNSWRetriever(store.GetDB(), embedding, config)
+	t.Cleanup(func() { retriever.Close(); store.Close() })
+	return &retrieverTestHelper{store: store, retriever: retriever}
+}
+
+type retrieverTestHelper struct {
+	store     *GORMStore
+	retriever *HNSWRetriever
+}
+
+func (h *retrieverTestHelper) Save(ctx context.Context, sessionID string, msgs []*schema.Message) error {
+	return h.store.Save(ctx, sessionID, msgs)
+}
+
+func (h *retrieverTestHelper) Recall(ctx context.Context, sessionID string, query string, topK int) ([]*schema.Message, error) {
+	return h.retriever.Recall(ctx, sessionID, query, topK)
+}
+
+func (h *retrieverTestHelper) IndexReady() bool {
+	return h.retriever.IndexReady()
+}
+
+func seedMessages(t *testing.T, store *GORMStore, sessionID string, count int) {
 	t.Helper()
 	msgs := make([]*schema.Message, count)
 	for i := 0; i < count; i++ {
@@ -278,15 +352,30 @@ func seedMessages(t *testing.T, store *Store, sessionID string, count int) {
 	}
 }
 
+func seedMessagesComposite(t *testing.T, h *retrieverTestHelper, sessionID string, count int) {
+	t.Helper()
+	msgs := make([]*schema.Message, count)
+	for i := 0; i < count; i++ {
+		if i%2 == 0 {
+			msgs[i] = schema.UserMessage(fmt.Sprintf("user message %d about Go programming", i))
+		} else {
+			msgs[i] = schema.AssistantMessage(fmt.Sprintf("assistant reply %d about Go language", i), "")
+		}
+	}
+	if err := h.Save(context.Background(), sessionID, msgs); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+}
+
 func TestRecall_HybridMode(t *testing.T) {
 	config := DefaultConfig()
 	config.RecallMode = RecallModeHybrid
 	config.DisableVectorSearch = true
-	store := setupStore(t, config, nil)
+	h := setupCompositeStore(t, config, nil)
 
-	seedMessages(t, store, "s1", 6)
+	seedMessagesComposite(t, h, "s1", 6)
 
-	recalled, err := store.Recall(context.Background(), "s1", "Go programming", 3)
+	recalled, err := h.Recall(context.Background(), "s1", "Go programming", 3)
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -300,11 +389,18 @@ func TestRecall_VectorMode_Fallback(t *testing.T) {
 	config := DefaultConfig()
 	config.RecallMode = RecallModeVector
 	config.EmbeddingDimension = 384
-	store := setupStore(t, config, mockEmbedding)
+	emb := &mockEmbedderBagOfChars{dim: 384}
+	h := setupCompositeStore(t, config, emb.Embedder())
 
-	seedMessages(t, store, "s1", 6)
+	seedMessagesComposite(t, h, "s1", 6)
 
-	recalled, err := store.Recall(context.Background(), "s1", "Go programming", 3)
+	// 等待索引就绪
+	deadline := time.Now().Add(3 * time.Second)
+	for !h.IndexReady() && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	recalled, err := h.Recall(context.Background(), "s1", "Go programming", 3)
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -318,11 +414,18 @@ func TestRecall_VectorMode_WithEmbedding(t *testing.T) {
 	config := DefaultConfig()
 	config.RecallMode = RecallModeVector
 	config.EmbeddingDimension = 384
-	store := setupStore(t, config, mockEmbedding)
+	emb := &mockEmbedderBagOfChars{dim: 384}
+	h := setupCompositeStore(t, config, emb.Embedder())
 
-	seedMessages(t, store, "s1", 6)
+	seedMessagesComposite(t, h, "s1", 6)
 
-	recalled, err := store.Recall(context.Background(), "s1", "Go programming", 3)
+	// 等待索引就绪
+	deadline := time.Now().Add(3 * time.Second)
+	for !h.IndexReady() && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	recalled, err := h.Recall(context.Background(), "s1", "Go programming", 3)
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -336,11 +439,11 @@ func TestRecall_VectorMode_NilEmbedding_FallbackToHybrid(t *testing.T) {
 	config := DefaultConfig()
 	config.RecallMode = RecallModeVector
 	config.DisableVectorSearch = true
-	store := setupStore(t, config, nil)
+	h := setupCompositeStore(t, config, nil)
 
-	seedMessages(t, store, "s1", 4)
+	seedMessagesComposite(t, h, "s1", 4)
 
-	recalled, err := store.Recall(context.Background(), "s1", "Go", 3)
+	recalled, err := h.Recall(context.Background(), "s1", "Go", 3)
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -353,11 +456,18 @@ func TestRecall_CombinedMode_WithEmbedding(t *testing.T) {
 	config := DefaultConfig()
 	config.RecallMode = RecallModeCombined
 	config.EmbeddingDimension = 384
-	store := setupStore(t, config, mockEmbedding)
+	emb := &mockEmbedderBagOfChars{dim: 384}
+	h := setupCompositeStore(t, config, emb.Embedder())
 
-	seedMessages(t, store, "s1", 6)
+	seedMessagesComposite(t, h, "s1", 6)
 
-	recalled, err := store.Recall(context.Background(), "s1", "Go programming", 3)
+	// 等待索引就绪
+	deadline := time.Now().Add(3 * time.Second)
+	for !h.IndexReady() && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	recalled, err := h.Recall(context.Background(), "s1", "Go programming", 3)
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -370,11 +480,11 @@ func TestRecall_CombinedMode_NoEmbedding_Fallback(t *testing.T) {
 	// Combined 模式但没有 embedding，应该 fallback 到 hybrid
 	config := DefaultConfig()
 	config.RecallMode = RecallModeCombined
-	store := setupStore(t, config, nil)
+	h := setupCompositeStore(t, config, nil)
 
-	seedMessages(t, store, "s1", 4)
+	seedMessagesComposite(t, h, "s1", 4)
 
-	recalled, err := store.Recall(context.Background(), "s1", "Go", 3)
+	recalled, err := h.Recall(context.Background(), "s1", "Go", 3)
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -387,11 +497,11 @@ func TestRecall_AutoMode(t *testing.T) {
 	config := DefaultConfig()
 	config.RecallMode = RecallModeAuto
 	config.DisableVectorSearch = true
-	store := setupStore(t, config, nil)
+	h := setupCompositeStore(t, config, nil)
 
-	seedMessages(t, store, "s1", 4)
+	seedMessagesComposite(t, h, "s1", 4)
 
-	recalled, err := store.Recall(context.Background(), "s1", "Go", 3)
+	recalled, err := h.Recall(context.Background(), "s1", "Go", 3)
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -401,10 +511,10 @@ func TestRecall_AutoMode(t *testing.T) {
 }
 
 func TestRecall_ZeroTopK_DefaultsTo3(t *testing.T) {
-	store := setupStore(t, nil, nil)
-	seedMessages(t, store, "s1", 10)
+	h := setupCompositeStore(t, nil, nil)
+	seedMessagesComposite(t, h, "s1", 10)
 
-	recalled, err := store.Recall(context.Background(), "s1", "Go", 0)
+	recalled, err := h.Recall(context.Background(), "s1", "Go", 0)
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -739,12 +849,14 @@ func TestClose_Idempotent(t *testing.T) {
 }
 
 func TestIndexReady_AfterInit(t *testing.T) {
-	store := setupStore(t, nil, nil)
+	config := DefaultConfig()
+	config.DisableVectorSearch = true
+	h := setupCompositeStore(t, config, nil)
 
 	// 等待后台索引重建完成
 	time.Sleep(200 * time.Millisecond)
 
-	if !store.IndexReady() {
+	if !h.IndexReady() {
 		t.Error("index should be ready after init")
 	}
 }
