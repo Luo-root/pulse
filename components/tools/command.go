@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -10,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/Luo-root/pulse/components/bufutil"
 )
 
 // ============================================================================
@@ -55,8 +56,8 @@ func CommandExec(ctx context.Context, args map[string]any) (any, error) {
 	// 继承 PATH 等必要环境变量
 	cmd.Env = buildCommandEnv()
 
-	stdout := &cappedBuffer{max: 1024 * 1024} // 1MB 限制
-	stderr := &cappedBuffer{max: 1024 * 1024}
+	stdout := bufutil.NewCappedBuffer(1024 * 1024) // 1MB 限制
+	stderr := bufutil.NewCappedBuffer(1024 * 1024)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
@@ -145,39 +146,6 @@ func buildCommandEnv() []string {
 // absPath 获取绝对路径
 func absPath(path string) (string, error) {
 	return filepath.Abs(path)
-}
-
-// ============================================================================
-// cappedBuffer 有容量上限的输出缓冲区
-// ============================================================================
-
-type cappedBuffer struct {
-	buf bytes.Buffer
-	max int
-}
-
-func (b *cappedBuffer) Write(p []byte) (int, error) {
-	origLen := len(p)
-	if b.buf.Len() >= b.max {
-		return origLen, nil
-	}
-	remaining := b.max - b.buf.Len()
-	if len(p) > remaining {
-		p = p[:remaining]
-	}
-	_, err := b.buf.Write(p)
-	if err != nil {
-		return 0, err
-	}
-	return origLen, nil
-}
-
-func (b *cappedBuffer) String() string {
-	return b.buf.String()
-}
-
-func (b *cappedBuffer) Truncated() bool {
-	return b.buf.Len() >= b.max
 }
 
 // ============================================================================

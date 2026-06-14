@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,16 +17,13 @@ import (
 	"github.com/Luo-root/pulse/components/tools"
 )
 
-// DefaultMaxToolRounds 默认最大工具调用轮次
 const DefaultMaxToolRounds int = 20
 
-// Interface 统一接口
 type Interface interface {
 	SendMessage(ctx context.Context, msg *schema.Message) (*schema.Message, error)
 	SendMessageStream(ctx context.Context, msg *schema.Message, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error)
 }
 
-// Option Agent 配置选项
 type Option func(*Agent)
 
 func WithMemoryController(mc *memory.Controller) Option {
@@ -47,7 +46,6 @@ func WithMaxToolRounds(n int) Option {
 	}
 }
 
-// Agent 封装多轮对话（支持 Generate 和 Stream）
 type Agent struct {
 	model            chatmodel.BaseModel
 	registry         *tools.ToolRegistry
@@ -55,7 +53,7 @@ type Agent struct {
 	sessionID        string
 	usageTracker     *UsageTracker
 	maxToolRounds    int
-	mu               sync.Mutex // 保护 send 循环的并发安全
+	mu               sync.Mutex
 }
 
 func NewAgent(model chatmodel.BaseModel, registry *tools.ToolRegistry, opts ...Option) *Agent {
@@ -67,19 +65,27 @@ func NewAgent(model chatmodel.BaseModel, registry *tools.ToolRegistry, opts ...O
 	for _, opt := range opts {
 		opt(ag)
 	}
-
 	if ag.sessionID == "" {
 		ag.sessionID = "default"
 	}
-
 	if ag.memoryController == nil {
 		ag.memoryController = defaultMemoryController(model)
 	}
-
 	return ag
 }
 
-// SendMessage 发送完整消息（支持多模态内容）
+// ============================================================================
+// 公共 API
+// ============================================================================
+
+func (ag *Agent) Send(ctx context.Context, userContent string) (*schema.Message, error) {
+	return ag.SendMessage(ctx, schema.UserMessage(userContent))
+}
+
+func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error) {
+	return ag.SendMessageStream(ctx, schema.UserMessage(userContent), onChunk)
+}
+
 func (ag *Agent) SendMessage(ctx context.Context, msg *schema.Message) (*schema.Message, error) {
 	ag.mu.Lock()
 	defer ag.mu.Unlock()
@@ -88,21 +94,18 @@ func (ag *Agent) SendMessage(ctx context.Context, msg *schema.Message) (*schema.
 		return nil, err
 	}
 
-	query := msg.TextContent() // 记忆召回用纯文本
-
+	query := msg.TextContent()
 	for round := 0; round < ag.maxToolRounds; round++ {
-		startTime := time.Now()
-
 		msgs, err := ag.memoryController.BuildContext(ctx, ag.sessionID, query)
 		if err != nil {
 			return nil, err
 		}
 
-		resp, err := ag.model.Generate(ctx, msgs)
+		startTime := time.Now()
+		resp, err := ag.generateWithRetry(ctx, msgs)
 		if err != nil {
 			return nil, err
 		}
-
 		ag.recordUsage(resp.Usage, startTime)
 
 		if len(resp.ToolCalls) == 0 {
@@ -117,11 +120,9 @@ func (ag *Agent) SendMessage(ctx context.Context, msg *schema.Message) (*schema.
 		}
 		query = ""
 	}
-
 	return nil, fmt.Errorf("tool call loop exceeded maximum rounds (%d)", ag.maxToolRounds)
 }
 
-// SendMessageStream 流式发送完整消息（支持多模态内容）
 func (ag *Agent) SendMessageStream(ctx context.Context, msg *schema.Message, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error) {
 	ag.mu.Lock()
 	defer ag.mu.Unlock()
@@ -131,16 +132,14 @@ func (ag *Agent) SendMessageStream(ctx context.Context, msg *schema.Message, onC
 	}
 
 	query := msg.TextContent()
-
 	for round := 0; round < ag.maxToolRounds; round++ {
-		startTime := time.Now()
-
 		msgs, err := ag.memoryController.BuildContext(ctx, ag.sessionID, query)
 		if err != nil {
 			return nil, err
 		}
 
-		reader, err := ag.model.Stream(ctx, msgs)
+		startTime := time.Now()
+		reader, err := ag.streamWithRetry(ctx, msgs)
 		if err != nil {
 			return nil, err
 		}
@@ -149,7 +148,6 @@ func (ag *Agent) SendMessageStream(ctx context.Context, msg *schema.Message, onC
 		if err != nil {
 			return nil, err
 		}
-
 		ag.recordUsageFromReader(reader, startTime)
 
 		if len(fullMsg.ToolCalls) == 0 {
@@ -164,103 +162,80 @@ func (ag *Agent) SendMessageStream(ctx context.Context, msg *schema.Message, onC
 		}
 		query = ""
 	}
-
 	return nil, fmt.Errorf("tool call loop exceeded maximum rounds (%d)", ag.maxToolRounds)
 }
 
-// Send 非流式
-func (ag *Agent) Send(ctx context.Context, userContent string) (*schema.Message, error) {
-	ag.mu.Lock()
-	defer ag.mu.Unlock()
+// ============================================================================
+// 内部实现
+// ============================================================================
 
-	err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{schema.UserMessage(userContent)})
-	if err != nil {
-		return nil, err
+// retryableError 判断是否为可重试的瞬态错误
+func retryableError(err error) bool {
+	if err == nil {
+		return false
 	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "429") ||
+		strings.Contains(errStr, "500") ||
+		strings.Contains(errStr, "502") ||
+		strings.Contains(errStr, "503") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "deadline exceeded")
+}
 
-	query := userContent
+// generateWithRetry 带指数退避重试的 Generate
+func (ag *Agent) generateWithRetry(ctx context.Context, msgs []*schema.Message) (*schema.Message, error) {
+	const maxRetries = 3
+	var lastErr error
 
-	for round := 0; round < ag.maxToolRounds; round++ {
-		startTime := time.Now()
-
-		msgs, err := ag.memoryController.BuildContext(ctx, ag.sessionID, query)
-		if err != nil {
-			return nil, err
-		}
-
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		resp, err := ag.model.Generate(ctx, msgs)
-		if err != nil {
-			return nil, err
-		}
-
-		ag.recordUsage(resp.Usage, startTime)
-
-		// 无工具调用 → 最终回答
-		if len(resp.ToolCalls) == 0 {
-			if err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{resp}); err != nil {
-				return nil, err
-			}
+		if err == nil {
 			return resp, nil
 		}
+		lastErr = err
 
-		// 有工具调用 → 执行工具，继续循环
-		if err := ag.handleToolCalls(ctx, resp); err != nil {
+		if !retryableError(err) || attempt == maxRetries {
 			return nil, err
 		}
-		query = "" // 后续轮次不再用原始 query 做记忆召回
-	}
 
-	return nil, fmt.Errorf("tool call loop exceeded maximum rounds (%d)", ag.maxToolRounds)
+		backoff := time.Duration(math.Pow(2, float64(attempt))) * time.Second
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+	return nil, lastErr
 }
 
-// SendStream 流式
-func (ag *Agent) SendStream(ctx context.Context, userContent string, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error) {
-	ag.mu.Lock()
-	defer ag.mu.Unlock()
+// streamWithRetry 带指数退避重试的 Stream
+func (ag *Agent) streamWithRetry(ctx context.Context, msgs []*schema.Message) (*schema.StreamReader, error) {
+	const maxRetries = 3
+	var lastErr error
 
-	err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{schema.UserMessage(userContent)})
-	if err != nil {
-		return nil, err
-	}
-
-	for round := 0; round < ag.maxToolRounds; round++ {
-		startTime := time.Now()
-
-		msgs, err := ag.memoryController.BuildContext(ctx, ag.sessionID, userContent)
-		if err != nil {
-			return nil, err
-		}
-
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		reader, err := ag.model.Stream(ctx, msgs)
-		if err != nil {
+		if err == nil {
+			return reader, nil
+		}
+		lastErr = err
+
+		if !retryableError(err) || attempt == maxRetries {
 			return nil, err
 		}
 
-		fullMsg, err := ag.readStream(reader, onChunk)
-		if err != nil {
-			return nil, err
-		}
-
-		ag.recordUsageFromReader(reader, startTime)
-
-		// 无工具调用 → 最终回答
-		if len(fullMsg.ToolCalls) == 0 {
-			if err := ag.memoryController.SaveTurn(ctx, ag.sessionID, []*schema.Message{fullMsg}); err != nil {
-				return nil, err
-			}
-			return fullMsg, nil
-		}
-
-		// 有工具调用 → 执行工具，继续循环
-		if err := ag.handleToolCalls(ctx, fullMsg); err != nil {
-			return nil, err
+		backoff := time.Duration(math.Pow(2, float64(attempt))) * time.Second
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
 		}
 	}
-
-	return nil, fmt.Errorf("tool call loop exceeded maximum rounds (%d)", ag.maxToolRounds)
+	return nil, lastErr
 }
 
-// readStream 从 StreamReader 读取所有 chunk，组装完整消息
 func (ag *Agent) readStream(reader *schema.StreamReader, onChunk func(msg *schema.Message, isToolCall bool) bool) (*schema.Message, error) {
 	fullMsg := &schema.Message{Role: schema.AssistantRole}
 
@@ -293,7 +268,6 @@ func (ag *Agent) readStream(reader *schema.StreamReader, onChunk func(msg *schem
 			fullMsg.OutputAudio = msg.OutputAudio
 		}
 
-		// 当前 chunk 是否包含工具调用
 		isToolCall := len(msg.ToolCalls) > 0
 		if !onChunk(msg, isToolCall) {
 			return fullMsg, errors.New("user cancelled stream")
@@ -313,7 +287,6 @@ func (ag *Agent) readStream(reader *schema.StreamReader, onChunk func(msg *schem
 	return fullMsg, nil
 }
 
-// handleToolCalls 执行工具调用，将结果保存到记忆
 func (ag *Agent) handleToolCalls(ctx context.Context, assistantMsg *schema.Message) error {
 	results := ag.registry.ExecuteBatch(ctx, assistantMsg.ToolCalls)
 
@@ -333,7 +306,6 @@ func (ag *Agent) handleToolCalls(ctx context.Context, assistantMsg *schema.Messa
 	return ag.memoryController.SaveTurn(ctx, ag.sessionID, msgs)
 }
 
-// recordUsage 记录 Usage（非流式）
 func (ag *Agent) recordUsage(usage *schema.Usage, startTime time.Time) {
 	if ag.usageTracker == nil || usage == nil {
 		return
@@ -341,7 +313,6 @@ func (ag *Agent) recordUsage(usage *schema.Usage, startTime time.Time) {
 	ag.usageTracker.Record(*usage, ag.getModelName(), time.Since(startTime))
 }
 
-// recordUsageFromReader 记录 Usage（流式，从 StreamReader 获取）
 func (ag *Agent) recordUsageFromReader(reader *schema.StreamReader, startTime time.Time) {
 	if ag.usageTracker == nil {
 		return
@@ -354,6 +325,13 @@ func (ag *Agent) recordUsageFromReader(reader *schema.StreamReader, startTime ti
 		PromptTokensDetails: reader.Usage.PromptTokensDetails,
 	}
 	ag.usageTracker.Record(usage, ag.getModelName(), time.Since(startTime))
+}
+
+func (ag *Agent) getModelName() string {
+	if m, ok := ag.model.(interface{ GetModelName() string }); ok {
+		return m.GetModelName()
+	}
+	return "unknown"
 }
 
 // ============================================================================
@@ -405,14 +383,6 @@ func (ag *Agent) ChangeModel(model chatmodel.BaseModel) {
 	ag.mu.Lock()
 	defer ag.mu.Unlock()
 	ag.model = model
-}
-
-// getModelName 获取模型名称
-func (ag *Agent) getModelName() string {
-	if m, ok := ag.model.(interface{ GetModelName() string }); ok {
-		return m.GetModelName()
-	}
-	return "unknown"
 }
 
 // ============================================================================

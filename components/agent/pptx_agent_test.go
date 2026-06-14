@@ -391,7 +391,7 @@ func TestPPTXAgent_RealLLM(t *testing.T) {
 
 	skillReg, toolReg, _ := setupPPTXEnv(t)
 	sb := sandbox.NewProcessSandbox(sandbox.ProcessConfig{})
-	sandbox.RegisterSandboxTools(toolReg, sb)
+	sandbox.RegisterSandboxTools(toolReg, sb, nil)
 
 	// 获取 PPTX Skill 的工具定义，传给 LLM
 	sk, _ := skillReg.Get("pptx")

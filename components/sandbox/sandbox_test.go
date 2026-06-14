@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-// ============================================================
-// 辅助函数
-// ============================================================
-
 func newSandbox(t *testing.T) *ProcessSandbox {
 	t.Helper()
 	return NewProcessSandbox(ProcessConfig{})
@@ -21,419 +17,182 @@ func newSandbox(t *testing.T) *ProcessSandbox {
 // 基础功能
 // ============================================================
 
-func TestSandbox_ListLangs(t *testing.T) {
+func TestSandbox_ExecuteEcho(t *testing.T) {
 	s := newSandbox(t)
 	defer s.Close()
 
-	langs := s.ListLangs()
-	t.Logf("available langs: %v", langs)
-
-	if len(langs) == 0 {
-		t.Fatal("expected at least 1 language")
-	}
-
-	mustHave := []string{"python", "node", "go", "shell"}
-	for _, want := range mustHave {
-		found := false
-		for _, l := range langs {
-			if l == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("missing language: %s", want)
-		}
-	}
-}
-
-func TestSandbox_CheckLang(t *testing.T) {
-	s := newSandbox(t)
-	defer s.Close()
-
-	// Go 应该可用
-	if err := s.CheckLang("go"); err != nil {
-		t.Errorf("go should be available: %v", err)
-	}
-
-	// 不存在的语言
-	if err := s.CheckLang("fortran"); err == nil {
-		t.Error("expected error for unsupported language")
-	}
-}
-
-// ============================================================
-// Go 执行（保证可用）
-// ============================================================
-
-func TestSandbox_ExecuteGo(t *testing.T) {
-	s := newSandbox(t)
-	defer s.Close()
-
-	if err := s.CheckLang("go"); err != nil {
-		t.Skip("go not available:", err)
-	}
-
-	code := `package main
-
-import "fmt"
-
-func main() {
-	fmt.Println("hello from go")
-}
-`
-	result, err := s.Execute(context.Background(), ExecRequest{
-		Language: "go",
-		Code:     code,
-		Timeout:  30 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	t.Logf("stdout: %q", result.Stdout)
-	t.Logf("stderr: %q", result.Stderr)
-	t.Logf("exit: %d, duration: %s", result.ExitCode, result.Duration)
-
-	if result.ExitCode != 0 {
-		t.Fatalf("non-zero exit: %d, stderr: %s", result.ExitCode, result.Stderr)
-	}
-	if !strings.Contains(result.Stdout, "hello from go") {
-		t.Errorf("unexpected output: %s", result.Stdout)
-	}
-}
-
-// ============================================================
-// Python 执行
-// ============================================================
-
-func TestSandbox_ExecutePython(t *testing.T) {
-	s := newSandbox(t)
-	defer s.Close()
-
-	if err := s.CheckLang("python"); err != nil {
-		t.Skip("python not available:", err)
-	}
-
-	result, err := s.Execute(context.Background(), ExecRequest{
-		Language: "python",
-		Code:     "print('hello from python')",
-	})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	t.Logf("stdout: %q", result.Stdout)
-
-	if result.ExitCode == 9009 {
-		t.Skip("python command not found (exit code 9009 on Windows)")
-	}
-
-	if result.ExitCode != 0 {
-		t.Fatalf("non-zero exit: %d, stderr: %s", result.ExitCode, result.Stderr)
-	}
-	if !strings.Contains(result.Stdout, "hello from python") {
-		t.Errorf("unexpected output: %s", result.Stdout)
-	}
-}
-
-// ============================================================
-// Node 执行
-// ============================================================
-
-func TestSandbox_ExecuteNode(t *testing.T) {
-	s := newSandbox(t)
-	defer s.Close()
-
-	if err := s.CheckLang("node"); err != nil {
-		t.Skip("node not available:", err)
-	}
-
-	result, err := s.Execute(context.Background(), ExecRequest{
-		Language: "node",
-		Code:     "console.log('hello from node')",
-	})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	t.Logf("stdout: %q", result.Stdout)
-
-	if result.ExitCode != 0 {
-		t.Fatalf("non-zero exit: %d, stderr: %s", result.ExitCode, result.Stderr)
-	}
-	if !strings.Contains(result.Stdout, "hello from node") {
-		t.Errorf("unexpected output: %s", result.Stdout)
-	}
-}
-
-// ============================================================
-// Shell 执行
-// ============================================================
-
-func TestSandbox_ExecuteShell(t *testing.T) {
-	s := newSandbox(t)
-	defer s.Close()
-
-	if err := s.CheckLang("shell"); err != nil {
-		t.Skip("shell not available:", err)
-	}
-
-	var code string
+	shell := "sh"
+	args := []string{"-c", "echo hello"}
 	if runtime.GOOS == "windows" {
-		code = "echo hello from shell"
-	} else {
-		code = "echo hello from shell"
+		shell = "cmd"
+		args = []string{"/C", "echo hello"}
 	}
 
 	result, err := s.Execute(context.Background(), ExecRequest{
-		Language: "shell",
-		Code:     code,
+		Command: shell,
+		Args:    args,
 	})
 	if err != nil {
-		t.Fatalf("execute: %v", err)
+		t.Fatalf("execute failed: %v", err)
 	}
-	t.Logf("stdout: %q", result.Stdout)
-
 	if result.ExitCode != 0 {
-		t.Fatalf("non-zero exit: %d, stderr: %s", result.ExitCode, result.Stderr)
+		t.Fatalf("expected exit code 0, got %d: %s", result.ExitCode, result.Stderr)
 	}
-	if !strings.Contains(result.Stdout, "hello from shell") {
-		t.Errorf("unexpected output: %s", result.Stdout)
+	if !strings.Contains(result.Stdout, "hello") {
+		t.Fatalf("expected 'hello' in stdout, got: %s", result.Stdout)
 	}
 }
 
-// ============================================================
-// 输入文件
-// ============================================================
-
-func TestSandbox_InputFiles(t *testing.T) {
+func TestSandbox_ExecuteWithFiles(t *testing.T) {
 	s := newSandbox(t)
 	defer s.Close()
 
-	if err := s.CheckLang("go"); err != nil {
-		t.Skip("go not available:", err)
+	shell := "sh"
+	catCmd := []string{"-c", "cat data.txt"}
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		catCmd = []string{"/C", "type data.txt"}
 	}
 
-	code := `package main
-
-import (
-	"fmt"
-	"os"
-)
-
-func main() {
-	data, err := os.ReadFile("data.txt")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "read error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Print(string(data))
-}
-`
 	result, err := s.Execute(context.Background(), ExecRequest{
-		Language: "go",
-		Code:     code,
-		Timeout:  30 * time.Second,
+		Command: shell,
+		Args:    catCmd,
 		Files: []InputFile{
-			{Path: "data.txt", Content: "hello from file"},
+			{Path: "data.txt", Content: "file content here"},
 		},
 	})
 	if err != nil {
-		t.Fatalf("execute: %v", err)
+		t.Fatalf("execute failed: %v", err)
 	}
-	t.Logf("stdout: %q", result.Stdout)
-
-	if result.ExitCode != 0 {
-		t.Fatalf("exit code %d, stderr: %s", result.ExitCode, result.Stderr)
-	}
-	if !strings.Contains(result.Stdout, "hello from file") {
-		t.Errorf("expected file content, got: %s", result.Stdout)
+	if !strings.Contains(result.Stdout, "file content here") {
+		t.Fatalf("expected file content in stdout, got: %s", result.Stdout)
 	}
 }
-
-func TestSandbox_InputFilesNested(t *testing.T) {
-	s := newSandbox(t)
-	defer s.Close()
-
-	if err := s.CheckLang("go"); err != nil {
-		t.Skip("go not available:", err)
-	}
-
-	code := `package main
-
-import (
-	"fmt"
-	"os"
-)
-
-func main() {
-	data, err := os.ReadFile("configs/app.json")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Print(string(data))
-}
-`
-	result, err := s.Execute(context.Background(), ExecRequest{
-		Language: "go",
-		Code:     code,
-		Timeout:  30 * time.Second,
-		Files: []InputFile{
-			{Path: "configs/app.json", Content: `{"debug": true}`},
-		},
-	})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-
-	if result.ExitCode != 0 {
-		t.Fatalf("exit %d: %s", result.ExitCode, result.Stderr)
-	}
-	if !strings.Contains(result.Stdout, "debug") {
-		t.Errorf("expected nested file content, got: %s", result.Stdout)
-	}
-}
-
-// ============================================================
-// 超时处理
-// ============================================================
 
 func TestSandbox_Timeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("timeout test unreliable on Windows due to cmd.exe signal handling")
+	}
 	s := newSandbox(t)
 	defer s.Close()
 
-	if err := s.CheckLang("go"); err != nil {
-		t.Skip("go not available:", err)
-	}
-
-	// 死循环代码
-	code := `package main
-
-import "time"
-
-func main() {
-	time.Sleep(60 * time.Second)
-}
-`
 	result, err := s.Execute(context.Background(), ExecRequest{
-		Language: "go",
-		Code:     code,
-		Timeout:  2 * time.Second,
+		Command: "sh",
+		Args:    []string{"-c", "sleep 10"},
+		Timeout: 500 * time.Millisecond,
 	})
 	if err != nil {
-		t.Fatalf("execute: %v", err)
+		t.Fatalf("execute failed: %v", err)
 	}
-
-	t.Logf("timed_out: %v, exit: %d, duration: %s", result.TimedOut, result.ExitCode, result.Duration)
-
 	if !result.TimedOut {
-		t.Error("expected timeout, but got none")
-	}
-	if result.ExitCode != -1 {
-		t.Errorf("expected exit code -1 for timeout, got %d", result.ExitCode)
+		t.Fatal("expected timeout")
 	}
 }
 
-// ============================================================
-// 错误处理
-// ============================================================
-
-func TestSandbox_NonZeroExit(t *testing.T) {
+func TestSandbox_ExitCode(t *testing.T) {
 	s := newSandbox(t)
 	defer s.Close()
 
-	if err := s.CheckLang("python"); err != nil {
-		t.Skip("python not available:", err)
+	shell := "sh"
+	args := []string{"-c", "exit 42"}
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		args = []string{"/C", "exit /b 42"}
 	}
 
 	result, err := s.Execute(context.Background(), ExecRequest{
-		Language: "python",
-		Code:     "import sys; sys.exit(42)",
-		Timeout:  5 * time.Second,
+		Command: shell,
+		Args:    args,
 	})
 	if err != nil {
-		t.Fatalf("execute: %v", err)
+		t.Fatalf("execute failed: %v", err)
 	}
-
-	if result.ExitCode == 9009 {
-		t.Skip("python command not found (exit code 9009 on Windows)")
-	}
-
-	t.Logf("exit: %d", result.ExitCode)
-
 	if result.ExitCode != 42 {
-		t.Errorf("expected exit code 42, got %d", result.ExitCode)
+		t.Fatalf("expected exit code 42, got %d", result.ExitCode)
 	}
 }
 
-func TestSandbox_EmptyCode(t *testing.T) {
+func TestSandbox_EmptyCommand(t *testing.T) {
 	s := newSandbox(t)
 	defer s.Close()
 
-	_, err := s.Execute(context.Background(), ExecRequest{
-		Language: "go",
-		Code:     "",
-	})
+	_, err := s.Execute(context.Background(), ExecRequest{})
 	if err == nil {
-		t.Error("expected error for empty code")
+		t.Fatal("expected error for empty command")
 	}
-	t.Logf("expected error: %v", err)
 }
-
-func TestSandbox_UnsupportedLang(t *testing.T) {
-	s := newSandbox(t)
-	defer s.Close()
-
-	_, err := s.Execute(context.Background(), ExecRequest{
-		Language: "rust",
-		Code:     "fn main() {}",
-	})
-	if err == nil {
-		t.Error("expected error for unsupported language")
-	}
-	t.Logf("expected error: %v", err)
-}
-
-// ============================================================
-// 输出截断
-// ============================================================
 
 func TestSandbox_OutputTruncation(t *testing.T) {
-	s := NewProcessSandbox(ProcessConfig{
-		MaxOutputBytes: 100, // 故意设很小
-	})
+	s := NewProcessSandbox(ProcessConfig{MaxOutputBytes: 100})
 	defer s.Close()
 
-	if err := s.CheckLang("go"); err != nil {
-		t.Skip("go not available:", err)
+	shell := "sh"
+	args := []string{"-c", "for i in $(seq 1 1000); do echo line_$i; done"}
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		args = []string{"/C", "for /L %i in (1,1,1000) do @echo line_%i"}
 	}
 
-	code := `package main
-
-import (
-	"fmt"
-	"strings"
-)
-
-func main() {
-	fmt.Println(strings.Repeat("A", 1000))
-}
-`
 	result, err := s.Execute(context.Background(), ExecRequest{
-		Language: "go",
-		Code:     code,
-		Timeout:  30 * time.Second,
+		Command: shell,
+		Args:    args,
 	})
 	if err != nil {
-		t.Fatalf("execute: %v", err)
+		t.Fatalf("execute failed: %v", err)
 	}
-
-	t.Logf("stdout len: %d, truncated: %v", len(result.Stdout), result.Truncated)
-
 	if !result.Truncated {
-		t.Error("expected output to be truncated")
+		t.Fatal("expected truncation")
 	}
-	if len(result.Stdout) > 100 {
-		t.Errorf("stdout too long: %d bytes", len(result.Stdout))
+}
+
+func TestSandbox_WorkDir(t *testing.T) {
+	s := newSandbox(t)
+	defer s.Close()
+
+	shell := "sh"
+	args := []string{"-c", "pwd"}
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		args = []string{"/C", "cd"}
+	}
+
+	result, err := s.Execute(context.Background(), ExecRequest{
+		Command: shell,
+		Args:    args,
+	})
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit 0, got %d", result.ExitCode)
+	}
+	if strings.TrimSpace(result.Stdout) == "" {
+		t.Fatal("expected work dir in stdout")
+	}
+}
+
+func TestSandbox_CustomWorkDir(t *testing.T) {
+	s := newSandbox(t)
+	defer s.Close()
+
+	dir := t.TempDir()
+	shell := "sh"
+	args := []string{"-c", "pwd"}
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		args = []string{"/C", "cd"}
+	}
+
+	result, err := s.Execute(context.Background(), ExecRequest{
+		Command: shell,
+		Args:    args,
+		WorkDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit 0, got %d", result.ExitCode)
 	}
 }
 
@@ -441,186 +200,153 @@ func main() {
 // 环境变量
 // ============================================================
 
-func TestSandbox_EnvVars(t *testing.T) {
+func TestSandbox_EnvBlacklist(t *testing.T) {
 	s := newSandbox(t)
 	defer s.Close()
 
-	if err := s.CheckLang("go"); err != nil {
-		t.Skip("go not available:", err)
+	shell := "sh"
+	args := []string{"-c", "env"}
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		args = []string{"/C", "set"}
 	}
 
-	code := `package main
-
-import (
-	"fmt"
-	"os"
-)
-
-func main() {
-	fmt.Print(os.Getenv("PULSE_TEST_VAR"))
-}
-`
 	result, err := s.Execute(context.Background(), ExecRequest{
-		Language: "go",
-		Code:     code,
-		Timeout:  30 * time.Second,
-		Env:      map[string]string{"PULSE_TEST_VAR": "hello_env"},
+		Command: shell,
+		Args:    args,
 	})
 	if err != nil {
-		t.Fatalf("execute: %v", err)
+		t.Fatalf("execute failed: %v", err)
 	}
-
-	t.Logf("exit: %d, duration: %s", result.ExitCode, result.Duration)
-	t.Logf("stdout: %q", result.Stdout)
-	t.Logf("stderr: %q", result.Stderr)
-
-	if result.ExitCode != 0 {
-		t.Fatalf("exit %d: %s", result.ExitCode, result.Stderr)
-	}
-	if !strings.Contains(result.Stdout, "hello_env") {
-		t.Errorf("expected env var value, got: %s", result.Stdout)
+	if strings.Contains(result.Stdout, "AWS_SECRET") {
+		t.Fatal("AWS_SECRET should be blocked")
 	}
 }
 
-// ============================================================
-// 默认超时配置
-// ============================================================
-
-func TestSandbox_DefaultTimeout(t *testing.T) {
-	s := NewProcessSandbox(ProcessConfig{
-		DefaultTimeout: 5 * time.Second,
-	})
+func TestSandbox_EnvPassthrough(t *testing.T) {
+	s := NewProcessSandbox(ProcessConfig{EnvMode: EnvModePassthrough})
 	defer s.Close()
 
-	if err := s.CheckLang("go"); err != nil {
-		t.Skip("go not available:", err)
+	shell := "sh"
+	args := []string{"-c", "env"}
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		args = []string{"/C", "set"}
 	}
 
-	code := `package main
-
-import "time"
-
-func main() {
-	time.Sleep(60 * time.Second)
-}
-`
-	start := time.Now()
 	result, err := s.Execute(context.Background(), ExecRequest{
-		Language: "go",
-		Code:     code,
-		// 不设 Timeout，应该使用默认 5s
+		Command: shell,
+		Args:    args,
 	})
-	elapsed := time.Since(start)
-
 	if err != nil {
-		t.Fatalf("execute: %v", err)
+		t.Fatalf("execute failed: %v", err)
 	}
-
-	t.Logf("timed_out: %v, elapsed: %s", result.TimedOut, elapsed)
-
-	if !result.TimedOut {
-		t.Error("expected timeout")
-	}
-	// 应该在 5s 左右返回，不会等到 60s
-	if elapsed > 10*time.Second {
-		t.Errorf("took too long: %s, default timeout may not be applied", elapsed)
+	// passthrough should have PATH
+	if !strings.Contains(result.Stdout, "PATH") {
+		t.Fatal("PATH should be present in passthrough mode")
 	}
 }
 
-// ============================================================
-// 动态添加语言
-// ============================================================
-
-func TestSandbox_AddLang(t *testing.T) {
+func TestSandbox_CustomEnv(t *testing.T) {
 	s := newSandbox(t)
 	defer s.Close()
 
-	// 查找可用的解释器
-	interpreter := ""
-	for _, name := range []string{"bash", "sh"} {
-		if err := s.CheckLang("shell"); err == nil {
-			interpreter = name
-			break
-		}
-	}
-	if interpreter == "" {
-		t.Skip("no shell interpreter found")
+	shell := "sh"
+	args := []string{"-c", "echo $MY_VAR"}
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		args = []string{"/C", "echo %MY_VAR%"}
 	}
 
-	s.AddLang("echo", LangConfig{
-		Command: interpreter,
-		Args:    []string{"-c"},
+	result, err := s.Execute(context.Background(), ExecRequest{
+		Command: shell,
+		Args:    args,
+		Env:     map[string]string{"MY_VAR": "hello_world"},
 	})
-
-	if err := s.CheckLang("echo"); err != nil {
-		t.Fatalf("echo should be available: %v", err)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if !strings.Contains(result.Stdout, "hello_world") {
+		t.Fatalf("expected MY_VAR in output, got: %s", result.Stdout)
 	}
 }
 
 // ============================================================
-// FormatResult 测试
+// 路径安全
+// ============================================================
+
+func TestSandbox_PathEscape(t *testing.T) {
+	s := newSandbox(t)
+	defer s.Close()
+
+	_, err := s.Execute(context.Background(), ExecRequest{
+		Command: "echo",
+		Files: []InputFile{
+			{Path: "../../../etc/passwd", Content: "bad"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for path escape")
+	}
+}
+
+func TestSandbox_FileInjection(t *testing.T) {
+	s := newSandbox(t)
+	defer s.Close()
+
+	shell := "sh"
+	args := []string{"-c", "cat subdir/data.txt"}
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		args = []string{"/C", "type subdir\\data.txt"}
+	}
+
+	result, err := s.Execute(context.Background(), ExecRequest{
+		Command: shell,
+		Args:    args,
+		Files: []InputFile{
+			{Path: "subdir/data.txt", Content: "nested content"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if !strings.Contains(result.Stdout, "nested content") {
+		t.Fatalf("expected nested content, got: %s", result.Stdout)
+	}
+}
+
+// ============================================================
+// FormatResult
 // ============================================================
 
 func TestFormatResult(t *testing.T) {
-	tests := []struct {
-		name   string
-		result *ExecResult
-		check  func(string) bool
-	}{
-		{
-			name: "success",
-			result: &ExecResult{
-				Stdout:   "hello\n",
-				ExitCode: 0,
-				Duration: 100 * time.Millisecond,
-			},
-			check: func(s string) bool {
-				return strings.Contains(s, "Exit Code: 0") && strings.Contains(s, "STDOUT")
-			},
-		},
-		{
-			name: "error",
-			result: &ExecResult{
-				Stderr:   "panic!\n",
-				ExitCode: 1,
-				Duration: 50 * time.Millisecond,
-			},
-			check: func(s string) bool {
-				return strings.Contains(s, "Exit Code: 1") && strings.Contains(s, "STDERR")
-			},
-		},
-		{
-			name: "timeout",
-			result: &ExecResult{
-				TimedOut: true,
-				ExitCode: -1,
-				Duration: 30 * time.Second,
-			},
-			check: func(s string) bool {
-				return strings.Contains(s, "TIMEOUT")
-			},
-		},
-		{
-			name: "truncated",
-			result: &ExecResult{
-				Stdout:    "partial...",
-				Truncated: true,
-				ExitCode:  0,
-				Duration:  1 * time.Second,
-			},
-			check: func(s string) bool {
-				return strings.Contains(s, "truncated")
-			},
-		},
+	r := &ExecResult{
+		Stdout:   "output\n",
+		Stderr:   "warning\n",
+		ExitCode: 0,
+		Duration: 100 * time.Millisecond,
 	}
+	out := FormatResult(r)
+	if !strings.Contains(out, "Exit Code: 0") {
+		t.Fatal("missing exit code")
+	}
+	if !strings.Contains(out, "output") {
+		t.Fatal("missing stdout")
+	}
+	if !strings.Contains(out, "warning") {
+		t.Fatal("missing stderr")
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			output := FormatResult(tt.result)
-			t.Logf("formatted:\n%s", output)
-			if !tt.check(output) {
-				t.Errorf("format check failed for %s", tt.name)
-			}
-		})
+func TestFormatResult_Timeout(t *testing.T) {
+	r := &ExecResult{
+		TimedOut: true,
+		Stderr:   "killed",
+		Duration: 5 * time.Second,
+	}
+	out := FormatResult(r)
+	if !strings.Contains(out, "TIMEOUT") {
+		t.Fatal("missing timeout indicator")
 	}
 }

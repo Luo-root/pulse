@@ -91,6 +91,7 @@ type ChatModelConfig struct {
 	PromptCacheKey   string `json:"prompt_cache_key,omitempty"`
 	SafetyIdentifier string `json:"safety_identifier,omitempty"`
 
+	Debug      bool // 启用请求日志（输出到 stderr）
 	TimeOut    time.Duration
 	HTTPClient *http.Client `json:"-"`
 }

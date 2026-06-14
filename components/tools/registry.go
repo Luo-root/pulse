@@ -354,6 +354,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 }
 
 // ExecuteBatch 批量执行
+// ExecuteBatch 并行执行多个工具调用（带并发限制）
 func (r *ToolRegistry) ExecuteBatch(ctx context.Context, calls []schema.ToolCall) []schema.ToolResult {
 	if len(calls) == 0 {
 		return nil
@@ -363,6 +364,10 @@ func (r *ToolRegistry) ExecuteBatch(ctx context.Context, calls []schema.ToolCall
 		return []schema.ToolResult{r.Execute(ctx, calls[0])}
 	}
 
+	// 并发限制：最多同时执行 5 个工具
+	maxConcurrent := 5
+	sem := make(chan struct{}, maxConcurrent)
+
 	var wg sync.WaitGroup
 	results := make([]schema.ToolResult, len(calls))
 
@@ -370,6 +375,10 @@ func (r *ToolRegistry) ExecuteBatch(ctx context.Context, calls []schema.ToolCall
 		wg.Add(1)
 		go func(idx int, c schema.ToolCall) {
 			defer wg.Done()
+
+			sem <- struct{}{}        // 获取信号量
+			defer func() { <-sem }() // 释放信号量
+
 			results[idx] = r.Execute(ctx, c)
 		}(i, call)
 	}

@@ -17,8 +17,9 @@ type AgentLoop struct {
 	model        chatmodel.BaseModel
 	registry     *tools.ToolRegistry
 	maxRounds    int
+	maxMessages  int // 消息窗口大小，0 = 不限制
 	systemPrompt string
-	onStep       func(step *Step) // 每步回调（可选，用于日志/可观测）
+	onStep       func(step *Step)
 }
 
 // Step ReAct 单步记录
@@ -43,12 +44,10 @@ type AgentResult struct {
 // Option AgentLoop 配置选项
 type Option func(*AgentLoop)
 
-// WithMaxRounds 设置最大循环次数
+// WithMaxRounds 设置最大循环次数（0 = 不限制）
 func WithMaxRounds(n int) Option {
 	return func(al *AgentLoop) {
-		if n > 0 {
-			al.maxRounds = n
-		}
+		al.maxRounds = n
 	}
 }
 
@@ -63,6 +62,14 @@ func WithSystemPrompt(prompt string) Option {
 func WithStepCallback(fn func(step *Step)) Option {
 	return func(al *AgentLoop) {
 		al.onStep = fn
+	}
+}
+
+// WithMaxMessages 设置消息窗口大小（防止长任务内存膨胀，0=不限制）
+// 保留系统消息 + 最近 N 条消息
+func WithMaxMessages(n int) Option {
+	return func(al *AgentLoop) {
+		al.maxMessages = n
 	}
 }
 
@@ -84,7 +91,7 @@ func (al *AgentLoop) Run(ctx context.Context, userMessage string) (*AgentResult,
 	messages := al.buildInitialMessages(userMessage)
 	result := &AgentResult{}
 
-	for round := 0; round < al.maxRounds; round++ {
+	for round := 0; al.maxRounds == 0 || round < al.maxRounds; round++ {
 		step := &Step{Round: round + 1}
 		startTime := time.Now()
 
@@ -132,6 +139,11 @@ func (al *AgentLoop) Run(ctx context.Context, userMessage string) (*AgentResult,
 		toolMsgs := schema.ToolResultsMessage(toolResults)
 		messages = append(messages, toolMsgs...)
 
+		// 消息窗口裁剪：保留系统消息 + 最近消息
+		if al.maxMessages > 0 && len(messages) > al.maxMessages {
+			messages = al.trimMessages(messages)
+		}
+
 		result.Steps = append(result.Steps, step)
 
 		if al.onStep != nil {
@@ -147,7 +159,7 @@ func (al *AgentLoop) RunStream(ctx context.Context, userMessage string, onChunk 
 	messages := al.buildInitialMessages(userMessage)
 	result := &AgentResult{}
 
-	for round := 0; round < al.maxRounds; round++ {
+	for round := 0; al.maxRounds == 0 || round < al.maxRounds; round++ {
 		step := &Step{Round: round + 1}
 		startTime := time.Now()
 
@@ -224,6 +236,10 @@ func (al *AgentLoop) RunStream(ctx context.Context, userMessage string, onChunk 
 		toolMsgs := schema.ToolResultsMessage(toolResults)
 		messages = append(messages, toolMsgs...)
 
+		if al.maxMessages > 0 && len(messages) > al.maxMessages {
+			messages = al.trimMessages(messages)
+		}
+
 		result.Steps = append(result.Steps, step)
 
 		if al.onStep != nil {
@@ -242,6 +258,44 @@ func (al *AgentLoop) buildInitialMessages(userMessage string) []*schema.Message 
 	}
 	messages = append(messages, schema.UserMessage(userMessage))
 	return messages
+}
+
+// trimMessages 裁剪消息列表到 maxMessages 大小
+// 保留系统消息（第一条）+ 最近的消息
+func (al *AgentLoop) trimMessages(messages []*schema.Message) []*schema.Message {
+	if al.maxMessages <= 0 || len(messages) <= al.maxMessages {
+		return messages
+	}
+
+	// 保留系统消息
+	var systemMsg *schema.Message
+	startIdx := 0
+	if len(messages) > 0 && messages[0].Role == schema.SystemRole {
+		systemMsg = messages[0]
+		startIdx = 1
+	}
+
+	// 保留最后 maxMessages-1 条（留 1 个位置给系统消息）
+	keep := al.maxMessages - 1
+	if systemMsg == nil {
+		keep = al.maxMessages
+	}
+	if keep < 1 {
+		keep = 1
+	}
+
+	tail := messages[startIdx:]
+	if len(tail) > keep {
+		tail = tail[len(tail)-keep:]
+	}
+
+	if systemMsg != nil {
+		result := make([]*schema.Message, 0, 1+len(tail))
+		result = append(result, systemMsg)
+		result = append(result, tail...)
+		return result
+	}
+	return tail
 }
 
 // FormatResult 格式化执行结果为可读文本

@@ -2,10 +2,13 @@ package gorm
 
 import (
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -140,6 +143,8 @@ type Config struct {
 	ChunkSize int
 	// ChunkOverlap 分块重叠大小（中文字符数）
 	ChunkOverlap int
+	// IndexCachePath HNSW 索引缓存文件路径（空 = 不缓存）
+	IndexCachePath string
 }
 
 // CombinedWeights 组合召回的各因子权重，总和应为 1.0
@@ -235,17 +240,15 @@ func (n *messageNode) ID() string           { return n.model.ID }
 func (n *messageNode) Embedding() []float32 { return n.vec }
 
 // Store 基于 GORM 的高级记忆存储
-// 完全兼容 Store 接口
 type Store struct {
 	db        *gorm.DB
 	config    *Config
-	embedding EmbeddingFunc // 嵌入函数（可选）
+	embedding EmbeddingFunc
 
-	// HNSW 向量索引（线程安全）
-	vecIndex *hnsw.Graph[*messageNode]
-	vecMu    sync.RWMutex
-	// 异步索引重建的 readiness 信号
-	indexReady atomic.Bool
+	vecIndex     *hnsw.Graph[*messageNode]
+	vecMu        sync.RWMutex
+	indexedNodes map[string][]float32 // 跟踪已索引的节点（用于缓存导出）
+	indexReady   atomic.Bool
 }
 
 // NewStore 创建 GORM 记忆存储
@@ -277,9 +280,10 @@ func NewStore(config *Config, embedding EmbeddingFunc) (*Store, error) {
 	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_role_session ON messages(role, session_id)")
 
 	store := &Store{
-		db:        db,
-		config:    config,
-		embedding: embedding,
+		db:           db,
+		config:       config,
+		embedding:    embedding,
+		indexedNodes: make(map[string][]float32),
 	}
 
 	if !config.DisableVectorSearch && embedding != nil {
@@ -289,7 +293,10 @@ func NewStore(config *Config, embedding EmbeddingFunc) (*Store, error) {
 		store.vecIndex.EfSearch = 200
 
 		go func() {
-			store.rebuildIndexFromDB()
+			if !store.loadIndexCache() {
+				store.rebuildIndexFromDB()
+				store.saveIndexCache()
+			}
 			store.indexReady.Store(true)
 		}()
 	} else {
@@ -321,9 +328,10 @@ func isValidVector(vec []float32) bool {
 	return normSq > 0
 }
 
-// addToIndex 安全地向 HNSW 索引添加节点，捕获可能的 panic
+// addToIndex 安全地向 HNSW 索引添加节点
 func (s *Store) addToIndex(node *messageNode) {
-	if s.vecIndex == nil || !isValidVector(node.Embedding()) {
+	vec := node.Embedding()
+	if s.vecIndex == nil || !isValidVector(vec) {
 		return
 	}
 	defer func() {
@@ -332,42 +340,164 @@ func (s *Store) addToIndex(node *messageNode) {
 		}
 	}()
 	s.vecIndex.Add(node)
+	s.indexedNodes[node.ID()] = vec
 }
 
 func (s *Store) rebuildIndexFromDB() {
-	defer s.indexReady.Store(true) // 确保无论成功/失败/panic 都标记就绪
+	defer s.indexReady.Store(true)
 
-	var models []MessageModel
-	if err := s.db.Find(&models).Error; err != nil {
-		return
-	}
-	var chunks []EmbeddingChunk
-	if err := s.db.Find(&chunks).Error; err != nil {
-		// 表可能不存在，忽略
-	}
+	const batchSize = 500
+	var offset int
 
 	s.vecMu.Lock()
 	defer s.vecMu.Unlock()
 
-	for i := range models {
-		vec, err := models[i].GetEmbedding()
-		if err != nil || !isValidVector(vec) {
-			continue
+	for {
+		var batch []MessageModel
+		if err := s.db.Offset(offset).Limit(batchSize).Order("timestamp ASC").Find(&batch).Error; err != nil {
+			break
 		}
-		s.addToIndex(&messageNode{model: &models[i], vec: vec})
+		if len(batch) == 0 {
+			break
+		}
+
+		for i := range batch {
+			vec, err := batch[i].GetEmbedding()
+			if err != nil || !isValidVector(vec) {
+				continue
+			}
+			s.addToIndex(&messageNode{model: &batch[i], vec: vec})
+		}
+
+		if len(batch) < batchSize {
+			break
+		}
+		offset += batchSize
 	}
 
-	for i := range chunks {
-		vec, err := chunks[i].GetEmbedding()
-		if err != nil || !isValidVector(vec) {
-			continue
+	offset = 0
+	for {
+		var batch []EmbeddingChunk
+		if err := s.db.Offset(offset).Limit(batchSize).Order("chunk_index ASC").Find(&batch).Error; err != nil {
+			break
 		}
-		s.addToIndex(&messageNode{model: &MessageModel{ID: chunks[i].ID}, vec: vec})
+		if len(batch) == 0 {
+			break
+		}
+
+		for i := range batch {
+			vec, err := batch[i].GetEmbedding()
+			if err != nil || !isValidVector(vec) {
+				continue
+			}
+			s.addToIndex(&messageNode{model: &MessageModel{ID: batch[i].ID}, vec: vec})
+		}
+
+		if len(batch) < batchSize {
+			break
+		}
+		offset += batchSize
 	}
+}
+
+// ============================================================================
+// HNSW 索引缓存
+// ============================================================================
+
+type indexCacheEntry struct {
+	ID  string
+	Vec []float32
+}
+
+type indexCacheData struct {
+	Entries      []indexCacheEntry
+	MessageCount int64
+	ChunkCount   int64
+}
+
+// loadIndexCache 从磁盘加载索引缓存，返回是否成功
+func (s *Store) loadIndexCache() bool {
+	if s.config.IndexCachePath == "" {
+		return false
+	}
+
+	f, err := os.Open(s.config.IndexCachePath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	var cache indexCacheData
+	if err := gob.NewDecoder(f).Decode(&cache); err != nil {
+		return false
+	}
+
+	// 验证缓存是否有效：检查 DB 中消息数量
+	var msgCount, chunkCount int64
+	s.db.Model(&MessageModel{}).Count(&msgCount)
+	s.db.Model(&EmbeddingChunk{}).Count(&chunkCount)
+
+	if msgCount != cache.MessageCount || chunkCount != cache.ChunkCount {
+		return false
+	}
+
+	// 缓存有效，加载到索引
+	s.vecMu.Lock()
+	defer s.vecMu.Unlock()
+
+	for _, entry := range cache.Entries {
+		if isValidVector(entry.Vec) {
+			s.addToIndex(&messageNode{
+				model: &MessageModel{ID: entry.ID},
+				vec:   entry.Vec,
+			})
+		}
+	}
+	return true
+}
+
+// saveIndexCache 将索引保存到磁盘
+func (s *Store) saveIndexCache() {
+	if s.config.IndexCachePath == "" {
+		return
+	}
+
+	s.vecMu.RLock()
+	entries := make([]indexCacheEntry, 0, len(s.indexedNodes))
+	for id, vec := range s.indexedNodes {
+		if isValidVector(vec) {
+			entries = append(entries, indexCacheEntry{ID: id, Vec: vec})
+		}
+	}
+	s.vecMu.RUnlock()
+
+	// 查询 DB 记录数
+	var msgCount, chunkCount int64
+	s.db.Model(&MessageModel{}).Count(&msgCount)
+	s.db.Model(&EmbeddingChunk{}).Count(&chunkCount)
+
+	cache := indexCacheData{
+		Entries:      entries,
+		MessageCount: msgCount,
+		ChunkCount:   chunkCount,
+	}
+
+	// 确保目录存在
+	dir := filepath.Dir(s.config.IndexCachePath)
+	os.MkdirAll(dir, 0755)
+
+	f, err := os.Create(s.config.IndexCachePath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	gob.NewEncoder(f).Encode(cache)
 }
 
 // Save 保存消息（支持批量 + 嵌入生成）
 // 每条消息使用递增时间戳，确保同一轮对话内的顺序正确
+// 嵌入生成在事务外执行，避免网络 I/O 阻塞 SQLite 写锁
 func (s *Store) Save(ctx context.Context, sessionID string, msgs []*schema.Message) error {
 	if len(msgs) == 0 {
 		return nil
@@ -375,108 +505,136 @@ func (s *Store) Save(ctx context.Context, sessionID string, msgs []*schema.Messa
 
 	baseTime := time.Now().UnixMilli()
 
+	type preparedMsg struct {
+		model     *MessageModel
+		chunks    []*EmbeddingChunk
+		chunkVecs [][]float32
+		msgVec    []float32
+		needChunk bool
+	}
+
+	// Phase 1: 在事务外准备所有数据（包括 embedding 网络调用）
+	prepared := make([]preparedMsg, len(msgs))
+	for i, msg := range msgs {
+		timestamp := baseTime + int64(i)
+		content := msg.TextContent()
+
+		model := &MessageModel{
+			ID:               fmt.Sprintf("%s_%s", sessionID, uuid.New().String()),
+			SessionID:        sessionID,
+			Role:             string(msg.Role),
+			Content:          content,
+			ReasoningContent: msg.ReasoningContent,
+			Timestamp:        timestamp,
+			CreatedAt:        time.Now(),
+		}
+
+		// 序列化元数据
+		metaData := make(map[string]any)
+		if len(msg.ToolCalls) > 0 {
+			metaData["tool_calls"] = msg.ToolCalls
+		}
+		if msg.ToolCallID != "" {
+			metaData["tool_call_id"] = msg.ToolCallID
+		}
+		if msg.IsMultimodal() {
+			metaData["multimodal"] = true
+			metaData["image_count"] = msg.ImageCount()
+			typeCounts := make(map[string]int)
+			for _, p := range msg.ContentParts {
+				typeCounts[p.Type]++
+			}
+			metaData["content_types"] = typeCounts
+		}
+		if len(msg.OutputImages) > 0 {
+			metaData["output_images"] = len(msg.OutputImages)
+		}
+		if msg.OutputAudio != nil {
+			metaData["output_audio"] = msg.OutputAudio.Format
+		}
+		if len(metaData) > 0 {
+			meta, _ := json.Marshal(metaData)
+			model.Metadata = string(meta)
+		}
+
+		prepared[i].model = model
+
+		// 嵌入生成（网络调用，在事务外执行）
+		if !s.config.DisableVectorSearch && s.embedding != nil {
+			embedText := content
+			if msg.ReasoningContent != "" {
+				embedText = msg.ReasoningContent + " " + embedText
+			}
+
+			estTokens := len([]rune(embedText)) / 2
+			prepared[i].needChunk = s.config.ChunkSize > 0 && estTokens > s.config.ChunkSize
+
+			if prepared[i].needChunk {
+				textChunks := SplitText(embedText, s.config.ChunkSize, s.config.ChunkOverlap)
+				prepared[i].chunks = make([]*EmbeddingChunk, len(textChunks))
+				prepared[i].chunkVecs = make([][]float32, len(textChunks))
+				for idx, chunkContent := range textChunks {
+					vec, err := s.embedding(ctx, chunkContent)
+					if err != nil || len(vec) == 0 {
+						continue
+					}
+					chunkModel := &EmbeddingChunk{
+						ID:         fmt.Sprintf("%s_chunk_%d", model.ID, idx),
+						MessageID:  model.ID,
+						SessionID:  sessionID,
+						ChunkIndex: idx,
+						Content:    chunkContent,
+					}
+					chunkModel.SetEmbedding(vec)
+					prepared[i].chunks[idx] = chunkModel
+					prepared[i].chunkVecs[idx] = vec
+				}
+			} else {
+				vec, err := s.embedding(ctx, embedText)
+				if err == nil && len(vec) > 0 {
+					model.SetEmbedding(vec)
+					prepared[i].msgVec = vec
+				}
+			}
+		}
+	}
+
+	// Phase 2: 在事务内只做数据库写入（纯磁盘 I/O）
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for i, msg := range msgs {
-			timestamp := baseTime + int64(i)
-
-			// 提取文本内容（多模态消息也要保存文本部分）
-			content := msg.TextContent()
-
-			model := &MessageModel{
-				ID:               fmt.Sprintf("%s_%s", sessionID, uuid.New().String()),
-				SessionID:        sessionID,
-				Role:             string(msg.Role),
-				Content:          content,
-				ReasoningContent: msg.ReasoningContent,
-				Timestamp:        timestamp,
-				CreatedAt:        time.Now(),
-			}
-
-			// 序列化元数据（包含工具调用和多模态标记）
-			metaData := make(map[string]any)
-			if len(msg.ToolCalls) > 0 {
-				metaData["tool_calls"] = msg.ToolCalls
-			}
-			if msg.ToolCallID != "" {
-				metaData["tool_call_id"] = msg.ToolCallID
-			}
-			// 记录多模态信息（不存储图片数据，只存元数据）
-			if msg.IsMultimodal() {
-				metaData["multimodal"] = true
-				metaData["image_count"] = msg.ImageCount()
-				// 记录内容类型分布
-				typeCounts := make(map[string]int)
-				for _, p := range msg.ContentParts {
-					typeCounts[p.Type]++
-				}
-				metaData["content_types"] = typeCounts
-			}
-			if len(msg.OutputImages) > 0 {
-				metaData["output_images"] = len(msg.OutputImages)
-			}
-			if msg.OutputAudio != nil {
-				metaData["output_audio"] = msg.OutputAudio.Format
-			}
-			if len(metaData) > 0 {
-				meta, _ := json.Marshal(metaData)
-				model.Metadata = string(meta)
-			}
-
-			// 嵌入生成（只对文本部分做嵌入，不嵌入图片）
-			if !s.config.DisableVectorSearch && s.embedding != nil {
-				embedText := content
-				if msg.ReasoningContent != "" {
-					embedText = msg.ReasoningContent + " " + embedText
-				}
-
-				estTokens := len([]rune(embedText)) / 2
-				needChunk := s.config.ChunkSize > 0 && estTokens > s.config.ChunkSize
-
-				if needChunk {
-					chunks := SplitText(embedText, s.config.ChunkSize, s.config.ChunkOverlap)
-					for idx, chunkContent := range chunks {
-						vec, err := s.embedding(ctx, chunkContent)
-						if err != nil || len(vec) == 0 {
-							continue
-						}
-						chunkModel := &EmbeddingChunk{
-							ID:         fmt.Sprintf("%s_chunk_%d", model.ID, idx),
-							MessageID:  model.ID,
-							SessionID:  sessionID,
-							ChunkIndex: idx,
-							Content:    chunkContent,
-						}
-						chunkModel.SetEmbedding(vec)
-
-						if err := tx.Create(chunkModel).Error; err != nil {
-							return err
-						}
-						s.vecMu.Lock()
-						if s.vecIndex != nil {
-							s.addToIndex(&messageNode{
-								model: &MessageModel{ID: chunkModel.ID},
-								vec:   vec,
-							})
-						}
-						s.vecMu.Unlock()
+		for _, p := range prepared {
+			if p.needChunk {
+				for idx, chunk := range p.chunks {
+					if chunk == nil {
+						continue
 					}
-				} else {
-					vec, err := s.embedding(ctx, embedText)
-					if err == nil && len(vec) > 0 {
-						model.SetEmbedding(vec)
+					if err := tx.Create(chunk).Error; err != nil {
+						return err
+					}
+					if p.chunkVecs[idx] != nil {
 						s.vecMu.Lock()
 						if s.vecIndex != nil {
 							s.addToIndex(&messageNode{
-								model: model,
-								vec:   vec,
+								model: &MessageModel{ID: chunk.ID},
+								vec:   p.chunkVecs[idx],
 							})
 						}
 						s.vecMu.Unlock()
 					}
 				}
+			} else {
+				if p.msgVec != nil {
+					s.vecMu.Lock()
+					if s.vecIndex != nil {
+						s.addToIndex(&messageNode{
+							model: p.model,
+							vec:   p.msgVec,
+						})
+					}
+					s.vecMu.Unlock()
+				}
 			}
 
-			if err := tx.Create(model).Error; err != nil {
+			if err := tx.Create(p.model).Error; err != nil {
 				return err
 			}
 		}
@@ -846,7 +1004,9 @@ func (s *Store) ClearSession(ctx context.Context, sessionID string) error {
 
 // Close 关闭存储
 func (s *Store) Close() error {
-	// 清理向量索引
+	// 关闭前保存索引缓存
+	s.saveIndexCache()
+
 	s.vecMu.Lock()
 	s.vecIndex = nil
 	s.vecMu.Unlock()

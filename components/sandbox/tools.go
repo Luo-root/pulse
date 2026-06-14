@@ -3,27 +3,63 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/Luo-root/pulse/components/tools"
 )
 
-// RegisterSandboxTools 将沙箱能力注册为 Agent 可调用的工具
-func RegisterSandboxTools(registry *tools.ToolRegistry, sb Sandbox) error {
+// LangDef 工具层的语言定义
+type LangDef struct {
+	Command   string
+	Args      []string
+	Ext       string
+	InitFiles map[string]string
+}
 
-	// ---- 工具：执行代码 ----
+// defaultLangs 返回平台适配的语言配置
+func defaultLangs() map[string]LangDef {
+	pythonCmd := "python3"
+	shellCmd := "sh"
+	shellArgs := []string{"-c"}
+
+	if runtime.GOOS == "windows" {
+		pythonCmd = "python"
+		shellCmd = "cmd"
+		shellArgs = []string{"/C"}
+	}
+
+	return map[string]LangDef{
+		"python": {Command: pythonCmd, Ext: ".py"},
+		"node":   {Command: "node", Ext: ".js"},
+		"go":     {Command: "go", Args: []string{"run"}, Ext: ".go", InitFiles: map[string]string{"go.mod": "module sandbox\ngo 1.21\n"}},
+		"shell":  {Command: shellCmd, Args: shellArgs},
+	}
+}
+
+// RegisterSandboxTools 将沙箱能力注册为 Agent 可调用的工具
+func RegisterSandboxTools(registry *tools.ToolRegistry, sb Sandbox, langs map[string]LangDef) error {
+	if langs == nil {
+		langs = defaultLangs()
+	}
+
+	langNames := make([]string, 0, len(langs))
+	for name := range langs {
+		langNames = append(langNames, name)
+	}
+
 	executeSchema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"language": map[string]any{
 				"type":        "string",
-				"enum":        sb.ListLangs(),
+				"enum":        langNames,
 				"description": "编程语言",
 			},
 			"code": map[string]any{
 				"type":        "string",
-				"description": "要执行的代码。Python/Node/Go 需要完整可运行的代码，Shell 直接写命令",
+				"description": "要执行的代码",
 			},
 			"timeout": map[string]any{
 				"type":        "number",
@@ -35,15 +71,14 @@ func RegisterSandboxTools(registry *tools.ToolRegistry, sb Sandbox) error {
 
 	if err := registry.Register(tools.ToolMetadata{
 		Name:        "sandbox_execute_code",
-		Description: buildExecuteDesc(sb),
+		Description: fmt.Sprintf("在沙箱中执行代码。支持: %s。超时30秒，输出限制1MB。", strings.Join(langNames, ", ")),
 		Parameters:  executeSchema,
 		Category:    "sandbox",
 		Tags:        []string{"sandbox", "execution"},
-	}, makeExecuteHandler(sb)); err != nil {
-		return fmt.Errorf("注册 execute_code: %w", err)
+	}, makeExecuteHandler(sb, langs)); err != nil {
+		return err
 	}
 
-	// ---- 工具：执行 Shell 命令 ----
 	commandSchema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -59,27 +94,26 @@ func RegisterSandboxTools(registry *tools.ToolRegistry, sb Sandbox) error {
 		"required": []string{"command"},
 	}
 
-	if err := registry.Register(tools.ToolMetadata{
-		Name: "sandbox_run_command",
-		Description: "在沙箱中执行 shell 命令。" +
-			"适合运行系统命令、安装依赖、文件操作等。有超时和输出大小限制。",
-		Parameters: commandSchema,
-		Category:   "sandbox",
-		Tags:       []string{"sandbox", "shell"},
-	}, makeCommandHandler(sb)); err != nil {
-		return fmt.Errorf("注册 run_command: %w", err)
-	}
-
-	return nil
+	return registry.Register(tools.ToolMetadata{
+		Name:        "sandbox_run_command",
+		Description: "在沙箱中执行 shell 命令。有超时和输出大小限制。",
+		Parameters:  commandSchema,
+		Category:    "sandbox",
+		Tags:        []string{"sandbox", "shell"},
+	}, makeCommandHandler(sb, langs))
 }
 
-// makeExecuteHandler 生成 execute_code 的 handler
-func makeExecuteHandler(sb Sandbox) func(ctx context.Context, args map[string]any) (any, error) {
+func makeExecuteHandler(sb Sandbox, langs map[string]LangDef) func(ctx context.Context, args map[string]any) (any, error) {
 	return func(ctx context.Context, args map[string]any) (any, error) {
-		lang, _ := args["language"].(string)
+		langName, _ := args["language"].(string)
 		code, _ := args["code"].(string)
-		if lang == "" || code == "" {
+		if langName == "" || code == "" {
 			return nil, fmt.Errorf("language 和 code 不能为空")
+		}
+
+		lang, ok := langs[langName]
+		if !ok {
+			return nil, fmt.Errorf("不支持的语言: %s", langName)
 		}
 
 		var timeout time.Duration
@@ -87,11 +121,25 @@ func makeExecuteHandler(sb Sandbox) func(ctx context.Context, args map[string]an
 			timeout = time.Duration(t * float64(time.Second))
 		}
 
-		result, err := sb.Execute(ctx, ExecRequest{
-			Language: lang,
-			Code:     code,
-			Timeout:  timeout,
-		})
+		// 构建命令 + 文件注入
+		req := ExecRequest{Timeout: timeout}
+
+		for name, content := range lang.InitFiles {
+			req.Files = append(req.Files, InputFile{Path: name, Content: content})
+		}
+
+		if lang.Ext != "" {
+			// 有扩展名：写代码到文件，运行 <command> <args...> <file>
+			req.Files = append(req.Files, InputFile{Path: "main" + lang.Ext, Content: code})
+			req.Command = lang.Command
+			req.Args = append(append([]string{}, lang.Args...), "main"+lang.Ext)
+		} else {
+			// 无扩展名：shell 模式，代码直接作为命令参数
+			req.Command = lang.Command
+			req.Args = append(append([]string{}, lang.Args...), code)
+		}
+
+		result, err := sb.Execute(ctx, req)
 		if err != nil {
 			return nil, err
 		}
@@ -99,8 +147,7 @@ func makeExecuteHandler(sb Sandbox) func(ctx context.Context, args map[string]an
 	}
 }
 
-// makeCommandHandler 生成 run_command 的 handler
-func makeCommandHandler(sb Sandbox) func(ctx context.Context, args map[string]any) (any, error) {
+func makeCommandHandler(sb Sandbox, langs map[string]LangDef) func(ctx context.Context, args map[string]any) (any, error) {
 	return func(ctx context.Context, args map[string]any) (any, error) {
 		command, _ := args["command"].(string)
 		if command == "" {
@@ -112,10 +159,12 @@ func makeCommandHandler(sb Sandbox) func(ctx context.Context, args map[string]an
 			timeout = time.Duration(t * float64(time.Second))
 		}
 
+		// shell 模式：用配置的 shell 命令
+		shell := langs["shell"]
 		result, err := sb.Execute(ctx, ExecRequest{
-			Language: "shell",
-			Code:     command,
-			Timeout:  timeout,
+			Command: shell.Command,
+			Args:    append(append([]string{}, shell.Args...), command),
+			Timeout: timeout,
 		})
 		if err != nil {
 			return nil, err
@@ -124,21 +173,16 @@ func makeCommandHandler(sb Sandbox) func(ctx context.Context, args map[string]an
 	}
 }
 
-// FormatResult 格式化执行结果为 LLM 可读文本
 func FormatResult(r *ExecResult) string {
 	var sb strings.Builder
-
 	if r.TimedOut {
 		sb.WriteString("[TIMEOUT] 执行超时\n")
 	}
-
 	sb.WriteString(fmt.Sprintf("Exit Code: %d\n", r.ExitCode))
 	sb.WriteString(fmt.Sprintf("Duration: %s\n", r.Duration.Round(time.Millisecond)))
-
 	if r.Truncated {
 		sb.WriteString("(output truncated)\n")
 	}
-
 	if r.Stdout != "" {
 		sb.WriteString("\n--- STDOUT ---\n")
 		sb.WriteString(r.Stdout)
@@ -146,7 +190,6 @@ func FormatResult(r *ExecResult) string {
 			sb.WriteString("\n")
 		}
 	}
-
 	if r.Stderr != "" {
 		sb.WriteString("\n--- STDERR ---\n")
 		sb.WriteString(r.Stderr)
@@ -154,33 +197,8 @@ func FormatResult(r *ExecResult) string {
 			sb.WriteString("\n")
 		}
 	}
-
 	if r.Stdout == "" && r.Stderr == "" {
 		sb.WriteString("\n(no output)\n")
 	}
-
 	return sb.String()
-}
-
-// buildExecuteDesc 构建 execute_code 工具描述
-func buildExecuteDesc(sb Sandbox) string {
-	langs := sb.ListLangs()
-	var tips []string
-	for _, lang := range langs {
-		switch lang {
-		case "python":
-			tips = append(tips, "Python: 完整脚本，可 import 标准库")
-		case "node":
-			tips = append(tips, "Node.js: 完整脚本，可 require 标准模块")
-		case "go":
-			tips = append(tips, "Go: 需要 package main + func main()")
-		case "shell":
-			tips = append(tips, "Shell: 单条命令或多条用 && 连接")
-		}
-	}
-	return fmt.Sprintf(
-		"在沙箱中执行代码。支持语言: %s。有超时限制（默认30秒），输出限制1MB。\n%s",
-		strings.Join(langs, ", "),
-		strings.Join(tips, "；"),
-	)
 }

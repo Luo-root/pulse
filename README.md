@@ -12,21 +12,9 @@
 - [架构概览](#架构概览)
 - [核心特性](#核心特性)
 - [模块说明](#模块说明)
-  - [agent —— Agent 核心](#agent--agent-核心)
-  - [chatmodel —— 模型抽象](#chatmodel--模型抽象)
-  - [schema —— 消息与工具定义](#schema--消息与工具定义)
-  - [tools —— 工具注册与执行](#tools--工具注册与执行)
-  - [memory —— 记忆管理](#memory--记忆管理)
-  - [mcp —— MCP 协议客户端](#mcp--mcp-协议客户端)
-  - [sandbox —— 代码执行沙箱](#sandbox--代码执行沙箱)
-  - [flowchart —— 工作流编排](#flowchart--工作流编排)
-  - [skill —— Agent Skill 管理](#skill--agent-skill-管理)
-  - [stream —— 流式消息多播](#stream--流式消息多播)
-  - [flow —— 流式数据上下文](#flow--流式数据上下文)
 - [安装与依赖](#安装与依赖)
 - [快速开始](#快速开始)
 - [项目结构](#项目结构)
-- [项目参考](#应用的项目)
 - [许可证](#许可证)
 
 ---
@@ -46,7 +34,7 @@
 │  │LongTerm  │  │ Anthropic │  │ Web / Config │           │
 │  └──────────┘  └──────────┘  └──────────────┘           │
 ├─────────────────────────────────────────────────────────┤
-│  Flowchart (Workflow) ─ DAG + 拓扑并行                   │
+│  Flowchart (Workflow) ─ DAG + 切面 + ReAct/PlanExecute   │
 ├─────────────────────────────────────────────────────────┤
 │  MCP Client ─ JSON-RPC 2.0 over stdio                    │
 ├─────────────────────────────────────────────────────────┤
@@ -62,10 +50,12 @@
 
 1. **全栈 Agent 能力**：从模型接入到流式处理的完整解决方案
 2. **模块化设计**：各组件职责清晰，易于扩展和维护
-3. **安全机制**：包含路径安全校验、危险命令拦截、代码沙箱隔离等
+3. **安全机制**：危险命令拦截、代码沙箱隔离
 4. **可扩展性**：支持动态工具注册、技能加载、工作流编排
-5. **多模型支持**：支持 OpenAI 和 Anthropic 等主流模型接口
-6. **高性能**：基于协程池的工作流引擎，支持并行节点执行
+5. **多模型支持**：支持 OpenAI 和 Anthropic 等主流模型接口（兼容 Ollama 等 OpenAI 兼容端点）
+6. **多模态支持**：图片、音频、视频、文件的输入输出，工具结果多模态返回
+7. **高性能**：基于协程池的工作流引擎，支持并行节点执行
+8. **统一 Aspect 切面系统**：重试、超时、熔断、panic 捕获，每层独立可取消 context
 
 ---
 
@@ -82,23 +72,16 @@ Agent 是所有能力的调度中心，负责多轮对话循环、工具调用�
 | 类型 | 说明 |
 |------|------|
 | `Agent` | Agent 主体，封装 `BaseModel` + `ToolRegistry` + `MemoryController` |
-| `AgentInterface` | 统一接口：`Send()` 非流式 / `SendStream()` 流式 |
+| `Interface` | 统一接口：`SendMessage()` 非流式 / `SendMessageStream()` 流式 |
 | `UsageTracker` | Token 使用追踪器，支持多模型定价、预算控制、JSON 导出 |
-| `UsageRecord` / `UsageStats` | Token 消耗记录与汇总统计 |
-
-**关键机制**:
-
-- **工具调用循环**: 每个 `Send` / `SendStream` 调用最多执行 `DefaultMaxToolRounds`（默认 10）轮工具调用
-- **默认内存控制器**: 自动创建 200 条消息上限 + 8000 Token 预留的滑动窗口
-- **系统提示词模板**: 自动注入工作目录约束和工具调用规则
 
 ```go
-ag := agent.NewAgent(model, toolRegistry,
+ag := agent.NewAgent(model, registry,
     agent.WithSessionID("session-001"),
     agent.WithUsageTracker(tracker),
     agent.WithMaxToolRounds(5),
 )
-resp, err := ag.Send(ctx, "你好")
+resp, err := ag.SendMessage(ctx, schema.UserMessage("你好"))
 ```
 
 ---
@@ -107,7 +90,7 @@ resp, err := ag.Send(ctx, "你好")
 
 **位置**: `components/chatmodel/`
 
-定义模型统一接口并提供 OpenAI 和 Anthropic 实现，附带测试用 Mock 模型。
+定义模型统一接口并提供 OpenAI 和 Anthropic 实现。
 
 **核心接口**:
 
@@ -118,20 +101,11 @@ type BaseModel interface {
 }
 ```
 
-**实现**:
-
 | 实现 | 位置 | 说明 |
 |------|------|------|
-| `openai.ChatModel` | `components/chatmodel/openai/` | OpenAI 兼容 API（支持任意兼容端点） |
+| `openai.ChatModel` | `components/chatmodel/openai/` | OpenAI 兼容 API（支持 Ollama、vLLM 等兼容端点） |
 | `anthropic.ChatModel` | `components/chatmodel/anthropic/` | Anthropic Messages API |
-| `MockModel` | `components/chatmodel/mock_model.go` | 可编程响应的测试模拟模型 |
-
-**MockModel 特性**:
-
-- 预设响应队列（`MockResponse` 支持文本、推理、工具调用、延迟、错误）
-- 循环/非循环模式、自定义 `generateFunc` / `streamFunc`
-- 记录所有输入消息供断言验证
-- 预置场景：天气助手、回声模型、流式模型
+| `MockModel` | `components/chatmodel/mock/` | 可编程响应的测试模拟模型 |
 
 ---
 
@@ -145,17 +119,13 @@ type BaseModel interface {
 
 | 类型 | 说明 |
 |------|------|
-| `Message` | 统一消息结构：`Role`、`Content`、`ReasoningContent`、`ToolCalls`、`ToolCallID`、`Usage` |
+| `Message` | 统一消息结构，支持多模态 ContentParts、OutputImages、OutputAudio |
+| `ContentPart` | 多模态内容片段（text/image_url/input_audio/video_url/file_url/inline_data） |
 | `ToolCall` / `FunctionCall` | 工具调用结构体 |
-| `ToolResult` | 工具执行结果（含错误标记） |
-| `StreamReader` | 流式消息读取器（`Send` / `Recv` 模式） |
+| `ToolResult` | 工具执行结果，支持多模态 ContentParts 返回 |
+| `ToolResultContent` | 工具返回多模态结果时使用的结构体 |
+| `StreamReader` | 流式消息读取器 |
 | `Tool` | 工具定义：`Name` + `Description` + `Parameters`（JSON Schema） |
-
-**辅助能力**:
-
-- `Clone()` 深拷贝消息
-- `SystemMessage()` / `UserMessage()` / `AssistantMessage()` / `ToolResultsMessage()` 便捷构造
-- `FormatMessages()` / `PrintMessages()` 可读化打印
 
 ---
 
@@ -167,48 +137,46 @@ type BaseModel interface {
 
 **ToolRegistry（工具注册中心）**:
 
-```go
-type ToolRegistry struct {
-    tools map[string]*RegisteredTool
-    // 生命周期钩子
-    beforeExecuteFunc []func(...)
-    afterExecuteFunc  []func(...)
-    onRegisterFunc    []func(...)
-    onUnregisterFunc  []func(...)
-}
-```
-
 - 动态注册/注销/更新工具
+- `RegisterSimple()` 简化注册，`Register()` 完整注册
 - 批量并行执行（`ExecuteBatch`）
-- 按分类/权限/标签筛选
-- 启用/禁用控制
-- 4 阶段生命周期钩子
+- 4 阶段生命周期钩子（beforeExecute / afterExecute / onRegister / onUnregister）
 
 **权限分级**:
 
-| 级别 | 常量 | 说明 |
-|------|------|------|
-| 只读 | `PermReadOnly` | 无副作用（file_read、file_list、web_search） |
-| 读写 | `PermReadWrite` | 可能修改状态（file_write、user_config） |
-| 危险 | `PermDangerous` | 可能破坏系统（command_exec） |
+| 级别 | 说明 |
+|------|------|
+| `PermReadOnly` | 无副作用（file_read、file_list） |
+| `PermReadWrite` | 可能修改状态（file_write、file_edit） |
+| `PermDangerous` | 可能破坏系统（command_exec） |
 
 **内置工具**:
 
 | 工具 | 说明 |
 |------|------|
-| `file_read` | 读取文件内容（≤10MB），路径安全校验 |
-| `file_write` | 写入文件，自动创建父目录，路径安全校验 |
-| `file_list` | 列出目录内容，返回文件/目录元信息 |
-| `command_exec` | 执行系统命令，危险命令自动拦截（rm -f /、mkfs、dd、format 等） |
-| `web_search` | 联网搜索（基于 Serper.dev），支持地区和语言参数 |
-| `user_config` | 用户配置管理：偏好设置、运行规则读取与持久化（SQLite） |
-| `get_work_dir` | 获取当前工作目录和操作系统信息 |
-| `chromium` | 基于 Chrome DevTools Protocol 的浏览器自动化工具 |
-| `html_parser` | HTML 解析工具，支持提取文本、链接、图片等信息 |
+| `file_read` | 读取文件内容（≤10MB） |
+| `file_write` | 写入文件，自动创建父目录 |
+| `file_list` | 列出目录内容 |
+| `file_edit` | 精确字符串替换（增量修改文件） |
+| `file_search` | 文件名 glob 匹配 + 内容关键词搜索 |
+| `command_exec` | 执行 shell 命令，危险命令自动拦截 |
+| `web_fetch` | HTTP 抓取网页内容 |
+| `web_browse` | chromium 浏览器自动化（截图、点击、输入） |
+| `user_config` | 用户配置管理（SQLite） |
+| `get_work_dir` | 获取当前工作目录 |
 
-**路径安全（file.go）**: `safePath()` 函数确保所有文件操作严格限定在工作目录内，防止路径穿越攻击。
+**一键注册**:
 
-**动态加载器（loader.go / options.go）**: 支持运行时动态注册新工具，通过 `ToolOption` 模式配置权限、分类、超时、标签等属性。
+```go
+registry := tools.NewToolRegistry()
+registered := tools.RegisterAll(registry)
+// 自动检测 Chrome 环境，不可用时跳过 web_browse
+```
+
+`RegisterAll()` 自动检测环境：
+- 文件/命令/环境工具：始终注册
+- `web_browse`：检查系统是否有 Chrome/Chromium，没有则跳过
+- `RegisterAllWithBrowser()`：强制注册所有工具（Chrome 首次使用时自动下载）
 
 ---
 
@@ -222,40 +190,34 @@ type ToolRegistry struct {
 
 | 类型 | 说明 |
 |------|------|
-| `Controller` | 记忆控制器，协调三类记忆的存储与上下文构建 |
+| `Controller` | 记忆控制器，支持 functional options 配置 |
 | `ShortMemoryManager` | 短期记忆接口 |
-| `SimpleWindowMemory` | 纯滑动窗口实现 |
-| `WindowManager` | 对话窗口管理器，支持数量限制 + Token 限制 |
-| `WindowConfig` | 窗口配置（消息数上限、Token 上限、可自动计算） |
 | `LongTermStore` | 长期记忆存储接口 |
-| `GormStore` | 基于 GORM + SQLite 的高级记忆存储 |
-| `Embedder` / `EmbeddingFunc` | 文本向量化接口 |
+| `OpenAIEmbedder` | OpenAI 兼容 Embedding 实现（支持 OpenAI、Ollama /v1/embeddings、vLLM 等） |
 
 **短期记忆 - 窗口策略**:
 
-- `WindowManager.Truncate()`: 始终保留 System 消息；按消息数量 / Token 数双重限制；自动修复孤立的 ToolResult
-- 自动窗口计算：设置 `ReserveTokens` + 模型实现 `ModelContextWindow` → 自动计算 `MaxHistoryTokens`
-- 默认 Token 估算器：`1 token ≈ 1.8 个 rune`（中英文混合保守估算）
+- `window.Manager`: 按消息数量 / Token 数双重限制截断
+- `window.CalibratedEstimator`: 基于模型实际返回的 prompt_tokens 动态校准估算比例
+- `window.Config.ReserveTokens`: 设置预留 Token 数，自动计算 `MaxHistoryTokens`
 
 **长期记忆 - GormStore**:
 
-- 基于 SQLite 持久化存储
-- HNSW 向量索引实现高效语义搜索
-- 4 种召回模式：Auto（自适应）、Vector（向量语义）、Hybrid（关键词+时间衰减）、Combined（组合权重）
-- 长文本自动分块（`SplitText`）+ 自然边界断句
-- 异步向量索引重建、安全 panic 捕获
+- 基于 SQLite + HNSW 向量索引
+- 4 种召回模式：Auto、Vector、Hybrid、Combined（默认，向量+关键词+时间衰减权重 0.5/0.3/0.2）
+- 长文本自动分块 + 自然边界断句
 
 ```go
-store, _ := memory.NewGormStore(&memory.GormStoreConfig{
+store, _ := gorm.NewStore(&gorm.Config{
     DBPath:     "./chat.db",
-    RecallMode: memory.RecallModeAuto,
-}, embedFunc)
+    RecallMode: gorm.RecallModeCombined,
+}, memory.NewOpenAIEmbedder(&memory.OpenAIEmbedderConfig{
+    BaseURL: "https://api.openai.com/v1",
+    APIKey:  os.Getenv("OPENAI_API_KEY"),
+    Model:   "text-embedding-3-small",
+}).Embed)
 
-controller := memory.NewController(
-    systemPrompts,
-    memory.NewSimpleWindowMemory(windowMgr),
-    store,
-)
+controller := memory.NewController(systemPrompts, shortMemory, store)
 ```
 
 ---
@@ -266,27 +228,11 @@ controller := memory.NewController(
 
 实现 MCP (Model Context Protocol) 客户端，通过 JSON-RPC 2.0 over stdio 与外部 MCP 服务器通信。
 
-**核心组件**:
-
 | 组件 | 说明 |
 |------|------|
 | `Client` | MCP 客户端，实现 initialize → tools/list → tools/call 协议流程 |
-| `Transport` | 传输层接口（`Connect` / `Send` / `Recv` / `Close`） |
-| `StdioTransport` | 基于子进程 stdin/stdout 的传输层实现 |
 | `Manager` | 多 MCP 服务器管理器，自动注册/注销工具到 ToolRegistry |
 | `ConfigFile` | 配置文件加载（支持 `${VAR}` 环境变量替换） |
-
-**MCP 工具自动注册**:
-
-1. 连接 MCP 服务器 → 自动 `tools/list` 发现工具
-2. 按 `prefix/工具名` 格式注册到 `ToolRegistry`
-3. 工具调用自动转发到 MCP 服务器
-4. 断开连接自动注销
-
-```go
-manager := mcp.NewManager(toolRegistry)
-err := manager.ConnectFromConfig(ctx, "mcp_config.json")
-```
 
 ---
 
@@ -294,48 +240,46 @@ err := manager.ConnectFromConfig(ctx, "mcp_config.json")
 
 **位置**: `components/sandbox/`
 
-提供安全的代码执行环境，支持 Python、Node.js、Go、Shell 多语言。
+提供安全的代码执行环境，支持 Python、Node.js、Go、Shell 等语言。
 
-**核心接口**:
+**特性**:
 
-```go
-type Sandbox interface {
-    Execute(ctx context.Context, req ExecRequest) (*ExecResult, error)
-    CheckLang(lang string) error
-    ListLangs() []string
-    Close() error
-}
-```
-
-**ProcessSandbox 特性**:
-
-- 临时工作目录隔离（`os.MkdirTemp`）
-- 超时控制（默认 30s）
-- 输出截断（默认 1MB）
-- Windows 进程树管理（`CREATE_NEW_PROCESS_GROUP` + `taskkill /T`）
-- 自动创建 `go.mod` 等初始化文件
-- 支持代码执行前注入文件
-
-**工具注册**: 通过 `RegisterSandboxTools()` 注册 `sandbox-execute_code` 和 `sandbox-run_command` 两个工具。
+- 语言自动检测（有 Python 环境就能用 Python，有 Node 就能用 JS）
+- 环境变量三种模式：黑名单（默认）/ 白名单 / 透传
+- `ExecRequest.WorkDir` 支持指定工作目录（空则使用临时目录）
+- 输入文件路径穿越校验
+- 超时控制（默认 30s）+ 输出截断（默认 1MB）
 
 ---
 
-### flowchart —— 工作流编排
+### flowchart —— 工作流编排与 Agent 规划
 
 **位置**: `components/flowchart/`
 
-基于声明式依赖的工作流引擎，支持并行节点执行和 AOP 切面。
+基于声明式依赖的工作流引擎，支持并行节点执行、AOP 切面和 Agent 规划。
 
-**核心类型**:
+**核心组件**:
 
-| 类型 | 说明 |
+| 包 | 说明 |
 |------|------|
-| `Workflow` | 工作流引擎：基于 `FlowContext` 的声明式依赖工作流引擎 |
-| `Node` (interface) | 节点接口：`ID()` / `Inputs()` / `Outputs()` / `Run()` / `Aspects()` |
-| `SimpleNode` | 通用节点实现（函数式） |
-| `TopologicalNode` | 拓扑排序节点包装器，自动按依赖分层并行执行 |
+| `flowchart/` | Workflow 引擎、工作流级错误 |
+| `flowchart/flow/` | FlowContext、DataSlot、SafeMap — 数据传递基础设施 |
+| `flowchart/node/` | Node 接口、功能节点、Aspect 切面系统、Loop 类型 |
+| `flowchart/agent/` | AgentLoop（ReAct 循环）、PlanExecutor（规划-执行策略） |
 
-**内置功能节点（functional_node.go）**:
+**Node 接口**:
+
+```go
+type Node interface {
+    ID() string
+    Inputs() []string
+    Outputs() []string
+    Run(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error)
+    Aspects() []Aspect
+}
+```
+
+**内置功能节点**:
 
 | 节点 | 说明 |
 |------|------|
@@ -343,42 +287,56 @@ type Sandbox interface {
 | `NewLoopNode` | 循环节点（while 模式），支持超时/取消/最大迭代 |
 | `NewParallelNode` | 并行汇聚节点 |
 | `NewLLMStreamNode` | 流式 LLM 节点（Fork 出多个 StreamReader） |
-| `NewTaskNode` | 任务节点，由 Agent 驱动执行 |
-| `NewReActPlannerNode` | ReAct 规划节点，自动拆解目标为任务序列 |
-| `ScheduleLoopNode` | 调度循环节点，监听失败任务自动重规划 |
 
-**AOP 切面（node/）**:
+**统一 Aspect 切面系统**:
+
+所有切面实现统一接口，per-layer 独立可取消 context：
+
+```go
+type Aspect interface {
+    Around(ctx *AspectContext, node Node, next func() (map[string]any, error)) (map[string]any, error)
+}
+```
 
 | 切面 | 说明 |
 |------|------|
-| `Aspect` | 切面接口：`Before` / `After` |
-| `Interceptor` | 拦截器接口：`Around`（洋葱模型调用链） |
-| `RetryInterceptor` | 自动重试（支持最大尝试次数和延迟） |
-| `TimeoutInterceptor` | 超时控制（goroutine + timer 模式） |
-| `CircuitBreakerInterceptor` | 熔断降级（Closed → Open → HalfOpen 三态转换） |
-| `RecoveryInterceptor` | Panic 捕获与兜底逻辑 |
-| `ErrorSwallowInterceptor` | 作为外层拦截器使用，避免Error触发工作流层的 `ctx.Cancel` |
+| `RetryAspect` | 自动重试 |
+| `TimeoutAspect` | 超时控制（创建带超时的子 context，超时自动取消 WaitAll） |
+| `CircuitBreakerAspect` | 熔断降级（Closed → Open → HalfOpen） |
+| `RecoveryAspect` | panic 捕获与兜底 |
+| `ErrorSwallowAspect` | 错误吞没，防止传播到工作流层 |
+
+便捷构造器：`BeforeFunc(fn)` / `AfterFunc(fn)` / `AroundFunc(fn)`
+
+**Agent 规划**（`flowchart/agent/`）:
+
+| 引擎 | 说明 |
+|------|------|
+| `AgentLoop` | ReAct 循环：思考 → 工具调用 → 观察 → 循环 |
+| `PlanExecutor` | Plan-and-Execute：LLM 规划 → 验证依赖 → 逐步执行 → 重规划 |
+
+```go
+// ReAct 循环
+loop := agent.NewAgentLoop(model, registry, agent.WithMaxRounds(10))
+result, _ := loop.Run(ctx, "帮我分析这个数据集")
+
+// Plan-and-Execute
+executor := agent.NewPlanExecutor(model, registry)
+result, _ := executor.Run(ctx, "生成一份销售报告")
+```
 
 **工作流执行流程**:
 
-1. 用户添加节点 → `buildDAG()` 从 `Inputs()/Outputs()` 构建生产者映射
-2. 拓扑排序（Kahn 算法）检测循环依赖
-3. 按层分组 → 层内并行执行（`ants.Pool` 协程池）
-4. 层间串行 → 前一层输出写入 `FlowContext`，后一层 `WaitAll` 等待
+1. 用户添加节点 → 节点通过 `Inputs()/Outputs()` 声明依赖
+2. 所有节点提交到协程池，每个节点启动后 `WaitAll(inputs...)` 阻塞等待
+3. 数据就绪 → 构建切面链 → 执行节点 → 输出写入 FlowContext
+4. 下游节点自动被唤醒
 
 ```go
 wf, _ := flowchart.NewWorkflow(ctx, 10)
-wf.AddNode(node.NewNode("step1", []string{"input"}, []string{"mid"},
-    func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
-        return map[string]any{"mid": "processed"}, nil
-    },
-))
-wf.AddNode(node.NewNode("step2", []string{"mid"}, []string{"output"},
-    func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
-        return map[string]any{"output": inputs["mid"]}, nil
-    },
-))
-err := wf.Run(map[string]any{"input": "hello"})
+wf.AddNode(node.NewNode("step1", []string{"input"}, []string{"mid"}, runFunc))
+wf.AddNode(node.NewNode("step2", []string{"mid"}, []string{"output"}, runFunc))
+wf.Run(map[string]any{"input": "hello"})
 ```
 
 ---
@@ -389,33 +347,10 @@ err := wf.Run(map[string]any{"input": "hello"})
 
 基于 Markdown frontmatter 的技能定义系统，支持 Skill 作为 Agent 可调用工具的自动注册与动态加载。
 
-**Skill 结构**:
-
-```yaml
----
-name: my-skill
-description: 这是一个示例 Skill
-allowed-tools: file_read file_list
-parameters:
-  type: object
-  properties:
-    path:
-      type: string
-timeout: 30
----
-# Skill 正文（返回给 Agent 的指令内容）
+```go
+loader := skill.NewSkillLoader(registry, toolRegistry)
+loader.LoadFromDir("./skills")
 ```
-
-**核心组件**:
-
-| 组件 | 说明 |
-|------|------|
-| `Skill` | Skill 定义结构体（YAML + Markdown） |
-| `SkillRegistry` | Skill 注册表（内存索引） |
-| `SkillLoader` | Skill 加载器：从文件/字符串/目录加载并注册为工具 |
-| `ParseSkillMarkdown()` | Frontmatter 解析器 |
-
-**AllowedTools 机制**: Skill 可声明 `allowed-tools` 白名单，通过 `beforeExecute` 钩子限制该 Skill 只能调用指定的工具。
 
 ---
 
@@ -425,43 +360,9 @@ timeout: 30
 
 提供流式消息的一对多广播能力。
 
-**核心组件**:
-
-| 组件 | 说明 |
-|------|------|
-| `StreamWriter` | 流式消息写入器（与 `StreamReader` 配对使用） |
-| `MulticastController` | 多播控制器：源流 Fork 为多个子流，独立背压隔离 |
-
-**多播特性**:
-
 - `Fork(n)` 创建 N 个独立缓冲的子流
 - 慢消费者不影响其他消费者（独立缓冲区）
 - 广播超时保护（默认 5s）
-- 优雅关闭和错误传播
-
----
-
-### flow —— 流式数据上下文
-
-**位置**: `components/flow/`
-
-提供工作流节点间数据传递的基础设施。
-
-**核心组件**:
-
-| 组件 | 说明 |
-|------|------|
-| `FlowContext` | 工作流上下文：数据槽管理 + 取消信号 + 错误传播 |
-| `DataSlot` | 数据槽：支持 `SetOnce`（幂等）/ `SetOrUpdate`（覆盖）、`Wait`（阻塞等待）、`TryGet`（非阻塞） |
-| `SafeMap[K, V]` | 泛型并发安全 Map（基于 `sync.Map`） |
-| `LoopResult` / `LoopStatus` | 循环执行结果与状态 |
-
-**DataSlot 机制**:
-
-- `SetOnce(value)`: 首次写入，后续忽略（幂等）
-- `SetOrUpdate(value)`: 始终覆盖 + 广播唤醒等待者
-- `Get(ctx)`: 阻塞等待数据就绪，支持 context 取消
-- `WaitForAny(keys...)`: 使用 `reflect.Select` 多路复用等待任意一个就绪
 
 ---
 
@@ -478,11 +379,12 @@ go get github.com/Luo-root/pulse
 | 依赖 | 用途 |
 |------|------|
 | `gorm.io/gorm` + `github.com/glebarez/sqlite` | 长期记忆持久化 + 用户配置存储 |
-| `github.com/coder/hnsw` | HNSW 向量索引（语义搜索） |
+| `github.com/coder/hnsw` | HNSW 向量索引 |
 | `github.com/panjf2000/ants/v2` | 工作流协程池 |
 | `github.com/google/uuid` | 消息 ID 生成 |
 | `gopkg.in/yaml.v3` | Skill YAML 解析 |
 | `github.com/chromedp/chromedp` | 浏览器自动化工具 |
+| `golang.org/x/net` | HTML 解析 |
 
 ---
 
@@ -491,80 +393,43 @@ go get github.com/Luo-root/pulse
 ### 1. 创建 Agent
 
 ```go
-package main
+registry := tools.NewToolRegistry()
+tools.RegisterAll(registry)
 
-import (
-    "context"
-    "github.com/Luo-root/pulse/components/agent"
-    "github.com/Luo-root/pulse/components/chatmodel/openai"
-    "github.com/Luo-root/pulse/components/tools"
-)
+model, _ := openai.NewChatModel(&openai.ChatModelConfig{
+    BaseURL: "https://api.openai.com/v1",
+    APIKey:  os.Getenv("OPENAI_API_KEY"),
+    Model:   "gpt-4o",
+    Tools:   registry.GetEnabledTools(),
+})
 
-func main() {
-    // 1) 工具注册
-    registry := tools.NewToolRegistry()
-    // 注册内置工具（根据实际API调整）
-    // registry.Register(...)
-    
-    // 2) 模型
-    model, _ := openai.NewChatModel(&openai.ChatModelConfig{
-			BaseURL: m.config.API.BaseURL,
-			APIKey:  m.config.API.APIKey,
-			Model:   m.config.Model.ModelID,
-			Thinking: openai.Thinking{
-				Type: thinkingType,
-			},
-        	Tools: registry.GetEnabledTools(),
-		})
-
-    // 3) Agent
-    ag := agent.NewAgent(model, registry)
-    resp, _ := ag.Send(context.Background(), "列出当前目录文件")
-    println(resp.Content)
-}
+ag := agent.NewAgent(model, registry)
+resp, _ := ag.SendMessage(ctx, schema.UserMessage("列出当前目录文件"))
 ```
 
-### 2. 添加记忆
+### 2. 使用 ReAct 循环
 
 ```go
-store, _ := memory.NewGormStore(nil, nil)
-controller := memory.NewController(nil,
-    memory.NewSimpleWindowMemory(memory.NewWindowManager(
-        memory.WindowConfig{MaxHistoryMessages: 100, ReserveTokens: 4000},
-        model, nil,
-    )),
-    store,
+loop := flowagent.NewAgentLoop(model, registry,
+    flowagent.WithMaxRounds(10),
+    flowagent.WithSystemPrompt("你是一个编程助手"),
 )
-
-ag := agent.NewAgent(model, registry, agent.WithMemoryController(controller))
+result, _ := loop.Run(ctx, "帮我写一个 HTTP 服务器")
+fmt.Println(result.Answer)
 ```
 
 ### 3. 使用工作流
 
 ```go
 wf, _ := flowchart.NewWorkflow(ctx, 10)
-wf.AddNode(node.NewConditionNode("check", "data",
-    func(v any) bool { return v != nil },
-    "valid", "invalid",
-))
+wf.AddAspect(node.NewTimeoutAspect(30 * time.Second))
+wf.AddAspect(node.NewRetryAspect(3, time.Second))
 
-// 创建节点并添加重试拦截器
-testNode := node.NewNode("test", []string{"input"}, []string{"output"},
-    func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
-        return map[string]any{"output": "test"}, nil
-    },
-)
-testNode.AddAspect(node.NewRetryInterceptor(3, time.Second))
-wf.AddNode(testNode)
-wf.Run(map[string]any{"data": someValue})
-```
-
-### 4. 使用浏览器自动化工具（需要先注册chromium工具）
-
-```go
-// 使用 chromium 工具进行网页抓取（假设chromium工具已注册）
-// 首先需要确保chromium工具已注册到工具注册中心
-resp, err := ag.Send(ctx, "使用浏览器打开 https://example.com 并提取页面标题")
+n1 := node.NewNode("fetch", nil, []string{"data"}, fetchFunc)
+n2 := node.NewNode("process", []string{"data"}, []string{"result"}, processFunc)
+wf.AddNode(n1)
+wf.AddNode(n2)
+wf.Run(nil)
 ```
 
 ---
@@ -574,75 +439,205 @@ resp, err := ag.Send(ctx, "使用浏览器打开 https://example.com 并提取�
 ```
 pulse/
 ├── pulse.go                          # 包入口
-├── go.mod / go.sum                   # Go 模块定义
+├── go.mod / go.sum
+├── AGENTS.md                         # Agent 指令文件
 ├── LICENSE                           # Apache 2.0
-├── README.md                         # 项目文档
 └── components/
-    ├── agent/                        # Agent 核心调度
+    ├── agent/                        # Agent 核心
     │   ├── agent.go                  # Agent 主体 + 工具调用循环
     │   └── usage_tracker.go          # Token 使用追踪
     ├── chatmodel/                    # 模型抽象层
     │   ├── base_model.go             # BaseModel 接口
-    │   ├── mock_model.go             # 测试用 Mock 模型
+    │   ├── mock/                     # 测试用 Mock 模型
     │   ├── openai/                   # OpenAI 兼容实现
     │   └── anthropic/                # Anthropic 实现
     ├── schema/                       # 数据结构定义
-    │   ├── message.go                # Message / ToolCall / StreamReader
+    │   ├── message.go                # Message / ContentPart / StreamReader
     │   └── tool.go                   # Tool 定义
     ├── tools/                        # 工具系统
-    │   ├── registry.go               # 动态工具注册中心
-    │   ├── file.go                   # 文件操作工具 + 安全路径
-    │   ├── command.go                # 系统命令工具 + 危险命令拦截
-    │   ├── web.go                    # 联网搜索工具
-    │   ├── user_config.go            # 用户配置管理工具
-    │   ├── env.go                    # 环境信息工具
-    │   ├── chromium.go               # 浏览器自动化工具
-    │   ├── html_parser.go            # HTML 解析工具
-    │   ├── loader.go / options.go    # 动态工具加载
-    │   └── tools_registry.go         # RegisterAll 入口
+    │   ├── registry.go               # ToolRegistry + 生命周期钩子
+    │   ├── file_ops.go               # file_read / file_write / file_list
+    │   ├── file_edit.go              # file_edit / file_search
+    │   ├── command.go                # command_exec + 危险命令拦截
+    │   ├── web.go                    # web_fetch / web_browse
+    │   ├── user_config.go            # 用户配置管理
+    │   ├── env.go                    # get_work_dir
+    │   ├── chromium.go               # ChromiumManager
+    │   ├── html_parser.go            # HTML 解析
+    │   ├── prompt_loader.go          # AGENTS.md / CLAUDE.md 加载器
+    │   └── options.go                # ToolOption 函数式选项
     ├── memory/                       # 记忆管理
-    │   ├── controller.go             # 记忆控制器
+    │   ├── controller.go             # Controller + functional options
     │   ├── short_memory_manager.go   # 短期记忆接口
-    │   ├── simple_window_memory.go   # 滑动窗口实现
-    │   ├── window.go                 # 窗口管理器（数量/Token 限制）
     │   ├── long_term_store.go        # 长期记忆接口
-    │   ├── gorm_store.go             # GORM + HNSW 存储
-    │   ├── embedder.go               # 向量化接口
-    │   └── ollama_embedder.go        # Ollama 向量化实现
-    ├── mcp/                          # MCP 客户端
+    │   ├── embedder.go               # Embedder 接口
+    │   ├── openai_embedder.go        # OpenAI 兼容 Embedding
+    │   ├── window/                   # 窗口管理器 + CalibratedEstimator
+    │   ├── gorm/                     # GORM + HNSW 长期记忆存储
+    │   ├── memnetai/                 # MemNetAI 长期记忆
+    │   └── ollama/                   # Ollama Embedding
+    ├── mcp/                          # MCP 协议客户端
     │   ├── client.go                 # JSON-RPC 2.0 客户端
     │   ├── transport.go              # Stdio 传输层
     │   ├── manager.go                # 多服务器管理器
-    │   ├── types.go                  # 协议类型定义
     │   └── config.go                 # 配置文件加载
     ├── sandbox/                      # 代码沙箱
     │   ├── sandbox.go                # Sandbox 接口 + 配置
-    │   ├── process.go                # 子进程沙箱实现
+    │   ├── process.go                # 子进程沙箱 + 环境变量过滤
     │   └── tools.go                  # 沙箱工具注册
     ├── flowchart/                    # 工作流引擎
-    │   ├── workflow.go               # 工作流主引擎（DAG + 拓扑分层）
-    │   └── node/
-    │       ├── node.go               # Node 接口 + SimpleNode
-    │       ├── planner.go            # Plan / Task 定义
-    │       ├── react_planner.go      # ReAct 规划器 + 重规划
-    │       ├── task_node.go          # 任务执行节点
-    │       ├── topological_node.go   # 拓扑排序节点
-    │       ├── functional_node.go    # 内置功能节点
-    │       ├── aspect.go             # Aspect 接口 + 简易实现
-    │       └── interceptor.go        # 拦截器（重试/超时/熔断/兜底）
+    │   ├── workflow.go               # Workflow 引擎（协程池 + 切面链）
+    │   ├── error.go                  # 工作流级错误
+    │   ├── flow/                     # FlowContext / DataSlot / SafeMap
+    │   ├── node/                     # Node 接口 + 功能节点 + Aspect
+    │   └── agent/                    # AgentLoop (ReAct) + PlanExecutor
     ├── skill/                        # Skill 管理
     │   ├── skill.go                  # Skill 定义
-    │   ├── loader.go                 # 加载器（文件/字符串/目录）
+    │   ├── loader.go                 # 加载器
     │   └── registry.go               # Skill 注册表
     └── stream/                       # 流式处理
-        ├── stream_writer.go          # 流式写入器
-        └── stream_multicast.go       # 多播控制器
-
+        ├── stream_writer.go          # StreamWriter
+        └── stream_multicast.go       # MulticastController
 ```
-# 应用的项目
-## Pulse-TUI
-项目链接: [pulse-tui](https://github.com/Luo-root/pulse-tui)
-![pulse](static/pulse-tui.gif)
+
+---
+
+## 实践指南
+
+### 工作流节点间流式传递数据
+
+FlowContext 的 `Set` 方法接受 `any` 类型，可以直接传递 `*schema.StreamReader` 实现节点间流式数据传输：
+
+```go
+// 生产者节点：创建流，写入 FlowContext
+wf.AddNode(node.NewNode("llm_call", nil, []string{"llm_stream"}, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
+    reader, _ := model.Stream(ctx.GetContext(), messages)
+    ctx.Set("llm_stream", reader)
+    return nil, nil
+}))
+
+// 消费者节点：从 FlowContext 获取流，逐 chunk 处理
+wf.AddNode(node.NewNode("process", []string{"llm_stream"}, []string{"result"}, func(ctx *flow.FlowContext, inputs map[string]any) (map[string]any, error) {
+    reader := inputs["llm_stream"].(*schema.StreamReader)
+    var fullText string
+    for {
+        chunk, err := reader.Recv()
+        if err == io.EOF { break }
+        fullText += chunk.Content
+    }
+    return map[string]any{"result": fullText}, nil
+}))
+```
+
+一个流可以被多个消费者读取 — 配合 `stream.MulticastController.Fork(n)` 实现一对多广播。
+
+### 工作流切面与超时控制
+
+切面按注册顺序从外到内形成洋葱链，每层拥有独立的可取消 context：
+
+```go
+wf.AddAspect(node.NewTimeoutAspect(30 * time.Second))  // 外层：整体超时
+wf.AddAspect(node.NewRetryAspect(3, time.Second))       // 内层：重试
+
+// 或用函数式切面
+wf.AddAspect(node.AroundFunc(func(ctx *node.AspectContext, n node.Node, next func() (map[string]any, error)) (map[string]any, error) {
+    log.Printf("开始执行: %s", n.ID())
+    result, err := next()
+    log.Printf("执行完成: %s, err=%v", n.ID(), err)
+    return result, err
+}))
+```
+
+TimeoutAspect 超时时会取消本层 context，`FlowContext.WaitAllWithContext` 能立即感知到取消信号，节点的阻塞等待会被打断。
+
+### Agent ReAct 循环
+
+单 Agent 自主推理-执行模式，每步思考后决定调用工具还是给出最终回答：
+
+```go
+loop := flowagent.NewAgentLoop(model, registry,
+    flowagent.WithMaxRounds(10),
+    flowagent.WithSystemPrompt("你是一个编程助手"),
+    flowagent.WithStepCallback(func(step *flowagent.Step) {
+        log.Printf("Round %d: %d tool calls", step.Round, len(step.ToolCalls))
+    }),
+)
+
+result, _ := loop.Run(ctx, "帮我分析 sales.csv 的趋势")
+fmt.Println(result.Answer)
+fmt.Printf("共 %d 轮，消耗 %d tokens\n", result.Rounds, result.Usage.TotalTokens)
+```
+
+### Plan-and-Execute 规划执行
+
+先让 LLM 拆解任务为步骤，再逐步执行：
+
+```go
+executor := flowagent.NewPlanExecutor(model, registry,
+    flowagent.WithPlanMaxSteps(8),
+    flowagent.WithPlanMaxReplans(2),
+    flowagent.WithPlanCallback(func(steps []flowagent.PlanStep) {
+        for _, s := range steps {
+            log.Printf("计划步骤: %s - %s", s.ID, s.Description)
+        }
+    }),
+)
+
+result, _ := executor.Run(ctx, "分析销售数据并生成季度报告")
+```
+
+自动处理：依赖排序 → 验证无环 → 按序执行 → 失败重规划。
+
+### 工具返回多模态结果
+
+工具可以通过返回 `*schema.ToolResultContent` 向 Agent 传递图片、音频等非文本数据：
+
+```go
+registry.Register(tools.ToolMetadata{
+    Name: "screenshot",
+    // ...
+}, func(ctx context.Context, args map[string]any) (any, error) {
+    imageData := captureScreenshot()
+    return &schema.ToolResultContent{
+        Content: "截图完成",
+        ContentParts: []schema.ContentPart{
+            schema.TextPart("截图完成"),
+            schema.ImagePartBase64("image/png", base64.StdEncoding.EncodeToString(imageData)),
+        },
+    }, nil
+})
+```
+
+Agent 的 `web_browse` 工具已内置此能力 — 截图自动以 base64 ContentPart 返回给模型。
+
+### 校准 Token 估算
+
+窗口管理器的 Token 估算默认基于 `1 token ≈ 1.8 runes` 的固定比例，可以通过 `CalibratedEstimator` 用模型实际返回的 prompt_tokens 动态校准：
+
+```go
+ce := window.NewCalibratedEstimator()
+wm := window.NewManager(config, model, ce)
+
+// Agent 每次模型调用后喂入校准数据
+// 估算 3 轮后自动启用校准，ratio 限制在 0.3~3.0
+ce.Feed(estimatedTokens, actualPromptTokens)
+```
+
+### 自定义指令文件加载
+
+`PromptLoader` 支持加载业界标准的 Agent 指令文件：
+
+```go
+loader := tools.NewPromptLoader(".")
+
+// 加载所有可用指令文件
+content, loaded, _ := loader.LoadWithDefaults()
+// loaded = ["AGENTS.md", "CLAUDE.md", ".cursor/rules/"]
+
+// 或单独加载
+agentsContent, _ := loader.LoadAGENTS()
+```
+
 ---
 
 ## 许可证

@@ -23,6 +23,7 @@ type PlanExecutor struct {
 	maxSteps         int
 	maxReplans       int
 	maxRoundsPerStep int
+	maxPlanRounds    int
 	systemPrompt     string
 	onStep           func(step *ExecStep)
 	onPlan           func(steps []PlanStep)
@@ -86,9 +87,13 @@ func WithPlanMaxReplans(n int) PlanOption {
 
 func WithPlanMaxRoundsPerStep(n int) PlanOption {
 	return func(pe *PlanExecutor) {
-		if n > 0 {
-			pe.maxRoundsPerStep = n
-		}
+		pe.maxRoundsPerStep = n
+	}
+}
+
+func WithPlanMaxPlanRounds(n int) PlanOption {
+	return func(pe *PlanExecutor) {
+		pe.maxPlanRounds = n
 	}
 }
 
@@ -118,6 +123,7 @@ func NewPlanExecutor(model chatmodel.BaseModel, registry *tools.ToolRegistry, op
 		maxSteps:         8,
 		maxReplans:       2,
 		maxRoundsPerStep: 10,
+		maxPlanRounds:    5,
 	}
 	for _, opt := range opts {
 		opt(pe)
@@ -165,7 +171,7 @@ func (pe *PlanExecutor) Run(ctx context.Context, goal string) (*PlanResult, erro
 		}
 
 		// 重规划
-		newSteps, err := pe.replan(ctx, goal, planSteps, failedSteps)
+		newSteps, err := pe.replan(ctx, goal, planSteps, stepResults, failedSteps)
 		if err != nil {
 			break // 重规划失败，保留当前结果
 		}
@@ -229,7 +235,7 @@ func (pe *PlanExecutor) plan(ctx context.Context, goal string) ([]PlanStep, erro
 }`, goal, toolList, pe.maxSteps)
 
 	loop := NewAgentLoop(pe.model, pe.registry,
-		WithMaxRounds(1),
+		WithMaxRounds(pe.maxPlanRounds),
 		WithSystemPrompt("你是一个任务规划专家，只输出 JSON。"),
 	)
 
@@ -330,10 +336,10 @@ func (pe *PlanExecutor) buildStepContext(goal string, step PlanStep, stepResults
 }
 
 // replan 重规划失败步骤
-func (pe *PlanExecutor) replan(ctx context.Context, goal string, currentSteps []PlanStep, failedStepIDs []string) ([]PlanStep, error) {
+func (pe *PlanExecutor) replan(ctx context.Context, goal string, currentSteps []PlanStep, stepResults map[string]*ExecStep, failedStepIDs []string) ([]PlanStep, error) {
 	var failedInfo []string
 	for _, id := range failedStepIDs {
-		if es, ok := findExecStep(currentSteps, id); ok {
+		if es, ok := findExecStep(stepResults, id); ok {
 			failedInfo = append(failedInfo, fmt.Sprintf("- %s: %s (错误: %s)", es.PlanStep.ID, es.PlanStep.Description, es.Error))
 		}
 	}
@@ -356,7 +362,7 @@ func (pe *PlanExecutor) replan(ctx context.Context, goal string, currentSteps []
 4. 仅输出调整后的完整计划 JSON`, goal, formatCurrentSteps(currentSteps), strings.Join(failedInfo, "\n"))
 
 	loop := NewAgentLoop(pe.model, pe.registry,
-		WithMaxRounds(1),
+		WithMaxRounds(pe.maxPlanRounds),
 		WithSystemPrompt("你是一个任务重规划专家，只输出 JSON。"),
 	)
 
@@ -478,14 +484,10 @@ func findStep(steps []PlanStep, id string) PlanStep {
 	return PlanStep{ID: id}
 }
 
-// findExecStep 在执行步骤中查找
-func findExecStep(steps []PlanStep, id string) (*ExecStep, bool) {
-	for _, s := range steps {
-		if s.ID == id {
-			return &ExecStep{PlanStep: s}, true
-		}
-	}
-	return nil, false
+// findExecStep 从执行结果中查找指定 ID 的步骤
+func findExecStep(stepResults map[string]*ExecStep, id string) (*ExecStep, bool) {
+	es, ok := stepResults[id]
+	return es, ok
 }
 
 // formatCurrentSteps 格式化当前步骤列表

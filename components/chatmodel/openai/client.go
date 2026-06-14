@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/Luo-root/pulse/components/schema"
 )
@@ -89,6 +91,10 @@ func (c *Client) buildRequestBody(messages []APIMessage, stream bool) *RequestBo
 
 // genRequest 生成 HTTP 请求
 func (c *Client) genRequest(body *RequestBody) (*http.Request, error) {
+	if c.config.Debug {
+		c.debugLogRequest(body)
+	}
+
 	jsonData, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -100,6 +106,63 @@ func (c *Client) genRequest(body *RequestBody) (*http.Request, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	return req, nil
+}
+
+// debugLogRequest 输出请求摘要到日志文件
+func (c *Client) debugLogRequest(body *RequestBody) {
+	logFile, err := os.OpenFile("pulse-debug.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer logFile.Close()
+
+	fmt.Fprintf(logFile, "\n[%s] OpenAI Request ===\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(logFile, "  URL:   %s\n", c.baseURL)
+	fmt.Fprintf(logFile, "  Model: %s\n", body.Model)
+	fmt.Fprintf(logFile, "  Stream: %v\n", body.Stream)
+	fmt.Fprintf(logFile, "  Messages: %d\n", len(body.Messages))
+	for i, msg := range body.Messages {
+		switch content := msg.Content.(type) {
+		case string:
+			preview := content
+			if len(preview) > 120 {
+				preview = preview[:120] + "..."
+			}
+			fmt.Fprintf(logFile, "    [%d] %s: %s\n", i, msg.Role, preview)
+		case []map[string]any:
+			fmt.Fprintf(logFile, "    [%d] %s: %d content parts\n", i, msg.Role, len(content))
+			for j, part := range content {
+				typ, _ := part["type"].(string)
+				switch typ {
+				case "text":
+					text, _ := part["text"].(string)
+					if len(text) > 100 {
+						text = text[:100] + "..."
+					}
+					fmt.Fprintf(logFile, "      part[%d] text: %s\n", j, text)
+				case "image_url":
+					url, _ := part["image_url"].(map[string]any)
+					urlStr, _ := url["url"].(string)
+					if len(urlStr) > 80 {
+						urlStr = urlStr[:80] + "..."
+					}
+					detail, _ := url["detail"].(string)
+					fmt.Fprintf(logFile, "      part[%d] image_url: %s (detail=%q)\n", j, urlStr, detail)
+				case "input_audio":
+					audio, _ := part["input_audio"].(map[string]any)
+					format, _ := audio["format"].(string)
+					data, _ := audio["data"].(string)
+					fmt.Fprintf(logFile, "      part[%d] input_audio: format=%s, data=%d bytes\n", j, format, len(data))
+				default:
+					fmt.Fprintf(logFile, "      part[%d] %s\n", j, typ)
+				}
+			}
+		}
+	}
+	if len(body.Tools) > 0 {
+		fmt.Fprintf(logFile, "  Tools: %d\n", len(body.Tools))
+	}
+	fmt.Fprintf(logFile, "=== End Request\n\n")
 }
 
 // Generate 非流式生成
@@ -209,9 +272,13 @@ func convertContentParts(parts []schema.ContentPart) []map[string]any {
 
 		case schema.ContentTypeImageURL:
 			if p.ImageURL != nil {
+				imgObj := map[string]any{"url": p.ImageURL.URL}
+				if p.ImageURL.Detail != "" {
+					imgObj["detail"] = p.ImageURL.Detail
+				}
 				result = append(result, map[string]any{
 					"type":      "image_url",
-					"image_url": map[string]any{"url": p.ImageURL.URL, "detail": p.ImageURL.Detail},
+					"image_url": imgObj,
 				})
 			}
 
@@ -223,30 +290,67 @@ func convertContentParts(parts []schema.ContentPart) []map[string]any {
 				})
 			}
 
+		case schema.ContentTypeInlineData:
+			if p.InlineData != nil {
+				// 根据 MIME 类型映射到 OpenAI 支持的格式
+				switch {
+				case strings.HasPrefix(p.InlineData.MediaType, "image/"):
+					// 图片 → image_url with data URI
+					dataURI := "data:" + p.InlineData.MediaType + ";base64," + p.InlineData.Data
+					result = append(result, map[string]any{
+						"type":      "image_url",
+						"image_url": map[string]any{"url": dataURI},
+					})
+				case strings.HasPrefix(p.InlineData.MediaType, "audio/"):
+					// 音频 → input_audio
+					format := "mp3"
+					if strings.Contains(p.InlineData.MediaType, "wav") {
+						format = "wav"
+					} else if strings.Contains(p.InlineData.MediaType, "ogg") {
+						format = "ogg"
+					}
+					result = append(result, map[string]any{
+						"type":        "input_audio",
+						"input_audio": map[string]any{"data": p.InlineData.Data, "format": format},
+					})
+				default:
+					// 其他类型 → 降级为文本描述
+					result = append(result, map[string]any{
+						"type": "text",
+						"text": fmt.Sprintf("[附件: %s (%s)]", p.InlineData.MediaType, formatBytes(len(p.InlineData.Data))),
+					})
+				}
+			}
+
+		// video_url 和 file_url 不是 OpenAI 标准类型，降级为文本描述
 		case schema.ContentTypeVideoURL:
 			if p.VideoURL != nil {
 				result = append(result, map[string]any{
-					"type":      "video_url",
-					"video_url": map[string]any{"url": p.VideoURL.URL},
+					"type": "text",
+					"text": fmt.Sprintf("[视频: %s]", p.VideoURL.URL),
 				})
 			}
 
 		case schema.ContentTypeFileURL:
 			if p.FileURL != nil {
 				result = append(result, map[string]any{
-					"type":     "file_url",
-					"file_url": map[string]any{"url": p.FileURL.URL},
-				})
-			}
-
-		case schema.ContentTypeInlineData:
-			if p.InlineData != nil {
-				result = append(result, map[string]any{
-					"type":        "input_audio",
-					"input_audio": map[string]any{"data": p.InlineData.Data, "format": p.InlineData.MediaType},
+					"type": "text",
+					"text": fmt.Sprintf("[文件: %s]", p.FileURL.URL),
 				})
 			}
 		}
 	}
 	return result
+}
+
+// formatBytes 格式化字节数
+func formatBytes(n int) string {
+	switch {
+	case n >= 1024*1024:
+		return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
+	case n >= 1024:
+		return fmt.Sprintf("%.1fKB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
 }
