@@ -647,3 +647,23 @@ func indentString(s, prefix string) string {
 	}
 	return strings.TrimSuffix(indented.String(), "\n")
 }
+
+// ============================================================================
+// Document 通用文档类型
+// ============================================================================
+
+// Document 通用文档类型，用于非对话数据存储和检索
+// 适用场景：用户画像、企业知识库、产品文档等
+type Document struct {
+	ID       string         `json:"id"`                  // 唯一标识
+	Content  string         `json:"content"`             // 文本内容
+	MetaData map[string]any `json:"meta_data,omitempty"` // 开放元数据
+}
+
+// IndexItem 向量索引项接口
+// 用于 HNSW 索引的泛化，不绑定具体数据模型
+type IndexItem interface {
+	GetID() string
+	GetContent() string
+	GetEmbedding() []float32
+}

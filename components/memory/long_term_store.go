@@ -193,3 +193,26 @@ type MessageRecord struct {
 
 // EmbeddingFunc 文本转向量函数
 type EmbeddingFunc func(ctx context.Context, text string) ([]float32, error)
+
+// ============================================================================
+// 通用文档存储：DocumentStore
+// ============================================================================
+
+// DocumentStore 通用文档存储接口
+// 用于非对话型 Agent 场景：用户画像 Agent、企业管理 Agent 等
+type DocumentStore interface {
+	// SaveDocuments 批量保存文档
+	SaveDocuments(ctx context.Context, collection string, docs []*schema.Document) error
+
+	// RecallDocuments 根据查询召回相关文档
+	RecallDocuments(ctx context.Context, collection string, query string, topK int) ([]*schema.Document, error)
+
+	// GetDocuments 获取集合中的所有文档
+	GetDocuments(ctx context.Context, collection string) ([]*schema.Document, error)
+
+	// DeleteCollection 删除整个集合
+	DeleteCollection(ctx context.Context, collection string) error
+
+	// Close 关闭存储
+	Close() error
+}

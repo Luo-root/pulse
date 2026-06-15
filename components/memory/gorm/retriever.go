@@ -22,18 +22,27 @@ import (
 // HNSWRetriever 纯检索实现
 // ============================================================================
 
-// messageNode 包装 MessageModel 以实现 hnsw.Embeddable
-type messageNode struct {
-	model *MessageModel
-	vec   []float32 // 缓存嵌入向量，避免重复反序列化
+// indexNode 实现 IndexItem 接口，用于 HNSW 索引
+type indexNode struct {
+	id      string
+	content string
+	vec     []float32
 }
 
-func (n *messageNode) ID() string           { return n.model.ID }
-func (n *messageNode) Embedding() []float32 { return n.vec }
+func (n *indexNode) GetID() string           { return n.id }
+func (n *indexNode) GetContent() string      { return n.content }
+func (n *indexNode) GetEmbedding() []float32 { return n.vec }
+
+// 向后兼容 HNSW 库的 Embeddable 接口
+
+func (n *indexNode) ID() string           { return n.id }
+func (n *indexNode) Embedding() []float32 { return n.vec }
 
 // vectorCandidate 向量搜索候选结果
 type vectorCandidate struct {
-	model      *MessageModel
+	id         string
+	content    string
+	timestamp  int64
 	similarity float64
 }
 
@@ -44,7 +53,7 @@ type HNSWRetriever struct {
 	config    *Config
 	embedding EmbeddingFunc
 
-	vecIndex     *hnsw.Graph[*messageNode]
+	vecIndex     *hnsw.Graph[*indexNode]
 	vecMu        sync.RWMutex
 	indexedNodes map[string][]float32
 	indexReady   atomic.Bool
@@ -65,7 +74,7 @@ func NewHNSWRetriever(db *gorm.DB, embedding EmbeddingFunc, config *Config) *HNS
 	}
 
 	if !config.DisableVectorSearch && embedding != nil {
-		r.vecIndex = hnsw.NewGraph[*messageNode]()
+		r.vecIndex = hnsw.NewGraph[*indexNode]()
 		r.vecIndex.M = config.HNSW_M
 		r.vecIndex.Ml = config.HNSW_Ml
 		r.vecIndex.EfSearch = config.HNSW_EfSearch
@@ -154,9 +163,9 @@ func (r *HNSWRetriever) AddToIndex(ctx context.Context, sessionID string, msgs [
 			continue
 		}
 
-		node := &messageNode{
-			model: &MessageModel{ID: fmt.Sprintf("%s_*", sessionID)},
-			vec:   vec,
+		node := &indexNode{
+			id:  fmt.Sprintf("%s_*", sessionID),
+			vec: vec,
 		}
 
 		r.vecMu.Lock()
@@ -216,7 +225,7 @@ func (r *HNSWRetriever) RebuildIndex() {
 	}
 
 	r.vecMu.Lock()
-	r.vecIndex = hnsw.NewGraph[*messageNode]()
+	r.vecIndex = hnsw.NewGraph[*indexNode]()
 	r.vecIndex.M = r.config.HNSW_M
 	r.vecIndex.Ml = r.config.HNSW_Ml
 	r.vecIndex.EfSearch = r.config.HNSW_EfSearch
@@ -251,7 +260,7 @@ func (r *HNSWRetriever) vectorSearch(ctx context.Context, sessionID string, quer
 		fetchN = 10
 	}
 
-	var nodes []*messageNode
+	var nodes []*indexNode
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -273,6 +282,8 @@ func (r *HNSWRetriever) vectorSearch(ctx context.Context, sessionID string, quer
 
 		var msgID string
 		var sim float64
+		var content string
+		var ts int64
 
 		if strings.Contains(nodeID, "_chunk_") {
 			var chunk EmbeddingChunk
@@ -280,14 +291,22 @@ func (r *HNSWRetriever) vectorSearch(ctx context.Context, sessionID string, quer
 				continue
 			}
 			msgID = chunk.MessageID
+			content = chunk.Content
 			sim = cosineSimilarity(queryVec, node.Embedding())
+			// 获取父消息的时间戳
+			var parentMsg MessageModel
+			if err := r.db.WithContext(ctx).Where("id = ?", msgID).First(&parentMsg).Error; err == nil {
+				ts = parentMsg.Timestamp
+			}
 		} else {
+			msgID = nodeID
+			content = node.GetContent()
+			sim = cosineSimilarity(queryVec, node.Embedding())
 			var msg MessageModel
 			if err := r.db.WithContext(ctx).Where("id = ? AND session_id = ?", nodeID, sessionID).First(&msg).Error; err != nil {
 				continue
 			}
-			msgID = nodeID
-			sim = cosineSimilarity(queryVec, node.Embedding())
+			ts = msg.Timestamp
 		}
 
 		if existing, exists := msgMap[msgID]; exists {
@@ -297,15 +316,7 @@ func (r *HNSWRetriever) vectorSearch(ctx context.Context, sessionID string, quer
 			continue
 		}
 
-		var fullMsg MessageModel
-		if err := r.db.WithContext(ctx).Where("id = ?", msgID).First(&fullMsg).Error; err != nil {
-			continue
-		}
-		if fullMsg.SessionID != sessionID {
-			continue
-		}
-
-		msgMap[msgID] = &vectorCandidate{model: &fullMsg, similarity: sim}
+		msgMap[msgID] = &vectorCandidate{id: msgID, content: content, timestamp: ts, similarity: sim}
 		orderedIDs = append(orderedIDs, msgID)
 
 		if len(msgMap) >= topK {
@@ -340,7 +351,7 @@ func (r *HNSWRetriever) vectorRecall(ctx context.Context, sessionID string, quer
 
 	results := make([]*schema.Message, len(candidates))
 	for i, c := range candidates {
-		results[i] = c.model.ToSchemaMessage()
+		results[i] = &schema.Message{Role: schema.AssistantRole, Content: c.content}
 	}
 	return results, nil
 }
@@ -373,8 +384,9 @@ func (r *HNSWRetriever) combinedRecall(ctx context.Context, sessionID string, qu
 	}
 
 	type scored struct {
-		model *MessageModel
-		score float64
+		id      string
+		content string
+		score   float64
 	}
 	scoredList := make([]scored, 0, len(candidates))
 
@@ -382,9 +394,9 @@ func (r *HNSWRetriever) combinedRecall(ctx context.Context, sessionID string, qu
 		vecScore := c.similarity
 
 		keywordScore := 0.0
-		content := strings.ToLower(c.model.Content)
+		lowerContent := strings.ToLower(c.content)
 		for _, kw := range keywords {
-			if strings.Contains(content, strings.ToLower(kw)) {
+			if strings.Contains(lowerContent, strings.ToLower(kw)) {
 				keywordScore += 1.0
 			}
 		}
@@ -392,7 +404,7 @@ func (r *HNSWRetriever) combinedRecall(ctx context.Context, sessionID string, qu
 			keywordScore /= float64(len(keywords))
 		}
 
-		age := now - float64(c.model.Timestamp)
+		age := now - float64(c.timestamp)
 		if age < 0 {
 			age = 0
 		}
@@ -402,7 +414,7 @@ func (r *HNSWRetriever) combinedRecall(ctx context.Context, sessionID string, qu
 			weights.KeywordWeight*keywordScore +
 			weights.TimeWeight*timeScore
 
-		scoredList = append(scoredList, scored{model: c.model, score: total})
+		scoredList = append(scoredList, scored{id: c.id, content: c.content, score: total})
 	}
 
 	sort.Slice(scoredList, func(i, j int) bool {
@@ -415,7 +427,7 @@ func (r *HNSWRetriever) combinedRecall(ctx context.Context, sessionID string, qu
 
 	results := make([]*schema.Message, len(scoredList))
 	for i, sc := range scoredList {
-		results[i] = sc.model.ToSchemaMessage()
+		results[i] = &schema.Message{Role: schema.AssistantRole, Content: sc.content}
 	}
 	return results, nil
 }
@@ -500,7 +512,7 @@ func (r *HNSWRetriever) hybridRecall(ctx context.Context, sessionID string, quer
 // ============================================================================
 
 // addToIndex 安全地向 HNSW 索引添加节点
-func (r *HNSWRetriever) addToIndex(node *messageNode) {
+func (r *HNSWRetriever) addToIndex(node *indexNode) {
 	vec := node.Embedding()
 	if r.vecIndex == nil || !isValidVector(vec) {
 		return
@@ -537,7 +549,7 @@ func (r *HNSWRetriever) rebuildIndexFromDB() {
 			if err != nil || !isValidVector(vec) {
 				continue
 			}
-			r.addToIndex(&messageNode{model: &batch[i], vec: vec})
+			r.addToIndex(&indexNode{id: batch[i].ID, content: batch[i].Content, vec: vec})
 		}
 
 		if len(batch) < batchSize {
@@ -561,7 +573,7 @@ func (r *HNSWRetriever) rebuildIndexFromDB() {
 			if err != nil || !isValidVector(vec) {
 				continue
 			}
-			r.addToIndex(&messageNode{model: &MessageModel{ID: batch[i].ID}, vec: vec})
+			r.addToIndex(&indexNode{id: batch[i].ID, content: batch[i].Content, vec: vec})
 		}
 
 		if len(batch) < batchSize {
@@ -618,9 +630,9 @@ func (r *HNSWRetriever) loadIndexCache() bool {
 
 	for _, entry := range cache.Entries {
 		if isValidVector(entry.Vec) {
-			r.addToIndex(&messageNode{
-				model: &MessageModel{ID: entry.ID},
-				vec:   entry.Vec,
+			r.addToIndex(&indexNode{
+				id:  entry.ID,
+				vec: entry.Vec,
 			})
 		}
 	}
