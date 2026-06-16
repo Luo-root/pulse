@@ -10,40 +10,62 @@ import (
 
 // Controller 记忆控制器，管理三类记忆
 type Controller struct {
-	// 系统提示词 —— 永久存在于上下文底层
-	SystemPrompt []*schema.Message
-
-	// 短期记忆管理器 —— 滑动窗口 / 摘要
-	ShortMemory ShortMemoryManager
-
-	// 长期记忆存储器 —— 外部持久化 + 向量检索
-	LongStore LongTermStore
-
-	// 召回数量
-	TopK int
+	systemPrompt []*schema.Message
+	shortMemory  ShortMemoryManager
+	longStore    LongTermStore
+	topK         int
 }
 
-// NewController SystemPrompt 系统提示词, ShortMemory 短期记忆管理器, LongStore 长期记忆存储器
-func NewController(systemPrompt []*schema.Message, shortMemory ShortMemoryManager, longStore LongTermStore) *Controller {
-	topK := 3 // 默认召回 3 条
-	return &Controller{
-		SystemPrompt: systemPrompt,
-		ShortMemory:  shortMemory,
-		LongStore:    longStore,
-		TopK:         topK,
+// Option Controller 配置选项
+type Option func(*Controller)
+
+// WithTopK 设置长期记忆召回数量
+func WithTopK(k int) Option {
+	return func(c *Controller) {
+		if k > 0 {
+			c.topK = k
+		}
 	}
+}
+
+// WithLongStore 设置长期记忆存储器
+func WithLongStore(store LongTermStore) Option {
+	return func(c *Controller) {
+		c.longStore = store
+	}
+}
+
+// NewController 创建记忆控制器（保持向后兼容）
+func NewController(systemPrompt []*schema.Message, shortMemory ShortMemoryManager, opts ...Option) *Controller {
+	c := &Controller{
+		systemPrompt: systemPrompt,
+		shortMemory:  shortMemory,
+		topK:         3,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// AddSystemPrompt 追加系统提示词
+func (c *Controller) AddSystemPrompt(msgs ...*schema.Message) {
+	c.systemPrompt = append(c.systemPrompt, msgs...)
+}
+
+// GetShortMemory 获取短期记忆管理器
+func (c *Controller) GetShortMemory() ShortMemoryManager {
+	return c.shortMemory
 }
 
 // SaveTurn 保存一轮对话（user + assistant）
 func (c *Controller) SaveTurn(ctx context.Context, sessionID string, msgs []*schema.Message) error {
-	// 更新短期记忆（内部自动做窗口维护/摘要）
-	if c.ShortMemory != nil {
-		c.ShortMemory.AddTurn(sessionID, msgs)
+	if c.shortMemory != nil {
+		c.shortMemory.AddTurn(sessionID, msgs)
 	}
 
-	// 更新长期记忆
-	if c.LongStore != nil {
-		if err := c.LongStore.Save(ctx, sessionID, msgs); err != nil {
+	if c.longStore != nil {
+		if err := c.longStore.Save(ctx, sessionID, msgs); err != nil {
 			return fmt.Errorf("long-term save failed: %w", err)
 		}
 	}
@@ -51,29 +73,24 @@ func (c *Controller) SaveTurn(ctx context.Context, sessionID string, msgs []*sch
 }
 
 // BuildContext 构建带记忆的上文
-// 返回消息顺序：系统提示词 → 长期记忆召回 → 短期记忆（窗口+摘要）
 func (c *Controller) BuildContext(ctx context.Context, sessionID string, currentQuery string) ([]*schema.Message, error) {
 	msgs := make([]*schema.Message, 0, 64)
 
-	// 1. 系统提示词（永久记忆）
-	if len(c.SystemPrompt) > 0 {
-		msgs = append(msgs, c.SystemPrompt...)
+	if len(c.systemPrompt) > 0 {
+		msgs = append(msgs, c.systemPrompt...)
 	}
 
-	// 2. 长期记忆注入（跨会话相关历史）
-	if c.LongStore != nil && currentQuery != "" {
+	if c.longStore != nil && currentQuery != "" {
 		recallMsg, err := c.buildRecallMessage(ctx, sessionID, currentQuery)
 		if err != nil {
-			// 召回失败降级，不影响主流程
 			_ = err
 		} else if recallMsg != nil {
 			msgs = append(msgs, recallMsg)
 		}
 	}
 
-	// 3. 短期记忆（当前会话的窗口 + 摘要）
-	if c.ShortMemory != nil {
-		shortMsgs := c.ShortMemory.GetContextMessages(sessionID)
+	if c.shortMemory != nil {
+		shortMsgs := c.shortMemory.GetContextMessages(sessionID)
 		if len(shortMsgs) > 0 {
 			msgs = append(msgs, shortMsgs...)
 		}
@@ -82,14 +99,13 @@ func (c *Controller) BuildContext(ctx context.Context, sessionID string, current
 	return msgs, nil
 }
 
-// buildRecallMessage 构建长期记忆召回消息（局部变量，避免共享状态竞争）
 func (c *Controller) buildRecallMessage(ctx context.Context, sessionID string, query string) (*schema.Message, error) {
-	topK := c.TopK
+	topK := c.topK
 	if topK <= 0 {
 		topK = 3
 	}
 
-	mems, err := c.LongStore.Recall(ctx, sessionID, query, topK)
+	mems, err := c.longStore.Recall(ctx, sessionID, query, topK)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +116,7 @@ func (c *Controller) buildRecallMessage(ctx context.Context, sessionID string, q
 	var sb strings.Builder
 	sb.WriteString("以下是与当前问题相关的历史记忆：\n")
 	for i, m := range mems {
-		sb.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, m.Role, m.Content))
+		sb.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, m.Role, m.TextContent()))
 	}
 
 	return schema.SystemMessage(sb.String()), nil
@@ -108,26 +124,23 @@ func (c *Controller) buildRecallMessage(ctx context.Context, sessionID string, q
 
 // GetHistory 获取完整历史
 func (c *Controller) GetHistory(ctx context.Context, sessionID string) ([]*schema.Message, error) {
-	if c.LongStore == nil {
-		// 降级到短期记忆
-		if c.ShortMemory != nil {
-			return c.ShortMemory.GetRecent(sessionID), nil
+	if c.longStore == nil {
+		if c.shortMemory != nil {
+			return c.shortMemory.GetRecent(sessionID), nil
 		}
 		return nil, nil
 	}
-	return c.LongStore.GetSession(ctx, sessionID)
+	return c.longStore.GetSession(ctx, sessionID)
 }
 
 // Clear 清空会话
 func (c *Controller) Clear(ctx context.Context, sessionID string) error {
-	// 清空短期记忆
-	if c.ShortMemory != nil {
-		c.ShortMemory.Clear(sessionID)
+	if c.shortMemory != nil {
+		c.shortMemory.Clear(sessionID)
 	}
 
-	// 清空长期记忆
-	if c.LongStore != nil {
-		if err := c.LongStore.ClearSession(ctx, sessionID); err != nil {
+	if c.longStore != nil {
+		if err := c.longStore.ClearSession(ctx, sessionID); err != nil {
 			return fmt.Errorf("clear long-term store failed: %w", err)
 		}
 	}
@@ -136,8 +149,8 @@ func (c *Controller) Clear(ctx context.Context, sessionID string) error {
 
 // Close 释放资源
 func (c *Controller) Close() error {
-	if c.LongStore != nil {
-		return c.LongStore.Close()
+	if c.longStore != nil {
+		return c.longStore.Close()
 	}
 	return nil
 }

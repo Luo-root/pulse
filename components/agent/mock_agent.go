@@ -152,7 +152,7 @@ func (m *MockAgent) WithOnSend(fn func(*schema.Message)) *MockAgent {
 }
 
 // ============================================================================
-// AgentInterface 实现
+// Interface 实现
 // ============================================================================
 
 // SendMessage 非流式发送
@@ -229,6 +229,25 @@ func (m *MockAgent) SendMessageStream(ctx context.Context, msg *schema.Message, 
 			return fullMsg, fmt.Errorf("user cancelled stream")
 		}
 		fullMsg.ToolCalls = resp.ToolCalls
+		return fullMsg, nil
+	}
+
+	// 多模态响应：一次性发送（图片/音频不适合分块）
+	if len(resp.ContentParts) > 0 || len(resp.OutputImages) > 0 || resp.OutputAudio != nil {
+		chunk := &schema.Message{
+			Role:         resp.Role,
+			Content:      resp.Content,
+			ContentParts: resp.ContentParts,
+			OutputImages: resp.OutputImages,
+			OutputAudio:  resp.OutputAudio,
+		}
+		if !onChunk(chunk, false) {
+			return fullMsg, fmt.Errorf("user cancelled stream")
+		}
+		fullMsg.Content = resp.Content
+		fullMsg.ContentParts = resp.ContentParts
+		fullMsg.OutputImages = resp.OutputImages
+		fullMsg.OutputAudio = resp.OutputAudio
 		return fullMsg, nil
 	}
 
@@ -400,5 +419,5 @@ func contains(s, sub string) bool {
 	return false
 }
 
-// Ensure MockAgent implements AgentInterface
-var _ AgentInterface = (*MockAgent)(nil)
+// Ensure MockAgent implements Interface
+var _ Interface = (*MockAgent)(nil)

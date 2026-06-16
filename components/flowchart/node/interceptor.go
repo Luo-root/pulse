@@ -1,64 +1,34 @@
 package node
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/Luo-root/pulse/components/flow"
 )
 
 // ============================================================================
-// ErrorSwallowInterceptor —— 错误吞没兜底
+// RetryAspect —— 重试切面
 // ============================================================================
 
-// ErrorSwallowInterceptor 拦截节点（或内层拦截器）返回的 error，执行降级逻辑。
-// 作为最外层拦截器使用，确保节点级别的错误不会传播到工作流层触发 ctx.Cancel。
-type ErrorSwallowInterceptor struct {
-	FallbackFunc func(ctx *flow.FlowContext, node Node, err error) (map[string]any, error)
-}
-
-func NewErrorSwallowInterceptor(fallback func(ctx *flow.FlowContext, node Node, err error) (map[string]any, error)) *ErrorSwallowInterceptor {
-	return &ErrorSwallowInterceptor{FallbackFunc: fallback}
-}
-
-func (e *ErrorSwallowInterceptor) Before(ctx *flow.FlowContext, node Node)           {}
-func (e *ErrorSwallowInterceptor) After(ctx *flow.FlowContext, node Node, err error) {}
-
-func (e *ErrorSwallowInterceptor) Around(ctx *flow.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
-	out, err := next()
-	if err != nil && e.FallbackFunc != nil {
-		return e.FallbackFunc(ctx, node, err)
-	}
-	return out, err
-}
-
-// ============================================================================
-// RetryInterceptor —— 重试切面
-// ============================================================================
-
-// RetryInterceptor 节点失败时自动重试
-type RetryInterceptor struct {
+// RetryAspect 节点失败时自动重试
+type RetryAspect struct {
 	MaxAttempts int           // 最大尝试次数（至少为1）
 	Delay       time.Duration // 每次重试间隔
 	ShouldRetry func(err error) bool
 }
 
-// NewRetryInterceptor 创建重试拦截器
-func NewRetryInterceptor(maxAttempts int, delay time.Duration) *RetryInterceptor {
+func NewRetryAspect(maxAttempts int, delay time.Duration) *RetryAspect {
 	if maxAttempts <= 0 {
 		maxAttempts = 1
 	}
-	return &RetryInterceptor{
+	return &RetryAspect{
 		MaxAttempts: maxAttempts,
 		Delay:       delay,
 	}
 }
 
-func (r *RetryInterceptor) Before(ctx *flow.FlowContext, node Node)           {}
-func (r *RetryInterceptor) After(ctx *flow.FlowContext, node Node, err error) {}
-
-func (r *RetryInterceptor) Around(ctx *flow.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
+func (r *RetryAspect) Around(ctx *AspectContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
 	var out map[string]any
 	var err error
 	for i := 0; i < r.MaxAttempts; i++ {
@@ -77,46 +47,50 @@ func (r *RetryInterceptor) Around(ctx *flow.FlowContext, node Node, next func() 
 }
 
 // ============================================================================
-// TimeoutInterceptor —— 超时控制切面
+// TimeoutAspect —— 超时控制切面
 // ============================================================================
 
-// TimeoutInterceptor 限制节点执行时间，超时时返回错误
-type TimeoutInterceptor struct {
+// TimeoutAspect 限制节点执行时间，超时时取消本层 context 并返回错误
+type TimeoutAspect struct {
 	Timeout time.Duration
 }
 
-// NewTimeoutInterceptor 创建超时拦截器
-func NewTimeoutInterceptor(timeout time.Duration) *TimeoutInterceptor {
-	return &TimeoutInterceptor{Timeout: timeout}
+func NewTimeoutAspect(timeout time.Duration) *TimeoutAspect {
+	return &TimeoutAspect{Timeout: timeout}
 }
 
-func (t *TimeoutInterceptor) Before(ctx *flow.FlowContext, node Node)           {}
-func (t *TimeoutInterceptor) After(ctx *flow.FlowContext, node Node, err error) {}
-
-func (t *TimeoutInterceptor) Around(ctx *flow.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
+func (t *TimeoutAspect) Around(ctx *AspectContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
 	type result struct {
 		out map[string]any
 		err error
 	}
 	done := make(chan result, 1)
+
+	// 创建带超时的子 context，超时时自动取消
+	timeoutCtx, cancel := WithTimeout(ctx, t.Timeout)
+	defer cancel()
+
 	go func() {
 		out, err := next()
 		done <- result{out, err}
 	}()
 
-	timer := time.NewTimer(t.Timeout)
-	defer timer.Stop()
-
 	select {
 	case r := <-done:
 		return r.out, r.err
-	case <-timer.C:
+	case <-timeoutCtx.Done():
 		return nil, fmt.Errorf("node %s execution timeout after %v", node.ID(), t.Timeout)
 	}
 }
 
+// WithTimeout 创建带超时的 AspectContext 子节点
+func WithTimeout(parent *AspectContext, timeout time.Duration) (*AspectContext, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(parent.Context(), timeout)
+	return &AspectContext{Flow: parent.Flow, ctx: ctx, cancel: cancel}, cancel
+}
+
 // ============================================================================
-// CircuitBreakerInterceptor —— 熔断降级切面
+// CircuitBreakerAspect —— 熔断降级切面
 // ============================================================================
 
 // CircuitState 熔断器状态
@@ -128,28 +102,24 @@ const (
 	StateHalfOpen                     // 半开（试探）
 )
 
-// CircuitBreakerInterceptor 熔断降级拦截器
-// 当连续失败次数达到阈值时，进入熔断状态，直接返回 Fallback，不再执行真实逻辑。
-type CircuitBreakerInterceptor struct {
+// CircuitBreakerAspect 熔断降级切面
+// 当连续失败次数达到阈值时，进入熔断状态，直接返回 Fallback，不再执行真实逻辑
+type CircuitBreakerAspect struct {
 	mu               sync.Mutex
 	state            CircuitState
-	failureCount     int           // 连续失败计数（Closed 状态下）
-	threshold        int           // 触发熔断的失败次数阈值
-	timeout          time.Duration // 熔断持续时间，之后进入 HalfOpen
+	failureCount     int
+	threshold        int
+	timeout          time.Duration
 	lastFailTime     time.Time
-	halfOpenCalls    int // HalfOpen 状态下已发出的试探调用数
-	halfOpenSuccess  int // HalfOpen 状态下成功次数
-	HalfOpenMaxCalls int // 半开时最多允许的试探次数，达到即关闭
+	halfOpenCalls    int
+	halfOpenSuccess  int
+	HalfOpenMaxCalls int
 
-	// FallbackFunc 降级函数，熔断时调用。若 nil，则返回错误。
-	FallbackFunc func(ctx *flow.FlowContext, node Node) (map[string]any, error)
+	FallbackFunc func(ctx *AspectContext, node Node) (map[string]any, error)
 }
 
-// NewCircuitBreakerInterceptor 创建熔断拦截器
-// threshold: 触发熔断的失败次数阈值
-// timeout: 熔断后多久尝试恢复（进入半开）
-func NewCircuitBreakerInterceptor(threshold int, timeout time.Duration) *CircuitBreakerInterceptor {
-	return &CircuitBreakerInterceptor{
+func NewCircuitBreakerAspect(threshold int, timeout time.Duration) *CircuitBreakerAspect {
+	return &CircuitBreakerAspect{
 		threshold:        threshold,
 		timeout:          timeout,
 		state:            StateClosed,
@@ -157,10 +127,7 @@ func NewCircuitBreakerInterceptor(threshold int, timeout time.Duration) *Circuit
 	}
 }
 
-func (cb *CircuitBreakerInterceptor) Before(ctx *flow.FlowContext, node Node)           {}
-func (cb *CircuitBreakerInterceptor) After(ctx *flow.FlowContext, node Node, err error) {}
-
-func (cb *CircuitBreakerInterceptor) Around(ctx *flow.FlowContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
+func (cb *CircuitBreakerAspect) Around(ctx *AspectContext, node Node, next func() (map[string]any, error)) (map[string]any, error) {
 	if !cb.allow() {
 		if cb.FallbackFunc != nil {
 			return cb.FallbackFunc(ctx, node)
@@ -173,8 +140,7 @@ func (cb *CircuitBreakerInterceptor) Around(ctx *flow.FlowContext, node Node, ne
 	return out, err
 }
 
-// allow 判断是否允许本次调用
-func (cb *CircuitBreakerInterceptor) allow() bool {
+func (cb *CircuitBreakerAspect) allow() bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
@@ -199,15 +165,13 @@ func (cb *CircuitBreakerInterceptor) allow() bool {
 	return false
 }
 
-// recordResult 根据执行结果更新熔断器状态
-func (cb *CircuitBreakerInterceptor) recordResult(err error) {
+func (cb *CircuitBreakerAspect) recordResult(err error) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
 	if err != nil {
 		cb.lastFailTime = time.Now()
 		if cb.state == StateHalfOpen {
-			// 半开状态失败，立即再次熔断
 			cb.state = StateOpen
 			cb.halfOpenCalls = 0
 			cb.halfOpenSuccess = 0
@@ -221,47 +185,13 @@ func (cb *CircuitBreakerInterceptor) recordResult(err error) {
 		if cb.state == StateHalfOpen {
 			cb.halfOpenSuccess++
 			if cb.halfOpenSuccess >= cb.HalfOpenMaxCalls {
-				// 半开状态连续成功足够次数，关闭熔断
 				cb.state = StateClosed
 				cb.failureCount = 0
 				cb.halfOpenCalls = 0
 				cb.halfOpenSuccess = 0
 			}
 		} else {
-			// 关闭状态下成功，重置失败计数
 			cb.failureCount = 0
 		}
 	}
-}
-
-// ============================================================================
-// RecoveryInterceptor —— 全局异常捕获与兜底切面
-// ============================================================================
-
-// RecoveryInterceptor 捕获 panic 并执行兜底逻辑，防止单个节点拖垮整个工作流。
-type RecoveryInterceptor struct {
-	// FallbackFunc 兜底函数，接收 panic 值，返回兜底结果。
-	// 若 nil，则 panic 被转为 error 返回。
-	FallbackFunc func(ctx *flow.FlowContext, node Node, recoverVal any) (map[string]any, error)
-}
-
-// NewRecoveryInterceptor 创建兜底拦截器
-func NewRecoveryInterceptor(fallback func(ctx *flow.FlowContext, node Node, recoverVal any) (map[string]any, error)) *RecoveryInterceptor {
-	return &RecoveryInterceptor{FallbackFunc: fallback}
-}
-
-func (r *RecoveryInterceptor) Before(ctx *flow.FlowContext, node Node)           {}
-func (r *RecoveryInterceptor) After(ctx *flow.FlowContext, node Node, err error) {}
-
-func (r *RecoveryInterceptor) Around(ctx *flow.FlowContext, node Node, next func() (map[string]any, error)) (outputs map[string]any, err error) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			if r.FallbackFunc != nil {
-				outputs, err = r.FallbackFunc(ctx, node, rec)
-			} else {
-				err = fmt.Errorf("panic in node %s: %v", node.ID(), rec)
-			}
-		}
-	}()
-	return next()
 }

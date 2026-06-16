@@ -29,11 +29,15 @@ func LoadConfig(path string) ([]ServerConfig, error) {
 	for i := range config.MCPServers {
 		s := &config.MCPServers[i]
 		s.Transport.Command = expandEnv(s.Transport.Command)
+		s.Transport.URL = expandEnv(s.Transport.URL)
 		for j := range s.Transport.Args {
 			s.Transport.Args[j] = expandEnv(s.Transport.Args[j])
 		}
 		for j := range s.Transport.Env {
 			s.Transport.Env[j] = expandEnv(s.Transport.Env[j])
+		}
+		for k, v := range s.Transport.Headers {
+			s.Transport.Headers[k] = expandEnv(v)
 		}
 	}
 

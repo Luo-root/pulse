@@ -24,11 +24,15 @@ type ServerConfig struct {
 
 // TransportConfig 传输层配置
 type TransportConfig struct {
-	Type    string   `json:"type"`    // "stdio"
+	Type    string   `json:"type"`    // "stdio" 或 "sse"
 	Command string   `json:"command"` // stdio: 命令路径
 	Args    []string `json:"args"`    // stdio: 命令参数
 	Env     []string `json:"env"`     // stdio: 环境变量
 	WorkDir string   `json:"work_dir"`
+
+	// SSE 传输配置
+	URL     string            `json:"url"`     // sse: SSE 端点地址
+	Headers map[string]string `json:"headers"` // sse: 自定义请求头（如认证）
 }
 
 // ============================================================================
@@ -81,6 +85,14 @@ func (m *Manager) Connect(ctx context.Context, config ServerConfig) error {
 			Args:    config.Transport.Args,
 			Env:     config.Transport.Env,
 			WorkDir: config.Transport.WorkDir,
+		})
+	case "sse":
+		if config.Transport.URL == "" {
+			return fmt.Errorf("mcp server %s: transport.url is required for sse", config.Name)
+		}
+		transport = NewSSETransport(SSEConfig{
+			URL:     config.Transport.URL,
+			Headers: config.Transport.Headers,
 		})
 	default:
 		return fmt.Errorf("mcp server %s: unsupported transport type %q", config.Name, config.Transport.Type)

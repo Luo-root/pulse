@@ -1,7 +1,7 @@
 package node
 
 import (
-	"github.com/Luo-root/pulse/components/flow"
+	"github.com/Luo-root/pulse/components/flowchart/flow"
 )
 
 // Node 工作流节点

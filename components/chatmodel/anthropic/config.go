@@ -69,7 +69,7 @@ type APIMessage struct {
 
 // ContentBlock 内容块（多态结构）
 type ContentBlock struct {
-	Type string `json:"type"` // "text", "tool_use", "tool_result", "thinking"
+	Type string `json:"type"` // "text", "tool_use", "tool_result", "thinking", "image", "document", "audio", "video"
 
 	// type=text
 	Text string `json:"text,omitempty"`
@@ -80,12 +80,24 @@ type ContentBlock struct {
 	Input map[string]any `json:"input,omitempty"`
 
 	// type=tool_result
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"` // tool_result 的内容
-	IsError   bool   `json:"is_error,omitempty"`
+	ToolUseID string         `json:"tool_use_id,omitempty"`
+	Content   string         `json:"content,omitempty"` // tool_result 的文本内容
+	IsError   bool           `json:"is_error,omitempty"`
+	CntBlocks []ContentBlock `json:"content_blocks,omitempty"` // tool_result 的多模态内容
 
 	// type=thinking
 	Thinking string `json:"thinking,omitempty"`
+
+	// type=image, document, audio, video
+	Source *ContentSource `json:"source,omitempty"`
+}
+
+// ContentSource Anthropic 多模态内容源
+type ContentSource struct {
+	Type      string `json:"type"`                 // "base64" 或 "url"
+	MediaType string `json:"media_type,omitempty"` // "image/png", "application/pdf" 等
+	Data      string `json:"data,omitempty"`       // base64 数据（type=base64 时）
+	URL       string `json:"url,omitempty"`        // URL（type=url 时）
 }
 
 // APITool Anthropic 工具定义

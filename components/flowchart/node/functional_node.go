@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/Luo-root/pulse/components/chatmodel"
-	"github.com/Luo-root/pulse/components/flow"
+	"github.com/Luo-root/pulse/components/flowchart/flow"
 	"github.com/Luo-root/pulse/components/schema"
 	"github.com/Luo-root/pulse/components/stream"
 )
@@ -102,23 +102,23 @@ func NewLoopNode(
 				case <-ctx.Done():
 					// 区分超时和其他取消原因
 					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-						result := flow.NewLoopTimeoutResult(iteration)
+						result := NewLoopTimeoutResult(iteration)
 						return map[string]any{
 							outputKey: result,
-						}, flow.ErrLoopTimeout
+						}, ErrLoopTimeout
 					}
 
 					// 其他取消原因（手动取消、父context取消等）
-					result := flow.NewLoopCancelledResult(iteration, ctx.Err())
+					result := NewLoopCancelledResult(iteration, ctx.Err())
 					return map[string]any{
 						outputKey: result,
-					}, flow.ErrLoopCancelled
+					}, ErrLoopCancelled
 				default:
 				}
 
 				// 检查最大循环次数
 				if config.MaxIterations > 0 && iteration >= config.MaxIterations {
-					result := flow.NewLoopMaxIterationsResult(config.MaxIterations, iteration)
+					result := NewLoopMaxIterationsResult(config.MaxIterations, iteration)
 					return map[string]any{
 						outputKey: result,
 					}, nil
@@ -127,7 +127,7 @@ func NewLoopNode(
 				// 检查循环条件
 				if !condition(flowCtx) {
 					// 条件不满足，退出循环（正常完成）
-					result := flow.NewLoopCompletedResult(iteration)
+					result := NewLoopCompletedResult(iteration)
 					return map[string]any{
 						outputKey: result,
 					}, nil
@@ -191,7 +191,7 @@ func NewLLMStreamNode(
 			}
 
 			msgs := []*schema.Message{{Role: "user", Content: prompt}}
-			streamReader, err := model.Stream(*ctx.GetContext(), msgs)
+			streamReader, err := model.Stream(ctx.GetContext(), msgs)
 			if err != nil {
 				return nil, err
 			}

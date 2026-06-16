@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Luo-root/pulse/components/schema"
 	"github.com/chromedp/chromedp"
 )
 
@@ -63,59 +65,10 @@ func WebFetch(ctx context.Context, args map[string]any) (any, error) {
 		}
 		result["headers"] = h
 	default:
-		result["content"] = htmlToTextV2(string(body))
+		result["content"] = htmlToText(string(body))
 	}
 
 	return result, nil
-}
-
-// htmlToText 使用正则表达式和字符串操作将 HTML 转换为纯文本
-// 已弃用：请使用 htmlToTextV2（基于 golang.org/x/net/html 解析器）
-func htmlToText(s string) string {
-	// 去掉 script / style / noscript 块
-	lower := strings.ToLower(s)
-	for _, tag := range []string{"script", "style", "noscript"} {
-		for {
-			start := strings.Index(lower, "<"+tag)
-			if start == -1 {
-				break
-			}
-			end := strings.Index(lower[start:], "</"+tag+">")
-			if end == -1 {
-				s = s[:start]
-				lower = strings.ToLower(s)
-				break
-			}
-			s = s[:start] + s[start+end+len("</"+tag+">"):]
-			lower = strings.ToLower(s)
-		}
-	}
-
-	// 去标签
-	var buf strings.Builder
-	inTag := false
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '<':
-			inTag = true
-		case '>':
-			inTag = false
-			buf.WriteByte(' ')
-		default:
-			if !inTag {
-				buf.WriteByte(s[i])
-			}
-		}
-	}
-
-	// 合并多余空白行
-	var lines []string
-	for _, line := range strings.Split(buf.String(), "\n") {
-		if s := strings.TrimSpace(line); s != "" {
-			lines = append(lines, s)
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 // ============================================================================
@@ -229,33 +182,27 @@ func WebBrowse(ctx context.Context, args map[string]any) (any, error) {
 			return nil, err
 		}
 
-		var tmpFile *os.File
 		outputPath, hasOutputPath := args["output_path"].(string)
 
+		// 保存到文件（仅指定了 output_path 时）
 		if hasOutputPath && outputPath != "" {
-			tmpFile, err = os.Create(outputPath)
-			if err != nil {
-				return nil, fmt.Errorf("create output file: %w", err)
-			}
-		} else {
-			tmpFile, err = os.CreateTemp("", "pulse-screenshot-*.png")
-			if err != nil {
+			if err := os.WriteFile(outputPath, buf, 0644); err != nil {
 				return nil, fmt.Errorf("save screenshot: %w", err)
 			}
+			result["screenshot_path"] = outputPath
 		}
 
-		if _, err := tmpFile.Write(buf); err != nil {
-			tmpFile.Close()
-			if !hasOutputPath || outputPath == "" {
-				os.Remove(tmpFile.Name())
-			}
-			return nil, err
-		}
-		tmpFile.Close()
-
-		result["screenshot_path"] = tmpFile.Name()
 		result["size_bytes"] = len(buf)
-		result["content_type"] = "image/png"
+
+		// 返回 base64 图片作为 ContentPart
+		b64 := base64.StdEncoding.EncodeToString(buf)
+		return &schema.ToolResultContent{
+			Content: fmt.Sprintf("截图完成 (%d bytes)", len(buf)),
+			ContentParts: []schema.ContentPart{
+				schema.TextPart(fmt.Sprintf("截图完成 (%d bytes)", len(buf))),
+				schema.ImagePartBase64("image/png", b64),
+			},
+		}, nil
 
 	case "click":
 		selector := args["selector"].(string)

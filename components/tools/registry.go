@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -135,6 +136,24 @@ func (r *ToolRegistry) MustRegister(meta ToolMetadata, handler ToolHandler) {
 	if err := r.Register(meta, handler); err != nil {
 		panic(err)
 	}
+}
+
+// RegisterSimple 简化注册：只需 name、description、handler，其余用默认值
+// 默认：PermReadOnly、category="dynamic"、timeout=30s
+func (r *ToolRegistry) RegisterSimple(name, description string, handler ToolHandler, opts ...ToolOption) error {
+	meta := ToolMetadata{
+		Name:        name,
+		Description: description,
+		Permission:  PermReadOnly,
+		Category:    "dynamic",
+		Version:     "1.0.0",
+		Tags:        []string{"dynamic"},
+		Timeout:     30 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(&meta)
+	}
+	return r.Register(meta, handler)
 }
 
 // Unregister 注销工具
@@ -324,8 +343,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 	if err != nil {
 		result = schema.NewToolResult(call.ID, fmt.Sprintf(`{"error": "%s"}`, err.Error()), true)
 	} else {
-		content := marshalOutput(output)
-		result = schema.NewToolResult(call.ID, content, false)
+		result = buildToolResult(call.ID, output)
 	}
 
 	for _, hook := range r.afterExecuteFunc {
@@ -336,6 +354,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 }
 
 // ExecuteBatch 批量执行
+// ExecuteBatch 并行执行多个工具调用（带并发限制）
 func (r *ToolRegistry) ExecuteBatch(ctx context.Context, calls []schema.ToolCall) []schema.ToolResult {
 	if len(calls) == 0 {
 		return nil
@@ -345,6 +364,10 @@ func (r *ToolRegistry) ExecuteBatch(ctx context.Context, calls []schema.ToolCall
 		return []schema.ToolResult{r.Execute(ctx, calls[0])}
 	}
 
+	// 并发限制：最多同时执行 5 个工具
+	maxConcurrent := 5
+	sem := make(chan struct{}, maxConcurrent)
+
 	var wg sync.WaitGroup
 	results := make([]schema.ToolResult, len(calls))
 
@@ -352,6 +375,10 @@ func (r *ToolRegistry) ExecuteBatch(ctx context.Context, calls []schema.ToolCall
 		wg.Add(1)
 		go func(idx int, c schema.ToolCall) {
 			defer wg.Done()
+
+			sem <- struct{}{}        // 获取信号量
+			defer func() { <-sem }() // 释放信号量
+
 			results[idx] = r.Execute(ctx, c)
 		}(i, call)
 	}
@@ -492,4 +519,29 @@ func marshalOutput(output any) string {
 		}
 		return string(data)
 	}
+}
+
+// buildToolResult 从工具输出构建 ToolResult，支持多模态内容
+func buildToolResult(callID string, output any) schema.ToolResult {
+	if tc, ok := output.(*schema.ToolResultContent); ok {
+		result := schema.ToolResult{
+			CallID:       callID,
+			Content:      tc.Content,
+			ContentParts: tc.ContentParts,
+		}
+		// 如果没有显式 Content，从 ContentParts 提取文本
+		if result.Content == "" && len(tc.ContentParts) > 0 {
+			var texts []string
+			for _, p := range tc.ContentParts {
+				if p.Type == schema.ContentTypeText && p.Text != "" {
+					texts = append(texts, p.Text)
+				}
+			}
+			if len(texts) > 0 {
+				result.Content = strings.Join(texts, "\n")
+			}
+		}
+		return result
+	}
+	return schema.NewToolResult(callID, marshalOutput(output), false)
 }
