@@ -260,18 +260,11 @@ func (m *completionsModel) convertUserSide(msg *llm.Message) ([]sdk.ChatCompleti
 				sdk.ChatCompletionContentPartImageImageURLParam{URL: ref}))
 			onlyText = false
 		case llm.PartCustom:
-			// 开放模态块：仅 image/* 可降级映射为图像，其余显式拒绝。
-			if p.Media == nil || !strings.HasPrefix(p.Media.MediaType, "image/") {
-				return nil, unsupportedPart(m.provider, msg.Role, p.Kind)
-			}
-			ref, err := imageRef(m.provider, &llm.ImageSource{
-				Data: p.Media.Data, URL: p.Media.URL, MediaType: p.Media.MediaType,
-			})
+			part, err := m.convertCustomPart(p)
 			if err != nil {
 				return nil, err
 			}
-			parts = append(parts, sdk.ImageContentPart(
-				sdk.ChatCompletionContentPartImageImageURLParam{URL: ref}))
+			parts = append(parts, part)
 			onlyText = false
 		case llm.PartToolResult:
 			flush()
@@ -289,6 +282,37 @@ func (m *completionsModel) convertUserSide(msg *llm.Message) ([]sdk.ChatCompleti
 	}
 	flush()
 	return out, nil
+}
+
+// convertCustomPart 翻译开放模态块：image/* → image_url；video/* →
+// video_url（OpenAI 官方无此块，兼容网关如 MiniMax-M3 认它；官方端点
+// 会以 bad_request 拒绝，不静默丢弃）。其余模态显式报错。
+func (m *completionsModel) convertCustomPart(p *llm.Part) (sdk.ChatCompletionContentPartUnionParam, error) {
+	var empty sdk.ChatCompletionContentPartUnionParam
+	if p.Media == nil {
+		return empty, unsupportedPart(m.provider, llm.RoleUser, p.Kind)
+	}
+	ref, err := imageRef(m.provider, &llm.ImageSource{
+		Data: p.Media.Data, URL: p.Media.URL, MediaType: p.Media.MediaType,
+	})
+	if err != nil {
+		return empty, err
+	}
+	switch {
+	case strings.HasPrefix(p.Media.MediaType, "image/"):
+		return sdk.ImageContentPart(sdk.ChatCompletionContentPartImageImageURLParam{URL: ref}), nil
+	case strings.HasPrefix(p.Media.MediaType, "video/"):
+		raw, err := json.Marshal(map[string]any{
+			"type":      "video_url",
+			"video_url": map[string]string{"url": ref},
+		})
+		if err != nil {
+			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, err, "序列化 video_url 失败")
+		}
+		return param.Override[sdk.ChatCompletionContentPartUnionParam](json.RawMessage(raw)), nil
+	default:
+		return empty, unsupportedPart(m.provider, llm.RoleUser, p.Kind)
+	}
 }
 
 // pump 消费 SDK 流并翻译为 llm.StreamEvent；任何退出路径都保证

@@ -8,12 +8,58 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
 )
+
+func TestMain(m *testing.M) {
+	loadDotEnv()
+	os.Exit(m.Run())
+}
+
+// loadDotEnv 从仓库根的 .env 读入尚未设置的环境变量。
+// .env 已被 gitignore，专供本机真机冒烟；解析失败静默忽略。
+func loadDotEnv() {
+	dir, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	for i := 0; i < 6; i++ {
+		p := dir + string(os.PathSeparator) + ".env"
+		data, err := os.ReadFile(p)
+		if err == nil {
+			applyDotEnv(data)
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return
+		}
+		dir = parent
+	}
+}
+
+func applyDotEnv(data []byte) {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if os.Getenv(k) == "" {
+			_ = os.Setenv(k, v)
+		}
+	}
+}
 
 // ---- 测试基建 ----
 
@@ -347,6 +393,39 @@ func TestCompletionsImageInput(t *testing.T) {
 	}
 }
 
+func TestCompletionsVideoInput(t *testing.T) {
+	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		msgs, _ := body["messages"].([]any)
+		user, _ := msgs[0].(map[string]any)
+		parts, _ := user["content"].([]any)
+		if len(parts) != 2 {
+			t.Fatalf("文本+视频应为内容块列表: %v", user["content"])
+		}
+		vid, _ := parts[1].(map[string]any)
+		if vid["type"] != "video_url" {
+			t.Fatalf("第 2 块应为 video_url: %v", vid)
+		}
+		vu, _ := vid["video_url"].(map[string]any)
+		if vu["url"] != "https://example.com/clip.mp4" {
+			t.Fatalf("video url 不符: %v", vu)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"clip seen"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	})
+	req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+		llm.Text("what happens in this clip"),
+		llm.MediaURL("video/mp4", "https://example.com/clip.mp4"),
+	}})
+	resp, err := m.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Message.Text() != "clip seen" {
+		t.Fatalf("text = %q", resp.Message.Text())
+	}
+}
+
 func TestCompletionsErrorMapping(t *testing.T) {
 	cases := []struct {
 		status int
@@ -602,71 +681,154 @@ func TestRegistryIntegration(t *testing.T) {
 	}
 }
 
-// ---- 真机冒烟（环境变量门控）----
+// ---- 真机冒烟（环境变量门控，凭据绝不入库）----
+//
+//	PULSE_OPENAI_API_KEY     必填才跑
+//	PULSE_OPENAI_BASE_URL    可选，覆盖端点（OpenAI 兼容网关）
+//	PULSE_OPENAI_MODEL       可选，默认 gpt-4o-mini
+//	PULSE_OPENAI_SKIP_RESPONSES=1  跳过 Responses 变体（兼容网关常不实现）
 
-func TestLiveCompletions(t *testing.T) {
+func liveCfg(t *testing.T) llm.Config {
+	t.Helper()
 	key := os.Getenv("PULSE_OPENAI_API_KEY")
 	if key == "" {
 		t.Skip("PULSE_OPENAI_API_KEY 未设置，跳过真机冒烟")
 	}
-	model, err := NewCompletions(llm.Config{
-		Provider: ProviderCompletions, Model: "gpt-4o-mini", APIKey: key,
-	})
+	model := os.Getenv("PULSE_OPENAI_MODEL")
+	if model == "" {
+		model = "gpt-4o-mini"
+	}
+	return llm.Config{
+		Provider: ProviderCompletions,
+		Model:    model,
+		APIKey:   key,
+		BaseURL:  os.Getenv("PULSE_OPENAI_BASE_URL"),
+	}
+}
+
+func TestLiveCompletions(t *testing.T) {
+	cfg := liveCfg(t)
+	model, err := NewCompletions(cfg)
 	if err != nil {
 		t.Fatalf("NewCompletions: %v", err)
 	}
-	liveSmoke(t, model)
+
+	t.Run("text", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		resp, err := model.Generate(ctx, llm.NewRequest(llm.UserText("用一句话介绍 Go 语言")))
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if resp.Message.Text() == "" {
+			t.Fatalf("空文本；reasoning=%q finish=%s", resp.Message.ReasoningText(), resp.FinishReason)
+		}
+		t.Logf("text=%q tokens in/out=%d/%d", truncate(resp.Message.Text(), 80),
+			resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		ch, err := model.Stream(ctx, llm.NewRequest(llm.UserText("数到三，只输出数字")))
+		if err != nil {
+			t.Fatalf("Stream: %v", err)
+		}
+		evs := collect(t, ctx, ch)
+		var sb strings.Builder
+		for _, ev := range evs {
+			if ev.Kind == llm.EventTextDelta {
+				sb.WriteString(ev.Text)
+			}
+		}
+		if sb.Len() == 0 {
+			last := evs[len(evs)-1]
+			t.Fatalf("流式未收到文本增量 last=%s err=%v", last.Kind, last.Err)
+		}
+		t.Logf("stream=%q events=%d", truncate(sb.String(), 80), len(evs))
+	})
+
+	t.Run("tools", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		req := llm.NewRequest(llm.UserText("北京现在天气如何？请调用工具查询，不要直接回答"))
+		req.Tools = []llm.ToolDef{{
+			Name:        "get_weather",
+			Description: "查询城市天气",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+		}}
+		req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolAny}
+		resp, err := model.Generate(ctx, req)
+		if err != nil {
+			t.Fatalf("Generate(tool): %v", err)
+		}
+		if len(resp.Message.ToolCalls()) == 0 {
+			t.Fatalf("期望工具调用，得到: %s", resp.Message.Text())
+		}
+		t.Logf("tool=%s args=%s", resp.Message.ToolCalls()[0].Name, resp.Message.ToolCalls()[0].Arguments)
+	})
+
+	t.Run("image", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+			llm.Text("这张图里有什么？用一句话回答"),
+			llm.ImageURL("https://filecdn.minimax.chat/public/4ab63cda-da2a-4c77-b1c7-900d2562073f.png", "image/png"),
+		}})
+		resp, err := model.Generate(ctx, req)
+		if err != nil {
+			t.Fatalf("Generate(image): %v", err)
+		}
+		if resp.Message.Text() == "" {
+			t.Fatal("图像输入返回空文本")
+		}
+		t.Logf("image=%q", truncate(resp.Message.Text(), 80))
+	})
+
+	t.Run("video", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+			llm.Text("这段视频里发生了什么？用一句话回答"),
+			llm.MediaURL("video/mp4", "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"),
+		}})
+		resp, err := model.Generate(ctx, req)
+		if err != nil {
+			t.Fatalf("Generate(video): %v", err)
+		}
+		if resp.Message.Text() == "" {
+			t.Fatal("视频输入返回空文本")
+		}
+		t.Logf("video=%q", truncate(resp.Message.Text(), 80))
+	})
 }
 
 func TestLiveResponses(t *testing.T) {
-	key := os.Getenv("PULSE_OPENAI_API_KEY")
-	if key == "" {
-		t.Skip("PULSE_OPENAI_API_KEY 未设置，跳过真机冒烟")
+	if os.Getenv("PULSE_OPENAI_SKIP_RESPONSES") == "1" {
+		t.Skip("PULSE_OPENAI_SKIP_RESPONSES=1")
 	}
-	model, err := NewResponses(llm.Config{
-		Provider: ProviderResponses, Model: "gpt-4o-mini", APIKey: key,
-	})
+	cfg := liveCfg(t)
+	cfg.Provider = ProviderResponses
+	model, err := NewResponses(cfg)
 	if err != nil {
 		t.Fatalf("NewResponses: %v", err)
 	}
-	liveSmoke(t, model)
-}
-
-// liveSmoke 验证真机 Generate + Stream + 工具调用往返。
-func liveSmoke(t *testing.T, model llm.ChatModel) {
-	t.Helper()
-	ctx := context.Background()
-	req := llm.NewRequest(llm.UserText("用一句话介绍 Go"))
-	resp, err := model.Generate(ctx, req)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	resp, err := model.Generate(ctx, llm.NewRequest(llm.UserText("用一句话介绍 Go")))
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	if resp.Message.Text() == "" {
 		t.Fatal("Generate 返回空文本")
 	}
+	t.Logf("responses text=%q", truncate(resp.Message.Text(), 80))
+}
 
-	req2 := llm.NewRequest(llm.UserText("北京现在天气如何？请调用工具查询"))
-	req2.Tools = []llm.ToolDef{{
-		Name:        "get_weather",
-		Description: "查询城市天气",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
-	}}
-	resp2, err := model.Generate(ctx, req2)
-	if err != nil {
-		t.Fatalf("Generate(tool): %v", err)
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
 	}
-	if len(resp2.Message.ToolCalls()) == 0 {
-		t.Fatalf("期望工具调用，得到: %s", resp2.Message.Text())
-	}
-
-	evs := collect(t, ctx, mustStream(t, model, llm.NewRequest(llm.UserText("数到三"))))
-	var sb strings.Builder
-	for _, ev := range evs {
-		if ev.Kind == llm.EventTextDelta {
-			sb.WriteString(ev.Text)
-		}
-	}
-	if sb.Len() == 0 {
-		t.Fatal("流式未收到文本增量")
-	}
+	return string(r[:n]) + "…"
 }
