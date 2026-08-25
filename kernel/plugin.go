@@ -310,7 +310,8 @@ func (f *Fiber) doUnload() {
 }
 
 // forceUnload 由宿主作用域销毁时调用：整棵树都在拆除，不再广播
-// 通知，仅同步状态并释放引用。（私有作用域由宿主的效应栈级联回收。）
+// 通知，仅同步状态并释放引用。（私有作用域由宿主对 children 的
+// 级联销毁回收。）
 func (f *Fiber) forceUnload() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
