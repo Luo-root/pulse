@@ -31,7 +31,7 @@ type listener struct {
 type listenerKind int
 
 const (
-	listenerObserve   listenerKind = iota // Emit / Parallel / Serial 的观察签名 func(*P)
+	listenerObserve   listenerKind = iota // Emit / Parallel 的观察签名 func(*P)
 	listenerWaterfall                     // Waterfall 的 around 签名 func(P, func(P) P) P
 )
 
@@ -138,10 +138,10 @@ func OnWaterfall[P any](c *Context, k EventKey[P], fn func(payload P, next func(
 	return d, err
 }
 
-// On 注册一个观察型监听器（供 Emit / Serial / Parallel 派发）。
+// On 注册一个观察型监听器（供 Emit / Parallel 派发）。
 //
-// 监听器通过 *P 就地修改载荷（Serial 场景下前序监听器的修改对
-// 后续可见）。注册本身是一条效应（随作用域销毁自动摘除）；
+// 监听器通过 *P 就地修改载荷（Emit 串行派发时前序监听器的修改
+// 对后续可见）。注册本身是一条效应（随作用域销毁自动摘除）；
 // 返回撤销函数（幂等）。
 func On[P any](c *Context, k EventKey[P], fn func(payload *P)) (func(), error) {
 	typ := payloadType[P]()
@@ -181,9 +181,14 @@ func (c *Context) collectListeners(name string, kinds ...listenerKind) []*listen
 	return out
 }
 
-// Emit 以 observe 语义派发：按上述顺序同步逐个调用。waterfall 型
+// Emit 以观察语义派发：按上述顺序同步逐个调用。waterfall 型
 // 监听器不参与（安静跳过）；单个监听器的 panic 会向上传播
 // （观察者不应吞掉编程错误）。
+//
+// 监听器可通过 *P 就地修改载荷，且修改对后续监听器可见——Go 的
+// 同步调用天然就是串行累积语义（对应 Cordis 的 serial 模式），
+// 因此不设单独的 Serial 入口；需要"各拿独立副本"的并发语义用
+// Parallel。
 func Emit[P any](c *Context, k EventKey[P], payload P) {
 	for _, l := range c.collectListeners(k.name, listenerObserve) {
 		fn := l.fn.(func(*P))
@@ -191,9 +196,9 @@ func Emit[P any](c *Context, k EventKey[P], payload P) {
 	}
 }
 
-// Parallel 以并发语义派发全部观察监听器并等待完成。
-// 返回各监听器的错误（panic 被转换为 error），顺序与监听顺序对应；
-// 无监听器时返回 nil。
+// Parallel 以并发语义派发全部观察监听器并等待完成：每个监听器
+// 拿到独立副本起点，互不可见。返回各监听器的错误（panic 被转换
+// 为 error），顺序与监听顺序对应；无监听器时返回 nil。
 func Parallel[P any](c *Context, k EventKey[P], payload P) []error {
 	ls := c.collectListeners(k.name, listenerObserve)
 	if len(ls) == 0 {
@@ -229,15 +234,6 @@ func Parallel[P any](c *Context, k EventKey[P], payload P) []error {
 		return nil
 	}
 	return errs
-}
-
-// Serial 以串行累积语义派发观察监听器：每个监听器通过 *P 的
-// 修改对后续监听器可见（例如逐步追加内容）。
-func Serial[P any](c *Context, k EventKey[P], payload P) {
-	for _, l := range c.collectListeners(k.name, listenerObserve) {
-		fn := l.fn.(func(*P))
-		fn(&payload)
-	}
 }
 
 // Waterfall 以 around 链语义派发：监听器依次包裹，最终结果沿

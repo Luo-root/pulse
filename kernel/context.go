@@ -46,16 +46,14 @@ type Context struct {
 	onServiceChange []*subscriber // 服务变更订阅（内部使用）
 }
 
-// binding 是一条服务绑定：值 + 提供者信息。
+// binding 是一条服务绑定。
 //
-// provider 用于响应式依赖判断——当绑定被撤除时，内核据此通知
-// 由该 Fiber 提供的服务发生了变化。手工 Provide 的绑定 provider
-// 为 nil。
+// typ 存键值类型指纹，用于同名跨类型冲突检测；响应式依赖的
+// 感知由绑定撤除时的全树广播驱动，不依赖提供者身份。
 type binding struct {
-	key      string
-	value    any
-	typ      any // 零值指针，用于跨类型同名冲突检测
-	provider *Fiber
+	key   string
+	value any
+	typ   any
 }
 
 // New 创建根作用域。

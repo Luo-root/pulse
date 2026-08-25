@@ -50,7 +50,7 @@ v2 的目标：把 Cordis 的思想以 Go 的方式重新实现为 pulse 的内�
 | 5 | 不做 realm/isolate 多租户隔离 | 当前无场景；键名前缀约定已够用，留有扩展点 |
 | 6 | 不做代码级 HMR | Go 无法卸载已加载代码。Loader 的"重载"是状态级的：dispose 旧 Fiber、同一工厂重建新实例 |
 | 7 | waterfall 监听器契约只有注册顺序，不支持 prepend | 契约最小化；需要优先级时显式分层注册 |
-| 8 | 事件四种派发模式保留（Emit/Waterfall/Parallel/Serial），载荷统一指针/值传递 | Serial 通过 `*P` 就地累积修改，语义等价于 Cordis serial |
+| 8 | 事件三种派发模式（Emit/Waterfall/Parallel），不设独立 Serial | Cordis 的 serial 与 emit 差异在 await 与否；Go 同步调用天然串行累积（监听器经 `*P` 就地修改、对后续可见），两模式实现完全相同——保留两个入口只会让人误以为有行为差异 |
 
 ### 有意钉死的语义（有测试背书，不是漏测）
 
@@ -81,10 +81,10 @@ var Key = kernel.NewServiceKey[*Registry]("pulse.llm")
 dispose, _ := kernel.Provide(ctx, Key, reg)   // 自动登记为效应；覆盖=撤旧装新
 reg, ok := kernel.Get(ctx, Key)               // 全局仓库查找 + 类型断言
 
-// 事件（四种派发模式）
+// 事件（三种派发模式）
 var EvReq = kernel.NewEventKey[*Req]("x.req")
 kernel.OnWaterfall(ctx, EvReq, func(r *Req, next func(*Req) *Req) *Req { ... }) // around 链
-kernel.On(ctx, EvOther, func(p *P))           // Emit / Serial / Parallel 共用签名
+kernel.On(ctx, EvOther, func(p *P))           // Emit / Parallel 共用签名
 out := kernel.Waterfall(ctx, EvReq, req)      // 可短路、可改写
 
 // 插件（依赖响应式）

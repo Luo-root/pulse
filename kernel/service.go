@@ -44,17 +44,17 @@ func keyType[T any]() any {
 //     会据此重新评估自己的装载状态（激活 / 卸载 / 无感）；
 //   - 返回的 dispose 只撤销本次安装（幂等），不影响其他历史。
 func Provide[T any](c *Context, k ServiceKey[T], v T) (func(), error) {
-	return provide(c, k.name, v, keyType[T](), nil)
+	return provide(c, k.name, v, keyType[T]())
 }
 
-// provide 是 Provide 的内部形态，附带提供者与类型指纹。
+// provide 是 Provide 的内部形态，附带类型指纹。
 //
 // 服务绑定统一存放在根作用域的仓库中（对齐 Cordis 的 runtime
 // store：作用域管理生命周期归属与事件传播，服务命名空间全局唯一，
 // 避免"谁提供谁可见"的作用域陷阱）。安装本身作为登记层的一条
 // 效应跟踪——作用域销毁时绑定自动撤除，这正是 Cordis "set 即
 // effect"的不变式。
-func provide(c *Context, name string, v any, typ any, provider *Fiber) (func(), error) {
+func provide(c *Context, name string, v any, typ any) (func(), error) {
 	store := c.root()
 
 	var b *binding
@@ -69,7 +69,7 @@ func provide(c *Context, name string, v any, typ any, provider *Fiber) (func(), 
 					name, ot, nt)
 			}
 		}
-		b = &binding{key: name, value: v, typ: typ, provider: provider}
+		b = &binding{key: name, value: v, typ: typ}
 		store.bindings[name] = b
 		store.mu.Unlock()
 

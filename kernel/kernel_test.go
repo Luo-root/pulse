@@ -374,7 +374,7 @@ func TestEventModes(t *testing.T) {
 
 	_, _ = On(ctx, ev, func(p *int) { mu.Lock(); seen = append(seen, *p); mu.Unlock() })
 
-	Serial(ctx, ev, 7)
+	Emit(ctx, ev, 7) // 观察者可就地修改 => 串行派发传递修改
 	Emit(ctx, ev, 8)
 	errs := Parallel(ctx, ev, 9)
 	if errs != nil {
@@ -400,7 +400,7 @@ func TestMixedListenerKinds(t *testing.T) {
 		return next(v + 1)
 	})
 
-	Serial(ctx, ev, 5)
+	Emit(ctx, ev, 5)
 	if atomic.LoadInt32(&obsHit) != 1 || atomic.LoadInt32(&wfHit) != 0 {
 		t.Fatalf("emit crossed kinds: obs=%d wf=%d", obsHit, wfHit)
 	}

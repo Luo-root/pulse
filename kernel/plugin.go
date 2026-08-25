@@ -110,7 +110,6 @@ type Fiber struct {
 	settling  bool
 	unsub     func() // 摘除 host 上的变更订阅
 	closed    bool
-	wake      chan struct{} // 容量 1：每次收敛结束发信号
 	waitersMu sync.Mutex
 	waiters   []chan struct{}
 }
@@ -125,7 +124,6 @@ func Use(host *Context, p Plugin) (*Fiber, error) {
 		plugin: p,
 		host:   host,
 		inject: p.Inject(),
-		wake:   make(chan struct{}, 1),
 	}
 
 	// 订阅挂载层的服务变更（变更通知会从变更层广播到全树），
@@ -170,7 +168,9 @@ func (f *Fiber) settleSync() {
 	f.state = StateLoading
 	f.mu.Unlock()
 	f.doLoad()
-}// State 返回当前生命周期状态。
+}
+
+// State 返回当前生命周期状态。
 func (f *Fiber) State() FiberState {
 	f.mu.Lock()
 	defer f.mu.Unlock()

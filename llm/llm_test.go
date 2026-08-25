@@ -407,7 +407,7 @@ func TestScriptedToolCallStream(t *testing.T) {
 
 func TestErrorClassification(t *testing.T) {
 	base := errors.New("boom")
-	e := errRateLimit("openai", 429, base)
+	e := NewError(ErrRateLimit, "openai", 429, base, "rate limited")
 	if !IsRetryable(e) {
 		t.Fatal("rate limit should be retryable")
 	}
@@ -419,6 +419,9 @@ func TestErrorClassification(t *testing.T) {
 	}
 	if !errors.Is(e, base) {
 		t.Fatal("unwrap chain broken")
+	}
+	if KindOf(errors.New("other")) != ErrUnknown {
+		t.Fatal("foreign error kind should be unknown")
 	}
 }
 

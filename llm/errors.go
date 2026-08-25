@@ -87,17 +87,3 @@ func IsRetryable(err error) bool {
 	}
 	return false
 }
-
-// 预置构造器：覆盖 adapter 最常见的几类场景。
-
-func errAuth(provider string, status int, err error) error {
-	return NewError(ErrAuth, provider, status, err, "authentication failed")
-}
-
-func errRateLimit(provider string, status int, err error) error {
-	return NewError(ErrRateLimit, provider, status, err, "rate limited")
-}
-
-func errContextLength(provider string, status int, err error) error {
-	return NewError(ErrContextLength, provider, status, err, "context length exceeded")
-}
