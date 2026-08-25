@@ -9,7 +9,8 @@
 //	agent := loop.NewAgent(model, loop.WithToolSet(tools))
 //	res, err := agent.Run(ctx, history, llm.UserText("帮我查一下…"))
 //	// res.Final.Text()  → 最终回复
-//	// res.Messages      → 本回合新增消息（追加到 history 即多轮对话）
+//	// res.Messages      → 本回合新产生的消息（assistant/tool 交替）
+//	// 多轮对话 = history = append(history, input..., res.Messages...)
 //
 // # 扩展点全部事件化
 //

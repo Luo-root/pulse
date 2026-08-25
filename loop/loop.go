@@ -147,8 +147,13 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 
 	res := &Result{}
 
-	// 轨迹闭合：任何退出路径都恰好发出一次 turn_end。
+	// 统一收尾：任何退出路径（完成 / MaxSteps / 取消 / 错误）都
+	// ① 带上已发生的部分产出（Messages 非 nil）；
+	// ② 恰好发出一次 turn_end——轨迹保证闭合。
 	defer func() {
+		if res.Messages == nil {
+			res.Messages = produced
+		}
 		if res.StoppedBy == "" {
 			res.StoppedBy = StopError
 		}
@@ -213,8 +218,10 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 			start := time.Now()
 			btc := &BeforeToolCall{Call: call}
 			// 与 llm.before_generate 同一条 around 契约：监听器可能
-			// Clone 改写后返回新载荷，必须以返回值为准。
+			// Clone 改写后返回新载荷，必须以返回值为准——此后全程
+			// 使用 btc.Call（改写后的名字与参数），原 call 不再引用。
 			btc = waterfallOf(a.scope, EventBeforeToolCall, btc)
+			effective := btc.Call
 
 			if btc.Rejected {
 				reason := btc.RejectReason
@@ -223,27 +230,26 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 				}
 				text := "tool call rejected: " + reason
 				emit(a.scope, EventAfterToolCall, AfterToolCall{
-					Call: call, Rejected: true, Duration: time.Since(start),
+					Call: effective, Rejected: true, Duration: time.Since(start),
 				})
-				msgs = append(msgs, toolResultMsg(call.ID, text, true))
+				msgs = append(msgs, toolResultMsg(effective.ID, text, true))
 				produced = append(produced, msgs[len(msgs)-1])
 				continue
 			}
 
-			out, execErr := a.execute(ctx, call)
+			out, execErr := a.execute(ctx, effective)
 			text := out
 			if execErr != nil {
 				text = "tool error: " + execErr.Error()
 			}
 			emit(a.scope, EventAfterToolCall, AfterToolCall{
-				Call: call, Result: text, Duration: time.Since(start), Err: execErr,
+				Call: effective, Result: text, Duration: time.Since(start), Err: execErr,
 			})
-			msgs = append(msgs, toolResultMsg(call.ID, text, execErr != nil))
+			msgs = append(msgs, toolResultMsg(effective.ID, text, execErr != nil))
 			produced = append(produced, msgs[len(msgs)-1])
 		}
 	}
 
-	res.Messages = produced
 	return res, nil
 }
 

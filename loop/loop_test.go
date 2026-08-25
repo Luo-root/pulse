@@ -112,7 +112,8 @@ func newTestAgent(t *testing.T, model llm.ChatModel, ts ToolSet, scope *kernel.C
 	return a
 }
 
-// 验收 1：无工具纯对话一步完成；Messages 含 system+user+assistant。
+// 验收 1：无工具纯对话一步完成；Messages 仅含本回合产出（assistant
+// 一条，不含 system/input——契约见 Result.Messages）。
 func TestRunCompletesWithoutTools(t *testing.T) {
 	scope := kernel.New()
 	a := newTestAgent(t, llm.NewScripted(llm.Resp("hi there")), nil, scope)
@@ -205,6 +206,87 @@ func TestEventTraceRestoresExecution(t *testing.T) {
 	}, " | ")
 	if got := tr.joined(); got != want {
 		t.Fatalf("trace mismatch:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// before_tool_call 改写生效：监听器以 around 契约返回改写后的载荷，
+// 工具收到新的参数，审计事件与回传结果同源（HITL 改参路径）。
+func TestBeforeToolCallRewriteTakesEffect(t *testing.T) {
+	scope := kernel.New()
+	model := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "echo", Arguments: []byte(`{"text":"original"}`)}),
+		llm.Resp("ok"),
+	)
+	var seenArgs json.RawMessage
+	ts := NewMemToolSet()
+	if err := ts.Register(llm.ToolDef{Name: "echo"}, func(_ context.Context, args json.RawMessage) (string, error) {
+		seenArgs = args
+		return "executed", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a := newTestAgent(t, model, ts, scope)
+
+	// 策略监听器的正常写法：改写载荷后委托 next 返回。
+	unsub, err := kernel.OnWaterfall(scope, EventBeforeToolCall,
+		func(p *BeforeToolCall, next func(*BeforeToolCall) *BeforeToolCall) *BeforeToolCall {
+			p.Call.Arguments = []byte(`{"text":"rewritten"}`)
+			return next(p)
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+
+	res, err := a.Run(context.Background(), nil, llm.UserText("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(seenArgs) != `{"text":"rewritten"}` {
+		t.Fatalf("tool saw args %s, want rewritten payload", seenArgs)
+	}
+	var resultID string
+	for _, m := range res.Messages {
+		for _, part := range m.Parts {
+			if p := part.ToolResultValue; p != nil && p.ToolCallID == "c1" {
+				resultID = p.ToolCallID
+			}
+		}
+	}
+	if resultID != "c1" {
+		t.Fatalf("result id = %q (audit/execution diverged)", resultID)
+	}
+}
+
+// 错误/取消路径也带部分产出：Messages 非 nil（已发生的部分不丢）。
+func TestErrorPathCarriesPartialMessages(t *testing.T) {
+	scope := kernel.New()
+	model := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "echo", Arguments: []byte(`{}`)}),
+	)
+	tools := &fakeTools{fn: func(call llm.ToolCall) (string, error) { return "ok", nil }}
+	a := newTestAgent(t, model, tools, scope)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// 第一个工具完成后立即取消：第二步的 ctx 检查将命中取消。
+	unsub, err := kernel.On(scope, EventAfterToolCall, func(*AfterToolCall) { cancel() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+
+	res, rerr := a.Run(ctx, nil, llm.UserText("q"))
+	if !errors.Is(rerr, context.Canceled) {
+		t.Fatalf("err = %v, want canceled at step 2", rerr)
+	}
+	if res.StoppedBy != StopCanceled {
+		t.Fatalf("stoppedBy = %s", res.StoppedBy)
+	}
+	if len(res.Messages) == 0 {
+		t.Fatal("partial output lost: Messages is nil on error path")
+	}
+	if res.Messages[0].Role != llm.RoleAssistant || len(res.Messages[0].ToolCalls()) != 1 {
+		t.Fatalf("first partial message should be step-1 assistant toolcall, got role=%s", res.Messages[0].Role)
 	}
 }
 
