@@ -2,7 +2,6 @@ package kernel
 
 import (
 	"errors"
-	"reflect"
 	"sync"
 )
 
@@ -44,7 +43,7 @@ type Context struct {
 	children []*Context          // 派生出的子作用域（Dispose 时级联回收）
 	events   *eventBus           // 本层事件总线
 
-	onServiceChange []func(changed []string) // 服务变更订阅（内部使用）
+	onServiceChange []*subscriber // 服务变更订阅（内部使用）
 }
 
 // binding 是一条服务绑定：值 + 提供者信息。
@@ -249,24 +248,27 @@ func (c *Context) root() *Context {
 	return r
 }
 
-// sameFunc 判断两个 func 值是否为同一闭包（仅比较指针，够用）。
-func sameFunc(a, b func([]string)) bool {
-	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
+// subscriber 包装服务变更订阅，提供稳定的指针身份——闭包不能用
+// 代码指针判等（同一函数字面量的不同闭包指针相同），否则一个
+// 订阅者的撤销会误删他人的订阅。
+type subscriber struct {
+	fn func(changed []string)
 }
 
 // onChange 订阅本层的服务变更，返回摘除函数（幂等）。
 // 内部 API：供插件生命周期使用。
 func (c *Context) onChange(fn func(changed []string)) (unsub func()) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.onServiceChange = append(c.onServiceChange, fn)
+	sub := &subscriber{fn: fn}
+	c.onServiceChange = append(c.onServiceChange, sub)
+	c.mu.Unlock()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			for i, cur := range c.onServiceChange {
-				if sameFunc(cur, fn) {
+				if cur == sub {
 					c.onServiceChange = append(c.onServiceChange[:i], c.onServiceChange[i+1:]...)
 					return
 				}
@@ -286,11 +288,11 @@ func (c *Context) notifyServiceChange(changed []string) {
 	var walk func(*Context)
 	walk = func(n *Context) {
 		n.mu.Lock()
-		subs := append([]func([]string){}, n.onServiceChange...)
+		subs := append([]*subscriber{}, n.onServiceChange...)
 		kids := append([]*Context{}, n.children...)
 		n.mu.Unlock()
-		for _, fn := range subs {
-			fn(changed)
+		for _, sub := range subs {
+			sub.fn(changed)
 		}
 		for _, k := range kids {
 			walk(k)

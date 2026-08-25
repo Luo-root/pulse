@@ -87,6 +87,10 @@ func (l *Loader) MustRegister(name string, f Factory) {
 
 // Reconcile 将条目列表调和为期望的运行形态。单个条目的失败不阻断
 // 其余条目；返回聚合错误（errors.Join），所有失败条目都可见。
+//
+// 注意：调和期间持有 Loader 内部锁执行插件的装载/卸载——插件代码
+// 不得反向调用同一个 Loader（插件不应知道 Loader 的存在；需要
+// 与装配交互时通过内核服务而不是直接引用）。
 func (l *Loader) Reconcile(entries []Entry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

@@ -36,6 +36,11 @@ const (
 )
 
 // eventBus 是单个作用域的事件总线。
+//
+// 锁约定：mu 守护本结构全部字段（listeners/types），是叶子锁——
+// 其方法全部自持锁，方法内部不得触碰 Context.mu 或其他任何锁；
+// 调用方需要同时访问层结构（children 等）与总线时，锁序固定为
+// Context.mu -> bus.mu，全库不存在反向获取。
 type eventBus struct {
 	mu        sync.Mutex
 	listeners map[string][]*listener
@@ -54,8 +59,10 @@ func payloadType[P any]() reflect.Type {
 	return reflect.TypeOf((*P)(nil))
 }
 
-// add 注册监听器并做同名同类型校验（调用方须持有 bus.mu）。
+// add 注册监听器并做同名同类型校验（自持锁）。
 func (b *eventBus) add(name string, typ reflect.Type, l *listener) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if known, ok := b.types[name]; ok {
 		if known != typ {
 			return fmt.Errorf("kernel: event %q declared with payload %s, cannot listen as %s",
@@ -68,6 +75,7 @@ func (b *eventBus) add(name string, typ reflect.Type, l *listener) error {
 	return nil
 }
 
+// remove 按 listener 身份摘除（自持锁；未找到则为空操作）。
 func (b *eventBus) remove(name string, l *listener) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -88,6 +96,24 @@ func (b *eventBus) clear() {
 	b.listeners = make(map[string][]*listener)
 }
 
+// copyMatching 返回该事件下命中任一 kind 的监听器快照（自持锁）。
+// 派发在快照上进行——因此正在卸载的作用域仍可能收到最后一次
+// 派发，监听器须能容忍这一点（事件系统的固有窗口）。
+func (b *eventBus) copyMatching(name string, kinds ...listenerKind) []*listener {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []*listener
+	for _, l := range b.listeners[name] {
+		for _, k := range kinds {
+			if l.kind == k {
+				out = append(out, l)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // OnWaterfall 注册一个 waterfall（around 中间件）监听器。
 //
 // 监听器收到载荷和一个 next 函数：
@@ -102,9 +128,8 @@ func (b *eventBus) clear() {
 func OnWaterfall[P any](c *Context, k EventKey[P], fn func(payload P, next func(P) P) P) (func(), error) {
 	typ := payloadType[P]()
 	l := &listener{kind: listenerWaterfall, fn: fn}
+	// bus.add/remove 自持锁，apply 无需触碰 Context.mu。
 	d, err := c.Effect(func() (func(), error) {
-		c.mu.Lock()
-		defer c.mu.Unlock()
 		if err := c.events.add(k.name, typ, l); err != nil {
 			return nil, err
 		}
@@ -122,8 +147,6 @@ func On[P any](c *Context, k EventKey[P], fn func(payload *P)) (func(), error) {
 	typ := payloadType[P]()
 	l := &listener{kind: listenerObserve, fn: fn}
 	d, err := c.Effect(func() (func(), error) {
-		c.mu.Lock()
-		defer c.mu.Unlock()
 		if err := c.events.add(k.name, typ, l); err != nil {
 			return nil, err
 		}
@@ -137,22 +160,19 @@ func On[P any](c *Context, k EventKey[P], fn func(payload *P)) (func(), error) {
 // 监听器先于后代层执行，即「外层策略包裹内层行为」。事件派发是
 // 全树广播（与 notifyServiceChange 一致）：插件无论挂在哪个作用域，
 // 其监听都能到达；随其作用域销毁自动摘除。
+//
+// 锁序：逐层先持 Context.mu 快照 children，经 bus.mu 取监听快照
+// （叶子锁随取随放）；全部派发在所有锁释放之后进行。
 func (c *Context) collectListeners(name string, kinds ...listenerKind) []*listener {
 	root := c.root()
 	var out []*listener
 	var walk func(*Context)
 	walk = func(n *Context) {
 		n.mu.Lock()
-		for _, l := range n.events.listeners[name] {
-			for _, k := range kinds {
-				if l.kind == k {
-					out = append(out, l)
-					break
-				}
-			}
-		}
+		snap := n.events.copyMatching(name, kinds...)
 		kids := append([]*Context{}, n.children...)
 		n.mu.Unlock()
+		out = append(out, snap...)
 		for _, kid := range kids {
 			walk(kid)
 		}

@@ -478,16 +478,110 @@ func TestEventNameTypeConflict(t *testing.T) {
 	}
 }
 
+// #2（审核补充）：并发注册/撤销/派发同一事件总线——锁统一后
+// -race 必须保持干净（此前 add 无 bus 锁、collect 裸读切片的窗口
+// 由本测试钉住）。
+func TestEventBusConcurrentAddRemoveDispatch(t *testing.T) {
+	ctx := New()
+	ev := NewEventKey[int]("test.bus.race")
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// goroutine A：同层反复注册+撤销（add/remove 竞争窗口）。
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			d, err := OnWaterfall(ctx, ev, func(v int, next func(int) int) int { return next(v) })
+			if err != nil {
+				return
+			}
+			d()
+		}
+	}()
+
+	// goroutine B：并发派发（collectListeners 读快照窗口）。
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = Waterfall(ctx, ev, 0)
+		}
+	}()
+
+	// goroutine C：另一层并发观察注册 + 派发。
+	child := ctx.Derive()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			d, err := On(child, ev, func(*int) {})
+			if err == nil {
+				Emit(ctx, ev, 7)
+				d()
+			}
+		}
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
+// 回归：同层多个插件的变更订阅互不误删。Use 为每个 Fiber 注册的
+// 订阅闭包来自同一函数字面量（仅捕获变量不同），按函数代码指针
+// 判等会把它们当成同一个订阅——第一个 Close 会摘掉别人的订阅。
+func TestSiblingFiberSubscriptionNotCrossRemoved(t *testing.T) {
+	ctx := New()
+	disposeDep := mustProvide(t, ctx, keyStr, "dep")
+
+	pa := &countingPlugin{deps: []Dependency{Require(keyStr)}}
+	fa, err := Use(ctx, pa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pb := &countingPlugin{deps: []Dependency{Require(keyStr)}}
+	fb, err := Use(ctx, pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, fa, time.Second, StateActive)
+	waitForState(t, fb, time.Second, StateActive)
+
+	fa.Close() // A 注销——不得连带摘除 B 的订阅
+
+	disposeDep() // 依赖消失 => B 必须感知并卸载
+	waitForState(t, fb, time.Second, StateInactive)
+}
+
 // ---- Loader ----
 
 type tagPlugin struct {
 	countingPlugin
-	tag    string
+	entryID string
+	tag     string
 	configured bool
 }
 
 func (p *tagPlugin) Configure(cfg map[string]any) error {
 	p.tag, _ = cfg["tag"].(string)
+	p.entryID, _ = cfg["entry"].(string)
 	p.configured = true
 	return nil
 }
@@ -497,8 +591,10 @@ func TestLoaderReconcile(t *testing.T) {
 	l := NewLoader(ctx)
 
 	var applies int32
+	var madeMu sync.Mutex
+	var made []*tagPlugin // 工厂产出的实例，按创建顺序记录
 	l.MustRegister("tagged", func() Plugin {
-		return &tagPlugin{
+		p := &tagPlugin{
 			countingPlugin: countingPlugin{
 				onApply: func(c *Context) error {
 					atomic.AddInt32(&applies, 1)
@@ -506,12 +602,18 @@ func TestLoaderReconcile(t *testing.T) {
 				},
 			},
 		}
+		madeMu.Lock()
+		made = append(made, p)
+		madeMu.Unlock()
+		return p
 	})
 
-	// #4：两个条目各自的 config 私有且隔离。
+	// #4：两个条目各自的 config 私有且隔离——并且值各自正确到达。
+	// （Reconcile 内部按 map 迭代，装载顺序不定，故条目在 Config 里
+	// 自报身份来断言对应关系。）
 	if err := l.Reconcile([]Entry{
-		{ID: "a", Name: "tagged", Config: map[string]any{"tag": "v1"}},
-		{ID: "b", Name: "tagged", Config: map[string]any{"tag": "v2"}},
+		{ID: "a", Name: "tagged", Config: map[string]any{"entry": "a", "tag": "v1"}},
+		{ID: "b", Name: "tagged", Config: map[string]any{"entry": "b", "tag": "v2"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -519,28 +621,56 @@ func TestLoaderReconcile(t *testing.T) {
 	waitForState(t, fa, time.Second, StateActive)
 	waitForState(t, fb, time.Second, StateActive)
 
-	// 通过实例身份区分两个插件（工厂每条目调用一次）：
-	if fa == fb {
-		t.Fatal("two entries must get separate plugin instances")
+	madeMu.Lock()
+	if len(made) != 2 {
+		t.Fatalf("instances built = %d, want 2", len(made))
+	}
+	instA, instB := made[0], made[1]
+	madeMu.Unlock()
+
+	if !instA.configured || !instB.configured {
+		t.Fatal("Configure not invoked for both entries")
+	}
+	byID := map[string]*tagPlugin{instA.entryID: instA, instB.entryID: instB}
+	if len(byID) != 2 {
+		t.Fatalf("instances lost identity: %q %q", instA.entryID, instB.entryID)
+	}
+	if byID["a"].tag != "v1" || byID["b"].tag != "v2" {
+		t.Fatalf("config crossed wires: a=%q b=%q, want v1/v2", byID["a"].tag, byID["b"].tag)
 	}
 
-	// Config 变化 => 重建。
+	// Config 变化 => 重建（新实例拿到新值；旧实例不再被触碰）。
 	before := atomic.LoadInt32(&applies)
 	if err := l.Reconcile([]Entry{
-		{ID: "a", Name: "tagged", Config: map[string]any{"tag": "v1-changed"}},
-		{ID: "b", Name: "tagged", Config: map[string]any{"tag": "v2"}},
+		{ID: "a", Name: "tagged", Config: map[string]any{"entry": "a", "tag": "v1-changed"}},
+		{ID: "b", Name: "tagged", Config: map[string]any{"entry": "b", "tag": "v2"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	waitForState(t, l.Fiber("a"), time.Second, StateActive)
-	if atomic.LoadInt32(&applies)-before < 1 {
-		t.Fatal("config change did not rebuild entry a")
+
+	madeMu.Lock()
+	rebuilt := made[2]
+	madeMu.Unlock()
+	for _, old := range []*tagPlugin{instA, instB} {
+		if rebuilt == old {
+			t.Fatal("config change must rebuild the entry, not reuse instance")
+		}
+	}
+	if rebuilt.entryID != "a" || rebuilt.tag != "v1-changed" {
+		t.Fatalf("rebuilt = (%q,%q), want (a,v1-changed)", rebuilt.entryID, rebuilt.tag)
+	}
+	if got := atomic.LoadInt32(&applies); got-before < 1 {
+		t.Fatal("config change did not re-apply entry a")
+	}
+	if byID["b"].tag != "v2" {
+		t.Fatalf("untouched entry b mutated: %q", byID["b"].tag)
 	}
 
-	// Disabled => 卸载保留记录；另一条目不受影响。
+	// Disabled => 卸载保留记录；另一条目实例与配置不受影响。
 	if err := l.Reconcile([]Entry{
 		{ID: "a", Name: "tagged", Disabled: true},
-		{ID: "b", Name: "tagged", Config: map[string]any{"tag": "v2"}},
+		{ID: "b", Name: "tagged", Config: map[string]any{"entry": "b", "tag": "v2"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -548,6 +678,9 @@ func TestLoaderReconcile(t *testing.T) {
 		t.Fatal("disabled entry should not keep a fiber")
 	}
 	waitForState(t, l.Fiber("b"), time.Second, StateActive)
+	if byID["b"].tag != "v2" {
+		t.Fatalf("entry b config disturbed by disabling a: %q", byID["b"].tag)
+	}
 
 	if err := l.Reconcile(nil); err != nil {
 		t.Fatal(err)
