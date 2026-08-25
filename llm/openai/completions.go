@@ -327,7 +327,9 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 				}
 			}
 			var rc string
-			if f, ok := d.JSON.ExtraFields["reasoning_content"]; ok && f.Valid() {
+			// 注意：ExtraFields 里的字段 Valid() 恒为 false（SDK 对
+			// 未知字段不设 status），只看 Raw() 是否非空。
+			if f, ok := d.JSON.ExtraFields["reasoning_content"]; ok {
 				_ = json.Unmarshal([]byte(f.Raw()), &rc)
 			}
 			if rc != "" {
@@ -407,7 +409,8 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 func mapCompletionsMessage(msg *sdk.ChatCompletionMessage) *llm.Message {
 	parts := make([]llm.Part, 0, len(msg.ToolCalls)+2)
 	var reasoning string
-	if f, ok := msg.JSON.ExtraFields["reasoning_content"]; ok && f.Valid() {
+	if f, ok := msg.JSON.ExtraFields["reasoning_content"]; ok {
+		// 同上：ExtraFields 不吃 Valid()，以 Raw() 为准。
 		_ = json.Unmarshal([]byte(f.Raw()), &reasoning)
 	}
 	if reasoning != "" {

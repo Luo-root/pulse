@@ -146,6 +146,8 @@ func classifyStatus(status int, errCode, msg string) llm.ErrKind {
 		return llm.ErrContextLength
 	case strings.Contains(code, "content_filter"):
 		return llm.ErrContentFilter
+	case strings.Contains(code, "server_error"):
+		return llm.ErrProvider
 	case status == 400 || status == 405 || status == 422:
 		return llm.ErrBadRequest
 	case status >= 500:
