@@ -76,21 +76,16 @@ func (s *MemToolSet) Definitions() []llm.ToolDef {
 	return out
 }
 
-// Execute 实现 ToolSet：未知工具名返回错误；工具 panic 被恢复为
-// 错误（双保险——loop 侧也有一层恢复）。
-func (s *MemToolSet) Execute(ctx context.Context, call llm.ToolCall) (out string, err error) {
+// Execute 实现 ToolSet：未知工具名返回错误。
+// 工具 panic 的恢复由 loop（回合边界）统一负责——本实现不重复设防，
+// 保持自身为一个纯粹的名字到函数的分发器。
+func (s *MemToolSet) Execute(ctx context.Context, call llm.ToolCall) (string, error) {
 	s.mu.RLock()
 	t, ok := s.tools[call.Name]
 	s.mu.RUnlock()
 	if !ok {
 		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			out = ""
-			err = fmt.Errorf("tool %q panicked: %v", call.Name, r)
-		}
-	}()
 	return t.fn(ctx, call.Arguments)
 }
 

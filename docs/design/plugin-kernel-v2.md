@@ -157,14 +157,21 @@ observed 包装的 ChatModel（消费方接口）
 原则：**核心先站稳，能力逐个搬**。每个 P 级合入后 `go test ./...`
 保持绿线；旧 components/* 在迁移完成前原样保留可运行。
 
-### P0 agent-loop（下一个 PR）
+### P0 agent-loop（已完成，PR #5）
 
-- 新包 `loop/`：基于 `kernel.Plugin` + `llm.ChatModel` 的 ReAct 循环；
-- 循环本身是插件：Inject 依赖 `pulse.llm` 与工具注册服务；
+- 新包 `loop/`：基于 `llm.ChatModel` 的 ReAct 循环；
+- **Agent 是库对象而非插件**（有意取舍）：它没有可装载的副作用、
+  没有资源要回收，硬套 Plugin/Loader 只会多一层无意义的壳。依赖
+  经构造注入（ChatModel / ToolSet），事件派发作用域可选注入；
+  "一切皆插件"约束的是内核里的能力服务，不要求把每个库对象都
+  塞进 Loader。若未来出现 bundle 级消费者（CLI/server 装配），
+  在对应 P 级再补装配入口；
 - 每一步派发事件（step/start、tool/call、turn/end），拦截点即扩展点
-  （对标 DSH turn flow）；
+  （对标 DSH turn flow）；before_tool_call 为 waterfall，是 HITL
+  审批与权限策略的标准挂载点；
 - usage 统计从 llm.Response.Usage 取，不再各处拼装；
-- 交付验收：mock 模型跑通多轮工具循环；事件监听器能完整还原执行轨迹。
+- 交付验收：mock 模型跑通多轮工具循环；事件监听器能完整还原执行轨迹；
+  压测（500 步长回合 / 32 并发 / 事件洪峰 / 协程泄漏）全绿。
 
 ### P1 工具体系
 

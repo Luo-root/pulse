@@ -127,12 +127,11 @@ func TestRunCompletesWithoutTools(t *testing.T) {
 	if res.Steps != 1 || res.StoppedBy != StopCompleted {
 		t.Fatalf("steps=%d stoppedBy=%s", res.Steps, res.StoppedBy)
 	}
-	if len(res.Messages) != 3 {
-		t.Fatalf("messages = %d, want 3", len(res.Messages))
+	if len(res.Messages) != 1 {
+		t.Fatalf("messages = %d, want 1 (only this turn's output)", len(res.Messages))
 	}
-	roles := []llm.Role{res.Messages[0].Role, res.Messages[1].Role, res.Messages[2].Role}
-	if roles[0] != llm.RoleSystem || roles[1] != llm.RoleUser || roles[2] != llm.RoleAssistant {
-		t.Fatalf("message roles wrong: %v", roles)
+	if res.Messages[0].Role != llm.RoleAssistant {
+		t.Fatalf("message role = %s, want assistant", res.Messages[0].Role)
 	}
 }
 
@@ -340,11 +339,17 @@ func TestToolPanicRecovered(t *testing.T) {
 	}
 }
 
-// ctx 取消以错误返回且终止原因明确。
+// ctx 取消以错误返回；turn_end 仍发出（轨迹闭合），StoppedBy=canceled。
 func TestContextCancelFailsRun(t *testing.T) {
 	scope := kernel.New()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+
+	var ends []StopReason
+	if _, err := kernel.On(scope, EventTurnEnd, func(p *TurnEnd) { ends = append(ends, p.StoppedBy) }); err != nil {
+		t.Fatal(err)
+	}
+
 	a := newTestAgent(t, llm.NewScripted(llm.Resp("x")), nil, scope)
 
 	res, err := a.Run(ctx, nil, llm.UserText("q"))
@@ -353,6 +358,33 @@ func TestContextCancelFailsRun(t *testing.T) {
 	}
 	if res.StoppedBy != StopCanceled {
 		t.Fatalf("stoppedBy = %s", res.StoppedBy)
+	}
+	if len(ends) != 1 || ends[0] != StopCanceled {
+		t.Fatalf("turn_end events = %v, want exactly one canceled", ends)
+	}
+}
+
+// 基础设施失败（模型错误）→ StoppedBy=error、err 非 nil、turn_end 闭合。
+func TestModelErrorEmitsTurnEndWithError(t *testing.T) {
+	scope := kernel.New()
+	boom := errors.New("provider down")
+	model := llm.NewFailing(boom)
+
+	var ends []TurnEnd
+	if _, err := kernel.On(scope, EventTurnEnd, func(p *TurnEnd) { ends = append(ends, *p) }); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newTestAgent(t, model, nil, scope)
+	res, rerr := a.Run(context.Background(), nil, llm.UserText("q"))
+	if !errors.Is(rerr, boom) {
+		t.Fatalf("err = %v, want wrapped provider error", rerr)
+	}
+	if res.StoppedBy != StopError {
+		t.Fatalf("stoppedBy = %s, want error", res.StoppedBy)
+	}
+	if len(ends) != 1 || ends[0].StoppedBy != StopError {
+		t.Fatalf("turn_end not emitted exactly once with error: %+v", ends)
 	}
 }
 

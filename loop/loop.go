@@ -21,12 +21,16 @@ const (
 	StopMaxSteps StopReason = "max_steps"
 	// StopCanceled：ctx 取消（Run 同时返回 ctx.Err()）。
 	StopCanceled StopReason = "canceled"
+	// StopError：基础设施失败（模型调用失败、流异常终止）；
+	// Run 同时返回包装后的错误。
+	StopError StopReason = "error"
 )
 
 // Result 是一个回合的完整产出。
 type Result struct {
-	// Messages 是本回合新增的全部消息（assistant / tool 交替，
-	// 以最终 assistant 收尾）。追加到调用方的历史即完成多轮对话。
+	// Messages 是**本回合新产生的消息**：assistant 与 tool 结果交替，
+	// 以最终 assistant 收尾；不含 system、调用方传入的 history 与 input。
+	// 多轮对话 = 调用方自行 append(input, res.Messages...) 到自己的历史。
 	Messages []*llm.Message
 	// Final 是最后的 assistant 消息；MaxSteps 打断时可能是带未执行
 	// 工具调用的中间态——以 StoppedBy 区分。
@@ -74,9 +78,9 @@ func WithMaxSteps(n int) Option {
 	}
 }
 
-// WithEventScope 指定事件派发作用域。缺省时内部自建独立根作用域
-// （事件照常发出，只是没有监听者）；要让轨迹进入宿主作用域树
-// （例如与限流插件同树），传入宿主或其子作用域。
+// WithEventScope 指定事件派发作用域。缺省为 nil——不向任何作用域
+// 派发（纯库用法零内核足迹）；要让轨迹进入宿主作用域树（例如与
+// 限流插件同树、被轨迹监听器记录），传入宿主或其子作用域。
 func WithEventScope(scope *kernel.Context) Option {
 	return func(a *Agent) { a.scope = scope }
 }
@@ -90,10 +94,23 @@ func NewAgent(model llm.ChatModel, opts ...Option) (*Agent, error) {
 	for _, opt := range opts {
 		opt(a)
 	}
-	if a.scope == nil {
-		a.scope = kernel.New()
-	}
 	return a, nil
+}
+
+// emit 是 scope nil 安全的事件派发。
+func emit[P any](scope *kernel.Context, k kernel.EventKey[P], payload P) {
+	if scope == nil {
+		return
+	}
+	kernel.Emit(scope, k, payload)
+}
+
+// waterfallOf 是 scope nil 安全的 waterfall 派发。
+func waterfallOf[P any](scope *kernel.Context, k kernel.EventKey[P], payload P) P {
+	if scope == nil {
+		return payload
+	}
+	return kernel.Waterfall(scope, k, payload)
 }
 
 // Run 执行一个回合（非流式便捷入口，等价于不带 onDelta 的 RunStream）。
@@ -104,20 +121,24 @@ func (a *Agent) Run(ctx context.Context, history []*llm.Message, input ...*llm.M
 // RunStream 执行一个回合：onDelta 非 nil 时逐段回调 assistant 文本
 // 增量（流式 UI 用），结构化轨迹走内核事件总线。
 //
-// 返回的 error 仅在基础设施失败（模型调用失败、ctx 取消、流异常
-// 终止）时非 nil——此时 Result 只反映已发生的部分（Messages 为
-// nil）；MaxSteps 打断是正常终止变体（见 StopMaxSteps）。
+// 无论以何种方式结束（完成 / MaxSteps / 取消 / 错误）都会发出
+// turn_end 事件——轨迹保证闭合。返回的 error 仅在基础设施失败
+// （模型调用失败、ctx 取消、流异常终止）时非 nil，此时 Result 仍
+// 返回已发生的部分（StoppedBy=canceled/error）；MaxSteps 打断是
+// 正常终止变体（见 StopMaxSteps）。
 func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), history []*llm.Message, input ...*llm.Message) (*Result, error) {
-	kernel.Emit(a.scope, EventTurnStart, TurnStart{Input: input, History: history})
+	emit(a.scope, EventTurnStart, TurnStart{Input: input, History: history})
 
-	// 容量预估：system + 历史 + 输入 + 每步约两条（assistant+tool），
-	// 避免长回合反复扩容；仅是性能提示，不影响正确性。
-	msgs := make([]*llm.Message, 0, len(history)+len(input)+8)
+	// msgs 是发往模型的完整工作缓冲；produced 只收集本回合新产生
+	// 的消息（Result.Messages 的内容源）。
+	msgs := make([]*llm.Message, 0, len(history)+len(input)+8) // 容量仅为扩容提示
 	if a.system != "" {
 		msgs = append(msgs, llm.System(a.system))
 	}
 	msgs = append(msgs, history...)
 	msgs = append(msgs, input...)
+
+	var produced []*llm.Message
 
 	var defs []llm.ToolDef
 	if a.tools != nil {
@@ -125,12 +146,20 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 	}
 
 	res := &Result{}
-	stopped := StopCompleted
+
+	// 轨迹闭合：任何退出路径都恰好发出一次 turn_end。
+	defer func() {
+		if res.StoppedBy == "" {
+			res.StoppedBy = StopError
+		}
+		emit(a.scope, EventTurnEnd, TurnEnd{
+			Final: res.Final, Usage: res.Usage, Steps: res.Steps, StoppedBy: res.StoppedBy,
+		})
+	}()
 
 	for step := 1; ; step++ {
 		if err := ctx.Err(); err != nil {
-			stopped = StopCanceled
-			res.StoppedBy = stopped
+			res.StoppedBy = StopCanceled
 			return res, err
 		}
 		if a.maxSteps > 0 && step > a.maxSteps {
@@ -138,12 +167,13 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 			break
 		}
 
-		kernel.Emit(a.scope, EventStepStart, StepStart{Step: step})
+		emit(a.scope, EventStepStart, StepStart{Step: step})
 		req := &llm.GenerateRequest{Messages: msgs, Tools: defs}
 
 		ch, err := a.model.Stream(ctx, req)
 		if err != nil {
-			return nil, fmt.Errorf("loop: step %d: %w", step, err)
+			res.StoppedBy = StopError
+			return res, fmt.Errorf("loop: step %d: %w", step, err)
 		}
 		var resp *llm.Response
 		for ev := range ch {
@@ -153,18 +183,21 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 					onDelta(ev.Text)
 				}
 			case llm.EventError:
-				return nil, fmt.Errorf("loop: step %d: %w", step, ev.Err)
+				res.StoppedBy = StopError
+				return res, fmt.Errorf("loop: step %d: %w", step, ev.Err)
 			case llm.EventDone:
 				resp = ev.Response
 			}
 		}
 		if resp == nil || resp.Message == nil {
-			return nil, fmt.Errorf("loop: step %d: stream ended without a response", step)
+			res.StoppedBy = StopError
+			return res, fmt.Errorf("loop: step %d: stream ended without a response", step)
 		}
 
-		kernel.Emit(a.scope, EventAfterModel, AfterModel{Response: resp, Step: step})
+		emit(a.scope, EventAfterModel, AfterModel{Response: resp, Step: step})
 		res.Steps = step // 一步 = 一次完整的模型调用（无论后续是否调用工具）
 		msgs = append(msgs, resp.Message)
+		produced = append(produced, resp.Message)
 		res.Usage.InputTokens += resp.Usage.InputTokens
 		res.Usage.OutputTokens += resp.Usage.OutputTokens
 		res.Usage.CachedInputTokens += resp.Usage.CachedInputTokens
@@ -179,7 +212,9 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 		for _, call := range calls {
 			start := time.Now()
 			btc := &BeforeToolCall{Call: call}
-			_ = kernel.Waterfall(a.scope, EventBeforeToolCall, btc)
+			// 与 llm.before_generate 同一条 around 契约：监听器可能
+			// Clone 改写后返回新载荷，必须以返回值为准。
+			btc = waterfallOf(a.scope, EventBeforeToolCall, btc)
 
 			if btc.Rejected {
 				reason := btc.RejectReason
@@ -187,10 +222,11 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 					reason = "rejected by policy"
 				}
 				text := "tool call rejected: " + reason
-				kernel.Emit(a.scope, EventAfterToolCall, AfterToolCall{
+				emit(a.scope, EventAfterToolCall, AfterToolCall{
 					Call: call, Rejected: true, Duration: time.Since(start),
 				})
 				msgs = append(msgs, toolResultMsg(call.ID, text, true))
+				produced = append(produced, msgs[len(msgs)-1])
 				continue
 			}
 
@@ -199,17 +235,15 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 			if execErr != nil {
 				text = "tool error: " + execErr.Error()
 			}
-			kernel.Emit(a.scope, EventAfterToolCall, AfterToolCall{
+			emit(a.scope, EventAfterToolCall, AfterToolCall{
 				Call: call, Result: text, Duration: time.Since(start), Err: execErr,
 			})
 			msgs = append(msgs, toolResultMsg(call.ID, text, execErr != nil))
+			produced = append(produced, msgs[len(msgs)-1])
 		}
 	}
 
-	res.Messages = msgs
-	kernel.Emit(a.scope, EventTurnEnd, TurnEnd{
-		Final: res.Final, Usage: res.Usage, Steps: res.Steps, StoppedBy: res.StoppedBy,
-	})
+	res.Messages = produced
 	return res, nil
 }
 

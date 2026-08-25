@@ -46,7 +46,7 @@ type factoryEntry struct{ f Factory }
 // Registry 是 provider 工厂与命名实例的注册中心。
 //
 // 两级结构：
-//   - RegisterProvider("openai", factory)：登记 adapter——本身是
+//   - RegisterProvider(scope, "openai", factory)：登记 adapter——本身是
 //     一条内核效应，adapter 插件卸载时工厂随之收回；
 //   - Declare(id, cfg) + Open(id)：声明并打开命名实例。
 //
