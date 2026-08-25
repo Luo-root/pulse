@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 )
 
@@ -49,6 +48,12 @@ type Factory func() Plugin
 type Loader struct {
 	host *Context
 
+	// reconcileMu 串行化整个调和过程；mu 只保护下面的数据结构
+	// （短临界区）。因此装载期间插件代码可以安全调用 Fiber /
+	// Snapshot 做查询——但不得反向调用 Reconcile（插件不应知道
+	// Loader 的存在）。
+	reconcileMu sync.Mutex
+
 	mu        sync.Mutex
 	factories map[string]Factory
 	fibers    map[string]*Fiber // ID -> 当前实例
@@ -85,16 +90,25 @@ func (l *Loader) MustRegister(name string, f Factory) {
 	}
 }
 
+// mountPlan 是一次待执行装载的完整描述（阶段一产出、阶段二消费）。
+type mountPlan struct {
+	id      string
+	cfg     map[string]any
+	factory Factory
+}
+
 // Reconcile 将条目列表调和为期望的运行形态。单个条目的失败不阻断
 // 其余条目；返回聚合错误（errors.Join），所有失败条目都可见。
 //
-// 注意：调和期间持有 Loader 内部锁执行插件的装载/卸载——插件代码
-// 不得反向调用同一个 Loader（插件不应知道 Loader 的存在；需要
-// 与装配交互时通过内核服务而不是直接引用）。
+// 执行分三阶段：持锁 diff 出计划 → 解锁执行回收与装载（插件 Apply
+// 运行期间不持有任何 Loader 锁）→ 持锁提交结果。并发 Reconcile 由
+// reconcileMu 串行排队。
 func (l *Loader) Reconcile(entries []Entry) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.reconcileMu.Lock()
+	defer l.reconcileMu.Unlock()
 
+	// ---- 阶段一：diff 出回收与装载计划 ----
+	l.mu.Lock()
 	want := make(map[string]*Entry, len(entries))
 	for i := range entries {
 		e := entries[i]
@@ -105,49 +119,72 @@ func (l *Loader) Reconcile(entries []Entry) error {
 	}
 
 	var errs []error
+	var toClose []*Fiber
+	closing := make(map[string]struct{})
+	var plans []mountPlan
+	newEntries := make(map[string]*Entry, len(want))
 
-	// 移除消失的条目。
 	for id, f := range l.fibers {
 		if _, keep := want[id]; !keep {
-			f.Close()
-			delete(l.fibers, id)
-			delete(l.entries, id)
+			toClose = append(toClose, f)
+			closing[id] = struct{}{}
 		}
 	}
-
-	// 新增或重建变化的条目。
 	for id, e := range want {
 		cur := l.entries[id]
 		if cur != nil && cur.Name == e.Name &&
 			sameConfig(cur.Config, e.Config) && cur.Disabled == e.Disabled {
+			newEntries[id] = cloneEntry(e)
 			continue // 无变化
 		}
-
-		if old := l.fibers[id]; old != nil {
-			old.Close()
-			delete(l.fibers, id)
+		if old, ok := l.fibers[id]; ok {
+			toClose = append(toClose, old)
+			closing[id] = struct{}{}
 		}
-
 		if e.Disabled {
-			l.entries[id] = cloneEntry(e)
+			newEntries[id] = cloneEntry(e)
 			continue // 保留记录但不装载
 		}
-
 		factory, ok := l.factories[e.Name]
 		if !ok {
 			errs = append(errs, fmt.Errorf("kernel: entry %q references unknown plugin %q", id, e.Name))
-			l.entries[id] = cloneEntry(e)
+			newEntries[id] = cloneEntry(e)
 			continue
 		}
-
-		f, err := l.mount(e.Config, factory)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("kernel: entry %q (%s): %w", id, e.Name, err))
-		} else {
-			l.fibers[id] = f
-		}
-		l.entries[id] = cloneEntry(e)
+		plans = append(plans, mountPlan{id: id, cfg: cloneConfig(e.Config), factory: factory})
+		newEntries[id] = cloneEntry(e)
 	}
+	l.mu.Unlock()
+
+	// ---- 阶段二：解锁执行回收与装载 ----
+	for _, f := range toClose {
+		f.Close()
+	}
+
+	type mountedFiber struct {
+		id string
+		f  *Fiber
+	}
+	var mountedList []mountedFiber
+	for _, m := range plans {
+		f, err := l.mount(m.cfg, m.factory)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("kernel: entry %q (%s): %w", m.id, newEntries[m.id].Name, err))
+			continue
+		}
+		mountedList = append(mountedList, mountedFiber{id: m.id, f: f})
+	}
+
+	// ---- 阶段三：持锁提交结果 ----
+	l.mu.Lock()
+	for id := range closing {
+		delete(l.fibers, id)
+	}
+	for _, m := range mountedList {
+		l.fibers[m.id] = m.f
+	}
+	l.entries = newEntries
+	l.mu.Unlock()
 
 	return errors.Join(errs...)
 }
@@ -157,8 +194,7 @@ func (l *Loader) Reconcile(entries []Entry) error {
 func (l *Loader) mount(cfg map[string]any, factory Factory) (*Fiber, error) {
 	p := factory()
 	if cf, ok := p.(Configurable); ok {
-		copied := cloneConfig(cfg)
-		if err := cf.Configure(copied); err != nil {
+		if err := cf.Configure(cloneConfig(cfg)); err != nil {
 			return nil, fmt.Errorf("configure: %w", err)
 		}
 	}
@@ -181,24 +217,6 @@ func (l *Loader) Snapshot() map[string]string {
 		out[id] = f.State().String()
 	}
 	return out
-}
-
-// LoadFile 从 JSON 文件读取条目并调和。
-func (l *Loader) LoadFile(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	return l.LoadJSON(data)
-}
-
-// LoadJSON 从字节流读取条目并调和。
-func (l *Loader) LoadJSON(data []byte) error {
-	var entries []Entry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return fmt.Errorf("kernel: parse loader config: %w", err)
-	}
-	return l.Reconcile(entries)
 }
 
 func sameConfig(a, b map[string]any) bool {

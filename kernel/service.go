@@ -36,11 +36,12 @@ func keyType[T any]() any {
 	return reflect.TypeOf((*T)(nil))
 }
 
-// Provide 向作用域登记一个服务绑定，返回撤销函数。
+// Provide 向全局服务仓库登记一个服务绑定，返回撤销函数。
 //
 // 语义：
-//   - 同层旧绑定的撤除与新绑定的安装合为一次原子变更；
-//   - 变更完成后向整棵子树广播通知，声明了该依赖的插件实例
+//   - 同名旧绑定的撤除与新绑定的安装合为一次原子变更（覆盖即撤旧，
+//     被覆盖方的旧 dispose 不复活前值——有意语义，有测试背书）；
+//   - 变更完成后向整棵作用域树广播通知，声明了该依赖的插件实例
 //     会据此重新评估自己的装载状态（激活 / 卸载 / 无感）；
 //   - 返回的 dispose 只撤销本次安装（幂等），不影响其他历史。
 func Provide[T any](c *Context, k ServiceKey[T], v T) (func(), error) {
@@ -69,7 +70,7 @@ func provide(c *Context, name string, v any, typ any) (func(), error) {
 					name, ot, nt)
 			}
 		}
-		b = &binding{key: name, value: v, typ: typ}
+		b = &binding{value: v, typ: typ}
 		store.bindings[name] = b
 		store.mu.Unlock()
 
@@ -114,22 +115,4 @@ func Get[T any](c *Context, k ServiceKey[T]) (T, bool) {
 		return zero, false
 	}
 	return v, true
-}
-
-// MustGet 同 Get，但依赖缺失时 panic。仅用于装配期断言。
-func MustGet[T any](c *Context, k ServiceKey[T]) T {
-	v, ok := Get(c, k)
-	if !ok {
-		panic(fmt.Sprintf("kernel: service %q not found", k.name))
-	}
-	return v
-}
-
-// Has 报告服务是否存在，不关心具体类型。
-func Has(c *Context, name string) bool {
-	root := c.root()
-	root.mu.Lock()
-	defer root.mu.Unlock()
-	_, ok := root.bindings[name]
-	return ok
 }

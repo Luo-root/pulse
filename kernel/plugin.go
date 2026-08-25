@@ -20,23 +20,22 @@ type Plugin interface {
 	Apply(c *Context) error
 }
 
-// Dependency 是一条依赖声明。用 Require 构造。
-type Dependency interface {
-	depName() string
-	satisfied(c *Context) bool
-}
-
-type dependency struct {
-	name  string
+// Dependency 是一条依赖声明。用 Require 构造；字段不公开，
+// 依赖的种类由内核演进，插件只通过 Require 表达。
+type Dependency struct {
+	name string
 	check func(c *Context) bool
 }
 
-func (d *dependency) depName() string        { return d.name }
-func (d *dependency) satisfied(c *Context) bool { return d.check(c) }
+// Name 返回依赖的服务名（诊断与变更过滤用）。
+func (d Dependency) depName() string { return d.name }
+
+// satisfied 报告该依赖在当前作用域视图下是否满足。
+func (d Dependency) satisfied(c *Context) bool { return d.check(c) }
 
 // Require 声明对一个服务的依赖。类型不符视同不存在。
 func Require[T any](k ServiceKey[T]) Dependency {
-	return &dependency{
+	return Dependency{
 		name: k.name,
 		check: func(c *Context) bool {
 			_, ok := Get(c, k)
@@ -118,7 +117,7 @@ type Fiber struct {
 //
 // 首次装载同步执行：依赖满足则返回时已是 Active；不满足则进入
 // Inactive 挂起等待（依赖出现时自动激活）；Apply 报错则进入
-// Failed（Err 说明原因）。
+// Failed（Err 说明原因）。宿主已销毁时返回 ErrDisposed。
 func Use(host *Context, p Plugin) (*Fiber, error) {
 	f := &Fiber{
 		plugin: p,
@@ -142,7 +141,11 @@ func Use(host *Context, p Plugin) (*Fiber, error) {
 	})
 
 	host.mu.Lock()
-	host.assertAlive()
+	if host.disposed {
+		host.mu.Unlock()
+		f.unsub()
+		return nil, ErrDisposed
+	}
 	host.fibers = append(host.fibers, f)
 	host.mu.Unlock()
 
@@ -182,13 +185,6 @@ func (f *Fiber) Err() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.applyErr
-}
-
-// Context 返回活跃期的私有作用域；非 Active 状态返回 nil。
-func (f *Fiber) Context() *Context {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.ctx
 }
 
 // satisfied 判断全部依赖是否可达（须持有 f.mu）。
@@ -254,7 +250,15 @@ func (f *Fiber) doLoad() {
 	f.applyErr = nil
 	f.mu.Unlock()
 
-	ctx := f.host.Derive()
+	ctx, derr := f.host.Derive()
+	if derr != nil {
+		// 宿主已销毁：等价于被卸载——forceUnload 已将（或即将将）
+		// 本实例标记为 closed/inactive，这里不产生任何副作用。
+		f.mu.Lock()
+		f.state = StateInactive
+		f.mu.Unlock()
+		return
+	}
 	var err error
 	func() {
 		defer func() {

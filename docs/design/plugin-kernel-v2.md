@@ -111,17 +111,18 @@ l.Reconcile([]kernel.Entry{
 ### 5.1 词汇表
 
 - **消息 = content-block 模型**（对齐 Anthropic block 语义，adapter 负责转
-  自家线格式）：`Message{Role, []Part}`，Part 五种——text / image /
-  tool_call / tool_result / reasoning（思维链）；
+  自家线格式）：`Message{Role, []Part}`，Part 六种——text / image /
+  tool_call / tool_result / reasoning（思维链）/ custom（MIME 驱动的
+  开放模态块，承载音频、视频、PDF 及未来一切未知类型）；
 - **请求是完整的 `GenerateRequest`**：messages / tools / tool_choice /
   temperature / top_p / max_tokens / stop / response_format（JSON Schema
   结构化输出）/ metadata（审计透传）；零值字段一律交 provider 默认；
 - **流式 = 统一事件流** `<-chan StreamEvent`：text_delta /
   reasoning_delta / tool_call_begin / tool_call_delta / error / done，
   done 携带聚合 Response（含 Usage、FinishReason）；
-- **错误带分类**：`Error{Kind, Provider, Retryable, StatusCode}`，
-  `KindOf` / `IsRetryable` 供上层退避与 failover 决策——分类是接口契约
-  的一部分，不是日志细节。
+- **错误带分类**：`Error{Kind, Provider, StatusCode}`——可重试性由
+  Kind 唯一决定（单一真相），`KindOf` / `IsRetryable` 供上层退避与
+  failover 决策，分类是接口契约的一部分，不是日志细节。
 
 ### 5.2 注册中心与拦截 seam
 

@@ -23,13 +23,13 @@ const (
 )
 
 // Error 是本包所有对外错误的统一形态。
+// 可重试性由 Kind 唯一决定（见 IsRetryable），不设第二真相字段。
 type Error struct {
 	Kind       ErrKind
 	Provider   string // 出错来源的 provider 名；注册中心自身错误为 ""
-	Retryable  bool
 	StatusCode int    // HTTP 状态码；非 HTTP 错误为 0
 	Detail     string
-	Err        error  // 底层错误，可为 nil
+	Err        error // 底层错误，可为 nil
 }
 
 func (e *Error) Error() string {
@@ -53,14 +53,14 @@ func NewError(kind ErrKind, provider string, statusCode int, err error, detailFo
 	return &Error{
 		Kind:       kind,
 		Provider:   provider,
-		Retryable:  defaultRetryable(kind),
 		StatusCode: statusCode,
 		Detail:     fmt.Sprintf(detailFormat, args...),
 		Err:        err,
 	}
 }
 
-func defaultRetryable(kind ErrKind) bool {
+// retryableKind 是各错误类别的默认可重试性。
+func retryableKind(kind ErrKind) bool {
 	switch kind {
 	case ErrRateLimit, ErrNetwork, ErrProvider:
 		return true
@@ -78,12 +78,12 @@ func KindOf(err error) ErrKind {
 	return ErrUnknown
 }
 
-// IsRetryable 报告错误链是否标记为可重试。
-// 非本包错误一律不可重试（保守默认）。
+// IsRetryable 报告错误链是否可重试：非本包错误一律不可重试
+// （保守默认）。
 func IsRetryable(err error) bool {
 	var e *Error
 	if errors.As(err, &e) {
-		return e.Retryable
+		return retryableKind(e.Kind)
 	}
 	return false
 }

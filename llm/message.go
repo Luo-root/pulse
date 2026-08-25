@@ -50,9 +50,9 @@ type MediaContent struct {
 
 // ImageSource 描述图像内容：内联字节或 URL 二选一。
 type ImageSource struct {
-	Data     []byte // 内联字节（优先使用）
-	URL      string // http(s):// 或 data: URI
-	MIMEType string
+	Data      []byte // 内联字节（优先使用）
+	URL       string // http(s):// 或 data: URI
+	MediaType string // 内容的 MIME 类型（与 MediaContent.MediaType 同名同义）
 }
 
 // ToolCall 是一次工具调用请求（由模型发起）。
@@ -94,13 +94,13 @@ func Text(s string) Part { return Part{Kind: PartText, Text: s} }
 func Reasoning(s string) Part { return Part{Kind: PartReasoning, Text: s} }
 
 // ImageURL 用 URL 构造图像块。
-func ImageURL(url, mimeType string) Part {
-	return Part{Kind: PartImage, Image: &ImageSource{URL: url, MIMEType: mimeType}}
+func ImageURL(url, mediaType string) Part {
+	return Part{Kind: PartImage, Image: &ImageSource{URL: url, MediaType: mediaType}}
 }
 
 // ImageData 用内联字节构造图像块。
-func ImageData(mimeType string, data []byte) Part {
-	return Part{Kind: PartImage, Image: &ImageSource{Data: data, MIMEType: mimeType}}
+func ImageData(mediaType string, data []byte) Part {
+	return Part{Kind: PartImage, Image: &ImageSource{Data: data, MediaType: mediaType}}
 }
 
 // Media 构造开放模态块：音频、视频、PDF 及未来一切类型。

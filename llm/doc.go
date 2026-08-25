@@ -4,7 +4,7 @@
 // 分层与 DSH 的 ctx.llm 同构：
 //
 //	adapter 插件（openai/anthropic/deepseek…）
-//	    │ RegisterProvider
+//	    │ RegisterProvider(scope, "openai", factory)   // scope = adapter 自己的 Apply ctx
 //	    ▼
 //	Registry（本包，作为 kernel 服务 pulse.llm 提供）
 //	    │ Open / OpenDefault

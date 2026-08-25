@@ -28,7 +28,7 @@ func TestProvideGetAcrossScopes(t *testing.T) {
 	root := New()
 	mustProvide(t, root, keyStr, "root-value")
 
-	child := root.Derive()
+	child := mustDerive(t, root)
 	if v, ok := Get(child, keyStr); !ok || v != "root-value" {
 		t.Fatalf("child should see global service, got %q %v", v, ok)
 	}
@@ -77,9 +77,6 @@ func TestProvideOverwriteSemantics(t *testing.T) {
 	}
 	waitForState(t, fc, time.Second, StateActive) // 服务仍在 => 消费方无感保持
 
-	if v, _ := (func() (string, bool) { return Get(ctx, keyStr) })(); true {
-		_ = v
-	}
 	dB() // B 卸载 => 服务消失（A 的绑定已被覆盖作废，不复活）
 	waitForState(t, fc, time.Second, StateInactive)
 	if _, ok := Get(ctx, keyStr); ok {
@@ -118,7 +115,7 @@ func TestEffectLIFO(t *testing.T) {
 
 func TestDeriveDisposeIsolation(t *testing.T) {
 	root := New()
-	child := root.Derive()
+	child := mustDerive(t, root)
 
 	var disposed int
 	child.Effect(func() (func(), error) {
@@ -135,8 +132,8 @@ func TestDeriveDisposeIsolation(t *testing.T) {
 
 func TestParentDisposeCascades(t *testing.T) {
 	root := New()
-	child := root.Derive()
-	grand := child.Derive()
+	child := mustDerive(t, root)
+	grand := mustDerive(t, child)
 
 	var disposed int32
 	for _, c := range []*Context{child, grand} {
@@ -183,7 +180,7 @@ func TestDeriveDetachNoLeak(t *testing.T) {
 	}
 
 	// 手工派生/销毁同样不应留下死登记。
-	extra := ctx.Derive()
+	extra := mustDerive(t, ctx)
 	extra.Dispose()
 	if got := len(ctx.effects); got != baseEffects {
 		t.Fatalf("manual derive leak: %d -> %d", baseEffects, got)
@@ -431,7 +428,7 @@ func TestEventListenersAcrossSiblingScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sibling := root.Derive() // 与监听插件私有作用域平行的兄弟层
+	sibling := mustDerive(t, root) // 与监听插件私有作用域平行的兄弟层
 	got := Waterfall(sibling, ev, 0)
 	if atomic.LoadInt32(&hit) != 1 {
 		t.Fatal("sibling-scope listener never invoked")
@@ -447,7 +444,7 @@ func TestEventDisposeOnScopeDispose(t *testing.T) {
 	root := New()
 	ev := NewEventKey[int]("test.dispose")
 
-	child := root.Derive()
+	child := mustDerive(t, root)
 	if _, err := On(child, ev, func(p *int) { t.Error("dead-scope listener invoked") }); err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +518,7 @@ func TestEventBusConcurrentAddRemoveDispatch(t *testing.T) {
 	}()
 
 	// goroutine C：另一层并发观察注册 + 派发。
-	child := ctx.Derive()
+	child := mustDerive(t, ctx)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -547,8 +544,7 @@ func TestEventBusConcurrentAddRemoveDispatch(t *testing.T) {
 // 回归：同层多个插件的变更订阅互不误删。Use 为每个 Fiber 注册的
 // 订阅闭包来自同一函数字面量（仅捕获变量不同），按函数代码指针
 // 判等会把它们当成同一个订阅——第一个 Close 会摘掉别人的订阅。
-func TestSiblingFiberSubscriptionNotCrossRemoved(t *testing.T) {
-	ctx := New()
+func TestSiblingFiberSubscriptionNotCrossRemoved(t *testing.T) {	ctx := New()
 	disposeDep := mustProvide(t, ctx, keyStr, "dep")
 
 	pa := &countingPlugin{deps: []Dependency{Require(keyStr)}}
@@ -715,6 +711,23 @@ func TestUnknownFactoryRejected(t *testing.T) {
 	}
 }
 
+// 销毁后的作用域策略统一为返回错误，绝不 panic。
+func TestDisposedScopeReturnsErrors(t *testing.T) {
+	ctx := New()
+	child := mustDerive(t, ctx)
+	ctx.Dispose()
+
+	if _, err := child.Derive(); err != ErrDisposed {
+		t.Fatalf("Derive on disposed = %v, want ErrDisposed", err)
+	}
+	if _, err := child.Effect(func() (func(), error) { return nil, nil }); err != ErrDisposed {
+		t.Fatalf("Effect on disposed = %v, want ErrDisposed", err)
+	}
+	if _, err := Use(child, Func(func(*Context) error { return nil })); err != ErrDisposed {
+		t.Fatalf("Use on disposed = %v, want ErrDisposed", err)
+	}
+}
+
 func TestConcurrentDisposeRace(t *testing.T) {
 	ctx := New()
 	var wg sync.WaitGroup
@@ -722,7 +735,7 @@ func TestConcurrentDisposeRace(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			child := ctx.Derive()
+			child := mustDerive(t, ctx)
 			_, _ = Provide(child, keyInt, i)
 			_, _ = child.Effect(func() (func(), error) { return func() {}, nil })
 			_, _ = On(child, NewEventKey[int]("race.ev"), func(*int) {})
