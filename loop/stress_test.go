@@ -43,7 +43,7 @@ func TestStressLongRun500Steps(t *testing.T) {
 	if got := ticks.Load(); got != 500 {
 		t.Fatalf("tool executions = %d, want 500", got)
 	}
-	want := 500 * 2 // ?? assistant(toolcall)+tool ????? system/input
+	want := 500 * 2 // 每步 assistant(toolcall) + tool 结果各一条；不含 system/input
 	if len(res.Messages) != want {
 		t.Fatalf("messages = %d, want %d (only this turn's output)", len(res.Messages), want)
 	}

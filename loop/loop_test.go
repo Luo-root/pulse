@@ -313,9 +313,22 @@ func TestBeforeToolCallRejectsExecution(t *testing.T) {
 	}
 	defer unsub()
 
+	// 轨迹与模型所见一致：after_tool_call 的 Result 必须携带与回传
+	// 模型相同的拒绝文本（审计插件看到的不该是空串）。
+	var auditResult string
+	if _, err := kernel.On(scope, EventAfterToolCall, func(p *AfterToolCall) {
+		auditResult = p.Result
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	res, err := a.Run(context.Background(), nil, llm.UserText("do it"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	wantAudit := "tool call rejected: needs human approval"
+	if auditResult != wantAudit {
+		t.Fatalf("audit Result = %q, want %q", auditResult, wantAudit)
 	}
 	if got := tools.callCount(); got != 0 {
 		t.Fatalf("tool executed %d times despite rejection", got)

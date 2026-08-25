@@ -230,7 +230,7 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 				}
 				text := "tool call rejected: " + reason
 				emit(a.scope, EventAfterToolCall, AfterToolCall{
-					Call: effective, Rejected: true, Duration: time.Since(start),
+					Call: effective, Result: text, Rejected: true, Duration: time.Since(start),
 				})
 				msgs = append(msgs, toolResultMsg(effective.ID, text, true))
 				produced = append(produced, msgs[len(msgs)-1])
