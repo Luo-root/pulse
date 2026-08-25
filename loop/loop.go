@@ -63,7 +63,7 @@ func WithToolSet(ts ToolSet) Option { return func(a *Agent) { a.tools = ts } }
 // WithSystemPrompt 设置系统提示词（每次回合组装为首条消息）。
 func WithSystemPrompt(s string) Option { return func(a *Agent) { a.system = s } }
 
-// WithMaxSteps 设置单回合法理-行动步数上限。
+// WithMaxSteps 设置单回合推理-行动步数上限。
 //
 // 默认 0 = 不限制：几十上百次工具调用的长任务不应被打断。需要
 // 安全阀的场景（不可信模型、成本敏感、嵌入常驻进程）再显式设置；
