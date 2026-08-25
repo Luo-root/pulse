@@ -2,16 +2,24 @@ package kernel
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
 )
 
-// ConfigKey 是 Loader 向插件私有作用域注入条目配置的服务键。
-// 插件在 Apply 中按需读取（不声明为依赖——没有配置也允许装载）：
+// Configurable 是插件可选实现的配置接收接口。
 //
-//	cfg, _ := kernel.Get(c, kernel.ConfigKey)
-var ConfigKey = NewServiceKey[map[string]any]("kernel.plugin.config")
+// Loader 装载条目时，在 Use 之前把 Entry.Config 交给实现了本接口
+// 的插件实例（对齐 Cordis 把 entry.config 绑定进组件 apply 的做法）。
+// 配置是实例私有的——每个条目拿到自己那份，不经过全局服务仓库，
+// 因此多个条目之间不会互相覆盖、卸载互不影响：
+//
+//	type MyPlugin struct{ cfg map[string]any }
+//	func (p *MyPlugin) Configure(cfg map[string]any) error { p.cfg = cfg; return nil }
+type Configurable interface {
+	Configure(cfg map[string]any) error
+}
 
 // Entry 是 Loader 配置树中的一个条目：一个待装载插件的声明式描述。
 // 整个系统的装配形态 = 条目列表，它是"系统加载了什么"的权威记录。
@@ -22,8 +30,7 @@ type Entry struct {
 	Name string `json:"name" yaml:"name"`
 	// Disabled 为 true 时该条目保持卸载状态（保留配置便于恢复）。
 	Disabled bool `json:"disabled,omitempty" yaml:"disabled,omitempty"`
-	// Config 传给插件：装载前被 Provide 到插件私有作用域的
-	// ConfigKey 上。
+	// Config 经由 Configurable 接口传给该条目的插件实例。
 	Config map[string]any `json:"config,omitempty" yaml:"config,omitempty"`
 }
 
@@ -78,8 +85,8 @@ func (l *Loader) MustRegister(name string, f Factory) {
 	}
 }
 
-// Reconcile 将条目列表调和为期望的运行形态，返回聚合错误
-// （单个条目的失败不阻断其余条目）。
+// Reconcile 将条目列表调和为期望的运行形态。单个条目的失败不阻断
+// 其余条目；返回聚合错误（errors.Join），所有失败条目都可见。
 func (l *Loader) Reconcile(entries []Entry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -129,7 +136,7 @@ func (l *Loader) Reconcile(entries []Entry) error {
 			continue
 		}
 
-		f, err := l.mount(id, e.Config, factory)
+		f, err := l.mount(e.Config, factory)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("kernel: entry %q (%s): %w", id, e.Name, err))
 		} else {
@@ -138,39 +145,23 @@ func (l *Loader) Reconcile(entries []Entry) error {
 		l.entries[id] = cloneEntry(e)
 	}
 
-	if len(errs) == 0 {
-		return nil
+	return errors.Join(errs...)
+}
+
+// mount 装载一个条目：工厂建实例 => 可选的 Configure 交接私有配置
+// （失败视为该条目装载失败）=> 同步 Use。
+func (l *Loader) mount(cfg map[string]any, factory Factory) (*Fiber, error) {
+	p := factory()
+	if cf, ok := p.(Configurable); ok {
+		copied := cloneConfig(cfg)
+		if err := cf.Configure(copied); err != nil {
+			return nil, fmt.Errorf("configure: %w", err)
+		}
 	}
-	return errs[0]
+	return Use(l.host, p)
 }
 
-// mount 装载一个条目：把条目配置包装进插件（Apply 前注入其私有
-// 作用域的 ConfigKey），然后同步 Use。
-func (l *Loader) mount(id string, cfg map[string]any, factory Factory) (*Fiber, error) {
-	_ = id // 预留：条目级诊断信息
-	inner := factory()
-	return Use(l.host, &configured{config: cfg, inner: inner})
-}
-
-// configured 在 inner 的 Apply 之前向其私有作用域提供条目配置。
-type configured struct {
-	config map[string]any
-	inner  Plugin
-}
-
-func (p *configured) Inject() []Dependency { return p.inner.Inject() }
-
-func (p *configured) Apply(c *Context) error {
-	if p.config == nil {
-		p.config = map[string]any{}
-	}
-	if _, err := Provide(c, ConfigKey, p.config); err != nil {
-		return err
-	}
-	return p.inner.Apply(c)
-}
-
-// Fiber 返回某条目当前对应的实例；不存在返回 nil。
+// Fiber 返回某条目当前对应的实例；不存在（含 Disabled）返回 nil。
 func (l *Loader) Fiber(id string) *Fiber {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -213,11 +204,16 @@ func sameConfig(a, b map[string]any) bool {
 	return string(aj) == string(bj)
 }
 
+func cloneConfig(cfg map[string]any) map[string]any {
+	out := make(map[string]any, len(cfg))
+	for k, v := range cfg {
+		out[k] = v
+	}
+	return out
+}
+
 func cloneEntry(e *Entry) *Entry {
 	cp := *e
-	cp.Config = make(map[string]any, len(e.Config))
-	for k, v := range e.Config {
-		cp.Config[k] = v
-	}
+	cp.Config = cloneConfig(e.Config)
 	return &cp
 }

@@ -52,6 +52,18 @@ v2 的目标：把 Cordis 的思想以 Go 的方式重新实现为 pulse 的内�
 | 7 | waterfall 监听器契约只有注册顺序，不支持 prepend | 契约最小化；需要优先级时显式分层注册 |
 | 8 | 事件四种派发模式保留（Emit/Waterfall/Parallel/Serial），载荷统一指针/值传递 | Serial 通过 `*P` 就地累积修改，语义等价于 Cordis serial |
 
+### 有意钉死的语义（有测试背书，不是漏测）
+
+- **同名覆盖即撤旧，不还原前值**：后到的 `Provide` 覆盖旧绑定并广播变更；
+  覆盖者卸载后服务消失、依赖方自动卸载——被覆盖方的旧 dispose 是空操作，
+  不复活前值。两个插件抢同一服务名视为装配错误，行为可预期且可观测。
+- **事件派发为全树广播**：任意作用域派发，整棵树（根到叶、层内注册顺序）
+  上该事件的监听都会收到——兄弟作用域的策略插件因此能拦截彼此；
+  监听本身是 Effect，随注册方作用域销毁自动摘除。
+- **条目配置是实例私有的**：Loader 经由可选接口 `Configurable.Configure`
+  把 `Entry.Config` 交给对应实例（对齐 Cordis 把 config 绑进 apply 参数），
+  不经过全局服务仓库，多实例互不覆盖、卸载互不影响。
+
 ## 4. 内核 API 一览
 
 ```go
@@ -115,19 +127,21 @@ l.Reconcile([]kernel.Entry{
 
 ```
 adapter 插件(openai/anthropic/deepseek…)
-    │ RegisterProvider("openai", factory)
+    │ RegisterProvider(scope, "openai", factory)  // scope = adapter 自己的 Apply ctx
     ▼
-Registry —— kernel 服务 "pulse.llm"
-    │ Declare("main", cfg) + Open("main")（实例缓存单例）
+Registry —— kernel 服务 "pulse.llm"（生命周期随 llm.Plugin，卸载关全部实例）
+    │ Declare("main", cfg) + Open("main")（实例缓存单例；observed 实现 io.Closer 转发）
     ▼
 observed 包装的 ChatModel（消费方接口）
 ```
 
 每次调用经过两个内核事件，能力挂载不需要包裹任何实例：
 
-- `pulse.llm.before_generate`（waterfall）：可就地改写请求——路由、
-  默认参数注入、脱敏、限流检查都在监听器里做；
-- `pulse.llm.after_response`（emit）：计量、审计、缓存观察。
+- `pulse.llm.before_generate`（waterfall，载荷 `*GenerateRequest`）：可就地
+  改写请求——路由、默认参数注入、脱敏、限流检查都在监听器里做
+  （监听器应 `req.Clone()` 后改写再 next 委托，避免污染调用方）；
+- `pulse.llm.after_response`（emit，载荷值类型 `Response`）：计量、审计、
+  缓存观察——观察者拿到只读快照，改不了调用方的结果。
 
 ### 5.3 有意为之的边界
 

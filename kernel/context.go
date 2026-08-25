@@ -20,23 +20,29 @@ type effectEntry struct {
 
 // Context 是内核的核心抽象：一个服务仓库，同时也是一个效应
 // 跟踪器。它对应论文中的统一 context 类型——既承载"环境当前
-// 是什么样"（服务绑定），也承载"我们曾对环境做过什么"（效应栈）。
+// 是什么样"，也承载"我们曾对环境做过什么"（效应栈）。
 //
-// Context 组成作用域树：Derive 派生出的子作用域可以看到父作用域
-// 的服务绑定，而子作用域的销毁只回收它自己登记的效应，父作用域
-// 不受影响；反过来，销毁父作用域会级联销毁所有后代作用域。
+// 服务命名空间全局唯一：绑定统一存放在根作用域的仓库中
+// （见 service.go），Context 树管理的是生命周期归属与事件传播，
+// 不是服务可见性。
+//
+// Context 组成作用域树：Derive 派生出的子作用域共享全局服务
+// 仓库与全树事件广播；子作用域的销毁只回收它自己登记的效应并
+// 从父层摘除自身，父作用域不受影响；销毁父作用域则级联销毁
+// 所有后代。
 //
 // Context 并发安全。
 type Context struct {
-	parent *Context
+	parent    *Context
+	selfEntry *effectEntry // 本作用域在父层 effects 栈中的登记；根为 nil
 
 	mu       sync.Mutex
 	disposed bool
-	bindings map[string]*binding   // 服务名 -> 绑定（仅本层，查找沿父链向上）
-	effects  []*effectEntry        // 本层效应栈，LIFO unwind
-	fibers   []*Fiber              // 直接挂载在本层的插件实例
-	children []*Context            // 派生出的子作用域（Dispose 时级联回收）
-	events   *eventBus             // 本层事件总线
+	bindings map[string]*binding // 仅根作用域使用（全局服务仓库）
+	effects  []*effectEntry      // 本层效应栈，LIFO unwind
+	fibers   []*Fiber            // 直接挂载在本层的插件实例
+	children []*Context          // 派生出的子作用域（Dispose 时级联回收）
+	events   *eventBus           // 本层事件总线
 
 	onServiceChange []func(changed []string) // 服务变更订阅（内部使用）
 }
@@ -63,8 +69,9 @@ func New() *Context {
 
 // Derive 派生一个子作用域。
 //
-// 子作用域继承父作用域的全部服务绑定与事件监听；其上的一切注册
-// （服务、效应、插件）在子作用域 Dispose 时被回收，且不影响父层。
+// 子作用域继承全局服务绑定与事件广播；其上的一切注册（服务、
+// 效应、插件、事件监听）在子作用域 Dispose 时被回收，且子作用域
+// 会从父层摘除自己的登记——反复派生/销毁不会让父层效应栈增长。
 // 父作用域销毁时，子作用域随之级联销毁。
 func (c *Context) Derive() *Context {
 	c.mu.Lock()
@@ -72,16 +79,16 @@ func (c *Context) Derive() *Context {
 	c.assertAlive()
 
 	child := &Context{
-		parent:  c,
+		parent:   c,
 		bindings: make(map[string]*binding),
-		events:  newEventBus(),
+		events:   newEventBus(),
 	}
-	// 子作用域作为父层的一条效应登记：父销毁 => 子级联销毁。
-	c.effects = append(c.effects, &effectEntry{
-		name:    "kernel.derive",
-		dispose: child.dispose,
-	})
+	// 子作用域作为父层的一条效应登记：父销毁 => 子级联销毁；
+	// 子销毁 => 从父层摘除该登记（见 detachChild）。
+	entry := &effectEntry{name: "kernel.derive", dispose: child.dispose}
+	c.effects = append(c.effects, entry)
 	c.children = append(c.children, child)
+	child.selfEntry = entry
 	return child
 }
 
@@ -89,7 +96,8 @@ func (c *Context) Derive() *Context {
 // 将其完全撤销。
 //
 // 这是本作用域内一切变更的唯一入口——Provide、事件监听、插件
-// 装载最终都归约为一次 Effect 调用，因此都自动获得跟踪与回收：
+// 装载最终都归约为一次 Effect 调用，因此都自动获得跟踪与回收。
+// apply 在锁外执行，内部可以自由触碰本层或其他层的锁：
 //
 //	ch, err := ctx.Effect(func() (func(), error) {
 //	    ln, err := net.Listen("tcp", ":0")
@@ -108,8 +116,6 @@ func (c *Context) Effect(apply func() (func(), error)) (dispose func(), err erro
 	}
 	c.mu.Unlock()
 
-	// apply 在锁外执行：其内部可以自由触碰本层或其他层的锁
-	// （例如 Provide 经由此路径安装绑定并操作根仓库）。
 	undo, err := apply()
 	if err != nil {
 		return nil, err
@@ -157,9 +163,11 @@ func (c *Context) Parent() *Context { return c.parent }
 
 // Dispose 销毁本作用域：
 //
-//  1. 先递归销毁全部派生作用域；
-//  2. 再卸载挂载在本层的所有 Fiber；
-//  3. 最后按 LIFO 执行本层效应栈，还原一切注册。
+//  1. 先从父层摘除自己的登记（幂等，反复 Derive/Dispose 不泄漏）；
+//  2. 递归销毁全部派生作用域；
+//  3. 卸载挂载在本层的所有 Fiber；
+//  4. 清空本层事件总线（已死作用域的监听不得再被触达）；
+//  5. 按 LIFO 执行本层效应栈，还原一切注册。
 //
 // Dispose 幂等：重复调用是空操作。
 func (c *Context) Dispose() {
@@ -173,6 +181,8 @@ func (c *Context) dispose() {
 		return
 	}
 	c.disposed = true
+	parent := c.parent
+	self := c.selfEntry
 
 	// 快照后解锁执行：dispose 回调可能回调本 Context 的其他方法。
 	effects := make([]*effectEntry, len(c.effects))
@@ -187,8 +197,15 @@ func (c *Context) dispose() {
 	c.onServiceChange = nil
 	c.mu.Unlock()
 
-	// 后代先于本层效应回收（它们是本层的效应之一，顺序由栈保证，
-	// 这里显式化以便阅读）。fiber 卸载内部会操作自身状态，不再回到本层加锁。
+	// 已死作用域的事件总线立即失效。
+	c.events.clear()
+
+	// 从父层摘除自己的登记（先于 LIFO unwind，避免 unwind 时
+	// 对已死子树二次执行 derive-dispose）。
+	if parent != nil && self != nil {
+		parent.detachChild(self, c)
+	}
+
 	for _, f := range fibers {
 		f.forceUnload()
 	}
@@ -196,6 +213,25 @@ func (c *Context) dispose() {
 		effects[i].dispose()
 	}
 	_ = subscribers // 预留：作用域销毁通知
+}
+
+// detachChild 把一个已销毁的子作用域从本层的效应栈与 children
+// 中摘除。须由子作用域在自身 dispose 时调用一次。
+func (p *Context) detachChild(entry *effectEntry, child *Context) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, cur := range p.effects {
+		if cur == entry {
+			p.effects = append(p.effects[:i], p.effects[i+1:]...)
+			break
+		}
+	}
+	for i, cur := range p.children {
+		if cur == child {
+			p.children = append(p.children[:i], p.children[i+1:]...)
+			break
+		}
+	}
 }
 
 func (c *Context) assertAlive() {
@@ -241,15 +277,12 @@ func (c *Context) onChange(fn func(changed []string)) (unsub func()) {
 
 // notifyServiceChange 将服务变更广播到整棵作用域树的所有订阅者。
 //
-// 不做方向性裁剪（只向下/只向上）：依赖解析沿父链向上，但提供方
-// 可能晚于消费方出现在任意层；服务变更是低频事件，全树广播换取
-// 语义上的完备与实现的简单。每个订阅者自行过滤是否受影响。
+// 不做方向性裁剪（只向下/只向上）：依赖解析沿全局仓库进行，
+// 提供方可能晚于消费方出现在任意层；服务变更是低频事件，全树广播
+// 换取语义上的完备与实现的简单。每个订阅者自行过滤是否受影响。
 // 调用方不得持有任何层的锁。
 func (c *Context) notifyServiceChange(changed []string) {
-	root := c
-	for root.parent != nil {
-		root = root.parent
-	}
+	root := c.root()
 	var walk func(*Context)
 	walk = func(n *Context) {
 		n.mu.Lock()

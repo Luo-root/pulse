@@ -266,6 +266,15 @@ func (f *Fiber) doLoad() {
 	}()
 
 	f.mu.Lock()
+	if f.closed {
+		// Apply 执行期间实例被 Close / 宿主销毁：立即回滚本次装载，
+		// 不得让副作用以 Active 形态存活在已注销的实例上。
+		ctx.Dispose()
+		f.state = StateInactive
+		f.applyErr = nil
+		f.mu.Unlock()
+		return
+	}
 	if err != nil {
 		ctx.Dispose()
 		f.applyErr = err

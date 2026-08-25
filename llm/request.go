@@ -70,12 +70,44 @@ func NewRequest(msgs ...*Message) *GenerateRequest {
 	return &GenerateRequest{Messages: msgs}
 }
 
-// Clone 深拷贝请求顶层字段（Messages 切片复制、元素共享）。
+// Clone 深拷贝请求中「拦截改写会触碰」的字段：标量指针、
+// ToolChoice、ResponseFormat、Metadata 各自独立副本——waterfall
+// 监听器对 Clone 的改写不会污染调用方的原请求。
+//
+// Messages 与 Tools/StopSequences 为切片级复制、元素共享：消息与
+// 工具声明按不可变约定对待（需要变更内容时由调用方自行复制元素）。
 func (r *GenerateRequest) Clone() *GenerateRequest {
 	cp := *r
 	cp.Messages = append([]*Message{}, r.Messages...)
 	cp.Tools = append([]ToolDef{}, r.Tools...)
 	cp.StopSequences = append([]string{}, r.StopSequences...)
+	if r.Temperature != nil {
+		v := *r.Temperature
+		cp.Temperature = &v
+	}
+	if r.TopP != nil {
+		v := *r.TopP
+		cp.TopP = &v
+	}
+	if r.MaxTokens != nil {
+		v := *r.MaxTokens
+		cp.MaxTokens = &v
+	}
+	if r.ToolChoice != nil {
+		tc := *r.ToolChoice
+		cp.ToolChoice = &tc
+	}
+	if r.ResponseFormat != nil {
+		rf := *r.ResponseFormat
+		cp.ResponseFormat = &rf
+	}
+	if r.Metadata != nil {
+		md := make(map[string]any, len(r.Metadata))
+		for k, v := range r.Metadata {
+			md[k] = v
+		}
+		cp.Metadata = md
+	}
 	return &cp
 }
 

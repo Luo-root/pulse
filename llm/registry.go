@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"sync"
 
@@ -19,9 +18,11 @@ var ServiceKey = kernel.NewServiceKey[*Registry]("pulse.llm")
 //	before_generate（waterfall）：请求发出前经过所有监听器，可就地
 //	  改写请求字段（路由、注入默认参数、脱敏、限流检查……）；
 //	after_response（emit）：拿到响应后通知观察者（计量、审计、缓存）。
+//	  载荷是值类型 Response：观察者拿到 *Response 只读，改写不了
+//	  调用方的结果——与 before_generate 的指针改写语义形成对照。
 var (
 	EventBeforeGenerate = kernel.NewEventKey[*GenerateRequest]("pulse.llm.before_generate")
-	EventAfterResponse  = kernel.NewEventKey[*Response]("pulse.llm.after_response")
+	EventAfterResponse  = kernel.NewEventKey[Response]("pulse.llm.after_response")
 )
 
 // Config 是一个命名模型实例的声明。
@@ -38,11 +39,16 @@ type Config struct {
 // Factory 由配置构造模型实例。每个 adapter 提供一个工厂。
 type Factory func(cfg Config) (ChatModel, error)
 
+// factoryEntry 包装工厂以获得稳定的登记身份：撤销时按指针比较，
+// 避免两个闭包包裹同一函数时被误判为同一条目。
+type factoryEntry struct{ f Factory }
+
 // Registry 是 provider 工厂与命名实例的注册中心。
 //
 // 两级结构：
-//   - RegisterProvider("openai", factory)：登记 adapter；
-//   - Declare("main", cfg) + Open("main")：声明并打开命名实例。
+//   - RegisterProvider("openai", factory)：登记 adapter——本身是
+//     一条内核效应，adapter 插件卸载时工厂随之收回；
+//   - Declare(id, cfg) + Open(id)：声明并打开命名实例。
 //
 // Open 返回的是被拦截包装的实例：每次调用都会先过
 // EventBeforeGenerate（waterfall），成功返回后发 EventAfterResponse
@@ -51,10 +57,11 @@ type Registry struct {
 	ctx *kernel.Context // 拦截事件的派发作用域
 
 	mu        sync.Mutex
-	factories map[string]Factory
+	factories map[string]*factoryEntry
 	decls     map[string]Config
 	opened    map[string]ChatModel
 	defaultID string
+	closed    bool
 }
 
 // NewRegistry 创建注册中心。调用方负责将其 Provide 到 ServiceKey
@@ -62,40 +69,90 @@ type Registry struct {
 func NewRegistry(c *kernel.Context) *Registry {
 	return &Registry{
 		ctx:       c,
-		factories: make(map[string]Factory),
+		factories: make(map[string]*factoryEntry),
 		decls:     make(map[string]Config),
 		opened:    make(map[string]ChatModel),
 	}
 }
 
-// Plugin 返回提供本服务的内核插件：Apply 时向所在作用域
-// Provide 一个绑定该作用域的 Registry。
+// Plugin 返回提供本服务的内核插件：
+//   - Apply 时向所在作用域 Provide 一个绑定该作用域的 Registry；
+//   - 注册中心的生命周期与插件一致——卸载时关闭全部打开的实例。
 func Plugin() kernel.Plugin {
 	return kernel.Func(func(c *kernel.Context) error {
-		_, err := kernel.Provide(c, ServiceKey, NewRegistry(c))
+		reg := NewRegistry(c)
+		if _, err := kernel.Provide(c, ServiceKey, reg); err != nil {
+			return err // Provide 自动登记为效应，随插件卸载撤除
+		}
+		_, err := c.Effect(func() (func(), error) {
+			return func() { reg.Close() }, nil
+		})
 		return err
 	})
 }
 
-// RegisterProvider 登记一个 provider 工厂；同名覆盖旧登记
-// （撤旧装新语义）。返回撤销函数。
-func (r *Registry) RegisterProvider(name string, f Factory) (func(), error) {
-	r.mu.Lock()
-	r.factories[name] = f
-	r.mu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			if cur, ok := r.factories[name]; ok && sameFactory(cur, f) {
-				delete(r.factories, name)
-			}
-		})
-	}, nil
+// RegisterProvider 登记一个 provider 工厂。scope 是登记所属的
+// 作用域——adapter 插件应传入自己 Apply 收到的 Context，使工厂的
+// 生命周期与插件一致（Apply 中丢弃返回值也不会泄漏，插件卸载时
+// 工厂与其打开的实例一并收回）。
+//
+// 同名覆盖 = 撤旧装新，旧 provider 名下已打开的实例立即失效关闭
+// （下次 Open 用新工厂重建）。返回的 dispose 可提前手动撤销（幂等）。
+func (r *Registry) RegisterProvider(scope *kernel.Context, name string, f Factory) (func(), error) {
+	entry := &factoryEntry{f: f}
+	return scope.Effect(func() (func(), error) {
+		r.installFactory(name, entry)
+		return func() { r.removeFactory(name, entry) }, nil
+	})
 }
 
-func sameFactory(a, b Factory) bool { return fmt.Sprintf("%p", a) == fmt.Sprintf("%p", b) }
+// installFactory 替换工厂并失效该 provider 名下全部已开实例
+// （须不在 r.mu 内调用）。
+func (r *Registry) installFactory(name string, entry *factoryEntry) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.factories[name] = entry
+	stale := r.evictProviderLocked(name)
+	r.mu.Unlock()
+	for _, m := range stale {
+		closeModel(m)
+	}
+}
+
+// removeFactory 撤销自己的登记；若同名已被后来者覆盖则不动。
+func (r *Registry) removeFactory(name string, entry *factoryEntry) {
+	r.mu.Lock()
+	cur, ok := r.factories[name]
+	if !ok || cur != entry {
+		r.mu.Unlock()
+		return
+	}
+	delete(r.factories, name)
+	stale := r.evictProviderLocked(name)
+	r.mu.Unlock()
+	for _, m := range stale {
+		closeModel(m)
+	}
+}
+
+// evictProviderLocked 取出该 provider 名下全部已开实例并出缓存。
+// 须持有 r.mu。
+func (r *Registry) evictProviderLocked(name string) []ChatModel {
+	var stale []ChatModel
+	for id, cfg := range r.decls {
+		if cfg.Provider != name {
+			continue
+		}
+		if m, ok := r.opened[id]; ok {
+			stale = append(stale, m)
+			delete(r.opened, id)
+		}
+	}
+	return stale
+}
 
 // Declare 声明一个命名实例。重复 Declare 同名 id 会替换声明并
 // 关闭已打开的旧实例（下次 Open 用新配置重建）。
@@ -104,11 +161,18 @@ func (r *Registry) Declare(id string, cfg Config) error {
 		return NewError(ErrBadRequest, "", 0, nil, "declare %q: provider is required", id)
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	if r.closed {
+		r.mu.Unlock()
+		return NewError(ErrUnknown, "", 0, nil, "registry closed")
+	}
 	r.decls[id] = cfg
-	if old, ok := r.opened[id]; ok {
-		closeModel(old)
+	old, hadOld := r.opened[id]
+	if hadOld {
 		delete(r.opened, id)
+	}
+	r.mu.Unlock()
+	if hadOld {
+		closeModel(old)
 	}
 	return nil
 }
@@ -130,6 +194,10 @@ func (r *Registry) DefaultID() string {
 // Open 打开（或复用缓存的）命名实例。
 func (r *Registry) Open(id string) (ChatModel, error) {
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil, NewError(ErrUnknown, "", 0, nil, "registry closed")
+	}
 	if m, ok := r.opened[id]; ok {
 		r.mu.Unlock()
 		return m, nil
@@ -139,7 +207,7 @@ func (r *Registry) Open(id string) (ChatModel, error) {
 		r.mu.Unlock()
 		return nil, NewError(ErrNoModel, "", 0, nil, "model %q not declared", id)
 	}
-	factory, ok := r.factories[cfg.Provider]
+	fe, ok := r.factories[cfg.Provider]
 	if !ok {
 		r.mu.Unlock()
 		return nil, NewError(ErrNoModel, cfg.Provider, 0, nil,
@@ -147,13 +215,18 @@ func (r *Registry) Open(id string) (ChatModel, error) {
 	}
 	r.mu.Unlock()
 
-	m, err := factory(cfg)
+	m, err := fe.f(cfg)
 	if err != nil {
 		return nil, NewError(ErrUnknown, cfg.Provider, 0, err, "build model %q", id)
 	}
 
 	wrapped := &observed{inner: m, reg: r}
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		closeModel(m)
+		return nil, NewError(ErrUnknown, "", 0, nil, "registry closed")
+	}
 	// 双检：并发 Open 时后到者让位。
 	if cur, ok := r.opened[id]; ok {
 		r.mu.Unlock()
@@ -187,6 +260,26 @@ func (r *Registry) Drop(id string) {
 	closeModel(old)
 }
 
+// Close 关闭注册中心：关闭全部打开的实例并作废一切登记。
+// 由 llm.Plugin 在插件卸载时自动调用；重复调用幂等。
+func (r *Registry) Close() {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.closed = true
+	all := r.opened
+	r.opened = make(map[string]ChatModel)
+	r.decls = make(map[string]Config)
+	r.factories = make(map[string]*factoryEntry)
+	r.defaultID = ""
+	r.mu.Unlock()
+	for _, m := range all {
+		closeModel(m)
+	}
+}
+
 // Providers 返回已登记的 provider 名列表（诊断用）。
 func (r *Registry) Providers() []string {
 	r.mu.Lock()
@@ -216,7 +309,7 @@ func (o *observed) Generate(ctx context.Context, req *GenerateRequest) (*Respons
 	if err != nil {
 		return nil, err
 	}
-	kernel.Emit(o.reg.ctx, EventAfterResponse, resp)
+	kernel.Emit(o.reg.ctx, EventAfterResponse, *resp)
 	return resp, nil
 }
 
@@ -233,7 +326,7 @@ func (o *observed) Stream(ctx context.Context, req *GenerateRequest) (<-chan Str
 			out <- ev
 			if ev.Kind == EventDone {
 				if ev.Response != nil {
-					kernel.Emit(o.reg.ctx, EventAfterResponse, ev.Response)
+					kernel.Emit(o.reg.ctx, EventAfterResponse, *ev.Response)
 				}
 				return
 			}
@@ -243,4 +336,13 @@ func (o *observed) Stream(ctx context.Context, req *GenerateRequest) (<-chan Str
 		}
 	}()
 	return out, nil
+}
+
+// Close 转发给内层模型（内层实现 io.Closer 才真正关闭）——保证
+// Registry.Drop / Declare 替换 / Registry.Close 能关到真实资源。
+func (o *observed) Close() error {
+	if c, ok := o.inner.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
 }

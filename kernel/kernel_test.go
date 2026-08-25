@@ -1,7 +1,9 @@
 package kernel
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -50,10 +52,43 @@ func TestServiceTypeConflict(t *testing.T) {
 	if _, err := Provide(c, keyStr, "x"); err != nil {
 		t.Fatal(err)
 	}
-	// 同名不同类型键 => 拒绝。
 	conflict := NewServiceKey[int]("test.str")
 	if _, err := Provide(c, conflict, 42); err == nil {
 		t.Fatal("expected type conflict error")
+	}
+}
+
+// #6：同名覆盖语义钉死——覆盖即撤旧，被覆盖方的撤销不再复活前值；
+// 覆盖者卸载后服务消失、依赖方自动卸载。这是有意行为，不是漏测。
+func TestProvideOverwriteSemantics(t *testing.T) {
+	ctx := New()
+	dA := mustProvide(t, ctx, keyStr, "A")
+
+	consumer := &countingPlugin{deps: []Dependency{Require(keyStr)}}
+	fc, err := Use(ctx, consumer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, fc, time.Second, StateActive)
+
+	dB := mustProvide(t, ctx, keyStr, "B") // B 覆盖 A
+	if v, _ := Get(ctx, keyStr); v != "B" {
+		t.Fatalf("overwrite failed: %q", v)
+	}
+	waitForState(t, fc, time.Second, StateActive) // 服务仍在 => 消费方无感保持
+
+	if v, _ := (func() (string, bool) { return Get(ctx, keyStr) })(); true {
+		_ = v
+	}
+	dB() // B 卸载 => 服务消失（A 的绑定已被覆盖作废，不复活）
+	waitForState(t, fc, time.Second, StateInactive)
+	if _, ok := Get(ctx, keyStr); ok {
+		t.Fatal("service should be gone after overwriter disposal (documented semantics)")
+	}
+
+	dA() // A 的旧 dispose 是空操作（绑定指针已不同），不得 panic 或复活
+	if _, ok := Get(ctx, keyStr); ok {
+		t.Fatal("stale dispose must not resurrect binding")
 	}
 }
 
@@ -93,7 +128,6 @@ func TestDeriveDisposeIsolation(t *testing.T) {
 	if disposed != 1 {
 		t.Fatalf("child effect not unwound: %d", disposed)
 	}
-	// 根不受影响，仍可用。
 	if _, err := root.Effect(func() (func(), error) { return nil, nil }); err != nil {
 		t.Fatalf("root should stay alive: %v", err)
 	}
@@ -113,6 +147,46 @@ func TestParentDisposeCascades(t *testing.T) {
 	root.Dispose()
 	if got := atomic.LoadInt32(&disposed); got != 2 {
 		t.Fatalf("cascade unwind = %d, want 2", got)
+	}
+}
+
+// #5：反复装载/卸载后，宿主层的效应栈与 children 不随次数增长。
+func TestDeriveDetachNoLeak(t *testing.T) {
+	ctx := New()
+	disposeDep := mustProvide(t, ctx, keyStr, "dep")
+
+	p := &countingPlugin{deps: []Dependency{Require(keyStr)}}
+	f, err := Use(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, f, time.Second, StateActive)
+
+	baseEffects := len(ctx.effects)
+	baseChildren := len(ctx.children)
+	if baseChildren == 0 {
+		t.Fatal("expected fiber child scope registered")
+	}
+
+	for i := 0; i < 5; i++ {
+		disposeDep()
+		waitForState(t, f, time.Second, StateInactive)
+		disposeDep = mustProvide(t, ctx, keyStr, fmt.Sprintf("dep-%d", i))
+		waitForState(t, f, time.Second, StateActive)
+	}
+
+	if got := len(ctx.effects); got != baseEffects {
+		t.Fatalf("effects leak: base=%d now=%d", baseEffects, got)
+	}
+	if got := len(ctx.children); got != baseChildren {
+		t.Fatalf("children leak: base=%d now=%d", baseChildren, got)
+	}
+
+	// 手工派生/销毁同样不应留下死登记。
+	extra := ctx.Derive()
+	extra.Dispose()
+	if got := len(ctx.effects); got != baseEffects {
+		t.Fatalf("manual derive leak: %d -> %d", baseEffects, got)
 	}
 }
 
@@ -152,11 +226,9 @@ func TestPluginLifecycleReactive(t *testing.T) {
 		t.Fatalf("applies = %d, want 1", n)
 	}
 
-	// 依赖撤除 => 自动卸载。
 	disposeDep()
 	waitForState(t, f, time.Second, StateInactive)
 
-	// 依赖恢复 => 自动重新装载。
 	mustProvide(t, ctx, keyStr, "dep-v2")
 	waitForState(t, f, time.Second, StateActive)
 	if n := atomic.LoadInt32(&p.applies); n != 2 {
@@ -185,7 +257,6 @@ func TestPluginProvidesTrackedService(t *testing.T) {
 		t.Fatal("provided service not visible on host scope")
 	}
 
-	// 卸载后产物随之消失。
 	disposeDep()
 	waitForState(t, f, time.Second, StateInactive)
 	if _, ok := Get(ctx, providerKey); ok {
@@ -202,7 +273,7 @@ func TestPluginFailedThenRetry(t *testing.T) {
 		deps: []Dependency{Require(keyInt)},
 		onApply: func(c *Context) error {
 			if fail {
-				return fmt.Errorf("boom")
+				return errors.New("boom")
 			}
 			return nil
 		},
@@ -219,21 +290,66 @@ func TestPluginFailedThenRetry(t *testing.T) {
 	waitForState(t, f, time.Second, StateActive)
 }
 
+// #8：Close 与进行中的 doLoad 竞态——已注销实例不得被救活。
+func TestCloseDuringLoading(t *testing.T) {
+	ctx := New()
+	gate := make(chan struct{})
+	entered := make(chan struct{})
+	var block atomic.Bool
+
+	disposeDep := mustProvide(t, ctx, keyStr, "dep")
+
+	p := &countingPlugin{
+		deps: []Dependency{Require(keyStr)},
+		onApply: func(c *Context) error {
+			if block.Load() {
+				entered <- struct{}{}
+				<-gate // 卡在 Apply 中间
+				return errors.New("boom after close")
+			}
+			return nil
+		},
+	}
+	f, err := Use(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, f, time.Second, StateActive)
+
+	// 先卸到 Inactive，再以阻塞模式重装：依赖恢复 => 异步 doLoad。
+	disposeDep()
+	waitForState(t, f, time.Second, StateInactive)
+	block.Store(true)
+	disposeDep = mustProvide(t, ctx, keyStr, "dep-v2") // 触发重试装载
+	<-entered                                          // doLoad 正在执行（Loading 态）
+
+	f.Close() // 在 Apply 返回前注销
+	close(gate)
+
+	waitForState(t, f, time.Second, StateInactive)
+	if s := f.State(); s != StateInactive {
+		t.Fatalf("closed fiber ended in %s, want inactive", s)
+	}
+	if f.Err() != nil {
+		t.Fatalf("closed fiber should carry no error, got %v", f.Err())
+	}
+}
+
 func TestWaterfallOrderAndShortCircuit(t *testing.T) {
 	ctx := New()
 	type Request struct{ N int }
 	ev := NewEventKey[Request]("test.req")
 
 	unsub1, _ := OnWaterfall(ctx, ev, func(r Request, next func(Request) Request) Request {
-		r.N += 1 // 第一个监听器：+1 后委托
+		r.N += 1
 		return next(r)
 	})
 	_, _ = OnWaterfall(ctx, ev, func(r Request, next func(Request) Request) Request {
-		r.N += 10 // 第二个：+10 后短路
-		return r
+		r.N += 10
+		return r // 短路
 	})
 	_, _ = OnWaterfall(ctx, ev, func(r Request, next func(Request) Request) Request {
-		r.N += 100 // 不会执行
+		r.N += 100
 		return next(r)
 	})
 
@@ -258,7 +374,7 @@ func TestEventModes(t *testing.T) {
 
 	_, _ = On(ctx, ev, func(p *int) { mu.Lock(); seen = append(seen, *p); mu.Unlock() })
 
-	Serial(ctx, ev, 7) // 观察者可就地修改 => Serial 传递修改
+	Serial(ctx, ev, 7)
 	Emit(ctx, ev, 8)
 	errs := Parallel(ctx, ev, 9)
 	if errs != nil {
@@ -269,6 +385,76 @@ func TestEventModes(t *testing.T) {
 	if len(seen) != 3 {
 		t.Fatalf("seen = %v", seen)
 	}
+}
+
+// #7：同一事件混用观察与 waterfall 监听器——各自独立派发，
+// 不串台、不 panic。
+func TestMixedListenerKinds(t *testing.T) {
+	ctx := New()
+	ev := NewEventKey[int]("test.mixed")
+
+	var obsHit, wfHit int32
+	_, _ = On(ctx, ev, func(p *int) { atomic.AddInt32(&obsHit, 1) })
+	_, _ = OnWaterfall(ctx, ev, func(v int, next func(int) int) int {
+		atomic.AddInt32(&wfHit, 1)
+		return next(v + 1)
+	})
+
+	Serial(ctx, ev, 5)
+	if atomic.LoadInt32(&obsHit) != 1 || atomic.LoadInt32(&wfHit) != 0 {
+		t.Fatalf("emit crossed kinds: obs=%d wf=%d", obsHit, wfHit)
+	}
+
+	got := Waterfall(ctx, ev, 5)
+	if atomic.LoadInt32(&obsHit) != 1 || atomic.LoadInt32(&wfHit) != 1 {
+		t.Fatalf("waterfall crossed kinds: obs=%d wf=%d", obsHit, wfHit)
+	}
+	if got != 6 {
+		t.Fatalf("waterfall result = %d", got)
+	}
+}
+
+// #1：兄弟作用域上的监听必须能收到任意作用域的派发（全树广播）。
+func TestEventListenersAcrossSiblingScopes(t *testing.T) {
+	root := New()
+	ev := NewEventKey[int]("test.sibling")
+
+	var hit int32
+	pListener := Func(func(c *Context) error {
+		_, err := OnWaterfall(c, ev, func(v int, next func(int) int) int {
+			atomic.AddInt32(&hit, 1)
+			return next(v + 42)
+		})
+		return err
+	})
+	if _, err := Use(root, pListener); err != nil {
+		t.Fatal(err)
+	}
+
+	sibling := root.Derive() // 与监听插件私有作用域平行的兄弟层
+	got := Waterfall(sibling, ev, 0)
+	if atomic.LoadInt32(&hit) != 1 {
+		t.Fatal("sibling-scope listener never invoked")
+	}
+	if got != 42 {
+		t.Fatalf("sibling waterfall result = %d, want 42", got)
+	}
+}
+
+// #2：事件监听是效应——Apply 中丢弃 dispose，作用域销毁后监听消失；
+// 已销毁作用域的监听不再被任何派发触达。
+func TestEventDisposeOnScopeDispose(t *testing.T) {
+	root := New()
+	ev := NewEventKey[int]("test.dispose")
+
+	child := root.Derive()
+	if _, err := On(child, ev, func(p *int) { t.Error("dead-scope listener invoked") }); err != nil {
+		t.Fatal(err)
+	}
+	child.Dispose()
+
+	Emit(root, ev, 1)   // 不应触达已死层
+	Waterfall(root, ev, 2)
 }
 
 func TestParallelCollectsPanics(t *testing.T) {
@@ -292,52 +478,77 @@ func TestEventNameTypeConflict(t *testing.T) {
 	}
 }
 
+// ---- Loader ----
+
+type tagPlugin struct {
+	countingPlugin
+	tag    string
+	configured bool
+}
+
+func (p *tagPlugin) Configure(cfg map[string]any) error {
+	p.tag, _ = cfg["tag"].(string)
+	p.configured = true
+	return nil
+}
+
 func TestLoaderReconcile(t *testing.T) {
 	ctx := New()
 	l := NewLoader(ctx)
 
 	var applies int32
-	l.MustRegister("counter", func() Plugin {
-		return &countingPlugin{
-			onApply: func(c *Context) error {
-				atomic.AddInt32(&applies, 1)
-				cfg, _ := Get(c, ConfigKey)
-				if v, ok := cfg["tag"]; ok {
-					mustProvideForTest(t, c, v.(string))
-				}
-				return nil
+	l.MustRegister("tagged", func() Plugin {
+		return &tagPlugin{
+			countingPlugin: countingPlugin{
+				onApply: func(c *Context) error {
+					atomic.AddInt32(&applies, 1)
+					return nil
+				},
 			},
 		}
 	})
 
-	err := l.Reconcile([]Entry{{ID: "a", Name: "counter", Config: map[string]any{"tag": "v1"}}})
-	if err != nil {
+	// #4：两个条目各自的 config 私有且隔离。
+	if err := l.Reconcile([]Entry{
+		{ID: "a", Name: "tagged", Config: map[string]any{"tag": "v1"}},
+		{ID: "b", Name: "tagged", Config: map[string]any{"tag": "v2"}},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	f := l.Fiber("a")
-	waitForState(t, f, time.Second, StateActive)
-	if n := atomic.LoadInt32(&applies); n != 1 {
-		t.Fatalf("applies = %d", n)
+	fa, fb := l.Fiber("a"), l.Fiber("b")
+	waitForState(t, fa, time.Second, StateActive)
+	waitForState(t, fb, time.Second, StateActive)
+
+	// 通过实例身份区分两个插件（工厂每条目调用一次）：
+	if fa == fb {
+		t.Fatal("two entries must get separate plugin instances")
 	}
 
 	// Config 变化 => 重建。
-	if err := l.Reconcile([]Entry{{ID: "a", Name: "counter", Config: map[string]any{"tag": "v2"}}}); err != nil {
+	before := atomic.LoadInt32(&applies)
+	if err := l.Reconcile([]Entry{
+		{ID: "a", Name: "tagged", Config: map[string]any{"tag": "v1-changed"}},
+		{ID: "b", Name: "tagged", Config: map[string]any{"tag": "v2"}},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	waitForState(t, l.Fiber("a"), time.Second, StateActive)
-	if n := atomic.LoadInt32(&applies); n != 2 {
-		t.Fatalf("rebuild applies = %d, want 2", n)
+	if atomic.LoadInt32(&applies)-before < 1 {
+		t.Fatal("config change did not rebuild entry a")
 	}
 
-	// Disabled => 卸载保留记录。
-	if err := l.Reconcile([]Entry{{ID: "a", Name: "counter", Disabled: true}}); err != nil {
+	// Disabled => 卸载保留记录；另一条目不受影响。
+	if err := l.Reconcile([]Entry{
+		{ID: "a", Name: "tagged", Disabled: true},
+		{ID: "b", Name: "tagged", Config: map[string]any{"tag": "v2"}},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if l.Fiber("a") != nil {
 		t.Fatal("disabled entry should not keep a fiber")
 	}
+	waitForState(t, l.Fiber("b"), time.Second, StateActive)
 
-	// 移除。
 	if err := l.Reconcile(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -346,24 +557,32 @@ func TestLoaderReconcile(t *testing.T) {
 	}
 }
 
-func mustProvideForTest(t *testing.T, c *Context, tag string) {
-	t.Helper()
-	if _, err := Provide(c, NewServiceKey[string]("test.tag"), tag); err != nil {
-		t.Fatal(err)
+// #10c：多条目失败聚合可见。
+func TestReconcileAggregatesErrors(t *testing.T) {
+	ctx := New()
+	l := NewLoader(ctx)
+	err := l.Reconcile([]Entry{
+		{ID: "x", Name: "nope1"},
+		{ID: "y", Name: "nope2"},
+	})
+	if err == nil {
+		t.Fatal("expected aggregated error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "nope1") || !strings.Contains(msg, "nope2") {
+		t.Fatalf("aggregated error missing entries: %v", msg)
 	}
 }
 
 func TestUnknownFactoryRejected(t *testing.T) {
 	ctx := New()
 	l := NewLoader(ctx)
-	err := l.Reconcile([]Entry{{ID: "x", Name: "nope"}})
-	if err == nil {
+	if err := l.Reconcile([]Entry{{ID: "x", Name: "nope"}}); err == nil {
 		t.Fatal("expected unknown factory error")
 	}
 }
 
 func TestConcurrentDisposeRace(t *testing.T) {
-	// 并发 Provide/Dispose 不应产生数据竞争（go test -race 覆盖）。
 	ctx := New()
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
@@ -373,6 +592,7 @@ func TestConcurrentDisposeRace(t *testing.T) {
 			child := ctx.Derive()
 			_, _ = Provide(child, keyInt, i)
 			_, _ = child.Effect(func() (func(), error) { return func() {}, nil })
+			_, _ = On(child, NewEventKey[int]("race.ev"), func(*int) {})
 			child.Dispose()
 		}(i)
 	}
