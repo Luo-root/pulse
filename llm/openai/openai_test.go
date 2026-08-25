@@ -813,16 +813,78 @@ func TestLiveResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewResponses: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	resp, err := model.Generate(ctx, llm.NewRequest(llm.UserText("用一句话介绍 Go")))
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if resp.Message.Text() == "" {
-		t.Fatal("Generate 返回空文本")
-	}
-	t.Logf("responses text=%q", truncate(resp.Message.Text(), 80))
+
+	t.Run("text", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		resp, err := model.Generate(ctx, llm.NewRequest(llm.UserText("用一句话介绍 Go 语言")))
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if resp.Message.Text() == "" {
+			t.Fatalf("空文本；reasoning=%q finish=%s", resp.Message.ReasoningText(), resp.FinishReason)
+		}
+		t.Logf("text=%q tokens in/out=%d/%d", truncate(resp.Message.Text(), 80),
+			resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		ch, err := model.Stream(ctx, llm.NewRequest(llm.UserText("数到三，只输出数字")))
+		if err != nil {
+			t.Fatalf("Stream: %v", err)
+		}
+		evs := collect(t, ctx, ch)
+		var sb strings.Builder
+		for _, ev := range evs {
+			if ev.Kind == llm.EventTextDelta {
+				sb.WriteString(ev.Text)
+			}
+		}
+		if sb.Len() == 0 {
+			last := evs[len(evs)-1]
+			t.Fatalf("流式未收到文本增量 last=%s err=%v", last.Kind, last.Err)
+		}
+		t.Logf("stream=%q events=%d", truncate(sb.String(), 80), len(evs))
+	})
+
+	t.Run("tools", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		req := llm.NewRequest(llm.UserText("北京现在天气如何？请调用工具查询，不要直接回答"))
+		req.Tools = []llm.ToolDef{{
+			Name:        "get_weather",
+			Description: "查询城市天气",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+		}}
+		req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolAny}
+		resp, err := model.Generate(ctx, req)
+		if err != nil {
+			t.Fatalf("Generate(tool): %v", err)
+		}
+		if len(resp.Message.ToolCalls()) == 0 {
+			t.Fatalf("期望工具调用，得到: %s", resp.Message.Text())
+		}
+		t.Logf("tool=%s args=%s", resp.Message.ToolCalls()[0].Name, resp.Message.ToolCalls()[0].Arguments)
+	})
+
+	t.Run("image", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+			llm.Text("这张图里有什么？用一句话回答"),
+			llm.ImageURL("https://filecdn.minimax.chat/public/4ab63cda-da2a-4c77-b1c7-900d2562073f.png", "image/png"),
+		}})
+		resp, err := model.Generate(ctx, req)
+		if err != nil {
+			t.Fatalf("Generate(image): %v", err)
+		}
+		if resp.Message.Text() == "" {
+			t.Fatal("图像输入返回空文本")
+		}
+		t.Logf("image=%q", truncate(resp.Message.Text(), 80))
+	})
 }
 
 func truncate(s string, n int) string {
