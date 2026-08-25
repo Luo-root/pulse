@@ -1,0 +1,438 @@
+package llm
+
+import (
+	"context"
+	"errors"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/Luo-root/pulse/kernel"
+)
+
+// closerModel 包装任意 ChatModel 并统计 Close 次数。
+type closerModel struct {
+	ChatModel
+	closed atomic.Int32
+}
+
+func (m *closerModel) Close() error { m.closed.Add(1); return nil }
+
+func setupRegistry(t *testing.T) (*kernel.Context, *Registry) {
+	t.Helper()
+	ctx := kernel.New()
+	f, err := kernel.Use(ctx, Plugin())
+	if err != nil {
+		t.Fatalf("mount llm.Plugin: %v", err)
+	}
+	reg, ok := kernel.Get(ctx, ServiceKey)
+	if !ok {
+		t.Fatal("llm service not provided")
+	}
+	_ = f
+	return ctx, reg
+}
+
+func TestRegistryOpenAndCache(t *testing.T) {
+	ctx, reg := setupRegistry(t)
+
+	var builds int32
+	m := NewScripted(Resp("hi"))
+	_, err := reg.RegisterProvider(ctx, "mock", func(cfg Config) (ChatModel, error) {
+		atomic.AddInt32(&builds, 1)
+		return m, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Declare("main", Config{Provider: "mock", Model: "test-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got1, err := reg.Open("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, _ := reg.Open("main")
+	if got1 != got2 {
+		t.Fatal("Open should cache instances")
+	}
+	if n := atomic.LoadInt32(&builds); n != 1 {
+		t.Fatalf("factory called %d times, want 1", n)
+	}
+
+	resp, err := got1.Generate(context.Background(), NewRequest(UserText("ping")))
+	if err != nil || resp.Message.Text() != "hi" {
+		t.Fatalf("generate: %v %v", err, resp)
+	}
+}
+
+func TestOpenUnknownFails(t *testing.T) {
+	ctx, reg := setupRegistry(t)
+	if _, err := reg.Open("nope"); KindOf(err) != ErrNoModel {
+		t.Fatalf("kind = %s, want no_model (err=%v)", KindOf(err), err)
+	}
+	_, _ = reg.RegisterProvider(ctx, "mock", func(cfg Config) (ChatModel, error) { return nil, nil })
+	if err := reg.Declare("m", Config{Provider: "missing"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Open("m"); KindOf(err) != ErrNoModel {
+		t.Fatalf("unknown provider kind = %s, want no_model", KindOf(err))
+	}
+}
+
+// #3/#10d：拦截链路——before_generate waterfall 改写对后续监听器可见；
+// after_response 观察者拿到值类型 Response。
+func TestInterceptionEvents(t *testing.T) {
+	ctx, reg := setupRegistry(t)
+
+	_, _ = reg.RegisterProvider(ctx, "mock", func(cfg Config) (ChatModel, error) {
+		return NewScripted(Resp("answer")), nil
+	})
+	if err := reg.Declare("main", Config{Provider: "mock", Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	reg.SetDefault("main")
+
+	// before_generate：第一个监听器 Clone 后注入默认 MaxTokens。
+	_, _ = kernel.OnWaterfall(ctx, EventBeforeGenerate,
+		func(req *GenerateRequest, next func(*GenerateRequest) *GenerateRequest) *GenerateRequest {
+			req = req.Clone()
+			n := 128
+			req.MaxTokens = &n
+			return next(req)
+		})
+	// 第二个监听器验证能看到上游的改写。
+	var capturedMax atomic.Int64
+	_, _ = kernel.OnWaterfall(ctx, EventBeforeGenerate,
+		func(req *GenerateRequest, next func(*GenerateRequest) *GenerateRequest) *GenerateRequest {
+			capturedMax.Store(int64(*req.MaxTokens))
+			return next(req)
+		})
+
+	var seen atomic.Int32
+	unsub, _ := kernel.On(ctx, EventAfterResponse, func(r *Response) { seen.Add(1) })
+
+	model, err := reg.OpenDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 调用方的原请求不得被监听器污染（Clone 隔离）：
+	callerReq := NewRequest(UserText("q"))
+	if _, err := model.Generate(context.Background(), callerReq); err != nil {
+		t.Fatal(err)
+	}
+	if v := capturedMax.Load(); v != 128 {
+		t.Fatalf("before_generate rewrite not observed: %d", v)
+	}
+	if callerReq.MaxTokens != nil {
+		t.Fatal("caller request polluted by interception")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if seen.Load() == 0 {
+		t.Fatal("after_response observer never ran")
+	}
+	_ = unsub
+}
+
+// #1（llm 版）：限流插件挂在兄弟作用域，其 before_generate 监听
+// 必须能被 Generate 触达（事件全树广播）。
+func TestSiblingPluginSeesInterceptionEvents(t *testing.T) {
+	ctx, reg := setupRegistry(t) // llm 插件的私有作用域在 root 之下
+
+	_, _ = reg.RegisterProvider(ctx, "mock", func(cfg Config) (ChatModel, error) {
+		return NewScripted(Resp("ok")), nil
+	})
+	if err := reg.Declare("main", Config{Provider: "mock", Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 兄弟插件：在自己的私有作用域里挂监听（丢弃 dispose，
+	// 卸载时应随之消失）。
+	var hit atomic.Int32
+	ratePlugin := kernel.Func(func(c *kernel.Context) error {
+		_, err := kernel.OnWaterfall(c, EventBeforeGenerate,
+			func(req *GenerateRequest, next func(*GenerateRequest) *GenerateRequest) *GenerateRequest {
+				hit.Add(1)
+				return next(req)
+			})
+		return err
+	})
+	fr, err := kernel.Use(ctx, ratePlugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model, _ := reg.Open("main")
+	if _, err := model.Generate(context.Background(), NewRequest(UserText("q"))); err != nil {
+		t.Fatal(err)
+	}
+	if hit.Load() == 0 {
+		t.Fatal("sibling plugin's before_generate listener never invoked")
+	}
+
+	// #2（llm 版）：兄弟插件卸载 => 其监听随私有作用域回收。
+	fr.Close()
+	if hit.Load() > 0 {
+		before := hit.Load()
+		_, _ = model.Generate(context.Background(), NewRequest(UserText("q2")))
+		if hit.Load() != before {
+			t.Fatal("unloaded plugin's listener still firing")
+		}
+	}
+}
+
+// #3：三条关闭路径——Declare 替换、Drop、llm 插件卸载——都必须
+// 关到真实模型的 io.Closer。
+func TestRealModelClosedOnAllPaths(t *testing.T) {
+	t.Run("declare replace closes old", func(t *testing.T) {
+		ctx, reg := setupRegistry(t)
+		c1 := &closerModel{ChatModel: NewScripted(Resp("v1"))}
+		c2 := &closerModel{ChatModel: NewScripted(Resp("v2"))}
+		_, _ = reg.RegisterProvider(ctx, "mock", func(cfg Config) (ChatModel, error) {
+			if cfg.Model == "m1" {
+				return c1, nil
+			}
+			return c2, nil
+		})
+		_ = reg.Declare("main", Config{Provider: "mock", Model: "m1"})
+		first, err := reg.Open("main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = first
+
+		_ = reg.Declare("main", Config{Provider: "mock", Model: "m2"})
+		if got := c1.closed.Load(); got != 1 {
+			t.Fatalf("old instance closed %d times, want 1", got)
+		}
+		next, err := reg.Open("main") // 用新工厂重建
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, _ := next.Generate(context.Background(), NewRequest(UserText("x")))
+		if resp.Message.Text() != "v2" {
+			t.Fatalf("redeclare did not rebuild instance: %q", resp.Message.Text())
+		}
+	})
+
+	t.Run("drop closes instance", func(t *testing.T) {
+		ctx, reg := setupRegistry(t)
+		cm := &closerModel{ChatModel: NewScripted(Resp("x"))}
+		_, _ = reg.RegisterProvider(ctx, "mock", func(cfg Config) (ChatModel, error) { return cm, nil })
+		_ = reg.Declare("main", Config{Provider: "mock", Model: "m"})
+		if _, err := reg.Open("main"); err != nil {
+			t.Fatal(err)
+		}
+		reg.Drop("main")
+		if got := cm.closed.Load(); got != 1 {
+			t.Fatalf("dropped instance closed %d times, want 1", got)
+		}
+	})
+
+	t.Run("plugin unload closes registry models", func(t *testing.T) {
+		ctx := kernel.New()
+		cm := &closerModel{ChatModel: NewScripted(Resp("y"))}
+		fl, err := kernel.Use(ctx, Plugin())
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg, _ := kernel.Get(ctx, ServiceKey)
+		_, _ = reg.RegisterProvider(ctx, "mock", func(cfg Config) (ChatModel, error) { return cm, nil })
+		_ = reg.Declare("main", Config{Provider: "mock", Model: "m"})
+		if _, err := reg.Open("main"); err != nil {
+			t.Fatal(err)
+		}
+
+		fl.Close() // 插件卸载 => Registry.Close => 实例关闭
+		if got := cm.closed.Load(); got != 1 {
+			t.Fatalf("model closed %d times on plugin unload, want 1", got)
+		}
+		if _, err := reg.Open("main"); KindOf(err) != ErrUnknown && KindOf(err) != ErrNoModel {
+			t.Fatalf("open after registry close: %v", err)
+		}
+	})
+}
+
+// #9：provider 登记是可逆效应——adapter 插件卸载后工厂收回。
+func TestProviderRegistrationReversible(t *testing.T) {
+	ctx, reg := setupRegistry(t)
+
+	adapter := kernel.Func(func(c *kernel.Context) error {
+		// adapter 正确用法：把工厂登记到自己的私有作用域 c 上，
+		// 生命周期与插件一致（此处故意丢弃 dispose 验证兜底）。
+		_, err := reg.RegisterProvider(c, "mock", func(cfg Config) (ChatModel, error) {
+			return NewScripted(Resp("from-mock")), nil
+		})
+		return err
+	})
+	fa, err := kernel.Use(ctx, adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, p := range reg.Providers() {
+		if p == "mock" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("provider missing after registration")
+	}
+
+	fa.Close()
+	for _, p := range reg.Providers() {
+		if p == "mock" {
+			t.Fatal("provider survived adapter unload")
+		}
+	}
+	if err := reg.Declare("m", Config{Provider: "mock", Model: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Open("m"); KindOf(err) != ErrNoModel {
+		t.Fatalf("open without provider should fail with no_model, got %v", err)
+	}
+}
+
+// #9：同名覆盖 provider => 该 provider 名下已打开实例失效关闭，
+// 下次 Open 用新工厂重建。
+func TestProviderOverrideInvalidatesCache(t *testing.T) {
+	ctx, reg := setupRegistry(t)
+	old := &closerModel{ChatModel: NewScripted(Resp("old"))}
+	fresh := &closerModel{ChatModel: NewScripted(Resp("fresh"))}
+
+	d1, _ := reg.RegisterProvider(ctx, "mock", func(cfg Config) (ChatModel, error) { return old, nil })
+	_ = d1
+	_ = reg.Declare("main", Config{Provider: "mock", Model: "m"})
+	first, err := reg.Open("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = first
+
+	_, _ = reg.RegisterProvider(ctx, "mock", func(cfg Config) (ChatModel, error) { return fresh, nil })
+	if got := old.closed.Load(); got != 1 {
+		t.Fatalf("cached instance of overridden provider closed %d times, want 1", got)
+	}
+
+	again, err := reg.Open("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, _ := again.Generate(context.Background(), NewRequest(UserText("q")))
+	if resp.Message.Text() != "fresh" {
+		t.Fatalf("override did not take effect: %q", resp.Message.Text())
+	}
+}
+
+// #10b：Clone 对拦截会触碰的字段做深拷贝。
+func TestCloneIsolation(t *testing.T) {
+	temp := 0.7
+	n := 8
+	req := &GenerateRequest{
+		Messages:       []*Message{UserText("hi")},
+		Temperature:    &temp,
+		MaxTokens:      &n,
+		ToolChoice:     &ToolChoice{Mode: ToolAuto},
+		ResponseFormat: &ResponseFormat{Type: FormatJSONObject},
+		Metadata:       map[string]any{"k": "v"},
+	}
+	cp := req.Clone()
+
+	cp.Metadata["k"] = "changed"
+	md := 99
+	cp.MaxTokens = &md
+	cp.ToolChoice.Mode = ToolNone
+	cp.ResponseFormat.Type = FormatJSONSchema
+
+	if req.Metadata["k"] != "v" {
+		t.Fatal("Metadata leaked through Clone")
+	}
+	if *req.MaxTokens != 8 {
+		t.Fatal("MaxTokens pointer shared through Clone")
+	}
+	if req.ToolChoice.Mode != ToolAuto {
+		t.Fatal("ToolChoice shared through Clone")
+	}
+	if req.ResponseFormat.Type != FormatJSONObject {
+		t.Fatal("ResponseFormat shared through Clone")
+	}
+	if len(cp.Messages) != len(req.Messages) {
+		t.Fatal("messages slice not copied")
+	}
+}
+
+func TestCustomMediaParts(t *testing.T) {
+	m := NewScripted(Resp("heard"))
+	req := NewRequest(User(Media("audio/wav", []byte("RIFF...")), Text("这段音频说了什么")))
+	resp, err := m.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Message.Text() != "heard" {
+		t.Fatalf("resp = %q", resp.Message.Text())
+	}
+	if got := req.Messages[0].Parts[0]; got.Kind != PartCustom || got.Media.MediaType != "audio/wav" {
+		t.Fatalf("custom part = %+v", got)
+	}
+}
+
+func TestScriptedStreamEvents(t *testing.T) {
+	m := NewScripted(Resp("hello"))
+	ch, err := m.Stream(context.Background(), NewRequest(UserText("s")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []StreamEventKind
+	for ev := range ch {
+		kinds = append(kinds, ev.Kind)
+		if ev.Kind == EventDone && ev.Response.Message.Text() != "hello" {
+			t.Fatalf("done payload text = %q", ev.Response.Message.Text())
+		}
+	}
+	if len(kinds) != 2 || kinds[0] != EventTextDelta || kinds[1] != EventDone {
+		t.Fatalf("stream kinds = %v", kinds)
+	}
+}
+
+func TestScriptedToolCallStream(t *testing.T) {
+	m := NewScripted(RespToolCalls(ToolCall{ID: "c1", Name: "fs.read", Arguments: []byte(`{"p":"a"}`)}))
+	ch, _ := m.Stream(context.Background(), NewRequest())
+	for ev := range ch {
+		if ev.Kind == EventToolCallBegin && (ev.CallID != "c1" || ev.ToolName != "fs.read") {
+			t.Fatalf("begin event = %+v", ev)
+		}
+	}
+}
+
+func TestErrorClassification(t *testing.T) {
+	base := errors.New("boom")
+	e := NewError(ErrRateLimit, "openai", 429, base, "rate limited")
+	if !IsRetryable(e) {
+		t.Fatal("rate limit should be retryable")
+	}
+	if KindOf(e) != ErrRateLimit {
+		t.Fatalf("kind = %s", KindOf(e))
+	}
+	if IsRetryable(base) {
+		t.Fatal("foreign error must be conservative non-retryable")
+	}
+	if !errors.Is(e, base) {
+		t.Fatal("unwrap chain broken")
+	}
+	if KindOf(errors.New("other")) != ErrUnknown {
+		t.Fatal("foreign error kind should be unknown")
+	}
+}
+
+func TestContextCanceledStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := NewScripted(Resp("slow"))
+	ch, _ := m.Stream(ctx, NewRequest())
+	cancel()
+	for range ch {
+	} // channel 必然关闭（range 结束即为证）
+}
+
+var _ ChatModel = (*closerModel)(nil)
+var _ = time.Second

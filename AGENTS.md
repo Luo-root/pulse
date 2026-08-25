@@ -18,14 +18,17 @@ go test -run TestAgent_Send ./components/agent/...  # single test
 - `mcp` and `sandbox` tests spawn external processes (Node, Python, Go compilers); skip with `-run` if unavailable.
 - No Makefile, linter config, or CI pipeline exists. `go test ./...` is the only verification step.
 
-## Test files are gitignored
+## Test files ARE tracked in git
 
-`*_test.go` is listed in `.gitignore`. Tests exist on disk but are **not tracked in git**. When creating or modifying test files, be aware they won't appear in `git status` or commits unless `.gitignore` is changed first.
+`*_test.go` files are **tracked** and committed like any other source file. The only exceptions (ignored for safety) are `components/chatmodel/openai/openai_test.go` and `components/chatmodel/anthropic/anthropic_test.go`, which contain hardcoded API keys — never remove those two from `.gitignore`.
 
 ## Repo layout
 
 ```
 pulse.go                    # stub: package pulse (ignore)
+kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin+Fiber/Loader
+llm/                        # v2 model adapter layer: content-block messages, ChatModel, Registry
+docs/design/                # design docs (plugin-kernel-v2.md is the v2 blueprint)
 components/
   agent/                    # Agent core: multi-turn loop, tool calling, usage tracking
   chatmodel/                # BaseModel interface + openai/, anthropic/, mock_model.go
