@@ -209,6 +209,9 @@ func TestCompletionsWireFormat(t *testing.T) {
 		if t0["type"] != "function" {
 			t.Fatalf("工具类型不符: %v", t0)
 		}
+		if _, ok := body["stream_options"]; ok {
+			t.Fatalf("Generate 不得带 stream_options: %v", body["stream_options"])
+		}
 		if _, err := json.Marshal(body["temperature"]); err != nil || body["temperature"] != 0.5 {
 			t.Fatalf("temperature 不符: %v", body["temperature"])
 		}
@@ -519,8 +522,8 @@ func TestResponsesWireFormat(t *testing.T) {
 	if gotPath != "/responses" {
 		t.Fatalf("path = %q", gotPath)
 	}
-	if resp.FinishReason != llm.FinishStop {
-		t.Fatalf("FinishReason = %s", resp.FinishReason)
+	if resp.FinishReason != llm.FinishToolCalls {
+		t.Fatalf("含 function_call 应为 FinishToolCalls，得到 %s", resp.FinishReason)
 	}
 	if resp.Message.ReasoningText() != "ponder" || resp.Message.Text() != "hi there" {
 		t.Fatalf("消息映射不符: reasoning=%q text=%q", resp.Message.ReasoningText(), resp.Message.Text())
@@ -559,8 +562,8 @@ func TestResponsesStream(t *testing.T) {
 	wantKind(t, evs, 4, llm.EventToolCallDelta)
 	wantKind(t, evs, 5, llm.EventToolCallDelta)
 	done := wantKind(t, evs, 6, llm.EventDone)
-	if done.Response.FinishReason != llm.FinishStop {
-		t.Fatalf("FinishReason = %s", done.Response.FinishReason)
+	if done.Response.FinishReason != llm.FinishToolCalls {
+		t.Fatalf("含 function_call 应为 FinishToolCalls，得到 %s", done.Response.FinishReason)
 	}
 	msg := done.Response.Message
 	if msg.Text() != "Hello world" || msg.ReasoningText() != "thinking" {
@@ -572,6 +575,162 @@ func TestResponsesStream(t *testing.T) {
 	}
 	if done.Response.Usage.OutputTokens != 5 {
 		t.Fatalf("Usage 不符: %+v", done.Response.Usage)
+	}
+}
+
+func TestResponsesImageOnly(t *testing.T) {
+	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		items, _ := body["input"].([]any)
+		if len(items) != 1 {
+			t.Fatalf("仅图应发 1 条 input，得到 %d: %v", len(items), body["input"])
+		}
+		item, _ := items[0].(map[string]any)
+		parts, _ := item["content"].([]any)
+		if len(parts) != 1 {
+			t.Fatalf("content 块数 = %d，期望 1（纯图）: %v", len(parts), item["content"])
+		}
+		p0, _ := parts[0].(map[string]any)
+		if p0["type"] != "input_image" {
+			t.Fatalf("应为 input_image: %v", p0)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","error":null,"incomplete_details":null,"model":"gpt-test","output":[{"type":"message","id":"m1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"seen","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2},"metadata":{},"tool_choice":"auto","tools":[],"parallel_tool_calls":true}`))
+	})
+	req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+		llm.ImageURL("https://example.com/cat.png", "image/png"),
+	}})
+	resp, err := m.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Message.Text() != "seen" {
+		t.Fatalf("text = %q", resp.Message.Text())
+	}
+}
+
+func TestResponsesTextThenImage(t *testing.T) {
+	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		items, _ := body["input"].([]any)
+		if len(items) != 1 {
+			t.Fatalf("文+图应合成 1 条: %d %v", len(items), body["input"])
+		}
+		item, _ := items[0].(map[string]any)
+		parts, _ := item["content"].([]any)
+		if len(parts) != 2 {
+			t.Fatalf("content 块数 = %d: %v", len(parts), item["content"])
+		}
+		p0, _ := parts[0].(map[string]any)
+		p1, _ := parts[1].(map[string]any)
+		if p0["type"] != "input_text" || p0["text"] != "look" {
+			t.Fatalf("第 1 块应为文本 look: %v", p0)
+		}
+		if p1["type"] != "input_image" {
+			t.Fatalf("第 2 块应为 input_image: %v", p1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","error":null,"incomplete_details":null,"model":"gpt-test","output":[{"type":"message","id":"m1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2},"metadata":{},"tool_choice":"auto","tools":[],"parallel_tool_calls":true}`))
+	})
+	req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+		llm.Text("look"),
+		llm.ImageURL("https://example.com/cat.png", "image/png"),
+	}})
+	if _, err := m.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
+func TestResponsesVideoAndPDF(t *testing.T) {
+	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		items, _ := body["input"].([]any)
+		item, _ := items[0].(map[string]any)
+		parts, _ := item["content"].([]any)
+		if len(parts) != 3 {
+			t.Fatalf("文本+视频+pdf 应为 3 块: %v", item["content"])
+		}
+		p1, _ := parts[1].(map[string]any)
+		p2, _ := parts[2].(map[string]any)
+		if p1["type"] != "input_video" {
+			t.Fatalf("第 2 块应为 input_video: %v", p1)
+		}
+		if p2["type"] != "input_file" {
+			t.Fatalf("第 3 块应为 input_file: %v", p2)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","error":null,"incomplete_details":null,"model":"gpt-test","output":[{"type":"message","id":"m1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2},"metadata":{},"tool_choice":"auto","tools":[],"parallel_tool_calls":true}`))
+	})
+	req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+		llm.Text("inspect"),
+		llm.MediaURL("video/mp4", "https://example.com/clip.mp4"),
+		llm.Media("application/pdf", []byte("%PDF")),
+	}})
+	if _, err := m.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
+func TestCompletionsAudioAndPDF(t *testing.T) {
+	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		msgs, _ := body["messages"].([]any)
+		user, _ := msgs[0].(map[string]any)
+		parts, _ := user["content"].([]any)
+		if len(parts) != 3 {
+			t.Fatalf("文本+音频+pdf 应为 3 块: %v", user["content"])
+		}
+		p1, _ := parts[1].(map[string]any)
+		p2, _ := parts[2].(map[string]any)
+		if p1["type"] != "input_audio" {
+			t.Fatalf("第 2 块应为 input_audio: %v", p1)
+		}
+		if p2["type"] != "file" {
+			t.Fatalf("第 3 块应为 file: %v", p2)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	})
+	req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+		llm.Text("listen"),
+		llm.Media("audio/wav", []byte("RIFF")),
+		llm.Media("application/pdf", []byte("%PDF")),
+	}})
+	if _, err := m.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
+func TestStreamCancelSendsEventError(t *testing.T) {
+	started := make(chan struct{})
+	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: "+chunk(`"content":"x"`, `null`)+"\n\n")
+		flusher.Flush()
+		time.Sleep(2 * time.Second) // 等测试侧 cancel
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, err := m.Stream(ctx, llm.NewRequest(llm.UserText("hi")))
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	<-started
+	cancel()
+	var evs []llm.StreamEvent
+	for ev := range ch {
+		evs = append(evs, ev)
+	}
+	if len(evs) == 0 {
+		t.Fatal("取消后应至少有 EventError")
+	}
+	last := evs[len(evs)-1]
+	if last.Kind != llm.EventError {
+		t.Fatalf("最后事件 = %s，期望 EventError", last.Kind)
+	}
+	if llm.KindOf(last.Err) != llm.ErrCanceled {
+		t.Fatalf("kind = %s，期望 canceled（err=%v）", llm.KindOf(last.Err), last.Err)
 	}
 }
 

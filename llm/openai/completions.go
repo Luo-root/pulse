@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 
@@ -42,7 +43,7 @@ type tcAcc struct {
 }
 
 func (m *completionsModel) Generate(ctx context.Context, req *llm.GenerateRequest) (*llm.Response, error) {
-	params, err := m.buildParams(req)
+	params, err := m.buildParams(req, false)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +63,7 @@ func (m *completionsModel) Generate(ctx context.Context, req *llm.GenerateReques
 }
 
 func (m *completionsModel) Stream(ctx context.Context, req *llm.GenerateRequest) (<-chan llm.StreamEvent, error) {
-	params, err := m.buildParams(req)
+	params, err := m.buildParams(req, true)
 	if err != nil {
 		return nil, err
 	}
@@ -73,11 +74,13 @@ func (m *completionsModel) Stream(ctx context.Context, req *llm.GenerateRequest)
 }
 
 // buildParams 把 llm.GenerateRequest 翻译为 Chat Completions 请求。
-func (m *completionsModel) buildParams(req *llm.GenerateRequest) (sdk.ChatCompletionNewParams, error) {
+// stream=true 才带 stream_options：官方规定仅 stream 时有效，部分网关对非流式会 400。
+func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (sdk.ChatCompletionNewParams, error) {
 	params := sdk.ChatCompletionNewParams{
 		Model: shared.ChatModel(m.model),
-		// 流式/非流式统一带 include_usage：末块回传整次调用计量。
-		StreamOptions: sdk.ChatCompletionStreamOptionsParam{IncludeUsage: param.NewOpt(true)},
+	}
+	if stream {
+		params.StreamOptions = sdk.ChatCompletionStreamOptionsParam{IncludeUsage: param.NewOpt(true)}
 	}
 	msgs := make([]sdk.ChatCompletionMessageParamUnion, 0, len(req.Messages))
 	for _, msg := range req.Messages {
@@ -284,32 +287,56 @@ func (m *completionsModel) convertUserSide(msg *llm.Message) ([]sdk.ChatCompleti
 	return out, nil
 }
 
-// convertCustomPart 翻译开放模态块：image/* → image_url；video/* →
-// video_url（OpenAI 官方无此块，兼容网关如 MiniMax-M3 认它；官方端点
-// 会以 bad_request 拒绝，不静默丢弃）。其余模态显式报错。
+// convertCustomPart 按 MIME 家族映射：image → image_url；audio → input_audio
+// （官方块，仅内联 base64）；pdf → file；video → video_url（兼容网关扩展，
+// 官方端点会 bad_request）。其余模态显式报错，不静默丢弃。
 func (m *completionsModel) convertCustomPart(p *llm.Part) (sdk.ChatCompletionContentPartUnionParam, error) {
 	var empty sdk.ChatCompletionContentPartUnionParam
 	if p.Media == nil {
 		return empty, unsupportedPart(m.provider, llm.RoleUser, p.Kind)
 	}
-	ref, err := imageRef(m.provider, &llm.ImageSource{
-		Data: p.Media.Data, URL: p.Media.URL, MediaType: p.Media.MediaType,
-	})
-	if err != nil {
-		return empty, err
-	}
-	switch {
-	case strings.HasPrefix(p.Media.MediaType, "image/"):
+	kind := classifyMIME(p.Media.MediaType)
+	switch kind {
+	case mediaImage:
+		ref, err := mediaRef(m.provider, p.Media.Data, p.Media.MediaType, p.Media.URL)
+		if err != nil {
+			return empty, err
+		}
 		return sdk.ImageContentPart(sdk.ChatCompletionContentPartImageImageURLParam{URL: ref}), nil
-	case strings.HasPrefix(p.Media.MediaType, "video/"):
-		raw, err := json.Marshal(map[string]any{
-			"type":      "video_url",
-			"video_url": map[string]string{"url": ref},
+	case mediaAudio:
+		if len(p.Media.Data) == 0 {
+			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+				"audio 输入须内联字节（Completions input_audio 不接受 URL）")
+		}
+		return sdk.InputAudioContentPart(sdk.ChatCompletionContentPartInputAudioInputAudioParam{
+			Data:   base64.StdEncoding.EncodeToString(p.Media.Data),
+			Format: audioFormat(p.Media.MediaType),
+		}), nil
+	case mediaPDF:
+		file := sdk.ChatCompletionContentPartFileFileParam{
+			Filename: param.NewOpt(mediaFilename(p.Media, "document.pdf")),
+		}
+		if len(p.Media.Data) > 0 {
+			file.FileData = param.NewOpt("data:application/pdf;base64," + base64.StdEncoding.EncodeToString(p.Media.Data))
+		} else if p.Media.URL != "" {
+			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+				"Completions file 块不接受 URL，请用内联 PDF 字节")
+		} else {
+			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil, "PDF 块既无 Data 也无 URL")
+		}
+		return sdk.FileContentPart(file), nil
+	case mediaVideo:
+		ref, err := mediaRef(m.provider, p.Media.Data, p.Media.MediaType, p.Media.URL)
+		if err != nil {
+			return empty, err
+		}
+		part, err := overrideCompletionsPart(map[string]any{
+			"type": "video_url", "video_url": map[string]string{"url": ref},
 		})
 		if err != nil {
 			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, err, "序列化 video_url 失败")
 		}
-		return param.Override[sdk.ChatCompletionContentPartUnionParam](json.RawMessage(raw)), nil
+		return part, nil
 	default:
 		return empty, unsupportedPart(m.provider, llm.RoleUser, p.Kind)
 	}
@@ -320,12 +347,7 @@ func (m *completionsModel) convertCustomPart(p *llm.Part) (sdk.ChatCompletionCon
 func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sdk.ChatCompletionChunk], ch chan<- llm.StreamEvent) {
 	defer close(ch)
 	send := func(ev llm.StreamEvent) bool {
-		select {
-		case ch <- ev:
-			return true
-		case <-ctx.Done():
-			return false
-		}
+		return sendEvent(ctx, ch, m.provider, ev)
 	}
 
 	var (

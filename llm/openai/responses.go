@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 
@@ -123,11 +124,12 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 		case llm.RoleUser, llm.RoleTool:
 			var parts []responses.ResponseInputContentUnionParam
 			var texts []string
-			flushText := func() {
-				if len(texts) > 0 {
-					items = append(items, easyMessage(responses.EasyInputMessageRoleUser, strings.Join(texts, "\n"), parts))
-					texts = nil
+			flushUser := func() {
+				if len(texts) == 0 && len(parts) == 0 {
+					return
 				}
+				items = append(items, easyMessage(responses.EasyInputMessageRoleUser, strings.Join(texts, "\n"), parts))
+				texts, parts = nil, nil
 			}
 			for i := range msg.Parts {
 				p := &msg.Parts[i]
@@ -135,7 +137,6 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 				case llm.PartText:
 					texts = append(texts, p.Text)
 				case llm.PartImage:
-					flushText()
 					ref, err := imageRef(m.provider, p.Image)
 					if err != nil {
 						return params, err
@@ -144,20 +145,13 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 						OfInputImage: &responses.ResponseInputImageParam{ImageURL: param.NewOpt(ref)},
 					})
 				case llm.PartCustom:
-					if p.Media == nil || !strings.HasPrefix(p.Media.MediaType, "image/") {
-						return params, unsupportedPart(m.provider, msg.Role, p.Kind)
-					}
-					flushText()
-					ref, err := imageRef(m.provider, &llm.ImageSource{
-						Data: p.Media.Data, URL: p.Media.URL, MediaType: p.Media.MediaType,
-					})
+					part, err := m.convertCustomPart(p)
 					if err != nil {
 						return params, err
 					}
-					parts = append(parts, responses.ResponseInputContentUnionParam{
-						OfInputImage: &responses.ResponseInputImageParam{ImageURL: param.NewOpt(ref)},
-					})
+					parts = append(parts, part)
 				case llm.PartToolResult:
+					flushUser()
 					tr := p.ToolResultValue
 					if tr == nil {
 						return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
@@ -177,7 +171,7 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 					return params, unsupportedPart(m.provider, msg.Role, p.Kind)
 				}
 			}
-			flushText()
+			flushUser()
 
 		default:
 			return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil, "未知消息角色 %q", msg.Role)
@@ -291,6 +285,64 @@ func easyMessage(role responses.EasyInputMessageRole, text string, extraParts []
 	return responses.ResponseInputItemUnionParam{OfMessage: &msg}
 }
 
+// convertCustomPart 按 MIME 家族映射：image → input_image；pdf → input_file；
+// video → input_video；audio → input_audio（后两者是兼容网关扩展）。
+func (m *responsesModel) convertCustomPart(p *llm.Part) (responses.ResponseInputContentUnionParam, error) {
+	var empty responses.ResponseInputContentUnionParam
+	if p.Media == nil {
+		return empty, unsupportedPart(m.provider, llm.RoleUser, p.Kind)
+	}
+	kind := classifyMIME(p.Media.MediaType)
+	switch kind {
+	case mediaImage:
+		ref, err := mediaRef(m.provider, p.Media.Data, p.Media.MediaType, p.Media.URL)
+		if err != nil {
+			return empty, err
+		}
+		return responses.ResponseInputContentUnionParam{
+			OfInputImage: &responses.ResponseInputImageParam{ImageURL: param.NewOpt(ref)},
+		}, nil
+	case mediaPDF:
+		file := responses.ResponseInputFileParam{
+			Filename: param.NewOpt(mediaFilename(p.Media, "document.pdf")),
+		}
+		if len(p.Media.Data) > 0 {
+			file.FileData = param.NewOpt("data:application/pdf;base64," + base64.StdEncoding.EncodeToString(p.Media.Data))
+		} else if p.Media.URL != "" {
+			file.FileURL = param.NewOpt(p.Media.URL)
+		} else {
+			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil, "PDF 块既无 Data 也无 URL")
+		}
+		return responses.ResponseInputContentUnionParam{OfInputFile: &file}, nil
+	case mediaVideo:
+		ref, err := mediaRef(m.provider, p.Media.Data, p.Media.MediaType, p.Media.URL)
+		if err != nil {
+			return empty, err
+		}
+		part, err := overrideResponsesPart(map[string]any{
+			"type": "input_video", "video_url": map[string]string{"url": ref},
+		})
+		if err != nil {
+			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, err, "序列化 input_video 失败")
+		}
+		return part, nil
+	case mediaAudio:
+		ref, err := mediaRef(m.provider, p.Media.Data, p.Media.MediaType, p.Media.URL)
+		if err != nil {
+			return empty, err
+		}
+		part, err := overrideResponsesPart(map[string]any{
+			"type": "input_audio", "input_audio": map[string]string{"data": ref, "format": audioFormat(p.Media.MediaType)},
+		})
+		if err != nil {
+			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, err, "序列化 input_audio 失败")
+		}
+		return part, nil
+	default:
+		return empty, unsupportedPart(m.provider, llm.RoleUser, p.Kind)
+	}
+}
+
 // pump 消费 SDK 流并翻译为 llm.StreamEvent。
 //
 // 事件映射：output_text.delta → text_delta；reasoning_text/summary_text.delta →
@@ -300,12 +352,7 @@ func easyMessage(role responses.EasyInputMessageRole, text string, extraParts []
 func (m *responsesModel) pump(ctx context.Context, stream *ssestream.Stream[responses.ResponseStreamEventUnion], ch chan<- llm.StreamEvent) {
 	defer close(ch)
 	send := func(ev llm.StreamEvent) bool {
-		select {
-		case ch <- ev:
-			return true
-		case <-ctx.Done():
-			return false
-		}
+		return sendEvent(ctx, ch, m.provider, ev)
 	}
 
 	var (
@@ -458,7 +505,13 @@ func mapResponsesResponse(resp *responses.Response) (*llm.Message, llm.FinishRea
 		OutputTokens:      int(resp.Usage.OutputTokens),
 		CachedInputTokens: int(resp.Usage.InputTokensDetails.CachedTokens),
 	}
-	return msg, llm.FinishStop, usage
+	finish := llm.FinishStop
+	if len(msg.ToolCalls()) > 0 {
+		finish = llm.FinishToolCalls
+	} else if resp.Status == "incomplete" {
+		finish = incompleteFinish(resp)
+	}
+	return msg, finish, usage
 }
 
 // incompleteFinish 映射不完整结束原因；未知原因按截断处理。

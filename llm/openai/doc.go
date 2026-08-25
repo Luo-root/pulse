@@ -36,6 +36,9 @@
 //   - 输入侧的 reasoning 块不回传（Completions 线格式无此概念且
 //     DeepSeek 明确要求不回传；Responses 的有状态 reasoning 链接
 //     依赖 PreviousResponseID/encrypted_content，见"不做"）。
+//   - 多模态在适配层按 MIME 打通：image/*、audio/*、application/pdf
+//     走官方块；video/* 走兼容网关的 video_url / input_video（官方
+//     端点会 bad_request）。调用方只给 PartImage / PartCustom。
 //
 // # 不做
 //

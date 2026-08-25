@@ -2,7 +2,6 @@ package openai
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -162,22 +161,4 @@ func classifyStatus(status int, errCode, msg string) llm.ErrKind {
 func unsupportedPart(provider string, role llm.Role, kind llm.PartKind) *llm.Error {
 	return llm.NewError(llm.ErrBadRequest, provider, 0, nil,
 		"角色 %s 的内容块 %s 不被 %s 线协议支持", role, kind, provider)
-}
-
-// imageRef 把图像块归一为 URL（data URI 或远端引用）——两个变体
-// 的图像入参都是 URL 形态。
-func imageRef(provider string, src *llm.ImageSource) (string, error) {
-	switch {
-	case src == nil:
-		return "", llm.NewError(llm.ErrBadRequest, provider, 0, nil, "图像块缺少 ImageSource")
-	case len(src.Data) > 0:
-		if src.MediaType == "" {
-			return "", llm.NewError(llm.ErrBadRequest, provider, 0, nil, "内联图像缺少 MediaType")
-		}
-		return "data:" + src.MediaType + ";base64," + base64.StdEncoding.EncodeToString(src.Data), nil
-	case src.URL != "":
-		return src.URL, nil
-	default:
-		return "", llm.NewError(llm.ErrBadRequest, provider, 0, nil, "图像块既无 Data 也无 URL")
-	}
 }
