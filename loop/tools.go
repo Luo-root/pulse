@@ -64,13 +64,6 @@ func (s *MemToolSet) Register(def llm.ToolDef, fn ToolFunc) error {
 	return nil
 }
 
-// MustRegister 同 Register，冲突时 panic。用于包级 init 装配断言。
-func (s *MemToolSet) MustRegister(def llm.ToolDef, fn ToolFunc) {
-	if err := s.Register(def, fn); err != nil {
-		panic(err)
-	}
-}
-
 // Definitions 实现 ToolSet：按工具名排序返回，保证输出稳定。
 func (s *MemToolSet) Definitions() []llm.ToolDef {
 	s.mu.RLock()

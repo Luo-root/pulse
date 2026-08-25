@@ -105,10 +105,13 @@ func (a *Agent) Run(ctx context.Context, history []*llm.Message, input ...*llm.M
 // 增量（流式 UI 用），结构化轨迹走内核事件总线。
 //
 // 返回的 error 仅在基础设施失败（模型调用失败、ctx 取消、流异常
-// 终止）时非 nil；MaxSteps 打断是正常终止变体（见 StopMaxSteps）。
+// 终止）时非 nil——此时 Result 只反映已发生的部分（Messages 为
+// nil）；MaxSteps 打断是正常终止变体（见 StopMaxSteps）。
 func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), history []*llm.Message, input ...*llm.Message) (*Result, error) {
 	kernel.Emit(a.scope, EventTurnStart, TurnStart{Input: input, History: history})
 
+	// 容量预估：system + 历史 + 输入 + 每步约两条（assistant+tool），
+	// 避免长回合反复扩容；仅是性能提示，不影响正确性。
 	msgs := make([]*llm.Message, 0, len(history)+len(input)+8)
 	if a.system != "" {
 		msgs = append(msgs, llm.System(a.system))
@@ -187,15 +190,19 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 				kernel.Emit(a.scope, EventAfterToolCall, AfterToolCall{
 					Call: call, Rejected: true, Duration: time.Since(start),
 				})
-				msgs = append(msgs, rejectedResult(call.ID, text))
+				msgs = append(msgs, toolResultMsg(call.ID, text, true))
 				continue
 			}
 
 			out, execErr := a.execute(ctx, call)
+			text := out
+			if execErr != nil {
+				text = "tool error: " + execErr.Error()
+			}
 			kernel.Emit(a.scope, EventAfterToolCall, AfterToolCall{
-				Call: call, Result: out, Duration: time.Since(start), Err: execErr,
+				Call: call, Result: text, Duration: time.Since(start), Err: execErr,
 			})
-			msgs = append(msgs, toolResultMessage(call.ID, out, execErr))
+			msgs = append(msgs, toolResultMsg(call.ID, text, execErr != nil))
 		}
 	}
 
@@ -221,22 +228,10 @@ func (a *Agent) execute(ctx context.Context, call llm.ToolCall) (out string, err
 	return a.tools.Execute(ctx, call)
 }
 
-// toolResultMessage 构造工具结果消息：成功回传输出文本，失败回传
-// 错误说明（IsError=true，模型可自我修正）。
-func toolResultMessage(callID, out string, err error) *llm.Message {
-	if err != nil {
-		return &llm.Message{Role: llm.RoleTool, Parts: []llm.Part{
-			llm.ResultParts(callID, true, llm.Text("tool error: "+err.Error())),
-		}}
-	}
+// toolResultMsg 构造工具结果消息：isError=true 时文本应说明失败
+// 原因（拒绝原因或错误详情），模型可据此自我修正。
+func toolResultMsg(callID, text string, isError bool) *llm.Message {
 	return &llm.Message{Role: llm.RoleTool, Parts: []llm.Part{
-		llm.ResultParts(callID, false, llm.Text(out)),
-	}}
-}
-
-// rejectedResult 构造"被策略拒绝"的工具结果消息。
-func rejectedResult(callID, text string) *llm.Message {
-	return &llm.Message{Role: llm.RoleTool, Parts: []llm.Part{
-		llm.ResultParts(callID, true, llm.Text(text)),
+		llm.ResultParts(callID, isError, llm.Text(text)),
 	}}
 }
