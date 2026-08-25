@@ -187,6 +187,22 @@ func TestScriptedToolCallStream(t *testing.T) {
 	}
 }
 
+func TestCustomMediaParts(t *testing.T) {
+	// 开放模态：音频输入走 PartCustom，输出侧同样可携带（对称）。
+	m := NewScripted(Resp("heard"))
+	req := NewRequest(User(Media("audio/wav", []byte("RIFF...")), Text("这段音频说了什么")))
+	resp, err := m.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Message.Text() != "heard" {
+		t.Fatalf("resp = %q", resp.Message.Text())
+	}
+	if got := req.Messages[0].Parts[0]; got.Kind != PartCustom || got.Media.MediaType != "audio/wav" {
+		t.Fatalf("custom part = %+v", got)
+	}
+}
+
 func TestErrorClassification(t *testing.T) {
 	base := errors.New("boom")
 	e := errRateLimit("openai", 429, base)

@@ -18,6 +18,10 @@ const (
 )
 
 // PartKind 区分内容块类型。
+//
+// 五种强类型块覆盖高频模态；一切其他模态（音频、视频、PDF、以及
+// 未来出现的任何类型）统一走 PartCustom + [MediaContent]——MIME
+// 类型本身是 IANA 开放注册表，天然承载未知扩展，无需改动词汇表。
 type PartKind string
 
 const (
@@ -26,7 +30,23 @@ const (
 	PartToolCall   PartKind = "tool_call"   // 仅出现在 assistant 消息
 	PartToolResult PartKind = "tool_result" // 仅出现在 tool/user 消息
 	PartReasoning  PartKind = "reasoning"   // 思维链（推理模型）
+	// PartCustom 是开放模态块：MediaType 用 MIME 表达（audio/*、
+	// video/*、application/pdf……）。provider 不支持时 adapter 应
+	// 返回 ErrBadRequest，而不是静默丢弃内容。
+	PartCustom PartKind = "custom"
 )
+
+// MediaContent 是开放模态内容：一切非五类强类型块的统一载体。
+type MediaContent struct {
+	// MediaType 是内容的 MIME 类型（如 "audio/wav"、"video/mp4"、
+	// "application/pdf"）。必填。
+	MediaType string
+	Data      []byte // 内联字节（优先使用）
+	URL       string // 或资源引用（http(s):// 或 provider 支持的 URI）
+	// Metadata 承载模态特有的元参数（时长、采样率、分辨率……），
+	// provider 不理解则忽略。
+	Metadata map[string]any
+}
 
 // ImageSource 描述图像内容：内联字节或 URL 二选一。
 type ImageSource struct {
@@ -55,10 +75,12 @@ type ToolResult struct {
 //	PartImage                => Image
 //	PartToolCall             => ToolCallValue
 //	PartToolResult           => ToolResultValue
+//	PartCustom               => Media
 type Part struct {
 	Kind            PartKind
 	Text            string
 	Image           *ImageSource
+	Media           *MediaContent
 	ToolCallValue   *ToolCall
 	ToolResultValue *ToolResult
 }
@@ -79,6 +101,20 @@ func ImageURL(url, mimeType string) Part {
 // ImageData 用内联字节构造图像块。
 func ImageData(mimeType string, data []byte) Part {
 	return Part{Kind: PartImage, Image: &ImageSource{Data: data, MIMEType: mimeType}}
+}
+
+// Media 构造开放模态块：音频、视频、PDF 及未来一切类型。
+//
+//	Media("audio/wav", wavBytes)
+func Media(mediaType string, data []byte) Part {
+	return Part{Kind: PartCustom, Media: &MediaContent{MediaType: mediaType, Data: data}}
+}
+
+// MediaURL 用资源引用构造开放模态块。
+//
+//	MediaURL("video/mp4", "https://example.com/clip.mp4")
+func MediaURL(mediaType, url string) Part {
+	return Part{Kind: PartCustom, Media: &MediaContent{MediaType: mediaType, URL: url}}
 }
 
 // Call 构造工具调用块。
