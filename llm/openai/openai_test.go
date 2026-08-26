@@ -873,11 +873,16 @@ func TestCompletionsToolChoiceAndFormat(t *testing.T) {
 }
 
 func TestCompletionsAudioOutput(t *testing.T) {
-	// TTS 线格式：请求带官方 audio 模态参数；响应 message.audio.data
-	// 解码为 PartCustom(audio/*)。
+	// TTS 线格式：请求带 modalities + 官方 audio 模态参数；
+	// 响应 message.audio.data 解码为 PartCustom(audio/*)，
+	// transcript 非空时映射为文本块。
 	audioB64 := base64.StdEncoding.EncodeToString([]byte("RIFFxxxx"))
 	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
 		body := readJSON(t, r)
+		mods, _ := body["modalities"].([]any)
+		if len(mods) != 2 || mods[0] != "text" || mods[1] != "audio" {
+			t.Fatalf("modalities 应为 [text audio]: %v", body["modalities"])
+		}
 		au, _ := body["audio"].(map[string]any)
 		if au == nil {
 			t.Fatalf("请求应带 audio 模态: %v", body)
@@ -885,7 +890,7 @@ func TestCompletionsAudioOutput(t *testing.T) {
 		if au["voice"] != "mimo_default" || au["format"] != "wav" {
 			t.Fatalf("audio 参数不符: %v", au)
 		}
-		resp := `{"id":"c1","object":"chat.completion","created":1,"model":"tts","choices":[{"index":0,"message":{"role":"assistant","content":"","audio":{"id":"a1","data":"` + audioB64 + `","expires_at":0,"transcript":""}},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+		resp := `{"id":"c1","object":"chat.completion","created":1,"model":"tts","choices":[{"index":0,"message":{"role":"assistant","content":"","audio":{"id":"a1","data":"` + audioB64 + `","expires_at":0,"transcript":"你好，世界。"}},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(resp))
 	})
@@ -906,6 +911,48 @@ func TestCompletionsAudioOutput(t *testing.T) {
 	}
 	if found == nil || string(found.Data) != "RIFFxxxx" {
 		t.Fatalf("音频块映射不符: %+v", resp.Message.Parts)
+	}
+	if resp.Message.Text() != "你好，世界。" {
+		t.Fatalf("transcript 应映射为文本块: %q", resp.Message.Text())
+	}
+}
+
+func TestCompletionsAudioStreamFragments(t *testing.T) {
+	// 流式 audio：每片是独立 base64 编码块，必须逐片解码后拼字节——
+	// 拼字符串再整体解码会因 padding 错位失败或产出坏字节。
+	frag1 := base64.StdEncoding.EncodeToString([]byte("RIFF")) // 独立编码，含 padding
+	frag2 := base64.StdEncoding.EncodeToString([]byte("xxxxWAVE"))
+	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		writeSSE(t, w,
+			chunk(`"audio":{"data":"`+frag1+`"}`, `null`),
+			chunk(`"audio":{"data":"`+frag2+`"}`, `null`),
+			chunk(``, `"stop"`),
+		)
+	})
+	req := llm.NewRequest(llm.UserText("tts"))
+	req.Audio = &llm.AudioOutput{Voice: "v", Format: "wav"}
+	evs := collect(t, context.Background(), mustStream(t, m, req))
+	done := wantKind(t, evs, len(evs)-1, llm.EventDone)
+	var audio *llm.MediaContent
+	for _, p := range done.Response.Message.Parts {
+		if p.Kind == llm.PartCustom && p.Media != nil {
+			audio = p.Media
+		}
+	}
+	if audio == nil || string(audio.Data) != "RIFFxxxxWAVE" {
+		t.Fatalf("分片聚合不符: %+v", done.Response.Message.Parts)
+	}
+}
+
+func TestResponsesAudioRejected(t *testing.T) {
+	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("不应发出请求")
+	})
+	req := llm.NewRequest(llm.UserText("hi"))
+	req.Audio = &llm.AudioOutput{Voice: "v", Format: "wav"}
+	_, err := m.Generate(context.Background(), req)
+	if llm.KindOf(err) != llm.ErrBadRequest {
+		t.Fatalf("kind = %s，期望 bad_request（err=%v）", llm.KindOf(err), err)
 	}
 }
 

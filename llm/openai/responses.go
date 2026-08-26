@@ -201,6 +201,13 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 		return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
 			"Responses 协议不支持 StopSequences：请改用 %s provider 或去掉该字段", ProviderCompletions)
 	}
+	if req.Audio != nil {
+		// Responses 线格式没有 audio 输出模态（官方 audio 参数仅
+		// Completions 有）——显式报错，与 StopSequences 同款处理，
+		// 避免调用方以为合成了音频。
+		return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+			"Responses 协议不支持 Audio 输出：请改用 %s provider", ProviderCompletions)
+	}
 	for _, t := range req.Tools {
 		fd := responses.FunctionToolParam{
 			Name:   t.Name,

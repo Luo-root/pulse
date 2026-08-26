@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -55,11 +56,7 @@ func (m *completionsModel) Generate(ctx context.Context, req *llm.GenerateReques
 		return nil, llm.NewError(llm.ErrProvider, m.provider, 0, nil, "响应不含任何 choice")
 	}
 	choice := completion.Choices[0]
-	format := "wav"
-	if req.Audio != nil && req.Audio.Format != "" {
-		format = req.Audio.Format
-	}
-	msg, err := mapCompletionsMessage(m.provider, &choice.Message, format)
+	msg, err := mapCompletionsMessage(m.provider, &choice.Message, req.Audio)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +113,9 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 	}
 	if req.Audio != nil {
 		// 官方 audio 输出模态（gpt-4o-audio / MiMo-TTS 等同款线格式）。
+		// modalities 是官方通用参数：声明输出含音频；MiMo 不要求但
+		// gpt-4o-audio 必需，统一下发。
+		params.Modalities = []string{"text", "audio"}
 		ap := sdk.ChatCompletionAudioParam{Format: sdk.ChatCompletionAudioParamFormat(req.Audio.Format)}
 		ap.Voice.OfString = param.NewOpt(req.Audio.Voice)
 		params.Audio = ap
@@ -367,7 +367,10 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 	var (
 		text      strings.Builder
 		reasoning strings.Builder
-		audioBuf  strings.Builder
+		// 流式 audio 分片各自是独立的 base64 编码块（服务端按 4 字符
+		// 边界切片）：逐片 decode 再拼字节，不能拼字符串后整体解码
+		//（padding 会错位）。
+		audioBuf  bytes.Buffer
 		calls     []*tcAcc
 		byIdx     = map[int64]*tcAcc{}
 		finish    string
@@ -400,13 +403,20 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 				}
 			}
 			// 流式 audio 分片：SDK 未类型化 delta.audio，走原始 JSON。
+			// 每片独立 base64，立即解码进字节缓冲。
 			if f, ok := d.JSON.ExtraFields["audio"]; ok {
 				var av struct {
 					Data string `json:"data"`
 				}
 				_ = json.Unmarshal([]byte(f.Raw()), &av)
 				if av.Data != "" {
-					audioBuf.WriteString(av.Data)
+					raw, err := base64.StdEncoding.DecodeString(av.Data)
+					if err != nil {
+						send(llm.StreamEvent{Kind: llm.EventError, Err: llm.NewError(
+							llm.ErrProvider, m.provider, 0, err, "delta.audio.data 不是合法 base64")})
+						return
+					}
+					audioBuf.Write(raw)
 				}
 			}
 			for _, dt := range d.ToolCalls {
@@ -460,14 +470,13 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 	if text.Len() > 0 {
 		msg.Parts = append(msg.Parts, llm.Text(text.String()))
 	}
-	// 流式 audio 输出：delta.audio.data 为 base64 分片，按序拼接。
-	if req.Audio != nil && audioBuf.Len() > 0 {
-		part, err := audioPart(m.provider, audioBuf.String(), req.Audio.Format)
-		if err != nil {
-			send(llm.StreamEvent{Kind: llm.EventError, Err: err})
-			return
-		}
-		msg.Parts = append(msg.Parts, part)
+	// 流式 audio 收口与 Generate 一致：响应里带了音频就映射，
+	// 不要求请求侧声明过 Audio。分片已在循环里 decode 进字节缓冲。
+	if audioBuf.Len() > 0 {
+		msg.Parts = append(msg.Parts, llm.Part{Kind: llm.PartCustom, Media: &llm.MediaContent{
+			MediaType: audioOutputMIME(req.Audio),
+			Data:      append([]byte(nil), audioBuf.Bytes()...),
+		}})
 	}
 	for _, acc := range calls {
 		args := acc.args.String()
@@ -486,8 +495,9 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 
 // mapCompletionsMessage 翻译非流式响应消息。思维链取 reasoning_content
 // 兼容字段（DeepSeek 等网关风格，官方 SDK 未建类型，走原始 JSON）；
-// audioFormat 是请求声明的输出容器格式，用于给音频块标注 MIME。
-func mapCompletionsMessage(provider string, msg *sdk.ChatCompletionMessage, audioFormat string) (*llm.Message, error) {
+// audioOut 是请求声明的音频输出（nil 也不影响——响应里带 audio 就映射，
+// 与流式收口一致）。
+func mapCompletionsMessage(provider string, msg *sdk.ChatCompletionMessage, audioOut *llm.AudioOutput) (*llm.Message, error) {
 	parts := make([]llm.Part, 0, len(msg.ToolCalls)+3)
 	var reasoning string
 	if f, ok := msg.JSON.ExtraFields["reasoning_content"]; ok {
@@ -500,13 +510,18 @@ func mapCompletionsMessage(provider string, msg *sdk.ChatCompletionMessage, audi
 	if msg.Content != "" {
 		parts = append(parts, llm.Text(msg.Content))
 	}
-	// 官方 audio 输出模态：message.audio.data 为 base64 音频。
+	// 官方 audio 输出模态：message.audio.data 为 base64 音频，
+	// transcript 是合成文本回显（OpenAI 有值、MiMo 恒空）——非空时
+	// 映射为文本块，调用方 Message.Text() 可直接读。
 	if msg.Audio.Data != "" {
-		part, err := audioPart(provider, msg.Audio.Data, audioFormat)
+		part, err := audioPart(provider, msg.Audio.Data, audioOutputMIME(audioOut))
 		if err != nil {
 			return nil, err
 		}
 		parts = append(parts, part)
+	}
+	if msg.Audio.Transcript != "" {
+		parts = append(parts, llm.Text(msg.Audio.Transcript))
 	}
 	for _, tc := range msg.ToolCalls {
 		// 本包只声明 function 工具，custom 变体不会出现。
@@ -521,18 +536,28 @@ func mapCompletionsMessage(provider string, msg *sdk.ChatCompletionMessage, audi
 	return &llm.Message{Role: llm.RoleAssistant, Parts: parts}, nil
 }
 
+// audioOutputMIME 归一音频输出的容器格式到 MIME：空 = wav（provider
+// 默认）；pcm16 是裸 PCM 流，无 IANA 注册 MIME，用生态通用的 audio/pcm。
+func audioOutputMIME(audioOut *llm.AudioOutput) string {
+	f := "wav"
+	if audioOut != nil && audioOut.Format != "" {
+		f = audioOut.Format
+	}
+	if f == "pcm16" || f == "pcm" {
+		return "audio/pcm"
+	}
+	return "audio/" + f
+}
+
 // audioPart 把响应里的 base64 音频解码为 PartCustom 块。解码失败
 // 显式报错——音频内容不允许静默丢弃。
-func audioPart(provider, b64, format string) (llm.Part, error) {
+func audioPart(provider, b64, mime string) (llm.Part, error) {
 	data, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
 		return llm.Part{}, llm.NewError(llm.ErrProvider, provider, 0, err, "audio.data 不是合法 base64")
 	}
-	if format == "" {
-		format = "wav"
-	}
 	return llm.Part{Kind: llm.PartCustom, Media: &llm.MediaContent{
-		MediaType: "audio/" + format,
+		MediaType: mime,
 		Data:      data,
 	}}, nil
 }
