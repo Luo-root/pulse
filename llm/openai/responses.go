@@ -197,6 +197,22 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 		// Responses 的 reasoning.effort：none/minimal/low/medium/high/…
 		params.Reasoning.Effort = shared.ReasoningEffort(req.Reasoning.Effort)
 	}
+	if req.Output != nil {
+		if req.Output.Verbosity != "" {
+			params.Text.Verbosity = responses.ResponseTextConfigVerbosity(req.Output.Verbosity)
+		}
+		if req.Output.Logprobs != nil {
+			// Responses 没有单独 logprobs 开关；TopLogprobs > 0 即请求。
+			// 仅 Logprobs=true 无可映射线格式，显式拒绝避免静默丢失。
+			if *req.Output.Logprobs && req.Output.TopLogprobs == nil {
+				return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+					"Responses 协议的 logprobs 需要同时设置 Output.TopLogprobs")
+			}
+		}
+		if req.Output.TopLogprobs != nil {
+			params.TopLogprobs = param.NewOpt(int64(*req.Output.TopLogprobs))
+		}
+	}
 	// Options 长尾参数：按名取用，未知键忽略。
 	for key, v := range req.Options {
 		if v == nil {
@@ -247,6 +263,9 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 		params.Tools = append(params.Tools, responses.ToolUnionParam{OfFunction: &fd})
 	}
 	if req.ToolChoice != nil {
+		if req.ToolChoice.Parallel != nil {
+			params.ParallelToolCalls = param.NewOpt(*req.ToolChoice.Parallel)
+		}
 		switch req.ToolChoice.Mode {
 		case llm.ToolAuto:
 			params.ToolChoice.OfToolChoiceMode = param.NewOpt(responses.ToolChoiceOptionsAuto)

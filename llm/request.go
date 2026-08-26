@@ -27,6 +27,10 @@ const (
 type ToolChoice struct {
 	Mode ToolChoiceMode
 	Name string // Mode == ToolSpecific 时生效
+	// Parallel 控制是否允许并行工具调用：OpenAI → parallel_tool_calls，
+	// Anthropic → tool_choice 的 disable_parallel_tool_use（取反）。
+	// nil = provider 默认（通常允许）。
+	Parallel *bool
 }
 
 // ResponseFormatType 结构化输出类型。
@@ -66,6 +70,16 @@ type ReasoningOptions struct {
 	BudgetTokens int
 }
 
+// OutputOptions 控制模型输出的通用长尾语义。不同 provider 取各自支持
+// 的字段：OpenAI 读 Verbosity / Logprobs；Anthropic 读 Effort（及其
+// 结构化输出 format，当前 ResponseFormat 仍优先）。nil = provider 默认。
+type OutputOptions struct {
+	Verbosity   string
+	Effort      string
+	Logprobs    *bool
+	TopLogprobs *int
+}
+
 // GenerateRequest 是一次对话补全请求的完整描述。
 // 零值字段一律表示"交给 provider 默认"，不设魔法默认值——
 // 默认策略属于装配层，不属于词汇表。
@@ -87,6 +101,9 @@ type GenerateRequest struct {
 
 	// Reasoning 控制推理模型思维链；nil = provider 默认。
 	Reasoning *ReasoningOptions
+
+	// Output 控制输出风格 / token 概率；nil = provider 默认。
+	Output *OutputOptions
 
 	// Options 承载 provider 特有的请求级长尾参数（seed、penalties、
 	// service_tier、verbosity……），由各 adapter 按名取用、未知键
@@ -135,6 +152,18 @@ func (r *GenerateRequest) Clone() *GenerateRequest {
 		ro := *r.Reasoning
 		cp.Reasoning = &ro
 	}
+	if r.Output != nil {
+		oo := *r.Output
+		if r.Output.Logprobs != nil {
+			v := *r.Output.Logprobs
+			oo.Logprobs = &v
+		}
+		if r.Output.TopLogprobs != nil {
+			v := *r.Output.TopLogprobs
+			oo.TopLogprobs = &v
+		}
+		cp.Output = &oo
+	}
 	if r.Options != nil {
 		cp.Options = make(map[string]any, len(r.Options))
 		for k, v := range r.Options {
@@ -143,6 +172,10 @@ func (r *GenerateRequest) Clone() *GenerateRequest {
 	}
 	if r.ToolChoice != nil {
 		tc := *r.ToolChoice
+		if r.ToolChoice.Parallel != nil {
+			v := *r.ToolChoice.Parallel
+			tc.Parallel = &v
+		}
 		cp.ToolChoice = &tc
 	}
 	if r.ResponseFormat != nil {

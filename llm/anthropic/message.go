@@ -110,6 +110,15 @@ func (m *messagesModel) buildParams(req *llm.GenerateRequest) (sdk.MessageNewPar
 			BudgetTokens: int64(req.Reasoning.BudgetTokens),
 		}
 	}
+	if req.Output != nil {
+		if req.Output.Effort != "" {
+			params.OutputConfig.Effort = sdk.OutputConfigEffort(req.Output.Effort)
+		}
+		if req.Output.Verbosity != "" || req.Output.Logprobs != nil || req.Output.TopLogprobs != nil {
+			return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+				"Anthropic Messages 不支持 Output.Verbosity / Logprobs / TopLogprobs")
+		}
+	}
 	// Options 长尾参数：按名取用，未知键忽略。
 	for key, v := range req.Options {
 		if v == nil {
@@ -152,15 +161,41 @@ func (m *messagesModel) buildParams(req *llm.GenerateRequest) (sdk.MessageNewPar
 		params.Tools = append(params.Tools, sdk.ToolUnionParam{OfTool: &tool})
 	}
 	if req.ToolChoice != nil {
+		// Anthropic 的并行控制是 tool_choice 上的 disable_parallel_tool_use
+		//（取反）；none 变体没有该字段。
+		disable := param.NewOpt(true)
+		allow := param.NewOpt(false)
 		switch req.ToolChoice.Mode {
 		case llm.ToolAuto:
 			params.ToolChoice.OfAuto = &sdk.ToolChoiceAutoParam{}
+			if req.ToolChoice.Parallel != nil {
+				if *req.ToolChoice.Parallel {
+					params.ToolChoice.OfAuto.DisableParallelToolUse = allow
+				} else {
+					params.ToolChoice.OfAuto.DisableParallelToolUse = disable
+				}
+			}
 		case llm.ToolNone:
 			params.ToolChoice.OfNone = &sdk.ToolChoiceNoneParam{}
 		case llm.ToolAny:
 			params.ToolChoice.OfAny = &sdk.ToolChoiceAnyParam{}
+			if req.ToolChoice.Parallel != nil {
+				if *req.ToolChoice.Parallel {
+					params.ToolChoice.OfAny.DisableParallelToolUse = allow
+				} else {
+					params.ToolChoice.OfAny.DisableParallelToolUse = disable
+				}
+			}
 		case llm.ToolSpecific:
-			params.ToolChoice.OfTool = &sdk.ToolChoiceToolParam{Name: req.ToolChoice.Name}
+			tc := &sdk.ToolChoiceToolParam{Name: req.ToolChoice.Name}
+			if req.ToolChoice.Parallel != nil {
+				if *req.ToolChoice.Parallel {
+					tc.DisableParallelToolUse = allow
+				} else {
+					tc.DisableParallelToolUse = disable
+				}
+			}
+			params.ToolChoice.OfTool = tc
 		default:
 			return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
 				"未知 ToolChoiceMode %q", req.ToolChoice.Mode)

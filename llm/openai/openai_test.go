@@ -227,6 +227,9 @@ func TestCompletionsWireFormat(t *testing.T) {
 		if tc["type"] != "function" {
 			t.Fatalf("tool_choice 应为指定函数: %v", tc)
 		}
+		if body["parallel_tool_calls"] != false {
+			t.Fatalf("parallel_tool_calls = %v，期望 false", body["parallel_tool_calls"])
+		}
 		// 罐头响应：文本 + 工具调用 + usage
 		resp := `{"id":"c1","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"calling","tool_calls":[{"id":"call_9","type":"function","function":{"name":"echo","arguments":"{\"x\":2}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":4}}}`
 		w.Header().Set("Content-Type", "application/json")
@@ -242,7 +245,8 @@ func TestCompletionsWireFormat(t *testing.T) {
 	temp := 0.5
 	maxTok := 128
 	req.Tools = []llm.ToolDef{{Name: "echo", Description: "echo it", Parameters: json.RawMessage(`{"type":"object"}`)}}
-	req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolSpecific, Name: "echo"}
+	parallel := false
+	req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolSpecific, Name: "echo", Parallel: &parallel}
 	req.Temperature = &temp
 	req.MaxTokens = &maxTok
 	req.StopSequences = []string{"END"}
@@ -1009,6 +1013,19 @@ func TestRequestOptionsWireFormat(t *testing.T) {
 		if body["frequency_penalty"] != float64(0.5) {
 			t.Fatalf("frequency_penalty = %v", body["frequency_penalty"])
 		}
+		if body["presence_penalty"] != float64(-0.25) {
+			t.Fatalf("presence_penalty = %v", body["presence_penalty"])
+		}
+		if body["logprobs"] != true || body["top_logprobs"] != float64(3) {
+			t.Fatalf("logprobs/top_logprobs = %v/%v", body["logprobs"], body["top_logprobs"])
+		}
+		bias, _ := body["logit_bias"].(map[string]any)
+		if bias["123"] != float64(-10) {
+			t.Fatalf("logit_bias = %v", body["logit_bias"])
+		}
+		if body["store"] != true || body["prompt_cache_key"] != "cache-1" || body["safety_identifier"] != "safe-1" {
+			t.Fatalf("store/cache/safety = %v/%v/%v", body["store"], body["prompt_cache_key"], body["safety_identifier"])
+		}
 		if body["seed"] != float64(42) {
 			t.Fatalf("seed = %v", body["seed"])
 		}
@@ -1026,11 +1043,19 @@ func TestRequestOptionsWireFormat(t *testing.T) {
 	req := llm.NewRequest(llm.UserText("hi"))
 	req.Reasoning = &llm.ReasoningOptions{Effort: effort}
 	req.TopK = &topK
+	logprobs := true
+	topLogprobs := 3
+	req.Output = &llm.OutputOptions{Verbosity: "low", Logprobs: &logprobs, TopLogprobs: &topLogprobs}
 	req.Options = map[string]any{
 		"frequency_penalty": 0.5,
+		"presence_penalty":  -0.25,
 		"seed":              42, // JSON 反序列化约定：数字为 float64
 		"service_tier":      "flex",
 		"user":              "u-1",
+		"logit_bias":        map[string]any{"123": -10.0},
+		"store":             true,
+		"prompt_cache_key":  "cache-1",
+		"safety_identifier": "safe-1",
 		"unknown_key":       "ignored",
 	}
 	if _, err := m.Generate(context.Background(), req); err != nil {
@@ -1049,6 +1074,12 @@ func TestResponsesRequestOptions(t *testing.T) {
 		if text["verbosity"] != "low" {
 			t.Fatalf("text.verbosity = %v", body["text"])
 		}
+		if body["top_logprobs"] != float64(2) {
+			t.Fatalf("top_logprobs = %v", body["top_logprobs"])
+		}
+		if body["parallel_tool_calls"] != false {
+			t.Fatalf("parallel_tool_calls = %v", body["parallel_tool_calls"])
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","error":null,"incomplete_details":null,"model":"gpt-test","output":[{"type":"message","id":"m1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2},"metadata":{},"tool_choice":"auto","tools":[],"parallel_tool_calls":true}`))
 	}))
@@ -1061,6 +1092,11 @@ func TestResponsesRequestOptions(t *testing.T) {
 	}
 	req := llm.NewRequest(llm.UserText("hi"))
 	req.Reasoning = &llm.ReasoningOptions{Effort: "low"}
+	topLogprobs := 2
+	logprobs := true
+	parallel := false
+	req.Output = &llm.OutputOptions{Verbosity: "low", Logprobs: &logprobs, TopLogprobs: &topLogprobs}
+	req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolAuto, Parallel: &parallel}
 	req.Options = map[string]any{"verbosity": "low"}
 	if _, err := model.Generate(context.Background(), req); err != nil {
 		t.Fatalf("Generate: %v", err)

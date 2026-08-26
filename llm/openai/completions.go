@@ -116,6 +116,17 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 		// o 系列等推理模型的思考强度。
 		params.ReasoningEffort = shared.ReasoningEffort(req.Reasoning.Effort)
 	}
+	if req.Output != nil {
+		if req.Output.Verbosity != "" {
+			params.Verbosity = sdk.ChatCompletionNewParamsVerbosity(req.Output.Verbosity)
+		}
+		if req.Output.Logprobs != nil {
+			params.Logprobs = param.NewOpt(*req.Output.Logprobs)
+		}
+		if req.Output.TopLogprobs != nil {
+			params.TopLogprobs = param.NewOpt(int64(*req.Output.TopLogprobs))
+		}
+	}
 	// Options 长尾参数：按名取用，未知键忽略（与 Config.Options 同口径）。
 	// 数字兼容 int 与 float64（JSON 反序列化产生 float64，Go 字面量是 int）。
 	applyRequestOptions(req.Options, func(key string, v any) {
@@ -152,6 +163,30 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 		case "verbosity":
 			if s, ok := v.(string); ok {
 				params.Verbosity = sdk.ChatCompletionNewParamsVerbosity(s)
+			}
+		case "logit_bias":
+			if m_, ok := v.(map[string]any); ok {
+				bias := make(map[string]int64, len(m_))
+				for tok, n := range m_ {
+					if f, ok := n.(float64); ok {
+						bias[tok] = int64(f)
+					}
+				}
+				if len(bias) > 0 {
+					params.LogitBias = bias
+				}
+			}
+		case "store":
+			if b, ok := v.(bool); ok {
+				params.Store = param.NewOpt(b)
+			}
+		case "prompt_cache_key":
+			if s, ok := v.(string); ok {
+				params.PromptCacheKey = param.NewOpt(s)
+			}
+		case "safety_identifier":
+			if s, ok := v.(string); ok {
+				params.SafetyIdentifier = param.NewOpt(s)
 			}
 		}
 	})
@@ -194,6 +229,9 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 		params.Tools = append(params.Tools, sdk.ChatCompletionFunctionTool(fd))
 	}
 	if req.ToolChoice != nil {
+		if req.ToolChoice.Parallel != nil {
+			params.ParallelToolCalls = param.NewOpt(*req.ToolChoice.Parallel)
+		}
 		switch req.ToolChoice.Mode {
 		case llm.ToolAuto:
 			params.ToolChoice.OfAuto = param.NewOpt("auto")

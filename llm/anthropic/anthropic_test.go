@@ -711,6 +711,14 @@ func TestSamplingAndThinking(t *testing.T) {
 		if body["service_tier"] != "standard_only" {
 			t.Fatalf("service_tier = %v", body["service_tier"])
 		}
+		output, _ := body["output_config"].(map[string]any)
+		if output["effort"] != "high" {
+			t.Fatalf("output_config.effort = %v", body["output_config"])
+		}
+		choice, _ := body["tool_choice"].(map[string]any)
+		if choice["type"] != "auto" || choice["disable_parallel_tool_use"] != true {
+			t.Fatalf("tool_choice 并行映射不符: %v", body["tool_choice"])
+		}
 		// 带 thinking 的响应：thinking 块映射为 reasoning。
 		resp := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"thinking","thinking":"hmm","signature":"s"},{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}`
 		w.Header().Set("Content-Type", "application/json")
@@ -722,6 +730,9 @@ func TestSamplingAndThinking(t *testing.T) {
 	maxTok := 512
 	req.MaxTokens = &maxTok                                                   // anthropic 必填；thinking budget 须 < max_tokens
 	req.Reasoning = &llm.ReasoningOptions{BudgetTokens: 2048, Effort: "high"} // Effort 在 anthropic 被忽略
+	parallel := false
+	req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolAuto, Parallel: &parallel}
+	req.Output = &llm.OutputOptions{Effort: "high"}
 	req.Options = map[string]any{"service_tier": "standard_only"}
 	resp, err := m.Generate(context.Background(), req)
 	if err != nil {

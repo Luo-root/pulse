@@ -68,10 +68,18 @@ ctx 取消：先发 `EventError(canceled)` 再关 channel。
 
 词汇表公共字段之外：
 
-- `TopK` → 原生 `top_k`
-- `Reasoning.BudgetTokens`（≥1024 且 < max_tokens）→ `thinking: {type: enabled, budget_tokens}`，启用 extended thinking；`Effort` 在该线格式无对应参数，忽略
-- 请求级 `Options`：`service_tier`（如 standard_only）；其余键忽略
-- `Metadata` 只透传 `user_id`（线格式仅此一键）
+| 字段 | Anthropic Messages |
+|---|---|
+| `TopK` | 原生 `top_k` |
+| `Reasoning.BudgetTokens` | `thinking: {type: enabled, budget_tokens}`；≥1024 且 < max_tokens |
+| `Reasoning.Effort` | 无对应参数，忽略 |
+| `Output.Effort` | `output_config.effort`（low/medium/high/xhigh/max） |
+| `Output.Verbosity` / Logprobs / TopLogprobs | 无对应，显式 bad_request |
+| `ToolChoice.Parallel` | `disable_parallel_tool_use`（适配器自动取反） |
+
+请求级 `Options`：`service_tier`（如 standard_only）；其余键忽略。
+
+`Metadata` 只透传 `user_id`（线格式仅此一键）。
 
 ## 错误
 
