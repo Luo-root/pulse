@@ -227,6 +227,18 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 			if s, ok := v.(string); ok {
 				params.ServiceTier = responses.ResponseNewParamsServiceTier(s)
 			}
+		case "user":
+			if s, ok := v.(string); ok {
+				params.User = param.NewOpt(s)
+			}
+		case "prompt_cache_key":
+			if s, ok := v.(string); ok {
+				params.PromptCacheKey = param.NewOpt(s)
+			}
+		case "safety_identifier":
+			if s, ok := v.(string); ok {
+				params.SafetyIdentifier = param.NewOpt(s)
+			}
 		}
 	}
 	if req.MaxTokens != nil {

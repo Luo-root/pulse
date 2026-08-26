@@ -34,7 +34,7 @@ model, _ := reg.Open("main")
 | PDF 走 document 块 | `PartCustom(application/pdf)`：Data → base64 source，URL → url source |
 | 图片 | 内联 → base64 source；URL → url source |
 | thinking 回传需 signature 配对 | 输入侧 reasoning 块不回传（与 OpenAI 同口径） |
-| 无结构化输出参数 | `ResponseFormat` 非 text → 显式 `ErrBadRequest` |
+| 结构化输出 | `ResponseFormat` json_schema → `output_config.format`；json_object 无对应 → 显式 `ErrBadRequest` |
 | 无 audio 输出模态 | `req.Audio` → 显式 `ErrBadRequest` |
 
 工具历史：assistant 消息里的 `tool_call` → `tool_use` 块（空 Arguments 补 `{}`）。
@@ -80,6 +80,10 @@ ctx 取消：先发 `EventError(canceled)` 再关 channel。
 请求级 `Options`：`service_tier`（如 standard_only）；其余键忽略。
 
 `Metadata` 只透传 `user_id`（线格式仅此一键）。
+
+## 有意不做（线格式有但不适配）
+
+`cache_control` 缓存断点、`container`（代码执行）、`InferenceGeo` / `UserProfileID`、`mcp_servers` 等服务端工具、`redacted_thinking` 回传（无签名）。
 
 ## 错误
 

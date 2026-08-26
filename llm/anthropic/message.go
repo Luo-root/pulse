@@ -201,15 +201,24 @@ func (m *messagesModel) buildParams(req *llm.GenerateRequest) (sdk.MessageNewPar
 				"未知 ToolChoiceMode %q", req.ToolChoice.Mode)
 		}
 	}
-	if req.ResponseFormat != nil {
-		switch req.ResponseFormat.Type {
+	if rf := req.ResponseFormat; rf != nil {
+		switch rf.Type {
 		case llm.FormatText, "":
 			// 纯文本是默认行为，不下发。
+		case llm.FormatJSONSchema:
+			// 结构化输出走 output_config.format（json_schema）。
+			var schema map[string]any
+			if err := json.Unmarshal(rf.Schema, &schema); err != nil {
+				return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, err,
+					"ResponseFormat.Schema 不是合法 JSON")
+			}
+			// JSONOutputFormatParam 无 name 字段，schema 即全部约束。
+			params.OutputConfig.Format = sdk.JSONOutputFormatParam{Schema: schema}
 		default:
-			// Anthropic Messages 没有结构化输出参数；json_schema 靠
-			// 提示词工程是上层的事，这里显式拒绝而不是静默忽略。
+			// json_object 在 Anthropic 无对应线格式（结构化输出仅
+			// json_schema），显式拒绝而不是静默忽略。
 			return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
-				"anthropic 线格式不支持 ResponseFormat：%s", req.ResponseFormat.Type)
+				"anthropic 线格式不支持 ResponseFormat：%s（仅支持 json_schema）", rf.Type)
 		}
 	}
 	if req.Audio != nil {

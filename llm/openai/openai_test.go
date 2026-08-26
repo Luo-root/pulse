@@ -1080,6 +1080,9 @@ func TestResponsesRequestOptions(t *testing.T) {
 		if body["parallel_tool_calls"] != false {
 			t.Fatalf("parallel_tool_calls = %v", body["parallel_tool_calls"])
 		}
+		if body["user"] != "u-9" || body["prompt_cache_key"] != "ck-1" || body["safety_identifier"] != "s-1" {
+			t.Fatalf("user/cache/safety = %v/%v/%v", body["user"], body["prompt_cache_key"], body["safety_identifier"])
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","error":null,"incomplete_details":null,"model":"gpt-test","output":[{"type":"message","id":"m1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2},"metadata":{},"tool_choice":"auto","tools":[],"parallel_tool_calls":true}`))
 	}))
@@ -1097,7 +1100,7 @@ func TestResponsesRequestOptions(t *testing.T) {
 	parallel := false
 	req.Output = &llm.OutputOptions{Verbosity: "low", Logprobs: &logprobs, TopLogprobs: &topLogprobs}
 	req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolAuto, Parallel: &parallel}
-	req.Options = map[string]any{"verbosity": "low"}
+	req.Options = map[string]any{"verbosity": "low", "user": "u-9", "prompt_cache_key": "ck-1", "safety_identifier": "s-1"}
 	if _, err := model.Generate(context.Background(), req); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

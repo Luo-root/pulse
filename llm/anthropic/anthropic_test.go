@@ -331,17 +331,48 @@ func TestUnsupportedModalitiesRejected(t *testing.T) {
 	}
 }
 
-func TestResponseFormatRejected(t *testing.T) {
+func TestResponseFormatJSONSchema(t *testing.T) {
+	// 结构化输出走 output_config.format（json_schema）。
+	m := newTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		oc, _ := body["output_config"].(map[string]any)
+		if oc == nil {
+			t.Fatalf("应带 output_config: %v", body)
+		}
+		format, _ := oc["format"].(map[string]any)
+		if format["type"] != "json_schema" {
+			t.Fatalf("format.type = %v", format["type"])
+		}
+		schema, _ := format["schema"].(map[string]any)
+		if schema["type"] != "object" {
+			t.Fatalf("format.schema = %v", schema)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(okResp))
+	})
+	req := llm.NewRequest(llm.UserText("hi"))
+	req.ResponseFormat = &llm.ResponseFormat{
+		Type:   llm.FormatJSONSchema,
+		Schema: json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}}}`),
+	}
+	maxTok := 64
+	req.MaxTokens = &maxTok
+	if _, err := m.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
+func TestResponseFormatJSONObjectRejected(t *testing.T) {
+	// json_object 在 Anthropic 无对应线格式，显式拒绝。
 	m := newTest(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("不应发出请求")
 	})
 	req := llm.NewRequest(llm.UserText("hi"))
-	rf := llm.FormatJSONSchema
-	req.ResponseFormat = &llm.ResponseFormat{Type: rf}
+	req.ResponseFormat = &llm.ResponseFormat{Type: llm.FormatJSONObject}
 	maxTok := 32
 	req.MaxTokens = &maxTok
 	if _, err := m.Generate(context.Background(), req); llm.KindOf(err) != llm.ErrBadRequest {
-		t.Fatalf("ResponseFormat 应 bad_request，得到 %v", err)
+		t.Fatalf("json_object 应 bad_request，得到 %v", err)
 	}
 }
 
