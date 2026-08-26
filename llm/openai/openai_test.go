@@ -1089,6 +1089,21 @@ func TestResponsesRequestOptions(t *testing.T) {
 	}
 }
 
+func TestResponsesLogprobsConflictRejected(t *testing.T) {
+	// Responses：TopLogprobs 与显式 Logprobs=false 自相矛盾，必须
+	// bad_request 且不发 HTTP 请求。
+	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("不应发出请求")
+	})
+	no := false
+	top := 5
+	req := llm.NewRequest(llm.UserText("hi"))
+	req.Output = &llm.OutputOptions{Logprobs: &no, TopLogprobs: &top}
+	if _, err := m.Generate(context.Background(), req); llm.KindOf(err) != llm.ErrBadRequest {
+		t.Fatalf("Logprobs=false + TopLogprobs 应 bad_request，得到 %v", err)
+	}
+}
+
 func TestResponsesAudioRejected(t *testing.T) {
 	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("不应发出请求")

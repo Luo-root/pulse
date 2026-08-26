@@ -225,16 +225,6 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 	return params, nil
 }
 
-// applyRequestOptions 遍历请求级 Options；fn 只在值为存在时回调。
-// 数字统一以 float64 到达（JSON 反序列化约定），由调用方自行收窄。
-func applyRequestOptions(opts map[string]any, fn func(key string, v any)) {
-	for k, v := range opts {
-		if v != nil {
-			fn(k, v)
-		}
-	}
-}
-
 // convertMessage 翻译单条消息。工具结果在 OpenAI 线格式中必须是
 // 顶层 tool 消息，因此一条 llm.Message 可能展开为多条。
 func (m *completionsModel) convertMessage(msg *llm.Message) ([]sdk.ChatCompletionMessageParamUnion, error) {

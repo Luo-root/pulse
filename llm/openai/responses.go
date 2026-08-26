@@ -207,10 +207,17 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 			params.Text.Verbosity = responses.ResponseTextConfigVerbosity(req.Output.Verbosity)
 		}
 		// Responses 只有 top_logprobs 一个开关；单设 Logprobs=true 而
-		// 无 TopLogprobs 无法表达，显式报错。
-		if req.Output.Logprobs != nil && *req.Output.Logprobs && req.Output.TopLogprobs == nil {
-			return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
-				"Responses 协议的 logprobs 需要同时设置 Output.TopLogprobs")
+		// 无 TopLogprobs 无法表达。TopLogprobs 与 Logprobs=false 也
+		// 自相矛盾，两个冲突路径都显式拒绝。
+		if req.Output.Logprobs != nil {
+			if *req.Output.Logprobs && req.Output.TopLogprobs == nil {
+				return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+					"Responses 协议的 logprobs 需要同时设置 Output.TopLogprobs")
+			}
+			if !*req.Output.Logprobs && req.Output.TopLogprobs != nil {
+				return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+					"Output.Logprobs=false 与 Output.TopLogprobs 不能同时设置")
+			}
 		}
 		if req.Output.TopLogprobs != nil {
 			params.TopLogprobs = param.NewOpt(int64(*req.Output.TopLogprobs))

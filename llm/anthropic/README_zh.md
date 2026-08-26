@@ -70,7 +70,7 @@ ctx 取消：先发 `EventError(canceled)` 再关 channel。
 |---|---|
 | `TopK` | 原生 `top_k`（OpenAI 两变体无此参数，会显式 bad_request） |
 | `Reasoning.BudgetTokens` | `thinking: {type: enabled, budget_tokens}`；≥1024 且 < max_tokens |
-| `Reasoning.Effort` | 无对应参数，忽略（Reasoning 两 knob 各归各家是词汇表契约） |
+| `Reasoning.Effort` | 无对应参数，忽略；与 BudgetTokens 同时设置时只消费后者，不代表双重推理 |
 | `Output.Verbosity` / Logprobs / TopLogprobs | 无对应，显式 bad_request |
 | `ToolChoice.Parallel` | `disable_parallel_tool_use`（适配器自动取反） |
 

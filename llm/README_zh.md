@@ -75,7 +75,9 @@ Metadata           审计透传；provider 不理解则忽略
 `ErrBadRequest`（如 TopK 传 OpenAI、StopSequences 传 Responses、
 Output.Verbosity 传 Anthropic），不静默忽略、不做跨家隐式换算。
 `Reasoning` 例外：`Effort` 归 OpenAI、`BudgetTokens` 归 Anthropic，
-两个 knob 各归各家是结构注释写明的契约。
+两个 knob 各归各家是结构注释写明的契约，**不做跨家隐式换算**。同时
+设置时，每个 adapter 只消费自己对应字段：OpenAI 只发 Effort、Anthropic
+只发 BudgetTokens；另一字段不参与本次请求，不代表双重推理。
 
 词汇表**不收** provider 独有的采样与路由长尾（OpenAI 的 seed /
 penalties / logit_bias / store / prompt_cache_key / safety_identifier /
@@ -86,7 +88,7 @@ service_tier / user；Anthropic 的 service_tier / cache_control）——
 
 `Response`：`Message` + `FinishReason`（stop / tool_calls / length / content_filter / error）+ `TokenUsage`（含 cached input）。
 
-`Clone` 深拷贝拦截会改的字段（标量指针、ToolChoice、ResponseFormat、Audio、Reasoning、Output、Options、Metadata）。Messages / Tools 切片级复制、元素共享。waterfall 监听器应 `req.Clone()` 再改，避免污染调用方。
+`Clone` 深拷贝拦截会改的字段（标量指针、ToolChoice、ResponseFormat、Audio、Reasoning、Output、Metadata）。Messages / Tools 切片级复制、元素共享。waterfall 监听器应 `req.Clone()` 再改，避免污染调用方。
 
 ## 流事件
 
