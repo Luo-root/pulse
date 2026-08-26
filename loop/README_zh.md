@@ -138,6 +138,44 @@ _, _ = kernel.OnWaterfall(host, loop.EventBeforeToolCall,
 - 工具失败 ≠ 回合失败
 - 不做子 agent、不做多模态工具结果（Execute 返回字符串）
 
+## 导出一览
+
+定位：无状态回合执行器。设计：历史在调用方、扩展全走事件、默认不限步。
+
+**执行器**
+
+| 符号 | 做什么 |
+|---|---|
+| `Agent` | 配置+依赖引用，不可变 |
+| `Option` | `func(*Agent)` |
+| `NewAgent` | `model` 必填，否则 error |
+| `WithToolSet` / `WithSystemPrompt` / `WithMaxSteps` / `WithEventScope` | 见选项表 |
+| `(*Agent).Run` | `RunStream(ctx, nil, history, input...)` |
+| `(*Agent).RunStream` | `onDelta func(string)` 可 nil；返回 `(*Result, error)` |
+| `Result` | Messages / Final / Usage / Steps / StoppedBy |
+| `StopReason` 四常量 | completed / max_steps / canceled / error |
+
+**工具**
+
+| 符号 | 做什么 |
+|---|---|
+| `ToolSet` | `Definitions` + `Execute` |
+| `ToolFunc` | `func(ctx, json.RawMessage) (string, error)` |
+| `MemToolSet` / `NewMemToolSet` | 内存实现，并发安全 |
+| `(*MemToolSet).Register` | `(def, fn) error`；空名 / nil / 重名都报错 |
+| `Definitions` / `Execute` | 按名排序；未知工具名 error。panic 不在本类型恢复 |
+
+**事件载荷**（`scope==nil` 时不派发）
+
+| 符号 | 字段 | 做什么 |
+|---|---|---|
+| `EventTurnStart` + `TurnStart` | `Input`, `History` | 本轮新增 vs 已有历史 |
+| `EventStepStart` + `StepStart` | `Step` | 从 1 计的推理-行动步 |
+| `EventAfterModel` + `AfterModel` | `Response`, `Step` | 含 Usage |
+| `EventBeforeToolCall` + `BeforeToolCall` | `Call`, `Rejected`, `RejectReason` | waterfall；改 Call 或置 Rejected 短路 |
+| `EventAfterToolCall` + `AfterToolCall` | `Call`, `Result`, `Duration`, `Err`, `Rejected` | Result 与回传模型文本同源 |
+| `EventTurnEnd` + `TurnEnd` | `Final`, `Usage`, `Steps`, `StoppedBy` | 任意退出恰好一次 |
+
 ## 不做
 
 会话存储、重试 failover、把 Agent 装配成 Plugin、暴露 `llm.StreamEvent` channel。

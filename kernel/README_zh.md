@@ -177,6 +177,71 @@ _ = kernel.Parallel(ctx, Tick, 0)      // 并发；返回 []error 或 nil
 - 锁序固定：`ctx.mu → bus.mu`，`bus.mu` 是叶子锁。
 - 不做 realm / isolate，不做代码级 HMR。Loader「重载」= dispose 旧 Fiber + 同一工厂重建。
 
+## 导出一览
+
+定位：插件底座。设计：卸载即还原 + 依赖响应式。下面每个符号都能单独用。
+
+**作用域**
+
+| 符号 | 做什么 | 怎么用 |
+|---|---|---|
+| `New` | 建根作用域 | `ctx := kernel.New(); defer ctx.Dispose()` |
+| `(*Context).Derive` | 派生子作用域 | 共享全局服务；子 `Dispose` 只收回自己。已销毁 → `ErrDisposed` |
+| `(*Context).Dispose` | 级联销毁本层与后代 | LIFO unwind 效应 |
+| `(*Context).Effect` | 登记可逆副作用 | `apply` 返回 `undo`；可提前 `undo()`，否则 Dispose 兜底 |
+| `(*Context).Parent` | 父作用域 | 根返回 nil |
+| `ErrDisposed` | 对已销毁作用域操作 | `errors.Is(err, kernel.ErrDisposed)` |
+
+**服务**
+
+| 符号 | 做什么 | 怎么用 |
+|---|---|---|
+| `ServiceKey[T]` | 类型安全的服务键 | 包级 `var Key = NewServiceKey[*T]("pulse.x")` |
+| `NewServiceKey` | 创建键 | name 带包前缀 |
+| `(ServiceKey).Name` | 键的注册名 | 诊断、依赖过滤 |
+| `Provide` | 写入全局仓库 | 返回 dispose；覆盖不还原前值；同名不同类型报错 |
+| `Get` | 读取 | `(v, ok)`，未提供 `ok==false` |
+
+**插件**
+
+| 符号 | 做什么 | 怎么用 |
+|---|---|---|
+| `Plugin` | `Inject` + `Apply` | Apply 的 Context 是私有作用域 |
+| `Dependency` / `Require` | 声明对某 `ServiceKey` 的依赖 | `Inject() []Dependency{Require(Key)}` |
+| `Func` | 零依赖函数适配为 Plugin | `kernel.Func(func(c *Context) error { ... })` |
+| `Use` | 在 host 上装载 | `(*Fiber, error)`；销毁宿主 → `ErrDisposed` 且 fiber==nil；Apply 失败仍返回 fiber（Failed，可重试） |
+| `Fiber` | 运行实例 | 惯性状态机 |
+| `FiberState` / `String` | inactive/loading/active/unloading/failed | `fiber.State().String()` |
+| `(*Fiber).State` | 当前状态 | |
+| `(*Fiber).Err` | Apply 失败原因 | 非 Failed 为 nil |
+| `(*Fiber).Close` | 主动卸载并摘除 | 幂等 |
+| `(*Fiber).WaitState` | 等进入目标状态或超时 | `targets` 空 = 等不在 loading/unloading |
+
+**Loader**
+
+| 符号 | 做什么 | 怎么用 |
+|---|---|---|
+| `Loader` / `NewLoader` | 声明式调和器 | Fiber 挂在 host 下 |
+| `Entry` | `{ID, Name, Disabled, Config}` | ID 是调和 key |
+| `Factory` | `func() Plugin` | 每次装载新建实例 |
+| `Configurable` | 收 Config | `Reconcile` 在 Use 前调用 `Configure` |
+| `Register` / `MustRegister` | 登记工厂 | 同名冲突：error / panic |
+| `Reconcile` | 把条目列表变成增删改 | 单条失败不阻断，返回 `errors.Join` |
+| `(*Loader).Fiber` | 按条目 ID 取实例 | 不存在或 Disabled → nil |
+| `(*Loader).Snapshot` | `ID → 状态字符串` | 诊断 / 测试 |
+
+**事件**
+
+| 符号 | 做什么 | 怎么用 |
+|---|---|---|
+| `EventKey[P]` / `NewEventKey` | 类型安全事件键 | 包级 `var Tick = NewEventKey[int]("pulse.x.tick")` |
+| `(EventKey).Name` | 事件名 | |
+| `On` | 观察监听（Emit 与 Parallel 共用） | `func(*P)`，注册是效应 |
+| `OnWaterfall` | around 监听 | `func(P, next func(P) P) P`；不调 next 即短路 |
+| `Emit` | 同步按序派发观察者 | `*P` 就地改，对后续可见；panic 上抛 |
+| `Waterfall` | around 链 | 无监听器原样返回载荷 |
+| `Parallel` | 并发观察 | 各拿副本；返回 `[]error`（panic 已转换）或 nil |
+
 ## 不做
 
 realm、HMR、prepend、`OnParallel`、`Load`/`LoadFile`/`LoadJSON`、按作用域隔离的服务可见性。

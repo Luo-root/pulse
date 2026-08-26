@@ -179,6 +179,80 @@ TTS（Completions）：`req.Audio = &llm.AudioOutput{Voice: "alloy", Format: "wa
 - 输入侧 reasoning 不回传。
 - 未知 MIME / 变体不支持的字段：显式 `bad_request`，不静默丢。
 
+## 导出一览
+
+定位：provider 中立词汇表 + 注册中心。消费方只见 `ChatModel`。
+
+**消息**
+
+| 符号 | 做什么 |
+|---|---|
+| `Role` / `RoleSystem|User|Assistant|Tool` | 角色。Tool 贴近 OpenAI；Anthropic adapter 会折成 user 里的 tool_result |
+| `PartKind` 六个常量 | 块类型，见上文表 |
+| `Part` | Kind 决定哪个指针/字符串有效 |
+| `MediaContent` / `ImageSource` | 开放模态 / 图像：Data 优先，否则 URL；MediaType 必填 |
+| `ToolCall` / `ToolResult` | 模型发起的调用；回传结果（`IsError` 让模型自我修正） |
+| `Message` | `Role + Parts`；可选 `Name`（多角色，provider 不支持则忽略） |
+| `Text` / `Reasoning` / `ImageURL` / `ImageData` / `Media` / `MediaURL` / `Call` / `Result` / `ResultParts` | 块构造器。`Result` = 单文本成功；`ResultParts` 可带 `isError` 与多块 |
+| `System` / `User` / `UserText` / `Assistant` / `AssistantText` / `ToolMessage` | 消息构造器 |
+| `(*Message).Text` | 拼接全部 `PartText`（不含 reasoning），换行连接 |
+| `(*Message).ReasoningText` | 拼接思维链；无则 `""` |
+| `(*Message).ToolCalls` | 本条全部 tool_call |
+| `(*Message).Clone` | 顶层深拷贝，Part 内指针共享（消息按不可变约定） |
+
+**请求 / 响应 / 流**
+
+| 符号 | 做什么 |
+|---|---|
+| `ToolDef` | 暴露给模型的工具：Name / Description / Parameters(JSON Schema) |
+| `ToolChoice` / `ToolAuto|None|Any|Specific` | nil = provider 默认。Specific 时填 `Name` |
+| `ResponseFormat` / `FormatText|JSONObject|JSONSchema` | nil = 纯文本 |
+| `AudioOutput` | Completions 音频输出；`Format` 空 = provider 默认 |
+| `GenerateRequest` / `NewRequest` | 完整请求；零值交 provider |
+| `(*GenerateRequest).Clone` | 拦截改写用；Messages/Tools 元素共享 |
+| `FinishReason` 五个常量 | stop / tool_calls / length / content_filter / error |
+| `TokenUsage` / `Total` | 输入、输出、cached；`Total` = 输入+输出 |
+| `Response` | Message + FinishReason + Usage |
+| `StreamEventKind` 六个常量 | 见流事件表 |
+| `StreamEvent` | Kind / Index / Text / CallID / ToolName / Response / Err |
+| `ChatModel` | `Generate` + `Stream` |
+
+**错误**
+
+| 符号 | 做什么 |
+|---|---|
+| `ErrKind` 十个常量 | 见错误表 |
+| `Error` | Kind + Provider + StatusCode + Detail + 底层 Err |
+| `NewError` | adapter 构造分类错误 |
+| `KindOf` / `IsRetryable` | 从 error 链取 Kind；可重试仅 rate_limit/network/provider |
+| `(*Error).Error` / `Unwrap` | 标准 error 接口 |
+
+**注册中心**
+
+| 符号 | 做什么 |
+|---|---|
+| `ServiceKey` | kernel 服务键 `"pulse.llm"` |
+| `EventBeforeGenerate` / `EventAfterResponse` | waterfall `*GenerateRequest` / emit 值 `Response` |
+| `Config` | Provider / Model / BaseURL / APIKey / Options |
+| `Factory` | `func(Config) (ChatModel, error)` |
+| `Registry` / `NewRegistry` | 工厂 + 命名实例。传入的 Context 是拦截事件的派发作用域 |
+| `Plugin` | 把 Registry Provide 到作用域；卸载时 `Close` |
+| `RegisterProvider` | 可逆登记工厂；同名覆盖关闭该 provider 已开实例 |
+| `Declare` | 声明命名实例；重复同 id 替换并关旧实例 |
+| `SetDefault` / `DefaultID` | 默认实例 id |
+| `Open` / `OpenDefault` | 打开或复用缓存；未声明 / 无工厂 → `ErrNoModel` |
+| `Drop` | 关实例并删声明；若是 default 则清空 default |
+| `Close` | 关全部、作废登记；幂等 |
+| `Providers` | 已登记 provider 名（诊断） |
+
+**测试替身（`mock.go`）**
+
+| 符号 | 做什么 |
+|---|---|
+| `ScriptedModel` | 按序回放预置 Response；耗尽则重复最后一条。实现 ChatModel |
+| `Resp` / `RespToolCalls` | 纯文本 / 工具调用响应 |
+| `NewScripted` / `NewFailing` | 脚本模型 / 恒失败模型 |
+
 ## 不做
 
 会话存储、重试 failover、子 agent、独立语音端点（`/v1/audio/speech` 等；ASR/TTS 走对话线格式）、Azure/Bedrock 专用签名、Office 文档原生理解。

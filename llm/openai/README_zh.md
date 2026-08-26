@@ -131,6 +131,20 @@ go test -race -skip TestLive ./llm/openai
 - 输入侧 reasoning 不回传。
 - 不写供应商专有字段（`thinking` / `reasoning_split` / `service_tier`）。网关扩展只要不破坏通用路径即可用（如 `video_url`）。
 
+## 导出一览
+
+本包对外只有登记入口和两个工厂；`completionsModel` / `responsesModel` 不导出。
+
+| 符号 | 做什么 | 怎么用 |
+|---|---|---|
+| `ProviderCompletions` | `"openai"` | `Config.Provider` |
+| `ProviderResponses` | `"openai-responses"` | 同上 |
+| `Register` | 向 Registry 登记两个工厂 | `openai.Register(scope, reg)`，内部两次 `RegisterProvider` |
+| `NewCompletions` | Completions 工厂 | `llm.Factory` 签名；也可不经 Registry 直接 `NewCompletions(cfg)` |
+| `NewResponses` | Responses 工厂 | 同上 |
+
+`Generate` / `Stream` 在未导出的实现类型上，满足 `llm.ChatModel`。线格式、MIME、错误映射见上文各节。
+
 ## 不做
 
 `PreviousResponseID` / Conversations、内置工具（web_search 等）、独立端点 `/v1/audio/speech` 与 `/v1/audio/transcriptions`、Azure/Bedrock 专用签名。
