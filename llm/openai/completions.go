@@ -103,6 +103,29 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 	if req.TopP != nil {
 		params.TopP = param.NewOpt(*req.TopP)
 	}
+	if req.TopK != nil {
+		// 官方 Chat Completions 线格式没有 top_k——不为兼容网关做
+		// JSON 注入，显式报错（需要 top_k 请用 Anthropic provider）。
+		return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+			"Chat Completions 线格式不支持 TopK")
+	}
+	if req.Reasoning != nil && req.Reasoning.Effort != "" {
+		// o 系列等推理模型的思考强度。
+		params.ReasoningEffort = shared.ReasoningEffort(req.Reasoning.Effort)
+	}
+	if req.Output != nil {
+		if req.Output.Verbosity != "" {
+			params.Verbosity = sdk.ChatCompletionNewParamsVerbosity(req.Output.Verbosity)
+		}
+		// top_logprobs 依赖 logprobs=true 才有输出：设 TopLogprobs 时
+		// 自动隐含开启，调用方无需重复声明。
+		if req.Output.TopLogprobs != nil {
+			params.Logprobs = param.NewOpt(true)
+			params.TopLogprobs = param.NewOpt(int64(*req.Output.TopLogprobs))
+		} else if req.Output.Logprobs != nil {
+			params.Logprobs = param.NewOpt(*req.Output.Logprobs)
+		}
+	}
 	if req.MaxTokens != nil {
 		// 用新版字段 max_completion_tokens：max_tokens 已废弃且与
 		// o 系列推理模型不兼容。
@@ -142,6 +165,9 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 		params.Tools = append(params.Tools, sdk.ChatCompletionFunctionTool(fd))
 	}
 	if req.ToolChoice != nil {
+		if req.ToolChoice.Parallel != nil {
+			params.ParallelToolCalls = param.NewOpt(*req.ToolChoice.Parallel)
+		}
 		switch req.ToolChoice.Mode {
 		case llm.ToolAuto:
 			params.ToolChoice.OfAuto = param.NewOpt("auto")

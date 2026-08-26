@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -329,12 +330,21 @@ func TestProviderOverrideInvalidatesCache(t *testing.T) {
 func TestCloneIsolation(t *testing.T) {
 	temp := 0.7
 	n := 8
+	topK := 40
+	logprobs := true
+	topLogprobs := 3
+	parallel := false
 	req := &GenerateRequest{
 		Messages:       []*Message{UserText("hi")},
 		Temperature:    &temp,
+		TopP:           &temp,
+		TopK:           &topK,
 		MaxTokens:      &n,
-		ToolChoice:     &ToolChoice{Mode: ToolAuto},
+		ToolChoice:     &ToolChoice{Mode: ToolAuto, Parallel: &parallel},
 		ResponseFormat: &ResponseFormat{Type: FormatJSONObject},
+		Audio:          &AudioOutput{Voice: "alloy", Format: "wav"},
+		Reasoning:      &ReasoningOptions{Effort: "high", BudgetTokens: 1024},
+		Output:         &OutputOptions{Verbosity: "low", Logprobs: &logprobs, TopLogprobs: &topLogprobs},
 		Metadata:       map[string]any{"k": "v"},
 	}
 	cp := req.Clone()
@@ -343,7 +353,11 @@ func TestCloneIsolation(t *testing.T) {
 	md := 99
 	cp.MaxTokens = &md
 	cp.ToolChoice.Mode = ToolNone
+	*cp.ToolChoice.Parallel = true
 	cp.ResponseFormat.Type = FormatJSONSchema
+	cp.Audio.Voice = "nova"
+	cp.Reasoning.Effort = "low"
+	cp.Output.Verbosity = "high"
 
 	if req.Metadata["k"] != "v" {
 		t.Fatal("Metadata leaked through Clone")
@@ -351,14 +365,122 @@ func TestCloneIsolation(t *testing.T) {
 	if *req.MaxTokens != 8 {
 		t.Fatal("MaxTokens pointer shared through Clone")
 	}
-	if req.ToolChoice.Mode != ToolAuto {
+	if req.ToolChoice.Mode != ToolAuto || *req.ToolChoice.Parallel != false {
 		t.Fatal("ToolChoice shared through Clone")
 	}
 	if req.ResponseFormat.Type != FormatJSONObject {
 		t.Fatal("ResponseFormat shared through Clone")
 	}
+	if req.Audio.Voice != "alloy" || req.Reasoning.Effort != "high" || req.Output.Verbosity != "low" {
+		t.Fatal("Audio/Reasoning/Output shared through Clone")
+	}
+	if *req.Output.Logprobs != true || *req.Output.TopLogprobs != 3 {
+		t.Fatal("Output pointers shared through Clone")
+	}
 	if len(cp.Messages) != len(req.Messages) {
 		t.Fatal("messages slice not copied")
+	}
+}
+
+func TestConstructorsAndHelpers(t *testing.T) {
+	// 块构造器
+	parts := []Part{
+		Text("a"),
+		Reasoning("r"),
+		Call(ToolCall{ID: "c1", Name: "n", Arguments: json.RawMessage(`{}`)}),
+		Result("c1", "ok"),
+		ResultParts("c2", true, Text("bad")),
+		ImageURL("https://x/cat.png", "image/png"),
+		ImageData("image/png", []byte{1}),
+		Media("audio/wav", []byte("RIFF")),
+		MediaURL("video/mp4", "https://x/v.mp4"),
+	}
+	m := &Message{Role: RoleAssistant, Parts: []Part{parts[0], parts[1], parts[2]}}
+	if m.Text() != "a" || m.ReasoningText() != "r" {
+		t.Fatalf("Text/ReasoningText = %q/%q", m.Text(), m.ReasoningText())
+	}
+	if len(m.ToolCalls()) != 1 || m.ToolCalls()[0].ID != "c1" {
+		t.Fatalf("ToolCalls = %+v", m.ToolCalls())
+	}
+	// 消息构造器
+	if System("s").Parts[0].Text != "s" {
+		t.Fatal("System")
+	}
+	if ToolMessage("c1", "res").Parts[0].ToolResultValue.ToolCallID != "c1" {
+		t.Fatal("ToolMessage")
+	}
+	// Clone：顶层深拷贝
+	mc := m.Clone()
+	mc.Parts[0] = Text("changed")
+	if m.Parts[0].Text != "a" {
+		t.Fatal("Message.Clone shared parts slice")
+	}
+	// TokenUsage.Total
+	if (TokenUsage{InputTokens: 3, OutputTokens: 4}).Total() != 7 {
+		t.Fatal("Total")
+	}
+	// Error 文案与 unwrap 链
+	base := errors.New("boom")
+	e := NewError(ErrRateLimit, "openai", 429, base, "slow down")
+	if got := e.Error(); got != "llm: rate_limit (openai, slow down): boom" {
+		t.Fatalf("Error() = %q", got)
+	}
+	anon := NewError(ErrAuth, "", 0, nil, "no key")
+	if got := anon.Error(); got != "llm: auth (no key)" {
+		t.Fatalf("Error() = %q", got)
+	}
+	_ = parts
+}
+
+func TestInterceptionStream(t *testing.T) {
+	// observed.Stream 与 Generate 同契约：before_generate 改写可达、
+	// done 携带的 Response 触发 after_response、error 不触发。
+	ctx, reg := setupRegistry(t)
+
+	_, _ = reg.RegisterProvider(ctx, "mock", func(cfg Config) (ChatModel, error) {
+		return NewScripted(Resp("answer")), nil
+	})
+	if err := reg.Declare("main", Config{Provider: "mock", Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	reg.SetDefault("main")
+
+	var rewritten atomic.Bool
+	_, _ = kernel.OnWaterfall(ctx, EventBeforeGenerate,
+		func(req *GenerateRequest, next func(*GenerateRequest) *GenerateRequest) *GenerateRequest {
+			req = req.Clone()
+			n := 77
+			req.MaxTokens = &n
+			rewritten.Store(true)
+			return next(req)
+		})
+	var after atomic.Int32
+	_, _ = kernel.On(ctx, EventAfterResponse, func(r *Response) { after.Add(1) })
+
+	model, err := reg.OpenDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := model.Stream(context.Background(), NewRequest(UserText("q")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var done *StreamEvent
+	for ev := range ch {
+		if ev.Kind == EventDone {
+			cp := ev
+			done = &cp
+		}
+	}
+	if done == nil || done.Response.Message.Text() != "answer" {
+		t.Fatalf("done = %+v", done)
+	}
+	if !rewritten.Load() {
+		t.Fatal("before_generate never ran on Stream path")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if after.Load() != 1 {
+		t.Fatalf("after_response on stream done = %d", after.Load())
 	}
 }
 

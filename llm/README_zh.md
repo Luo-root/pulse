@@ -62,18 +62,33 @@ Office 文档是 zip+XML 容器，解析属于独立组件，不是本包。
 `GenerateRequest` 零值 = 交给 provider 默认，不设魔法值。
 
 ```
-Messages / Tools / ToolChoice
-Temperature / TopP / MaxTokens / StopSequences
-ResponseFormat     text | json_object | json_schema
+Messages / Tools / ToolChoice（含 Parallel 并行控制）
+Temperature / TopP / TopK / MaxTokens
+StopSequences / ResponseFormat
 Audio              官方对话接口的音频输出（voice + format）；仅 Completions
+Reasoning          Effort（OpenAI）/ BudgetTokens（Anthropic extended thinking）
+Output             Verbosity / Logprobs / TopLogprobs（仅 OpenAI）
 Metadata           审计透传；provider 不理解则忽略
 ```
+
+**能力矩阵是显式契约**：字段在某家线格式无对应参数时，adapter 返回
+`ErrBadRequest`（如 TopK 传 OpenAI、StopSequences 传 Responses、
+Output.Verbosity 传 Anthropic），不静默忽略、不做跨家隐式换算。
+`Reasoning` 例外：`Effort` 归 OpenAI、`BudgetTokens` 归 Anthropic，
+两个 knob 各归各家是结构注释写明的契约，**不做跨家隐式换算**。同时
+设置时，每个 adapter 只消费自己对应字段：OpenAI 只发 Effort、Anthropic
+只发 BudgetTokens；另一字段不参与本次请求，不代表双重推理。
+
+词汇表**不收** provider 独有的采样与路由长尾（OpenAI 的 seed /
+penalties / logit_bias / store / prompt_cache_key / safety_identifier /
+service_tier / user；Anthropic 的 service_tier / cache_control）——
+需要完整官方能力时直连对应 adapter 或等 provider 专属请求类型。
 
 `Audio` 是 OpenAI Chat Completions 官方 `audio` 参数，不是某家网关私货。Responses 线格式没有该字段——adapter 必须显式 `bad_request`，禁止当没看见。
 
 `Response`：`Message` + `FinishReason`（stop / tool_calls / length / content_filter / error）+ `TokenUsage`（含 cached input）。
 
-`Clone` 深拷贝拦截会改的字段（标量指针、ToolChoice、ResponseFormat、Audio、Metadata）。Messages / Tools 切片级复制、元素共享。waterfall 监听器应 `req.Clone()` 再改，避免污染调用方。
+`Clone` 深拷贝拦截会改的字段（标量指针、ToolChoice、ResponseFormat、Audio、Reasoning、Output、Metadata）。Messages / Tools 切片级复制、元素共享。waterfall 监听器应 `req.Clone()` 再改，避免污染调用方。
 
 ## 流事件
 
@@ -208,8 +223,10 @@ TTS（Completions）：`req.Audio = &llm.AudioOutput{Voice: "alloy", Format: "wa
 | `ToolChoice` / `ToolAuto|None|Any|Specific` | nil = provider 默认。Specific 时填 `Name` |
 | `ResponseFormat` / `FormatText|JSONObject|JSONSchema` | nil = 纯文本 |
 | `AudioOutput` | Completions 音频输出；`Format` 空 = provider 默认 |
+| `ReasoningOptions` | `Effort`（OpenAI）/ `BudgetTokens`（Anthropic extended thinking） |
+| `OutputOptions` | `Verbosity` / `Logprobs` / `TopLogprobs`（仅 OpenAI；Anthropic 显式拒绝） |
 | `GenerateRequest` / `NewRequest` | 完整请求；零值交 provider |
-| `(*GenerateRequest).Clone` | 拦截改写用；Messages/Tools 元素共享 |
+| `(*GenerateRequest).Clone` | 拦截改写用；深拷贝 Reasoning/Output 与标量字段 |
 | `FinishReason` 五个常量 | stop / tool_calls / length / content_filter / error |
 | `TokenUsage` / `Total` | 输入、输出、cached；`Total` = 输入+输出 |
 | `Response` | Message + FinishReason + Usage |

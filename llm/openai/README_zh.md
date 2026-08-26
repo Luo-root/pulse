@@ -88,6 +88,22 @@ req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
 - transcript 可能只出现在末片，pump 会累积进 done 的文本块
 - `pcm` / `pcm16` 的 MIME 标为 `audio/pcm`（不是非法的 `audio/pcm16`）
 
+## 请求级参数
+
+词汇表公共字段：`Temperature` / `TopP` / `MaxTokens` / `StopSequences` / `ResponseFormat` / `Audio` / `Reasoning` / `Output` / `ToolChoice.Parallel`。
+
+| 字段 | Completions | Responses |
+|---|---|---|
+| `Reasoning.Effort` | `reasoning_effort` | `reasoning.effort` |
+| `Output.Verbosity` | `verbosity` | `text.verbosity` |
+| `Output.Logprobs` / `TopLogprobs` | `logprobs` / `top_logprobs`（TopLogprobs 自动隐含 logprobs=true） | 仅 `top_logprobs`；单设 Logprobs=true 会显式 bad_request |
+| `ToolChoice.Parallel` | `parallel_tool_calls` | 同左 |
+| `TopK` | 无官方字段 → **显式 bad_request**（不为兼容网关做 JSON 注入） | 同左 |
+
+`Config.Options` 是**客户端级**配置（organization / project / timeout_seconds / max_retries / headers），不进请求体。
+
+OpenAI 独有的采样与路由长尾——`seed`、`frequency_penalty` / `presence_penalty`、`logit_bias`、`store`、`prompt_cache_key`、`safety_identifier`、`service_tier`、`user`——**不在词汇表**（无跨 provider 语义）。需要时直连 adapter 或经 provider 专属请求类型。
+
 ## 错误
 
 | 条件 | Kind |

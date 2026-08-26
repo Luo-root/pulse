@@ -227,6 +227,9 @@ func TestCompletionsWireFormat(t *testing.T) {
 		if tc["type"] != "function" {
 			t.Fatalf("tool_choice 应为指定函数: %v", tc)
 		}
+		if body["parallel_tool_calls"] != false {
+			t.Fatalf("parallel_tool_calls = %v，期望 false", body["parallel_tool_calls"])
+		}
 		// 罐头响应：文本 + 工具调用 + usage
 		resp := `{"id":"c1","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"calling","tool_calls":[{"id":"call_9","type":"function","function":{"name":"echo","arguments":"{\"x\":2}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":4}}}`
 		w.Header().Set("Content-Type", "application/json")
@@ -242,7 +245,8 @@ func TestCompletionsWireFormat(t *testing.T) {
 	temp := 0.5
 	maxTok := 128
 	req.Tools = []llm.ToolDef{{Name: "echo", Description: "echo it", Parameters: json.RawMessage(`{"type":"object"}`)}}
-	req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolSpecific, Name: "echo"}
+	parallel := false
+	req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolSpecific, Name: "echo", Parallel: &parallel}
 	req.Temperature = &temp
 	req.MaxTokens = &maxTok
 	req.StopSequences = []string{"END"}
@@ -995,6 +999,111 @@ func TestCompletionsAudioEmptyFormatOmitted(t *testing.T) {
 	}
 }
 
+func TestRequestOptionsWireFormat(t *testing.T) {
+	// 词汇表参数：reasoning_effort / verbosity / logprobs 按线格式落位；
+	// TopLogprobs 自动隐含 logprobs=true。
+	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		if body["reasoning_effort"] != "high" {
+			t.Fatalf("reasoning_effort = %v", body["reasoning_effort"])
+		}
+		if body["verbosity"] != "low" {
+			t.Fatalf("verbosity = %v", body["verbosity"])
+		}
+		if body["logprobs"] != true || body["top_logprobs"] != float64(3) {
+			t.Fatalf("logprobs/top_logprobs = %v/%v（TopLogprobs 应隐含 logprobs=true）",
+				body["logprobs"], body["top_logprobs"])
+		}
+		if _, has := body["top_k"]; has {
+			t.Fatal("top_k 不应出现在 Completions 线格式")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	})
+	req := llm.NewRequest(llm.UserText("hi"))
+	req.Reasoning = &llm.ReasoningOptions{Effort: "high"}
+	topLogprobs := 3
+	req.Output = &llm.OutputOptions{Verbosity: "low", TopLogprobs: &topLogprobs}
+	if _, err := m.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
+func TestTopKRejectedOnOpenAI(t *testing.T) {
+	// top_k 不是 OpenAI 两变体的官方字段：显式 bad_request，不为兼容
+	// 网关做 JSON 注入。
+	mc := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("不应发出请求")
+	})
+	mr := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("不应发出请求")
+	})
+	topK := 40
+	for i, m := range []llm.ChatModel{mc, mr} {
+		req := llm.NewRequest(llm.UserText("hi"))
+		req.TopK = &topK
+		if _, err := m.Generate(context.Background(), req); llm.KindOf(err) != llm.ErrBadRequest {
+			t.Fatalf("变体 %d: TopK 应 bad_request，得到 %v", i, llm.KindOf(err))
+		}
+	}
+}
+
+func TestResponsesRequestOptions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		reasoning, _ := body["reasoning"].(map[string]any)
+		if reasoning["effort"] != "low" {
+			t.Fatalf("reasoning.effort = %v", body["reasoning"])
+		}
+		text, _ := body["text"].(map[string]any)
+		if text["verbosity"] != "low" {
+			t.Fatalf("text.verbosity = %v", body["text"])
+		}
+		if body["top_logprobs"] != float64(2) {
+			t.Fatalf("top_logprobs = %v", body["top_logprobs"])
+		}
+		if body["parallel_tool_calls"] != false {
+			t.Fatalf("parallel_tool_calls = %v", body["parallel_tool_calls"])
+		}
+		if body["logprobs"] != nil {
+			t.Fatalf("Responses 线格式无 logprobs 开关: %v", body["logprobs"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","error":null,"incomplete_details":null,"model":"gpt-test","output":[{"type":"message","id":"m1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2},"metadata":{},"tool_choice":"auto","tools":[],"parallel_tool_calls":true}`))
+	}))
+	defer srv.Close()
+	model, err := NewResponses(llm.Config{
+		Provider: ProviderResponses, Model: "gpt-test", APIKey: "k", BaseURL: srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewResponses: %v", err)
+	}
+	req := llm.NewRequest(llm.UserText("hi"))
+	req.Reasoning = &llm.ReasoningOptions{Effort: "low"}
+	topLogprobs := 2
+	parallel := false
+	req.Output = &llm.OutputOptions{Verbosity: "low", TopLogprobs: &topLogprobs}
+	req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolAuto, Parallel: &parallel}
+	if _, err := model.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
+func TestResponsesLogprobsConflictRejected(t *testing.T) {
+	// Responses：TopLogprobs 与显式 Logprobs=false 自相矛盾，必须
+	// bad_request 且不发 HTTP 请求。
+	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("不应发出请求")
+	})
+	no := false
+	top := 5
+	req := llm.NewRequest(llm.UserText("hi"))
+	req.Output = &llm.OutputOptions{Logprobs: &no, TopLogprobs: &top}
+	if _, err := m.Generate(context.Background(), req); llm.KindOf(err) != llm.ErrBadRequest {
+		t.Fatalf("Logprobs=false + TopLogprobs 应 bad_request，得到 %v", err)
+	}
+}
+
 func TestResponsesAudioRejected(t *testing.T) {
 	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("不应发出请求")
@@ -1346,6 +1455,23 @@ func TestLiveResponses(t *testing.T) {
 			t.Fatal("图像输入返回空文本")
 		}
 		t.Logf("image=%q", truncate(resp.Message.Text(), 80))
+	})
+
+	t.Run("video", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+			llm.Text("这段视频里发生了什么？用一句话回答"),
+			llm.MediaURL("video/mp4", "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"),
+		}})
+		resp, err := model.Generate(ctx, req)
+		if err != nil {
+			t.Fatalf("Generate(video): %v", err)
+		}
+		if strings.TrimSpace(resp.Message.Text()) == "" {
+			t.Fatal("视频输入返回空文本")
+		}
+		t.Logf("video=%q", truncate(resp.Message.Text(), 80))
 	})
 }
 

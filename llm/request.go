@@ -27,6 +27,10 @@ const (
 type ToolChoice struct {
 	Mode ToolChoiceMode
 	Name string // Mode == ToolSpecific 时生效
+	// Parallel 控制是否允许并行工具调用：OpenAI → parallel_tool_calls，
+	// Anthropic → tool_choice 的 disable_parallel_tool_use（取反）。
+	// nil = provider 默认（通常允许）。
+	Parallel *bool
 }
 
 // ResponseFormatType 结构化输出类型。
@@ -57,6 +61,28 @@ type AudioOutput struct {
 	Format string
 }
 
+// ReasoningOptions 控制推理模型的思维链生成。字段按 provider 语义
+// 取用：OpenAI 读 Effort（none/minimal/low/medium/high/xhigh/max），
+// Anthropic 读 BudgetTokens（≥1024 且 < max_tokens，启用 extended
+// thinking；Effort 在该线格式无对应参数，忽略——两个 knob 各归各家
+// 是本结构的明确契约，不做跨家隐式换算）。nil = provider 默认。
+type ReasoningOptions struct {
+	Effort       string
+	BudgetTokens int
+}
+
+// OutputOptions 控制输出风格与 token 概率回传。当前仅 OpenAI 两变体
+// 支持：Verbosity → verbosity / text.verbosity；Logprobs+TopLogprobs →
+// logprobs / top_logprobs（Completions 中 TopLogprobs 自动隐含
+// Logprobs=true；Responses 单设 Logprobs=true 而无 TopLogprobs 显式
+// 报错）。Anthropic 无对应线格式 → 显式 ErrBadRequest。
+// nil = provider 默认。
+type OutputOptions struct {
+	Verbosity   string
+	Logprobs    *bool
+	TopLogprobs *int
+}
+
 // GenerateRequest 是一次对话补全请求的完整描述。
 // 零值字段一律表示"交给 provider 默认"，不设魔法默认值——
 // 默认策略属于装配层，不属于词汇表。
@@ -67,6 +93,7 @@ type GenerateRequest struct {
 
 	Temperature *float64
 	TopP        *float64
+	TopK        *int // 仅 Anthropic 原生；OpenAI 两变体显式 ErrBadRequest
 	MaxTokens   *int
 
 	StopSequences  []string
@@ -74,6 +101,12 @@ type GenerateRequest struct {
 
 	// Audio 声明音频输出模态（TTS via chat completions）；nil = 纯文本。
 	Audio *AudioOutput
+
+	// Reasoning 控制推理模型思维链；nil = provider 默认。
+	Reasoning *ReasoningOptions
+
+	// Output 控制输出风格 / token 概率；nil = provider 默认。
+	Output *OutputOptions
 
 	// Metadata 供上层审计/追踪透传，provider 不理解则忽略；
 	// 拦截事件（before_generate）可读取它做路由与计量归因。
@@ -108,8 +141,32 @@ func (r *GenerateRequest) Clone() *GenerateRequest {
 		v := *r.MaxTokens
 		cp.MaxTokens = &v
 	}
+	if r.TopK != nil {
+		v := *r.TopK
+		cp.TopK = &v
+	}
+	if r.Reasoning != nil {
+		ro := *r.Reasoning
+		cp.Reasoning = &ro
+	}
+	if r.Output != nil {
+		oo := *r.Output
+		if r.Output.Logprobs != nil {
+			v := *r.Output.Logprobs
+			oo.Logprobs = &v
+		}
+		if r.Output.TopLogprobs != nil {
+			v := *r.Output.TopLogprobs
+			oo.TopLogprobs = &v
+		}
+		cp.Output = &oo
+	}
 	if r.ToolChoice != nil {
 		tc := *r.ToolChoice
+		if r.ToolChoice.Parallel != nil {
+			v := *r.ToolChoice.Parallel
+			tc.Parallel = &v
+		}
 		cp.ToolChoice = &tc
 	}
 	if r.ResponseFormat != nil {
