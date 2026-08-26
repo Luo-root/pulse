@@ -739,13 +739,7 @@ func TestSamplingAndThinking(t *testing.T) {
 		if thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(2048) {
 			t.Fatalf("thinking 不符: %v", body["thinking"])
 		}
-		if body["service_tier"] != "standard_only" {
-			t.Fatalf("service_tier = %v", body["service_tier"])
-		}
-		output, _ := body["output_config"].(map[string]any)
-		if output["effort"] != "high" {
-			t.Fatalf("output_config.effort = %v", body["output_config"])
-		}
+		// 并行工具：ToolChoice.Parallel=false → disable_parallel_tool_use
 		choice, _ := body["tool_choice"].(map[string]any)
 		if choice["type"] != "auto" || choice["disable_parallel_tool_use"] != true {
 			t.Fatalf("tool_choice 并行映射不符: %v", body["tool_choice"])
@@ -763,14 +757,36 @@ func TestSamplingAndThinking(t *testing.T) {
 	req.Reasoning = &llm.ReasoningOptions{BudgetTokens: 2048, Effort: "high"} // Effort 在 anthropic 被忽略
 	parallel := false
 	req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolAuto, Parallel: &parallel}
-	req.Output = &llm.OutputOptions{Effort: "high"}
-	req.Options = map[string]any{"service_tier": "standard_only"}
 	resp, err := m.Generate(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	if resp.Message.ReasoningText() != "hmm" {
 		t.Fatalf("reasoning = %q", resp.Message.ReasoningText())
+	}
+}
+
+func TestAnthropicOutputUnsupportedRejected(t *testing.T) {
+	// Output.Verbosity / Logprobs / TopLogprobs 在 Anthropic 无对应线
+	// 格式：显式 bad_request，不静默丢弃。
+	m := newTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("不应发出请求")
+	})
+	logprobs := true
+	topLogprobs := 3
+	for _, out := range []llm.OutputOptions{
+		{Verbosity: "low"},
+		{Logprobs: &logprobs},
+		{TopLogprobs: &topLogprobs},
+	} {
+		req := llm.NewRequest(llm.UserText("hi"))
+		maxTok := 64
+		req.MaxTokens = &maxTok
+		out := out
+		req.Output = &out
+		if _, err := m.Generate(context.Background(), req); llm.KindOf(err) != llm.ErrBadRequest {
+			t.Fatalf("Output %+v 应 bad_request，得到 %v", out, llm.KindOf(err))
+		}
 	}
 }
 

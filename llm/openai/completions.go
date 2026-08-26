@@ -9,7 +9,6 @@ import (
 
 	"github.com/Luo-root/pulse/llm"
 	sdk "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/shared"
@@ -45,11 +44,11 @@ type tcAcc struct {
 }
 
 func (m *completionsModel) Generate(ctx context.Context, req *llm.GenerateRequest) (*llm.Response, error) {
-	params, extra, err := m.buildParams(req, false)
+	params, err := m.buildParams(req, false)
 	if err != nil {
 		return nil, err
 	}
-	completion, err := m.client.Chat.Completions.New(ctx, params, extra...)
+	completion, err := m.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, mapError(m.provider, err)
 	}
@@ -69,11 +68,11 @@ func (m *completionsModel) Generate(ctx context.Context, req *llm.GenerateReques
 }
 
 func (m *completionsModel) Stream(ctx context.Context, req *llm.GenerateRequest) (<-chan llm.StreamEvent, error) {
-	params, extra, err := m.buildParams(req, true)
+	params, err := m.buildParams(req, true)
 	if err != nil {
 		return nil, err
 	}
-	stream := m.client.Chat.Completions.NewStreaming(ctx, params, extra...)
+	stream := m.client.Chat.Completions.NewStreaming(ctx, params)
 	ch := make(chan llm.StreamEvent, 16)
 	go m.pump(ctx, stream, req, ch)
 	return ch, nil
@@ -81,13 +80,10 @@ func (m *completionsModel) Stream(ctx context.Context, req *llm.GenerateRequest)
 
 // buildParams 把 llm.GenerateRequest 翻译为 Chat Completions 请求。
 // stream=true 才带 stream_options：官方规定仅 stream 时有效，部分网关对非流式会 400。
-// 返回的 extra 是 per-request 选项（官方线格式没有、但兼容网关普遍
-// 接受的字段，经 WithJSONSet 注入请求体）。
-func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (sdk.ChatCompletionNewParams, []option.RequestOption, error) {
+func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (sdk.ChatCompletionNewParams, error) {
 	params := sdk.ChatCompletionNewParams{
 		Model: shared.ChatModel(m.model),
 	}
-	var extra []option.RequestOption
 	if stream {
 		params.StreamOptions = sdk.ChatCompletionStreamOptionsParam{IncludeUsage: param.NewOpt(true)}
 	}
@@ -95,7 +91,7 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 	for _, msg := range req.Messages {
 		converted, err := m.convertMessage(msg)
 		if err != nil {
-			return params, extra, err
+			return params, err
 		}
 		msgs = append(msgs, converted...)
 	}
@@ -108,9 +104,10 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 		params.TopP = param.NewOpt(*req.TopP)
 	}
 	if req.TopK != nil {
-		// 官方 Chat Completions 无 top_k；兼容网关（MiniMax 等）普遍
-		// 接受，经 WithJSONSet 注入请求体，官方端点会 bad_request。
-		extra = append(extra, option.WithJSONSet("top_k", *req.TopK))
+		// 官方 Chat Completions 线格式没有 top_k——不为兼容网关做
+		// JSON 注入，显式报错（需要 top_k 请用 Anthropic provider）。
+		return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+			"Chat Completions 线格式不支持 TopK")
 	}
 	if req.Reasoning != nil && req.Reasoning.Effort != "" {
 		// o 系列等推理模型的思考强度。
@@ -120,76 +117,15 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 		if req.Output.Verbosity != "" {
 			params.Verbosity = sdk.ChatCompletionNewParamsVerbosity(req.Output.Verbosity)
 		}
-		if req.Output.Logprobs != nil {
+		// top_logprobs 依赖 logprobs=true 才有输出：设 TopLogprobs 时
+		// 自动隐含开启，调用方无需重复声明。
+		if req.Output.TopLogprobs != nil {
+			params.Logprobs = param.NewOpt(true)
+			params.TopLogprobs = param.NewOpt(int64(*req.Output.TopLogprobs))
+		} else if req.Output.Logprobs != nil {
 			params.Logprobs = param.NewOpt(*req.Output.Logprobs)
 		}
-		if req.Output.TopLogprobs != nil {
-			params.TopLogprobs = param.NewOpt(int64(*req.Output.TopLogprobs))
-		}
 	}
-	// Options 长尾参数：按名取用，未知键忽略（与 Config.Options 同口径）。
-	// 数字兼容 int 与 float64（JSON 反序列化产生 float64，Go 字面量是 int）。
-	applyRequestOptions(req.Options, func(key string, v any) {
-		asFloat := func(v any) (float64, bool) {
-			switch f := v.(type) {
-			case float64:
-				return f, true
-			case int:
-				return float64(f), true
-			}
-			return 0, false
-		}
-		switch key {
-		case "frequency_penalty":
-			if f, ok := asFloat(v); ok {
-				params.FrequencyPenalty = param.NewOpt(f)
-			}
-		case "presence_penalty":
-			if f, ok := asFloat(v); ok {
-				params.PresencePenalty = param.NewOpt(f)
-			}
-		case "seed":
-			if f, ok := asFloat(v); ok {
-				params.Seed = param.NewOpt(int64(f))
-			}
-		case "user":
-			if s, ok := v.(string); ok {
-				params.User = param.NewOpt(s)
-			}
-		case "service_tier":
-			if s, ok := v.(string); ok {
-				params.ServiceTier = sdk.ChatCompletionNewParamsServiceTier(s)
-			}
-		case "verbosity":
-			if s, ok := v.(string); ok {
-				params.Verbosity = sdk.ChatCompletionNewParamsVerbosity(s)
-			}
-		case "logit_bias":
-			if m_, ok := v.(map[string]any); ok {
-				bias := make(map[string]int64, len(m_))
-				for tok, n := range m_ {
-					if f, ok := n.(float64); ok {
-						bias[tok] = int64(f)
-					}
-				}
-				if len(bias) > 0 {
-					params.LogitBias = bias
-				}
-			}
-		case "store":
-			if b, ok := v.(bool); ok {
-				params.Store = param.NewOpt(b)
-			}
-		case "prompt_cache_key":
-			if s, ok := v.(string); ok {
-				params.PromptCacheKey = param.NewOpt(s)
-			}
-		case "safety_identifier":
-			if s, ok := v.(string); ok {
-				params.SafetyIdentifier = param.NewOpt(s)
-			}
-		}
-	})
 	if req.MaxTokens != nil {
 		// 用新版字段 max_completion_tokens：max_tokens 已废弃且与
 		// o 系列推理模型不兼容。
@@ -221,7 +157,7 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 		if len(t.Parameters) > 0 {
 			var schema map[string]any
 			if err := json.Unmarshal(t.Parameters, &schema); err != nil {
-				return params, extra, llm.NewError(llm.ErrBadRequest, m.provider, 0, err,
+				return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, err,
 					"工具 %s 的参数 Schema 不是合法 JSON 对象", t.Name)
 			}
 			fd.Parameters = schema
@@ -244,7 +180,7 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 				Function: sdk.ChatCompletionNamedToolChoiceFunctionParam{Name: req.ToolChoice.Name},
 			}
 		default:
-			return params, extra, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+			return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
 				"未知 ToolChoiceMode %q", req.ToolChoice.Mode)
 		}
 	}
@@ -261,7 +197,7 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 			}
 			var schema any
 			if err := json.Unmarshal(rf.Schema, &schema); err != nil {
-				return params, extra, llm.NewError(llm.ErrBadRequest, m.provider, 0, err,
+				return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, err,
 					"ResponseFormat.Schema 不是合法 JSON")
 			}
 			params.ResponseFormat.OfJSONSchema = &shared.ResponseFormatJSONSchemaParam{
@@ -270,7 +206,7 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 		case llm.FormatText, "":
 			// 纯文本是默认行为，不下发。
 		default:
-			return params, extra, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+			return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
 				"未知 ResponseFormatType %q", rf.Type)
 		}
 	}
@@ -286,7 +222,7 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 			params.Metadata = md
 		}
 	}
-	return params, extra, nil
+	return params, nil
 }
 
 // applyRequestOptions 遍历请求级 Options；fn 只在值为存在时回调。

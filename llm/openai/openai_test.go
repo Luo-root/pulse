@@ -1000,66 +1000,51 @@ func TestCompletionsAudioEmptyFormatOmitted(t *testing.T) {
 }
 
 func TestRequestOptionsWireFormat(t *testing.T) {
-	// 词汇表长尾参数：reasoning_effort / top_k / penalties / seed /
-	// service_tier / verbosity 按线格式落位。
+	// 词汇表参数：reasoning_effort / verbosity / logprobs 按线格式落位；
+	// TopLogprobs 自动隐含 logprobs=true。
 	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
 		body := readJSON(t, r)
 		if body["reasoning_effort"] != "high" {
 			t.Fatalf("reasoning_effort = %v", body["reasoning_effort"])
 		}
-		if body["top_k"] != float64(40) {
-			t.Fatalf("top_k（WithJSONSet 注入）= %v", body["top_k"])
-		}
-		if body["frequency_penalty"] != float64(0.5) {
-			t.Fatalf("frequency_penalty = %v", body["frequency_penalty"])
-		}
-		if body["presence_penalty"] != float64(-0.25) {
-			t.Fatalf("presence_penalty = %v", body["presence_penalty"])
+		if body["verbosity"] != "low" {
+			t.Fatalf("verbosity = %v", body["verbosity"])
 		}
 		if body["logprobs"] != true || body["top_logprobs"] != float64(3) {
-			t.Fatalf("logprobs/top_logprobs = %v/%v", body["logprobs"], body["top_logprobs"])
+			t.Fatalf("logprobs/top_logprobs = %v/%v（TopLogprobs 应隐含 logprobs=true）",
+				body["logprobs"], body["top_logprobs"])
 		}
-		bias, _ := body["logit_bias"].(map[string]any)
-		if bias["123"] != float64(-10) {
-			t.Fatalf("logit_bias = %v", body["logit_bias"])
-		}
-		if body["store"] != true || body["prompt_cache_key"] != "cache-1" || body["safety_identifier"] != "safe-1" {
-			t.Fatalf("store/cache/safety = %v/%v/%v", body["store"], body["prompt_cache_key"], body["safety_identifier"])
-		}
-		if body["seed"] != float64(42) {
-			t.Fatalf("seed = %v", body["seed"])
-		}
-		if body["service_tier"] != "flex" {
-			t.Fatalf("service_tier = %v", body["service_tier"])
-		}
-		if body["user"] != "u-1" {
-			t.Fatalf("user = %v", body["user"])
+		if _, has := body["top_k"]; has {
+			t.Fatal("top_k 不应出现在 Completions 线格式")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
 	})
-	effort := "high"
-	topK := 40
 	req := llm.NewRequest(llm.UserText("hi"))
-	req.Reasoning = &llm.ReasoningOptions{Effort: effort}
-	req.TopK = &topK
-	logprobs := true
+	req.Reasoning = &llm.ReasoningOptions{Effort: "high"}
 	topLogprobs := 3
-	req.Output = &llm.OutputOptions{Verbosity: "low", Logprobs: &logprobs, TopLogprobs: &topLogprobs}
-	req.Options = map[string]any{
-		"frequency_penalty": 0.5,
-		"presence_penalty":  -0.25,
-		"seed":              42, // JSON 反序列化约定：数字为 float64
-		"service_tier":      "flex",
-		"user":              "u-1",
-		"logit_bias":        map[string]any{"123": -10.0},
-		"store":             true,
-		"prompt_cache_key":  "cache-1",
-		"safety_identifier": "safe-1",
-		"unknown_key":       "ignored",
-	}
+	req.Output = &llm.OutputOptions{Verbosity: "low", TopLogprobs: &topLogprobs}
 	if _, err := m.Generate(context.Background(), req); err != nil {
 		t.Fatalf("Generate: %v", err)
+	}
+}
+
+func TestTopKRejectedOnOpenAI(t *testing.T) {
+	// top_k 不是 OpenAI 两变体的官方字段：显式 bad_request，不为兼容
+	// 网关做 JSON 注入。
+	mc := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("不应发出请求")
+	})
+	mr := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("不应发出请求")
+	})
+	topK := 40
+	for i, m := range []llm.ChatModel{mc, mr} {
+		req := llm.NewRequest(llm.UserText("hi"))
+		req.TopK = &topK
+		if _, err := m.Generate(context.Background(), req); llm.KindOf(err) != llm.ErrBadRequest {
+			t.Fatalf("变体 %d: TopK 应 bad_request，得到 %v", i, llm.KindOf(err))
+		}
 	}
 }
 
@@ -1080,8 +1065,8 @@ func TestResponsesRequestOptions(t *testing.T) {
 		if body["parallel_tool_calls"] != false {
 			t.Fatalf("parallel_tool_calls = %v", body["parallel_tool_calls"])
 		}
-		if body["user"] != "u-9" || body["prompt_cache_key"] != "ck-1" || body["safety_identifier"] != "s-1" {
-			t.Fatalf("user/cache/safety = %v/%v/%v", body["user"], body["prompt_cache_key"], body["safety_identifier"])
+		if body["logprobs"] != nil {
+			t.Fatalf("Responses 线格式无 logprobs 开关: %v", body["logprobs"])
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","error":null,"incomplete_details":null,"model":"gpt-test","output":[{"type":"message","id":"m1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2},"metadata":{},"tool_choice":"auto","tools":[],"parallel_tool_calls":true}`))
@@ -1096,11 +1081,9 @@ func TestResponsesRequestOptions(t *testing.T) {
 	req := llm.NewRequest(llm.UserText("hi"))
 	req.Reasoning = &llm.ReasoningOptions{Effort: "low"}
 	topLogprobs := 2
-	logprobs := true
 	parallel := false
-	req.Output = &llm.OutputOptions{Verbosity: "low", Logprobs: &logprobs, TopLogprobs: &topLogprobs}
+	req.Output = &llm.OutputOptions{Verbosity: "low", TopLogprobs: &topLogprobs}
 	req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolAuto, Parallel: &parallel}
-	req.Options = map[string]any{"verbosity": "low", "user": "u-9", "prompt_cache_key": "ck-1", "safety_identifier": "s-1"}
 	if _, err := model.Generate(context.Background(), req); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

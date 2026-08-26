@@ -90,30 +90,19 @@ req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
 
 ## 请求级参数
 
-词汇表公共字段：`Temperature` / `TopP` / `TopK` / `MaxTokens` / `StopSequences` / `ResponseFormat` / `Audio` / `Reasoning` / `Output` / `ToolChoice.Parallel`。
+词汇表公共字段：`Temperature` / `TopP` / `MaxTokens` / `StopSequences` / `ResponseFormat` / `Audio` / `Reasoning` / `Output` / `ToolChoice.Parallel`。
 
 | 字段 | Completions | Responses |
 |---|---|---|
 | `Reasoning.Effort` | `reasoning_effort` | `reasoning.effort` |
 | `Output.Verbosity` | `verbosity` | `text.verbosity` |
-| `Output.Logprobs` / `TopLogprobs` | `logprobs` / `top_logprobs` | 仅 `top_logprobs`；单设 Logprobs=true 会显式 bad_request |
+| `Output.Logprobs` / `TopLogprobs` | `logprobs` / `top_logprobs`（TopLogprobs 自动隐含 logprobs=true） | 仅 `top_logprobs`；单设 Logprobs=true 会显式 bad_request |
 | `ToolChoice.Parallel` | `parallel_tool_calls` | 同左 |
-| `TopK` | 无官方字段，JSON 注入 | 无对应，忽略 |
+| `TopK` | 无官方字段 → **显式 bad_request**（不为兼容网关做 JSON 注入） | 同左 |
 
-请求级 `Options`（长尾逃生舱，未知键忽略）：
+`Config.Options` 是**客户端级**配置（organization / project / timeout_seconds / max_retries / headers），不进请求体。
 
-| 键 | 类型 | 落到 |
-|---|---|---|
-| `frequency_penalty` / `presence_penalty` | float64 | 同名字段 |
-| `seed` | int / float64 | `seed` |
-| `user` | string | `user` |
-| `service_tier` | string | `service_tier`（auto/default/flex/scale/priority/fast） |
-| `verbosity` | string | Completions `verbosity` / Responses `text.verbosity`（low/medium/high） |
-| `logit_bias` | map[string]any（数值） | Completions `logit_bias` |
-| `store` | bool | Completions `store` |
-| `prompt_cache_key` / `safety_identifier` | string | Completions 同名字段 |
-
-`Config.Options` 是**客户端级**配置（organization / project / timeout_seconds / max_retries / headers），与请求级 `Options` 是两层。
+OpenAI 独有的采样与路由长尾——`seed`、`frequency_penalty` / `presence_penalty`、`logit_bias`、`store`、`prompt_cache_key`、`safety_identifier`、`service_tier`、`user`——**不在词汇表**（无跨 provider 语义）。需要时直连 adapter 或经 provider 专属请求类型。
 
 ## 错误
 

@@ -66,20 +66,17 @@ ctx 取消：先发 `EventError(canceled)` 再关 channel。
 
 ## 请求级参数
 
-词汇表公共字段之外：
-
 | 字段 | Anthropic Messages |
 |---|---|
-| `TopK` | 原生 `top_k` |
+| `TopK` | 原生 `top_k`（OpenAI 两变体无此参数，会显式 bad_request） |
 | `Reasoning.BudgetTokens` | `thinking: {type: enabled, budget_tokens}`；≥1024 且 < max_tokens |
-| `Reasoning.Effort` | 无对应参数，忽略 |
-| `Output.Effort` | `output_config.effort`（low/medium/high/xhigh/max） |
+| `Reasoning.Effort` | 无对应参数，忽略（Reasoning 两 knob 各归各家是词汇表契约） |
 | `Output.Verbosity` / Logprobs / TopLogprobs | 无对应，显式 bad_request |
 | `ToolChoice.Parallel` | `disable_parallel_tool_use`（适配器自动取反） |
 
-请求级 `Options`：`service_tier`（如 standard_only）；其余键忽略。
-
 `Metadata` 只透传 `user_id`（线格式仅此一键）。
+
+Anthropic 独有的 `service_tier`、`cache_control` 断点不在词汇表（无跨 provider 语义），需要时直连 adapter。
 
 ## 有意不做（线格式有但不适配）
 

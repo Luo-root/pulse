@@ -345,7 +345,6 @@ func TestCloneIsolation(t *testing.T) {
 		Audio:          &AudioOutput{Voice: "alloy", Format: "wav"},
 		Reasoning:      &ReasoningOptions{Effort: "high", BudgetTokens: 1024},
 		Output:         &OutputOptions{Verbosity: "low", Logprobs: &logprobs, TopLogprobs: &topLogprobs},
-		Options:        map[string]any{"seed": 42},
 		Metadata:       map[string]any{"k": "v"},
 	}
 	cp := req.Clone()
@@ -359,7 +358,6 @@ func TestCloneIsolation(t *testing.T) {
 	cp.Audio.Voice = "nova"
 	cp.Reasoning.Effort = "low"
 	cp.Output.Verbosity = "high"
-	cp.Options["seed"] = 7
 
 	if req.Metadata["k"] != "v" {
 		t.Fatal("Metadata leaked through Clone")
@@ -378,9 +376,6 @@ func TestCloneIsolation(t *testing.T) {
 	}
 	if *req.Output.Logprobs != true || *req.Output.TopLogprobs != 3 {
 		t.Fatal("Output pointers shared through Clone")
-	}
-	if req.Options["seed"] != 42 {
-		t.Fatal("Options map leaked through Clone")
 	}
 	if len(cp.Messages) != len(req.Messages) {
 		t.Fatal("messages slice not copied")
@@ -454,7 +449,8 @@ func TestInterceptionStream(t *testing.T) {
 	_, _ = kernel.OnWaterfall(ctx, EventBeforeGenerate,
 		func(req *GenerateRequest, next func(*GenerateRequest) *GenerateRequest) *GenerateRequest {
 			req = req.Clone()
-			req.Options = map[string]any{"marker": true}
+			n := 77
+			req.MaxTokens = &n
 			rewritten.Store(true)
 			return next(req)
 		})

@@ -64,18 +64,21 @@ type AudioOutput struct {
 // ReasoningOptions 控制推理模型的思维链生成。字段按 provider 语义
 // 取用：OpenAI 读 Effort（none/minimal/low/medium/high/xhigh/max），
 // Anthropic 读 BudgetTokens（≥1024 且 < max_tokens，启用 extended
-// thinking；Effort 在该线格式被忽略）。nil = provider 默认。
+// thinking；Effort 在该线格式无对应参数，忽略——两个 knob 各归各家
+// 是本结构的明确契约，不做跨家隐式换算）。nil = provider 默认。
 type ReasoningOptions struct {
 	Effort       string
 	BudgetTokens int
 }
 
-// OutputOptions 控制模型输出的通用长尾语义。不同 provider 取各自支持
-// 的字段：OpenAI 读 Verbosity / Logprobs；Anthropic 读 Effort（及其
-// 结构化输出 format，当前 ResponseFormat 仍优先）。nil = provider 默认。
+// OutputOptions 控制输出风格与 token 概率回传。当前仅 OpenAI 两变体
+// 支持：Verbosity → verbosity / text.verbosity；Logprobs+TopLogprobs →
+// logprobs / top_logprobs（Completions 中 TopLogprobs 自动隐含
+// Logprobs=true；Responses 单设 Logprobs=true 而无 TopLogprobs 显式
+// 报错）。Anthropic 无对应线格式 → 显式 ErrBadRequest。
+// nil = provider 默认。
 type OutputOptions struct {
 	Verbosity   string
-	Effort      string
 	Logprobs    *bool
 	TopLogprobs *int
 }
@@ -90,7 +93,7 @@ type GenerateRequest struct {
 
 	Temperature *float64
 	TopP        *float64
-	TopK        *int
+	TopK        *int // 仅 Anthropic 原生；OpenAI 两变体显式 ErrBadRequest
 	MaxTokens   *int
 
 	StopSequences  []string
@@ -104,12 +107,6 @@ type GenerateRequest struct {
 
 	// Output 控制输出风格 / token 概率；nil = provider 默认。
 	Output *OutputOptions
-
-	// Options 承载 provider 特有的请求级长尾参数（seed、penalties、
-	// service_tier、verbosity……），由各 adapter 按名取用、未知键
-	// 忽略——词汇表只收语义稳定的公共字段，长尾不为此改词汇表。
-	// 各 adapter 认识的键见其文档。
-	Options map[string]any
 
 	// Metadata 供上层审计/追踪透传，provider 不理解则忽略；
 	// 拦截事件（before_generate）可读取它做路由与计量归因。
@@ -163,12 +160,6 @@ func (r *GenerateRequest) Clone() *GenerateRequest {
 			oo.TopLogprobs = &v
 		}
 		cp.Output = &oo
-	}
-	if r.Options != nil {
-		cp.Options = make(map[string]any, len(r.Options))
-		for k, v := range r.Options {
-			cp.Options[k] = v
-		}
 	}
 	if r.ToolChoice != nil {
 		tc := *r.ToolChoice

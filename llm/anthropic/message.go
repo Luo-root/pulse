@@ -111,24 +111,9 @@ func (m *messagesModel) buildParams(req *llm.GenerateRequest) (sdk.MessageNewPar
 		}
 	}
 	if req.Output != nil {
-		if req.Output.Effort != "" {
-			params.OutputConfig.Effort = sdk.OutputConfigEffort(req.Output.Effort)
-		}
 		if req.Output.Verbosity != "" || req.Output.Logprobs != nil || req.Output.TopLogprobs != nil {
 			return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
 				"Anthropic Messages 不支持 Output.Verbosity / Logprobs / TopLogprobs")
-		}
-	}
-	// Options 长尾参数：按名取用，未知键忽略。
-	for key, v := range req.Options {
-		if v == nil {
-			continue
-		}
-		switch key {
-		case "service_tier":
-			if s, ok := v.(string); ok {
-				params.ServiceTier = sdk.MessageNewParamsServiceTier(s)
-			}
 		}
 	}
 	if len(req.StopSequences) > 0 {
