@@ -16,15 +16,7 @@ v2 以可逆效应和依赖响应式为内核，先落地插件内核、模型�
 | [`llm/openai`](llm/openai/README_zh.md) | OpenAI Chat Completions + Responses 官方 SDK 适配器 | `openai.Register()` |
 | [`llm/anthropic`](llm/anthropic/README_zh.md) | Anthropic Messages 官方 SDK 适配器 | `anthropic.Register()` |
 | [`loop`](loop/README_zh.md) | 无状态 ReAct 回合执行器，工具调用与 HITL 决策事件 | `loop.NewAgent()` |
-| `components/tools` | v1 工具实现，等待作为 v2 工具插件重写接入 | `tools.NewRegistry()` |
-| `components/mcp` | v1 MCP stdio / SSE 客户端，等待作为 v2 工具来源插件重写接入 | `mcp.NewManager()` |
-| `components/sandbox` | 进程隔离代码执行沙箱 | `sandbox.New()` |
-| `components/skill` | Markdown + YAML frontmatter Skill 解析与加载 | `skill.ParseSkillMarkdown()` |
-| `components/schema` | 旧组件仍使用的数据结构 | 后续随组件迁移逐步收口 |
-| `components/stream` | 一对多流式广播 | `stream.NewMulticast()` |
-| `components/bufutil` | 带容量限制的缓冲工具 | 包级 API |
-
-> `components/*` 中保留的实现不是 v2 核心 API。它们会在需要接入 `kernel` / `llm` 时重写；不要为新功能建立在旧组件间的兼容层上。
+| [`kernel/flow`](docs/design/flow-v2-design.md) | 数据就绪驱动的节点编排（槽位三态含跳过） | `flow.New(ctx)` |
 
 ## 快速上手：模型 + ReAct 工具回合
 
@@ -123,7 +115,7 @@ func main() {
 - **词汇表优先**：`llm` 只收跨 provider 有稳定语义的字段；无对应线格式时 adapter 显式 `ErrBadRequest`，不静默吞参数。
 - **插件不是口号**：对环境的修改都注册可逆 Effect；服务依赖变化驱动 Fiber 装载 / 卸载。
 - **Agent 无状态**：`loop.Agent` 只执行一个回合；历史、会话存储、重试与 failover 由上层或后续 v2 组件承担。
-- **旧组件等待重写**：工具、MCP、Sandbox、Skill 等尚未接入 v2 时保留源码；接入时从核心契约重写，不绕过 `kernel`。
+- **v1 components 已删除**：工具 / MCP / 沙箱 / Skill 将作为 v2 插件重写，不复活旧包。
 
 ## 构建与测试
 
@@ -133,7 +125,7 @@ go build ./...
 go test ./...
 
 # v2 核心回归（无真实 API）
-go test -race -skip TestLive ./kernel/ ./llm/... ./loop/
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/
 
 # 单独测试 provider adapter
 go test -race -skip TestLive ./llm/openai/
@@ -146,16 +138,9 @@ OpenAI / Anthropic / MiniMax / MiMo 的真实 API 冒烟测试都由环境变量
 
 ```text
 kernel/                    v2 插件内核
+  flow/                    数据就绪驱动的节点图
 llm/                       v2 模型词汇表、Registry 与 provider adapter
 loop/                      v2 无状态 ReAct 回合
-components/
-  bufutil/                 缓冲工具
-  mcp/                     待重写的 MCP 客户端
-  sandbox/                 代码沙箱
-  schema/                  旧组件数据结构
-  skill/                   Skill 解析与加载
-  stream/                  流式广播
-  tools/                   待重写的工具实现
 docs/design/               架构设计与迁移文档
 ```
 
