@@ -88,6 +88,15 @@ PULSE_ANTHROPIC_MODEL        默认 claude-sonnet-4-5
 
 覆盖文本 / 流式 / 工具 / 图像（URL）。离线 httptest 覆盖线格式、system 合并、tool_result 首位、PDF base64、错误分类表、流式全事件序列、取消收尾。
 
+## 有意钉死
+
+- SDK 自动重试默认关闭。
+- 输入侧 reasoning 不回传（thinking 回传需 signature 配对，词汇表不承载签名）。
+- 未知 MIME / 变体不支持的字段：显式 `bad_request`，不静默丢。
+- `PartCustom(image/*)` 与 `PartImage` 同路，都映射官方 image 块。
+- 相邻同角色消息合并为一条（连续 `RoleTool` 的多个 tool_result 必须同处一条 user 轮）。
+- `Metadata` 只透传 `user_id`（Anthropic 线格式仅此一键）；其余键不出去，`metadata.trace_id` 之类不要指望走这里。
+
 ## 不做
 
 Prompt caching 断点（`cache_control`）、thinking 开关（`ThinkingConfig`）、服务端工具（web_search 等）、token counting 端点、batch API、Azure/Bedrock/Vertex 专用签名。

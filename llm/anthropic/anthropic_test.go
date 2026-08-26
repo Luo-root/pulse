@@ -157,7 +157,7 @@ func TestWireFormat(t *testing.T) {
 		if trt["text"] != "boom happened" {
 			t.Fatalf("tool_result 内容不符: %v", trt)
 		}
-		// 工具声明
+		// 工具声明：schema 扁平映射——properties/required 各归其位
 		tools, _ := body["tools"].([]any)
 		if len(tools) != 1 {
 			t.Fatalf("tools 数量 = %d", len(tools))
@@ -169,6 +169,22 @@ func TestWireFormat(t *testing.T) {
 		schema, _ := t0["input_schema"].(map[string]any)
 		if schema["type"] != "object" {
 			t.Fatalf("input_schema.type = %v", schema["type"])
+		}
+		props, _ := schema["properties"].(map[string]any)
+		if props == nil || props["city"] == nil {
+			t.Fatalf("input_schema.properties 应为字段表: %v", schema)
+		}
+		if _, nested := props["properties"]; nested {
+			t.Fatal("整份 schema 被塞进了 properties（套层 bug）")
+		}
+		required, _ := schema["required"].([]any)
+		if len(required) != 1 || required[0] != "city" {
+			t.Fatalf("input_schema.required = %v", schema["required"])
+		}
+		// tool_choice 线上值
+		tcm, _ := body["tool_choice"].(map[string]any)
+		if tcm["type"] != "auto" {
+			t.Fatalf("tool_choice = %v", body["tool_choice"])
 		}
 		// 采样参数与 stop
 		if body["temperature"] != 0.5 {
@@ -195,7 +211,11 @@ func TestWireFormat(t *testing.T) {
 			llm.ResultParts("call_1", true, llm.Text("boom happened")),
 		}},
 	)
-	req.Tools = []llm.ToolDef{{Name: "echo", Description: "echo it", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	req.Tools = []llm.ToolDef{{
+		Name:        "echo",
+		Description: "echo it",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+	}}
 	req.ToolChoice = &llm.ToolChoice{Mode: llm.ToolAuto}
 	req.Temperature = &temp
 	req.MaxTokens = &maxTok
@@ -408,6 +428,184 @@ func TestStreamReasoning(t *testing.T) {
 	done := wantKind(t, evs, len(evs)-1, llm.EventDone)
 	if done.Response.Message.ReasoningText() != "pondering" {
 		t.Fatalf("聚合 reasoning = %q", done.Response.Message.ReasoningText())
+	}
+}
+
+func TestConsecutiveToolResultsMerged(t *testing.T) {
+	// 一次模型返回多个 tool_call 时 loop 会 append 多条 RoleTool；
+	// Anthropic 要求 user/assistant 严格交替，相邻 tool_result 必须
+	// 合并进同一条 user 轮。
+	m := newTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		msgs, _ := body["messages"].([]any)
+		if len(msgs) != 3 {
+			t.Fatalf("相邻 RoleTool 应合并：messages = %d，期望 3（user/assistant/user）: %v",
+				len(msgs), body["messages"])
+		}
+		last, _ := msgs[2].(map[string]any)
+		if last["role"] != "user" {
+			t.Fatalf("第 3 条应为 user: %v", last)
+		}
+		content, _ := last["content"].([]any)
+		if len(content) != 2 {
+			t.Fatalf("合并后 tool_result 数 = %d，期望 2: %v", len(content), last["content"])
+		}
+		r0, _ := content[0].(map[string]any)
+		r1, _ := content[1].(map[string]any)
+		if r0["tool_use_id"] != "call_1" || r1["tool_use_id"] != "call_2" {
+			t.Fatalf("tool_result 顺序不符: %v %v", r0, r1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(okResp))
+	})
+	req := llm.NewRequest(
+		llm.UserText("hi"),
+		&llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{
+			llm.Call(llm.ToolCall{ID: "call_1", Name: "a", Arguments: json.RawMessage(`{}`)}),
+			llm.Call(llm.ToolCall{ID: "call_2", Name: "b", Arguments: json.RawMessage(`{}`)}),
+		}},
+		llm.ToolMessage("call_1", "r1"),
+		llm.ToolMessage("call_2", "r2"),
+	)
+	maxTok := 64
+	req.MaxTokens = &maxTok
+	if _, err := m.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
+func TestGenerateToolUseAndThinking(t *testing.T) {
+	m := newTest(t, func(w http.ResponseWriter, r *http.Request) {
+		resp := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"thinking","thinking":"let me check","signature":"sig"},{"type":"tool_use","id":"call_9","name":"get_weather","input":{"city":"SF"}}],"stop_reason":"tool_use","usage":{"input_tokens":7,"output_tokens":4}}`
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(resp))
+	})
+	resp, err := m.Generate(context.Background(), funcReq())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.FinishReason != llm.FinishToolCalls {
+		t.Fatalf("stop_reason=tool_use 应映射 FinishToolCalls，得到 %s", resp.FinishReason)
+	}
+	if resp.Message.ReasoningText() != "let me check" {
+		t.Fatalf("thinking 应映射为 reasoning: %q", resp.Message.ReasoningText())
+	}
+	calls := resp.Message.ToolCalls()
+	if len(calls) != 1 || calls[0].Name != "get_weather" || string(calls[0].Arguments) != `{"city":"SF"}` {
+		t.Fatalf("tool_use 映射不符: %+v", calls)
+	}
+}
+
+func TestCustomImagePart(t *testing.T) {
+	// PartCustom(image/*) 与 PartImage 同路：都映射官方 image 块。
+	png := []byte{0x89, 'P', 'N', 'G'}
+	m := newTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		msgs, _ := body["messages"].([]any)
+		user, _ := msgs[0].(map[string]any)
+		parts, _ := user["content"].([]any)
+		if len(parts) != 2 {
+			t.Fatalf("应有两个 image 块: %v", user["content"])
+		}
+		for i, anyPart := range parts {
+			p, _ := anyPart.(map[string]any)
+			if p["type"] != "image" {
+				t.Fatalf("第 %d 块应为 image: %v", i+1, p)
+			}
+			src, _ := p["source"].(map[string]any)
+			if src["type"] != "base64" || src["media_type"] != "image/png" {
+				t.Fatalf("image source 不符: %v", src)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(okResp))
+	})
+	req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+		llm.ImageData("image/png", png),
+		llm.Media("image/png", png),
+	}})
+	maxTok := 64
+	req.MaxTokens = &maxTok
+	if _, err := m.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
+func TestMediaSources(t *testing.T) {
+	m := newTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		msgs, _ := body["messages"].([]any)
+		user, _ := msgs[0].(map[string]any)
+		parts, _ := user["content"].([]any)
+		if len(parts) != 2 {
+			t.Fatalf("应为图 base64 + PDF URL 两块: %v", user["content"])
+		}
+		p0, _ := parts[0].(map[string]any)
+		src0, _ := p0["source"].(map[string]any)
+		want := base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G'})
+		if src0["type"] != "base64" || src0["data"] != want {
+			t.Fatalf("图 base64 source 不符: %v", src0)
+		}
+		p1, _ := parts[1].(map[string]any)
+		if p1["type"] != "document" {
+			t.Fatalf("第 2 块应为 document: %v", p1)
+		}
+		src1, _ := p1["source"].(map[string]any)
+		if src1["type"] != "url" || src1["url"] != "https://example.com/doc.pdf" {
+			t.Fatalf("PDF URL source 不符: %v", src1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(okResp))
+	})
+	req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+		llm.ImageData("image/png", []byte{0x89, 'P', 'N', 'G'}),
+		llm.MediaURL("application/pdf", "https://example.com/doc.pdf"),
+	}})
+	maxTok := 64
+	req.MaxTokens = &maxTok
+	if _, err := m.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
+func TestHeadersOption(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Trace")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(okResp))
+	}))
+	defer srv.Close()
+	m, err := New(llm.Config{
+		Provider: ProviderAnthropic, Model: "claude-test", APIKey: "k", BaseURL: srv.URL,
+		Options: map[string]any{"headers": map[string]any{"X-Trace": "t-1"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := m.Generate(context.Background(), funcReq()); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got != "t-1" {
+		t.Fatalf("headers 选项未透传: %q", got)
+	}
+}
+
+func TestStreamEarlyEnd(t *testing.T) {
+	// 流在 message_stop 前静默结束：必须以 EventError(provider) 收尾，
+	// 不能当成正常完成。
+	m := newTest(t, func(w http.ResponseWriter, r *http.Request) {
+		writeSSE(t, w,
+			ev("message_start", `{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"c","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}}`),
+			ev("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}`),
+		)
+	})
+	evs := collect(t, context.Background(), mustStream(t, m, funcReq()))
+	if len(evs) == 0 || evs[len(evs)-1].Kind != llm.EventError {
+		t.Fatalf("期望 EventError 收尾: %+v", evs)
+	}
+	if llm.KindOf(evs[len(evs)-1].Err) != llm.ErrProvider {
+		t.Fatalf("kind = %s，期望 provider", llm.KindOf(evs[len(evs)-1].Err))
 	}
 }
 

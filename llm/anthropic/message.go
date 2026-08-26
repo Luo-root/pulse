@@ -50,7 +50,7 @@ func (m *messagesModel) Stream(ctx context.Context, req *llm.GenerateRequest) (<
 	}
 	stream := m.client.Messages.NewStreaming(ctx, params)
 	ch := make(chan llm.StreamEvent, 16)
-	go m.pump(ctx, stream, req, ch)
+	go m.pump(ctx, stream, ch)
 	return ch, nil
 }
 
@@ -78,6 +78,13 @@ func (m *messagesModel) buildParams(req *llm.GenerateRequest) (sdk.MessageNewPar
 			mp, err := m.convertMessage(msg)
 			if err != nil {
 				return params, err
+			}
+			// Anthropic 要求 user/assistant 严格交替：相邻同角色合并
+			// 为一条（连续 RoleTool 的多个 tool_result 必须同处一条
+			// user 轮，否则线格式 400）。
+			if n := len(msgs); n > 0 && msgs[n-1].Role == mp.Role {
+				msgs[n-1].Content = append(msgs[n-1].Content, mp.Content...)
+				continue
 			}
 			msgs = append(msgs, mp)
 		}
@@ -107,7 +114,18 @@ func (m *messagesModel) buildParams(req *llm.GenerateRequest) (sdk.MessageNewPar
 				return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, err,
 					"工具 %s 的参数 Schema 不是合法 JSON 对象", t.Name)
 			}
-			tool.InputSchema.Properties = schema
+			// ToolInputSchemaParam 是扁平结构：Properties 只收字段表，
+			// Required 单独收——不能把整份 JSON Schema 塞进 Properties。
+			if props, ok := schema["properties"]; ok {
+				tool.InputSchema.Properties = props
+			}
+			if required, ok := schema["required"].([]any); ok {
+				for _, r := range required {
+					if s, ok := r.(string); ok {
+						tool.InputSchema.Required = append(tool.InputSchema.Required, s)
+					}
+				}
+			}
 		}
 		params.Tools = append(params.Tools, sdk.ToolUnionParam{OfTool: &tool})
 	}
@@ -312,6 +330,13 @@ func (m *messagesModel) customBlock(role llm.Role, p *llm.Part) (sdk.ContentBloc
 		return empty, unsupportedPart(m.provider, role, p.Kind)
 	}
 	switch classifyMIME(p.Media.MediaType) {
+	case mediaImage:
+		// image/* 已有官方块：PartCustom 与 PartImage 同路，行为一致。
+		return m.imageBlock(&llm.ImageSource{
+			Data:      p.Media.Data,
+			URL:       p.Media.URL,
+			MediaType: p.Media.MediaType,
+		})
 	case mediaPDF:
 		doc := sdk.DocumentBlockParam{}
 		switch {
@@ -406,7 +431,7 @@ func joinText(parts []llm.Part) string {
 // thinking_delta → reasoning_delta；input_json_delta → tool_call_delta
 // （其 content_block_start 已发过 begin）；message_delta → 记录
 // stop_reason 与输出用量；message_stop → 聚合 done。
-func (m *messagesModel) pump(ctx context.Context, stream *ssestream.Stream[sdk.MessageStreamEventUnion], req *llm.GenerateRequest, ch chan<- llm.StreamEvent) {
+func (m *messagesModel) pump(ctx context.Context, stream *ssestream.Stream[sdk.MessageStreamEventUnion], ch chan<- llm.StreamEvent) {
 	defer close(ch)
 	send := func(ev llm.StreamEvent) bool {
 		select {
@@ -442,7 +467,7 @@ func (m *messagesModel) pump(ctx context.Context, stream *ssestream.Stream[sdk.M
 			}
 			// llm 契约：Index 0 = 文本/思维链，1 起按到达顺序编号工具
 			// 调用（线格式的 block index 只用于关联后续参数分片）。
-			acc := &tcAcc{index: len(calls) + 1, srcIndex: int(ev.Index), id: cb.ID, name: cb.Name, begun: true}
+			acc := &tcAcc{index: len(calls) + 1, srcIndex: int(ev.Index), id: cb.ID, name: cb.Name}
 			calls = append(calls, acc)
 			if !send(llm.StreamEvent{Kind: llm.EventToolCallBegin, Index: acc.index,
 				CallID: acc.id, ToolName: acc.name}) {
@@ -538,10 +563,9 @@ func (m *messagesModel) pump(ctx context.Context, stream *ssestream.Stream[sdk.M
 
 // tcAcc 累积一个流式工具调用（Anthropic 按 content block index 分片）。
 type tcAcc struct {
-	index    int // 对外事件序号：block index+1（0 保留给文本/思维链）
+	index    int // 对外事件序号：按到达顺序 1 起（0 保留给文本/思维链）
 	srcIndex int // 线格式里的 content block index
 	id       string
 	name     string
 	args     strings.Builder
-	begun    bool
 }

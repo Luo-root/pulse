@@ -125,7 +125,7 @@ func classifyStatus(status int, msg string) llm.ErrKind {
 		strings.Contains(text, "context length") ||
 		strings.Contains(text, "too many tokens"):
 		return llm.ErrContextLength
-	case strings.Contains(text, "content filter") || strings.Contains(text, "violat"):
+	case strings.Contains(text, "content filter"):
 		return llm.ErrContentFilter
 	case status == 400 || status == 405 || status == 422:
 		return llm.ErrBadRequest
