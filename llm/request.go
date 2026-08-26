@@ -57,6 +57,15 @@ type AudioOutput struct {
 	Format string
 }
 
+// ReasoningOptions 控制推理模型的思维链生成。字段按 provider 语义
+// 取用：OpenAI 读 Effort（none/minimal/low/medium/high/xhigh/max），
+// Anthropic 读 BudgetTokens（≥1024 且 < max_tokens，启用 extended
+// thinking；Effort 在该线格式被忽略）。nil = provider 默认。
+type ReasoningOptions struct {
+	Effort       string
+	BudgetTokens int
+}
+
 // GenerateRequest 是一次对话补全请求的完整描述。
 // 零值字段一律表示"交给 provider 默认"，不设魔法默认值——
 // 默认策略属于装配层，不属于词汇表。
@@ -67,6 +76,7 @@ type GenerateRequest struct {
 
 	Temperature *float64
 	TopP        *float64
+	TopK        *int
 	MaxTokens   *int
 
 	StopSequences  []string
@@ -74,6 +84,15 @@ type GenerateRequest struct {
 
 	// Audio 声明音频输出模态（TTS via chat completions）；nil = 纯文本。
 	Audio *AudioOutput
+
+	// Reasoning 控制推理模型思维链；nil = provider 默认。
+	Reasoning *ReasoningOptions
+
+	// Options 承载 provider 特有的请求级长尾参数（seed、penalties、
+	// service_tier、verbosity……），由各 adapter 按名取用、未知键
+	// 忽略——词汇表只收语义稳定的公共字段，长尾不为此改词汇表。
+	// 各 adapter 认识的键见其文档。
+	Options map[string]any
 
 	// Metadata 供上层审计/追踪透传，provider 不理解则忽略；
 	// 拦截事件（before_generate）可读取它做路由与计量归因。
@@ -107,6 +126,20 @@ func (r *GenerateRequest) Clone() *GenerateRequest {
 	if r.MaxTokens != nil {
 		v := *r.MaxTokens
 		cp.MaxTokens = &v
+	}
+	if r.TopK != nil {
+		v := *r.TopK
+		cp.TopK = &v
+	}
+	if r.Reasoning != nil {
+		ro := *r.Reasoning
+		cp.Reasoning = &ro
+	}
+	if r.Options != nil {
+		cp.Options = make(map[string]any, len(r.Options))
+		for k, v := range r.Options {
+			cp.Options[k] = v
+		}
 	}
 	if r.ToolChoice != nil {
 		tc := *r.ToolChoice

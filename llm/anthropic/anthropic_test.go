@@ -698,6 +698,40 @@ func TestErrorMapping(t *testing.T) {
 
 // ---- 装配 ----
 
+func TestSamplingAndThinking(t *testing.T) {
+	m := newTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		if body["top_k"] != float64(40) {
+			t.Fatalf("top_k = %v", body["top_k"])
+		}
+		thinking, _ := body["thinking"].(map[string]any)
+		if thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(2048) {
+			t.Fatalf("thinking 不符: %v", body["thinking"])
+		}
+		if body["service_tier"] != "standard_only" {
+			t.Fatalf("service_tier = %v", body["service_tier"])
+		}
+		// 带 thinking 的响应：thinking 块映射为 reasoning。
+		resp := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"thinking","thinking":"hmm","signature":"s"},{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}`
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(resp))
+	})
+	req := llm.NewRequest(llm.UserText("hi"))
+	topK := 40
+	req.TopK = &topK
+	maxTok := 512
+	req.MaxTokens = &maxTok                                                   // anthropic 必填；thinking budget 须 < max_tokens
+	req.Reasoning = &llm.ReasoningOptions{BudgetTokens: 2048, Effort: "high"} // Effort 在 anthropic 被忽略
+	req.Options = map[string]any{"service_tier": "standard_only"}
+	resp, err := m.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Message.ReasoningText() != "hmm" {
+		t.Fatalf("reasoning = %q", resp.Message.ReasoningText())
+	}
+}
+
 func TestRegistryIntegration(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -193,6 +193,26 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 	if req.TopP != nil {
 		params.TopP = param.NewOpt(*req.TopP)
 	}
+	if req.Reasoning != nil && req.Reasoning.Effort != "" {
+		// Responses 的 reasoning.effort：none/minimal/low/medium/high/…
+		params.Reasoning.Effort = shared.ReasoningEffort(req.Reasoning.Effort)
+	}
+	// Options 长尾参数：按名取用，未知键忽略。
+	for key, v := range req.Options {
+		if v == nil {
+			continue
+		}
+		switch key {
+		case "verbosity":
+			if s, ok := v.(string); ok {
+				params.Text.Verbosity = responses.ResponseTextConfigVerbosity(s)
+			}
+		case "service_tier":
+			if s, ok := v.(string); ok {
+				params.ServiceTier = responses.ResponseNewParamsServiceTier(s)
+			}
+		}
+	}
 	if req.MaxTokens != nil {
 		params.MaxOutputTokens = param.NewOpt(int64(*req.MaxTokens))
 	}

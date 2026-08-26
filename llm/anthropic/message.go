@@ -100,6 +100,28 @@ func (m *messagesModel) buildParams(req *llm.GenerateRequest) (sdk.MessageNewPar
 	if req.TopP != nil {
 		params.TopP = param.NewOpt(*req.TopP)
 	}
+	if req.TopK != nil {
+		params.TopK = param.NewOpt(int64(*req.TopK))
+	}
+	if req.Reasoning != nil && req.Reasoning.BudgetTokens > 0 {
+		// extended thinking：budget ≥1024 且 < max_tokens，由 provider
+		// 校验。Effort 在该线格式无对应参数，忽略。
+		params.Thinking.OfEnabled = &sdk.ThinkingConfigEnabledParam{
+			BudgetTokens: int64(req.Reasoning.BudgetTokens),
+		}
+	}
+	// Options 长尾参数：按名取用，未知键忽略。
+	for key, v := range req.Options {
+		if v == nil {
+			continue
+		}
+		switch key {
+		case "service_tier":
+			if s, ok := v.(string); ok {
+				params.ServiceTier = sdk.MessageNewParamsServiceTier(s)
+			}
+		}
+	}
 	if len(req.StopSequences) > 0 {
 		params.StopSequences = req.StopSequences
 	}

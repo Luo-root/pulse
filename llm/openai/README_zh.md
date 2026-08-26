@@ -88,6 +88,24 @@ req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
 - transcript 可能只出现在末片，pump 会累积进 done 的文本块
 - `pcm` / `pcm16` 的 MIME 标为 `audio/pcm`（不是非法的 `audio/pcm16`）
 
+## 请求级参数
+
+词汇表公共字段：`Temperature` / `TopP` / `MaxTokens` / `StopSequences` / `ResponseFormat` / `Audio` / `Reasoning` / `TopK`。
+
+- `Reasoning.Effort`（none/minimal/low/medium/high/xhigh/max）→ Completions 的 `reasoning_effort`
+- `TopK` → 官方线格式无此参数，经 `WithJSONSet` 注入请求体（MiniMax 等兼容网关接受，官方端点 400）
+- 请求级 `Options`（长尾逃生舱，未知键忽略）：
+
+| 键 | 类型 | 落到 |
+|---|---|---|
+| `frequency_penalty` / `presence_penalty` | float64 | 同名字段 |
+| `seed` | int / float64 | `seed` |
+| `user` | string | `user` |
+| `service_tier` | string | `service_tier`（auto/default/flex/scale/priority/fast） |
+| `verbosity` | string | Completions `verbosity` / Responses `text.verbosity`（low/medium/high） |
+
+`Config.Options` 是**客户端级**配置（organization / project / timeout_seconds / max_retries / headers），与请求级 `Options` 是两层。
+
 ## 错误
 
 | 条件 | Kind |

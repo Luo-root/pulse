@@ -995,6 +995,78 @@ func TestCompletionsAudioEmptyFormatOmitted(t *testing.T) {
 	}
 }
 
+func TestRequestOptionsWireFormat(t *testing.T) {
+	// 词汇表长尾参数：reasoning_effort / top_k / penalties / seed /
+	// service_tier / verbosity 按线格式落位。
+	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		if body["reasoning_effort"] != "high" {
+			t.Fatalf("reasoning_effort = %v", body["reasoning_effort"])
+		}
+		if body["top_k"] != float64(40) {
+			t.Fatalf("top_k（WithJSONSet 注入）= %v", body["top_k"])
+		}
+		if body["frequency_penalty"] != float64(0.5) {
+			t.Fatalf("frequency_penalty = %v", body["frequency_penalty"])
+		}
+		if body["seed"] != float64(42) {
+			t.Fatalf("seed = %v", body["seed"])
+		}
+		if body["service_tier"] != "flex" {
+			t.Fatalf("service_tier = %v", body["service_tier"])
+		}
+		if body["user"] != "u-1" {
+			t.Fatalf("user = %v", body["user"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	})
+	effort := "high"
+	topK := 40
+	req := llm.NewRequest(llm.UserText("hi"))
+	req.Reasoning = &llm.ReasoningOptions{Effort: effort}
+	req.TopK = &topK
+	req.Options = map[string]any{
+		"frequency_penalty": 0.5,
+		"seed":              42, // JSON 反序列化约定：数字为 float64
+		"service_tier":      "flex",
+		"user":              "u-1",
+		"unknown_key":       "ignored",
+	}
+	if _, err := m.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
+func TestResponsesRequestOptions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		reasoning, _ := body["reasoning"].(map[string]any)
+		if reasoning["effort"] != "low" {
+			t.Fatalf("reasoning.effort = %v", body["reasoning"])
+		}
+		text, _ := body["text"].(map[string]any)
+		if text["verbosity"] != "low" {
+			t.Fatalf("text.verbosity = %v", body["text"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","error":null,"incomplete_details":null,"model":"gpt-test","output":[{"type":"message","id":"m1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2},"metadata":{},"tool_choice":"auto","tools":[],"parallel_tool_calls":true}`))
+	}))
+	defer srv.Close()
+	model, err := NewResponses(llm.Config{
+		Provider: ProviderResponses, Model: "gpt-test", APIKey: "k", BaseURL: srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewResponses: %v", err)
+	}
+	req := llm.NewRequest(llm.UserText("hi"))
+	req.Reasoning = &llm.ReasoningOptions{Effort: "low"}
+	req.Options = map[string]any{"verbosity": "low"}
+	if _, err := model.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
 func TestResponsesAudioRejected(t *testing.T) {
 	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("不应发出请求")

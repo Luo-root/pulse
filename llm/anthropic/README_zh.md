@@ -64,6 +64,15 @@ Anthropic 流没有 `[DONE]` 哨兵，`message_stop` 即最后一条；`message_
 
 ctx 取消：先发 `EventError(canceled)` 再关 channel。
 
+## 请求级参数
+
+词汇表公共字段之外：
+
+- `TopK` → 原生 `top_k`
+- `Reasoning.BudgetTokens`（≥1024 且 < max_tokens）→ `thinking: {type: enabled, budget_tokens}`，启用 extended thinking；`Effort` 在该线格式无对应参数，忽略
+- 请求级 `Options`：`service_tier`（如 standard_only）；其余键忽略
+- `Metadata` 只透传 `user_id`（线格式仅此一键）
+
 ## 错误
 
 | 条件 | Kind |
