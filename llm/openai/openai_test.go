@@ -1455,6 +1455,23 @@ func TestLiveResponses(t *testing.T) {
 		}
 		t.Logf("image=%q", truncate(resp.Message.Text(), 80))
 	})
+
+	t.Run("video", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+			llm.Text("这段视频里发生了什么？用一句话回答"),
+			llm.MediaURL("video/mp4", "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"),
+		}})
+		resp, err := model.Generate(ctx, req)
+		if err != nil {
+			t.Fatalf("Generate(video): %v", err)
+		}
+		if strings.TrimSpace(resp.Message.Text()) == "" {
+			t.Fatal("视频输入返回空文本")
+		}
+		t.Logf("video=%q", truncate(resp.Message.Text(), 80))
+	})
 }
 
 func truncate(s string, n int) string {
