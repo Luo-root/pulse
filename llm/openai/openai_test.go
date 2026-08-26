@@ -944,6 +944,57 @@ func TestCompletionsAudioStreamFragments(t *testing.T) {
 	}
 }
 
+func TestCompletionsAudioStreamTranscript(t *testing.T) {
+	// transcript 可能只出现在末片（OpenAI 常见），流式 done 也要收到文本块。
+	frag := base64.StdEncoding.EncodeToString([]byte("RIFF"))
+	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		writeSSE(t, w,
+			chunk(`"audio":{"data":"`+frag+`"}`, `null`),
+			chunk(`"audio":{"transcript":"你好"}`, `"stop"`),
+		)
+	})
+	req := llm.NewRequest(llm.UserText("tts"))
+	req.Audio = &llm.AudioOutput{Voice: "v"} // Format 空：请求不下发 format，MIME 仍按 wav 标注
+	evs := collect(t, context.Background(), mustStream(t, m, req))
+	done := wantKind(t, evs, len(evs)-1, llm.EventDone)
+	if done.Response.Message.Text() != "你好" {
+		t.Fatalf("流式 transcript = %q", done.Response.Message.Text())
+	}
+}
+
+func TestCompletionsAudioEmptyFormatOmitted(t *testing.T) {
+	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		au, _ := body["audio"].(map[string]any)
+		if au == nil {
+			t.Fatal("应带 audio 对象")
+		}
+		if _, ok := au["format"]; ok {
+			t.Fatalf("空 Format 不应下发 format 字段: %v", au)
+		}
+		if au["voice"] != "alloy" {
+			t.Fatalf("voice = %v", au["voice"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"tts","choices":[{"index":0,"message":{"role":"assistant","content":"","audio":{"id":"a1","data":"` + base64.StdEncoding.EncodeToString([]byte("RIFF")) + `","expires_at":0,"transcript":""}},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	})
+	req := llm.NewRequest(llm.UserText("tts"))
+	req.Audio = &llm.AudioOutput{Voice: "alloy"}
+	resp, err := m.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	var mime string
+	for _, p := range resp.Message.Parts {
+		if p.Kind == llm.PartCustom && p.Media != nil {
+			mime = p.Media.MediaType
+		}
+	}
+	if mime != "audio/wav" {
+		t.Fatalf("空 Format 解码 MIME = %q，期望 audio/wav", mime)
+	}
+}
+
 func TestResponsesAudioRejected(t *testing.T) {
 	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("不应发出请求")

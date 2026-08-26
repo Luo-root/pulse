@@ -116,8 +116,14 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 		// modalities 是官方通用参数：声明输出含音频；MiMo 不要求但
 		// gpt-4o-audio 必需，统一下发。
 		params.Modalities = []string{"text", "audio"}
-		ap := sdk.ChatCompletionAudioParam{Format: sdk.ChatCompletionAudioParamFormat(req.Audio.Format)}
-		ap.Voice.OfString = param.NewOpt(req.Audio.Voice)
+		var ap sdk.ChatCompletionAudioParam
+		if req.Audio.Voice != "" {
+			ap.Voice.OfString = param.NewOpt(req.Audio.Voice)
+		}
+		if req.Audio.Format != "" {
+			// 空 Format 不下发，交给 provider 默认（解码侧空也按 wav 标注 MIME）。
+			ap.Format = sdk.ChatCompletionAudioParamFormat(req.Audio.Format)
+		}
 		params.Audio = ap
 	}
 	for _, t := range req.Tools {
@@ -369,13 +375,14 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 		reasoning strings.Builder
 		// 流式 audio 分片各自是独立的 base64 编码块（服务端按 4 字符
 		// 边界切片）：逐片 decode 再拼字节，不能拼字符串后整体解码
-		//（padding 会错位）。
-		audioBuf  bytes.Buffer
-		calls     []*tcAcc
-		byIdx     = map[int64]*tcAcc{}
-		finish    string
-		usage     sdk.CompletionUsage
-		usageSeen bool
+		//（padding 会错位）。transcript 可能出现在任意分片或仅末片。
+		audioBuf        bytes.Buffer
+		audioTranscript strings.Builder
+		calls           []*tcAcc
+		byIdx           = map[int64]*tcAcc{}
+		finish          string
+		usage           sdk.CompletionUsage
+		usageSeen       bool
 	)
 	for stream.Next() {
 		chunk := stream.Current()
@@ -406,7 +413,8 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 			// 每片独立 base64，立即解码进字节缓冲。
 			if f, ok := d.JSON.ExtraFields["audio"]; ok {
 				var av struct {
-					Data string `json:"data"`
+					Data       string `json:"data"`
+					Transcript string `json:"transcript"`
 				}
 				_ = json.Unmarshal([]byte(f.Raw()), &av)
 				if av.Data != "" {
@@ -417,6 +425,9 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 						return
 					}
 					audioBuf.Write(raw)
+				}
+				if av.Transcript != "" {
+					audioTranscript.WriteString(av.Transcript)
 				}
 			}
 			for _, dt := range d.ToolCalls {
@@ -477,6 +488,9 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 			MediaType: audioOutputMIME(req.Audio),
 			Data:      append([]byte(nil), audioBuf.Bytes()...),
 		}})
+	}
+	if audioTranscript.Len() > 0 {
+		msg.Parts = append(msg.Parts, llm.Text(audioTranscript.String()))
 	}
 	for _, acc := range calls {
 		args := acc.args.String()
