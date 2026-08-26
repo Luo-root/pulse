@@ -40,9 +40,5 @@ go.work.sum
 # Database files
 *.db
 
-# Tests with hardcoded API keys (not safe to commit)
-components/chatmodel/openai/openai_test.go
-components/chatmodel/anthropic/anthropic_test.go
-
 # Skills directory (if managed separately)
 skills/
