@@ -45,12 +45,24 @@ type ResponseFormat struct {
 	Schema json.RawMessage // FormatJSONSchema 时的 JSON Schema
 }
 
+// AudioOutput 声明对话接口的音频输出模态（OpenAI Chat Completions
+// 官方 `audio` 参数，gpt-4o-audio 与 MiMo-TTS 等兼容实现同款线格式）。
+// nil 表示纯文本输出。模型返回的音频以 PartCustom（audio/*）块出现在
+// 响应 Message 中。
+type AudioOutput struct {
+	// Voice 是音色标识（内置音色名或 provider 约定的克隆音色）。
+	Voice string
+	// Format 是输出音频容器格式：wav / mp3 / flac / opus / pcm16。
+	// 空 = provider 默认。
+	Format string
+}
+
 // GenerateRequest 是一次对话补全请求的完整描述。
 // 零值字段一律表示"交给 provider 默认"，不设魔法默认值——
 // 默认策略属于装配层，不属于词汇表。
 type GenerateRequest struct {
-	Messages []*Message
-	Tools    []ToolDef
+	Messages   []*Message
+	Tools      []ToolDef
 	ToolChoice *ToolChoice
 
 	Temperature *float64
@@ -59,6 +71,9 @@ type GenerateRequest struct {
 
 	StopSequences  []string
 	ResponseFormat *ResponseFormat
+
+	// Audio 声明音频输出模态（TTS via chat completions）；nil = 纯文本。
+	Audio *AudioOutput
 
 	// Metadata 供上层审计/追踪透传，provider 不理解则忽略；
 	// 拦截事件（before_generate）可读取它做路由与计量归因。
@@ -100,6 +115,10 @@ func (r *GenerateRequest) Clone() *GenerateRequest {
 	if r.ResponseFormat != nil {
 		rf := *r.ResponseFormat
 		cp.ResponseFormat = &rf
+	}
+	if r.Audio != nil {
+		ao := *r.Audio
+		cp.Audio = &ao
 	}
 	if r.Metadata != nil {
 		md := make(map[string]any, len(r.Metadata))
@@ -145,12 +164,12 @@ type Response struct {
 type StreamEventKind string
 
 const (
-	EventTextDelta      StreamEventKind = "text_delta"       // Text 增量
-	EventReasoningDelta StreamEventKind = "reasoning_delta"  // 思维链增量
-	EventToolCallBegin  StreamEventKind = "tool_call_begin"  // Index 号工具调用开始（CallID/Name 就绪）
-	EventToolCallDelta  StreamEventKind = "tool_call_delta"  // Index 号工具调用参数增量（Text 为 JSON 片段）
-	EventError          StreamEventKind = "error"            // 流中失败（Err 非 nil），此后关闭
-	EventDone           StreamEventKind = "done"             // 正常结束（Response 为聚合结果），此后关闭
+	EventTextDelta      StreamEventKind = "text_delta"      // Text 增量
+	EventReasoningDelta StreamEventKind = "reasoning_delta" // 思维链增量
+	EventToolCallBegin  StreamEventKind = "tool_call_begin" // Index 号工具调用开始（CallID/Name 就绪）
+	EventToolCallDelta  StreamEventKind = "tool_call_delta" // Index 号工具调用参数增量（Text 为 JSON 片段）
+	EventError          StreamEventKind = "error"           // 流中失败（Err 非 nil），此后关闭
+	EventDone           StreamEventKind = "done"            // 正常结束（Response 为聚合结果），此后关闭
 )
 
 // StreamEvent 是流式响应的最小事件单元。

@@ -116,10 +116,14 @@ l.Reconcile([]kernel.Entry{
   开放模态块，承载音频、视频、PDF 及未来一切未知类型）；
 - **请求是完整的 `GenerateRequest`**：messages / tools / tool_choice /
   temperature / top_p / max_tokens / stop / response_format（JSON Schema
-  结构化输出）/ metadata（审计透传）；零值字段一律交 provider 默认；
+  结构化输出）/ audio（官方对话接口音频输出模态：voice + format；仅
+  Chat Completions 线格式支持，Responses 变体显式 bad_request）/ metadata
+  （审计透传）；零值字段一律交 provider 默认；
 - **流式 = 统一事件流** `<-chan StreamEvent`：text_delta /
   reasoning_delta / tool_call_begin / tool_call_delta / error / done，
-  done 携带聚合 Response（含 Usage、FinishReason）；
+  done 携带聚合 Response（含 Usage、FinishReason）。**有意不做 audio
+  增量事件**：音频分片对逐字 UI 无意义（无法边收边播的半帧），适配器
+  在流内聚合解码、随 done 的 Message 以 custom 块交付；
 - **错误带分类**：`Error{Kind, Provider, StatusCode}`——可重试性由
   Kind 唯一决定（单一真相），`KindOf` / `IsRetryable` 供上层退避与
   failover 决策，分类是接口契约的一部分，不是日志细节。
