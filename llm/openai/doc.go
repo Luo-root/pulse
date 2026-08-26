@@ -43,6 +43,8 @@
 // # 不做
 //
 // PreviousResponseID/Conversations 有状态链（loop 无状态传全量历史）、
-// 内置工具（web_search/file_search/code_interpreter/MCP）、音频模态、
-// Azure/Bedrock 专用签名。
+// 内置工具（web_search/file_search/code_interpreter/MCP）、对话接口
+// 之外的独立语音端点（/v1/audio/speech、/v1/audio/transcriptions——
+// ASR/TTS 走对话线格式：audio 输入用 input_audio 块，TTS 用官方
+// audio 输出模态）、Azure/Bedrock 专用签名。
 package openai

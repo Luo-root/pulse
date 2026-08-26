@@ -55,8 +55,16 @@ func (m *completionsModel) Generate(ctx context.Context, req *llm.GenerateReques
 		return nil, llm.NewError(llm.ErrProvider, m.provider, 0, nil, "响应不含任何 choice")
 	}
 	choice := completion.Choices[0]
+	format := "wav"
+	if req.Audio != nil && req.Audio.Format != "" {
+		format = req.Audio.Format
+	}
+	msg, err := mapCompletionsMessage(m.provider, &choice.Message, format)
+	if err != nil {
+		return nil, err
+	}
 	return &llm.Response{
-		Message:      mapCompletionsMessage(&choice.Message),
+		Message:      msg,
 		FinishReason: mapFinishReason(choice.FinishReason),
 		Usage:        mapUsage(completion.Usage),
 	}, nil
@@ -69,7 +77,7 @@ func (m *completionsModel) Stream(ctx context.Context, req *llm.GenerateRequest)
 	}
 	stream := m.client.Chat.Completions.NewStreaming(ctx, params)
 	ch := make(chan llm.StreamEvent, 16)
-	go m.pump(ctx, stream, ch)
+	go m.pump(ctx, stream, req, ch)
 	return ch, nil
 }
 
@@ -105,6 +113,12 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 	}
 	if len(req.StopSequences) > 0 {
 		params.Stop = sdk.ChatCompletionNewParamsStopUnion{OfStringArray: req.StopSequences}
+	}
+	if req.Audio != nil {
+		// 官方 audio 输出模态（gpt-4o-audio / MiMo-TTS 等同款线格式）。
+		ap := sdk.ChatCompletionAudioParam{Format: sdk.ChatCompletionAudioParamFormat(req.Audio.Format)}
+		ap.Voice.OfString = param.NewOpt(req.Audio.Voice)
+		params.Audio = ap
 	}
 	for _, t := range req.Tools {
 		fd := shared.FunctionDefinitionParam{Name: t.Name}
@@ -344,7 +358,7 @@ func (m *completionsModel) convertCustomPart(p *llm.Part) (sdk.ChatCompletionCon
 
 // pump 消费 SDK 流并翻译为 llm.StreamEvent；任何退出路径都保证
 // channel 关闭（EventError/EventDone 后 close）。
-func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sdk.ChatCompletionChunk], ch chan<- llm.StreamEvent) {
+func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sdk.ChatCompletionChunk], req *llm.GenerateRequest, ch chan<- llm.StreamEvent) {
 	defer close(ch)
 	send := func(ev llm.StreamEvent) bool {
 		return sendEvent(ctx, ch, m.provider, ev)
@@ -353,6 +367,7 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 	var (
 		text      strings.Builder
 		reasoning strings.Builder
+		audioBuf  strings.Builder
 		calls     []*tcAcc
 		byIdx     = map[int64]*tcAcc{}
 		finish    string
@@ -382,6 +397,16 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 				reasoning.WriteString(rc)
 				if !send(llm.StreamEvent{Kind: llm.EventReasoningDelta, Index: 0, Text: rc}) {
 					return
+				}
+			}
+			// 流式 audio 分片：SDK 未类型化 delta.audio，走原始 JSON。
+			if f, ok := d.JSON.ExtraFields["audio"]; ok {
+				var av struct {
+					Data string `json:"data"`
+				}
+				_ = json.Unmarshal([]byte(f.Raw()), &av)
+				if av.Data != "" {
+					audioBuf.WriteString(av.Data)
 				}
 			}
 			for _, dt := range d.ToolCalls {
@@ -435,6 +460,15 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 	if text.Len() > 0 {
 		msg.Parts = append(msg.Parts, llm.Text(text.String()))
 	}
+	// 流式 audio 输出：delta.audio.data 为 base64 分片，按序拼接。
+	if req.Audio != nil && audioBuf.Len() > 0 {
+		part, err := audioPart(m.provider, audioBuf.String(), req.Audio.Format)
+		if err != nil {
+			send(llm.StreamEvent{Kind: llm.EventError, Err: err})
+			return
+		}
+		msg.Parts = append(msg.Parts, part)
+	}
 	for _, acc := range calls {
 		args := acc.args.String()
 		if args == "" {
@@ -451,9 +485,10 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 }
 
 // mapCompletionsMessage 翻译非流式响应消息。思维链取 reasoning_content
-// 兼容字段（DeepSeek 等网关风格，官方 SDK 未建类型，走原始 JSON）。
-func mapCompletionsMessage(msg *sdk.ChatCompletionMessage) *llm.Message {
-	parts := make([]llm.Part, 0, len(msg.ToolCalls)+2)
+// 兼容字段（DeepSeek 等网关风格，官方 SDK 未建类型，走原始 JSON）；
+// audioFormat 是请求声明的输出容器格式，用于给音频块标注 MIME。
+func mapCompletionsMessage(provider string, msg *sdk.ChatCompletionMessage, audioFormat string) (*llm.Message, error) {
+	parts := make([]llm.Part, 0, len(msg.ToolCalls)+3)
 	var reasoning string
 	if f, ok := msg.JSON.ExtraFields["reasoning_content"]; ok {
 		// 同上：ExtraFields 不吃 Valid()，以 Raw() 为准。
@@ -465,6 +500,14 @@ func mapCompletionsMessage(msg *sdk.ChatCompletionMessage) *llm.Message {
 	if msg.Content != "" {
 		parts = append(parts, llm.Text(msg.Content))
 	}
+	// 官方 audio 输出模态：message.audio.data 为 base64 音频。
+	if msg.Audio.Data != "" {
+		part, err := audioPart(provider, msg.Audio.Data, audioFormat)
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, part)
+	}
 	for _, tc := range msg.ToolCalls {
 		// 本包只声明 function 工具，custom 变体不会出现。
 		if tc.Type == "function" {
@@ -475,7 +518,23 @@ func mapCompletionsMessage(msg *sdk.ChatCompletionMessage) *llm.Message {
 			}))
 		}
 	}
-	return &llm.Message{Role: llm.RoleAssistant, Parts: parts}
+	return &llm.Message{Role: llm.RoleAssistant, Parts: parts}, nil
+}
+
+// audioPart 把响应里的 base64 音频解码为 PartCustom 块。解码失败
+// 显式报错——音频内容不允许静默丢弃。
+func audioPart(provider, b64, format string) (llm.Part, error) {
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return llm.Part{}, llm.NewError(llm.ErrProvider, provider, 0, err, "audio.data 不是合法 base64")
+	}
+	if format == "" {
+		format = "wav"
+	}
+	return llm.Part{Kind: llm.PartCustom, Media: &llm.MediaContent{
+		MediaType: "audio/" + format,
+		Data:      data,
+	}}, nil
 }
 
 // mapFinishReason 映射结束原因；function_call 是已废弃的旧值，

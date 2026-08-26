@@ -118,30 +118,35 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 				}
 			}
 			if len(texts) > 0 {
-				items = append(items, easyMessage(responses.EasyInputMessageRoleAssistant, strings.Join(texts, "\n"), nil))
+				items = append(items, easyMessage(responses.EasyInputMessageRoleAssistant, []responses.ResponseInputContentUnionParam{{
+					OfInputText: &responses.ResponseInputTextParam{Text: strings.Join(texts, "\n")},
+				}}))
 			}
 
 		case llm.RoleUser, llm.RoleTool:
-			var parts []responses.ResponseInputContentUnionParam
-			var texts []string
+			// 按遇到顺序构建 content 列表——文本与媒体的相对顺序
+			// 保持原样，不重排（图在文前就是图在前）。
+			var content []responses.ResponseInputContentUnionParam
 			flushUser := func() {
-				if len(texts) == 0 && len(parts) == 0 {
+				if len(content) == 0 {
 					return
 				}
-				items = append(items, easyMessage(responses.EasyInputMessageRoleUser, strings.Join(texts, "\n"), parts))
-				texts, parts = nil, nil
+				items = append(items, easyMessage(responses.EasyInputMessageRoleUser, content))
+				content = nil
 			}
 			for i := range msg.Parts {
 				p := &msg.Parts[i]
 				switch p.Kind {
 				case llm.PartText:
-					texts = append(texts, p.Text)
+					content = append(content, responses.ResponseInputContentUnionParam{
+						OfInputText: &responses.ResponseInputTextParam{Text: p.Text},
+					})
 				case llm.PartImage:
 					ref, err := imageRef(m.provider, p.Image)
 					if err != nil {
 						return params, err
 					}
-					parts = append(parts, responses.ResponseInputContentUnionParam{
+					content = append(content, responses.ResponseInputContentUnionParam{
 						OfInputImage: &responses.ResponseInputImageParam{ImageURL: param.NewOpt(ref)},
 					})
 				case llm.PartCustom:
@@ -149,7 +154,7 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 					if err != nil {
 						return params, err
 					}
-					parts = append(parts, part)
+					content = append(content, part)
 				case llm.PartToolResult:
 					flushUser()
 					tr := p.ToolResultValue
@@ -266,22 +271,17 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 	return params, nil
 }
 
-// easyMessage 构造 EasyInput 消息项：纯文本走字符串内容，图文混合
-// 走内容块列表。
-func easyMessage(role responses.EasyInputMessageRole, text string, extraParts []responses.ResponseInputContentUnionParam) responses.ResponseInputItemUnionParam {
+// easyMessage 构造 EasyInput 消息项：单块文本走字符串内容，其余按
+// 传入顺序走内容块列表。
+func easyMessage(role responses.EasyInputMessageRole, content []responses.ResponseInputContentUnionParam) responses.ResponseInputItemUnionParam {
 	msg := responses.EasyInputMessageParam{Role: role}
-	if len(extraParts) == 0 {
-		msg.Content.OfString = param.NewOpt(text)
-	} else {
-		list := make(responses.ResponseInputMessageContentListParam, 0, len(extraParts)+1)
-		if text != "" {
-			list = append(list, responses.ResponseInputContentUnionParam{
-				OfInputText: &responses.ResponseInputTextParam{Text: text},
-			})
+	if len(content) == 1 {
+		if t := content[0].OfInputText; t != nil {
+			msg.Content.OfString = param.NewOpt(t.Text)
+			return responses.ResponseInputItemUnionParam{OfMessage: &msg}
 		}
-		list = append(list, extraParts...)
-		msg.Content.OfInputItemContentList = list
 	}
+	msg.Content.OfInputItemContentList = content
 	return responses.ResponseInputItemUnionParam{OfMessage: &msg}
 }
 

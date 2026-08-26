@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -734,6 +735,210 @@ func TestStreamCancelSendsEventError(t *testing.T) {
 	}
 }
 
+func TestResponsesCancelSendsEventError(t *testing.T) {
+	started := make(chan struct{})
+	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","item_id":"m1","output_index":0,"content_index":0,"delta":"x","sequence_number":1}`+"\n\n")
+		flusher.Flush()
+		time.Sleep(2 * time.Second)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, err := m.Stream(ctx, llm.NewRequest(llm.UserText("hi")))
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	<-started
+	cancel()
+	var evs []llm.StreamEvent
+	for ev := range ch {
+		evs = append(evs, ev)
+	}
+	if len(evs) == 0 {
+		t.Fatal("取消后应至少有 EventError")
+	}
+	last := evs[len(evs)-1]
+	if last.Kind != llm.EventError || llm.KindOf(last.Err) != llm.ErrCanceled {
+		t.Fatalf("最后事件 = %s（err=%v），期望 EventError(canceled)", last.Kind, last.Err)
+	}
+}
+
+func TestUnknownMIMERejected(t *testing.T) {
+	// 未知 application/* 与空 MediaType 都必须显式 bad_request 且不发请求。
+	reject := func(t *testing.T, m llm.ChatModel, mediaType string, data []byte) {
+		t.Helper()
+		req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+			llm.Media(mediaType, data),
+		}})
+		if _, err := m.Generate(context.Background(), req); llm.KindOf(err) != llm.ErrBadRequest {
+			t.Fatalf("mediaType %q: kind = %v，期望 bad_request", mediaType, llm.KindOf(err))
+		}
+	}
+	mc := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) { t.Fatal("不应发出请求") })
+	reject(t, mc, "application/zip", []byte("PK"))
+	reject(t, mc, "", []byte("???"))
+	mr := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) { t.Fatal("不应发出请求") })
+	reject(t, mr, "application/zip", []byte("PK"))
+	reject(t, mr, "", []byte("???"))
+}
+
+func TestResponsesImageBeforeText(t *testing.T) {
+	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		items, _ := body["input"].([]any)
+		item, _ := items[0].(map[string]any)
+		parts, _ := item["content"].([]any)
+		if len(parts) != 2 {
+			t.Fatalf("图+文应为 2 块: %v", item["content"])
+		}
+		p0, _ := parts[0].(map[string]any)
+		p1, _ := parts[1].(map[string]any)
+		if p0["type"] != "input_image" {
+			t.Fatalf("图在前：第 1 块应为 input_image: %v", p0)
+		}
+		if p1["type"] != "input_text" || p1["text"] != "what is this" {
+			t.Fatalf("图在前：第 2 块应为文本: %v", p1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","error":null,"incomplete_details":null,"model":"gpt-test","output":[{"type":"message","id":"m1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"cat","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2},"metadata":{},"tool_choice":"auto","tools":[],"parallel_tool_calls":true}`))
+	})
+	req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+		llm.ImageURL("https://example.com/cat.png", "image/png"),
+		llm.Text("what is this"),
+	}})
+	resp, err := m.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Message.Text() != "cat" {
+		t.Fatalf("text = %q", resp.Message.Text())
+	}
+}
+
+func TestCompletionsToolChoiceAndFormat(t *testing.T) {
+	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		switch body["model"] {
+		case "auto-test":
+			tc, _ := body["tool_choice"].(string)
+			if tc != "auto" {
+				t.Fatalf("auto 应为字符串 tool_choice: %v", body["tool_choice"])
+			}
+		case "none-test":
+			tc, _ := body["tool_choice"].(string)
+			if tc != "none" {
+				t.Fatalf("none 应为字符串 tool_choice: %v", body["tool_choice"])
+			}
+		case "format-test":
+			rf, _ := body["response_format"].(map[string]any)
+			if rf["type"] != "json_object" {
+				t.Fatalf("response_format.type = %v", rf["type"])
+			}
+		case "schema-test":
+			rf, _ := body["response_format"].(map[string]any)
+			if rf["type"] != "json_schema" {
+				t.Fatalf("response_format.type = %v", rf["type"])
+			}
+			js, _ := rf["json_schema"].(map[string]any)
+			if js["name"] != "answer" {
+				t.Fatalf("json_schema.name = %v", js["name"])
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"{}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	})
+	for _, tc := range []struct {
+		model string
+		mode  llm.ToolChoiceMode
+		rf    *llm.ResponseFormat
+	}{
+		{"auto-test", llm.ToolAuto, nil},
+		{"none-test", llm.ToolNone, nil},
+		{"format-test", "", &llm.ResponseFormat{Type: llm.FormatJSONObject}},
+		{"schema-test", "", &llm.ResponseFormat{Type: llm.FormatJSONSchema, Name: "answer", Schema: json.RawMessage(`{"type":"object"}`)}},
+	} {
+		req := llm.NewRequest(llm.UserText("q"))
+		if tc.mode != "" {
+			req.ToolChoice = &llm.ToolChoice{Mode: tc.mode}
+		}
+		if tc.rf != nil {
+			req.ResponseFormat = tc.rf
+		}
+		if _, err := m.Generate(context.Background(), req); err != nil {
+			t.Fatalf("%s: Generate: %v", tc.model, err)
+		}
+	}
+}
+
+func TestCompletionsAudioOutput(t *testing.T) {
+	// TTS 线格式：请求带官方 audio 模态参数；响应 message.audio.data
+	// 解码为 PartCustom(audio/*)。
+	audioB64 := base64.StdEncoding.EncodeToString([]byte("RIFFxxxx"))
+	m := newCompletionsTest(t, func(w http.ResponseWriter, r *http.Request) {
+		body := readJSON(t, r)
+		au, _ := body["audio"].(map[string]any)
+		if au == nil {
+			t.Fatalf("请求应带 audio 模态: %v", body)
+		}
+		if au["voice"] != "mimo_default" || au["format"] != "wav" {
+			t.Fatalf("audio 参数不符: %v", au)
+		}
+		resp := `{"id":"c1","object":"chat.completion","created":1,"model":"tts","choices":[{"index":0,"message":{"role":"assistant","content":"","audio":{"id":"a1","data":"` + audioB64 + `","expires_at":0,"transcript":""}},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(resp))
+	})
+	req := llm.NewRequest(
+		llm.UserText("用轻快的语气"),
+		&llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{llm.Text("你好，世界。")}},
+	)
+	req.Audio = &llm.AudioOutput{Voice: "mimo_default", Format: "wav"}
+	resp, err := m.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	var found *llm.MediaContent
+	for _, p := range resp.Message.Parts {
+		if p.Kind == llm.PartCustom && p.Media != nil && p.Media.MediaType == "audio/wav" {
+			found = p.Media
+		}
+	}
+	if found == nil || string(found.Data) != "RIFFxxxx" {
+		t.Fatalf("音频块映射不符: %+v", resp.Message.Parts)
+	}
+}
+
+func TestRegistryOpenResponses(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","error":null,"incomplete_details":null,"model":"gpt-test","output":[{"type":"message","id":"m1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"roundtrip","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2},"metadata":{},"tool_choice":"auto","tools":[],"parallel_tool_calls":true}`))
+	}))
+	defer srv.Close()
+
+	ctx := kernel.New()
+	reg := llm.NewRegistry(ctx)
+	if err := Register(ctx, reg); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := reg.Declare("r", llm.Config{
+		Provider: ProviderResponses, Model: "gpt-test", APIKey: "k", BaseURL: srv.URL,
+	}); err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	model, err := reg.Open("r")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	resp, err := model.Generate(context.Background(), llm.NewRequest(llm.UserText("q")))
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Message.Text() != "roundtrip" {
+		t.Fatalf("text = %q", resp.Message.Text())
+	}
+}
+
 func TestResponsesIncomplete(t *testing.T) {
 	m := newResponsesTest(t, func(w http.ResponseWriter, r *http.Request) {
 		writeSSE(t, w,
@@ -1052,4 +1257,101 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// ---- MiMo 真机（ASR/TTS 走对话线格式，环境变量门控）----
+//
+//	PULSE_MIMO_API_KEY / PULSE_MIMO_BASE_URL 存在才跑。
+//	闭环设计：TTS 合成 wav → 字节直接喂 ASR → 校验转写文本。
+
+func mimoCfg(t *testing.T, model string) llm.Config {
+	t.Helper()
+	key := os.Getenv("PULSE_MIMO_API_KEY")
+	if key == "" {
+		t.Skip("PULSE_MIMO_API_KEY 未设置，跳过 MiMo 真机")
+	}
+	return llm.Config{
+		Provider: ProviderCompletions,
+		Model:    model,
+		APIKey:   key,
+		BaseURL:  os.Getenv("PULSE_MIMO_BASE_URL"),
+	}
+}
+
+func TestLiveMimoTTS(t *testing.T) {
+	m, err := NewCompletions(mimoCfg(t, "mimo-v2.5-tts"))
+	if err != nil {
+		t.Fatalf("NewCompletions: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	req := llm.NewRequest(
+		llm.UserText("用平静的语速朗读"),
+		&llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{llm.Text("你好，这是 Pulse 适配层的真机语音合成测试。")}},
+	)
+	req.Audio = &llm.AudioOutput{Voice: "mimo_default", Format: "wav"}
+	resp, err := m.Generate(ctx, req)
+	if err != nil {
+		t.Fatalf("TTS Generate: %v", err)
+	}
+	var audio *llm.MediaContent
+	for _, p := range resp.Message.Parts {
+		if p.Kind == llm.PartCustom && p.Media != nil && strings.HasPrefix(p.Media.MediaType, "audio/") {
+			audio = p.Media
+		}
+	}
+	if audio == nil || len(audio.Data) < 44 {
+		t.Fatalf("TTS 未返回有效音频: parts=%d", len(resp.Message.Parts))
+	}
+	if string(audio.Data[:4]) != "RIFF" {
+		t.Fatalf("wav 头不符: %x", audio.Data[:4])
+	}
+	t.Logf("TTS OK: %d bytes wav", len(audio.Data))
+}
+
+func TestLiveMimoASR(t *testing.T) {
+	// 第一步：TTS 合成一段已知文本的 wav。
+	ttsM, err := NewCompletions(mimoCfg(t, "mimo-v2.5-tts"))
+	if err != nil {
+		t.Fatalf("NewCompletions(tts): %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	target := "今天天气不错。"
+	ttsReq := llm.NewRequest(
+		llm.UserText("朗读"),
+		&llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{llm.Text(target)}},
+	)
+	ttsReq.Audio = &llm.AudioOutput{Voice: "mimo_default", Format: "wav"}
+	ttsResp, err := ttsM.Generate(ctx, ttsReq)
+	if err != nil {
+		t.Fatalf("TTS: %v", err)
+	}
+	var wav []byte
+	for _, p := range ttsResp.Message.Parts {
+		if p.Kind == llm.PartCustom && p.Media != nil && strings.HasPrefix(p.Media.MediaType, "audio/") {
+			wav = p.Media.Data
+		}
+	}
+	if len(wav) == 0 {
+		t.Fatal("TTS 无音频产物")
+	}
+
+	// 第二步：同一音频喂 ASR，校验转写。
+	asrM, err := NewCompletions(mimoCfg(t, "mimo-v2.5-asr"))
+	if err != nil {
+		t.Fatalf("NewCompletions(asr): %v", err)
+	}
+	asrReq := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
+		llm.Media("audio/wav", wav),
+	}})
+	asrResp, err := asrM.Generate(ctx, asrReq)
+	if err != nil {
+		t.Fatalf("ASR Generate: %v", err)
+	}
+	text := asrResp.Message.Text()
+	if strings.TrimSpace(text) == "" {
+		t.Fatal("ASR 返回空转写")
+	}
+	t.Logf("ASR OK: %q (期望含 %q)", truncate(text, 60), target)
 }
