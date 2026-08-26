@@ -6,97 +6,143 @@ pulse v2 的模型适配层：provider 中立的对话词汇表 + 适配器注�
 
 ```
 adapter 插件（openai / anthropic / …）
-    │ RegisterProvider(scope, "openai", factory)
+    │ RegisterProvider(scope, "openai", factory)   // 可逆效应
     ▼
 Registry（本包，kernel 服务 pulse.llm）
-    │ Open / OpenDefault
+    │ Declare + Open / OpenDefault
     ▼
-ChatModel
+ChatModel.Generate / Stream
 ```
 
-## 词汇表
+读完这篇应能：构造消息和请求、打开一个命名模型、读流事件、按 `ErrKind` 做退避决策。具体线格式见 [`openai/README_zh.md`](openai/README_zh.md)。
 
-### 消息 = content-block
+## ChatModel
 
-`Message{Role, []Part}`。六种块：
+```go
+type ChatModel interface {
+    Generate(ctx context.Context, req *GenerateRequest) (*Response, error)
+    Stream(ctx context.Context, req *GenerateRequest) (<-chan StreamEvent, error)
+}
+```
 
-| Kind | 字段 | 说明 |
+两条路径语义一致：`Stream` 是增量的 `Generate`。都必须可被 `ctx` 取消。错误应为本包 `*Error`（带 `Kind`）。
+
+## 消息：content-block
+
+`Message{Role, []Part}`。角色：`system` / `user` / `assistant` / `tool`。
+
+六种块：
+
+| Kind | 有效字段 | 出现位置 |
 |---|---|---|
-| `text` | `Text` | 普通文本 |
-| `image` | `Image` | 内联字节或 URL |
+| `text` | `Text` | 任意 |
+| `image` | `Image`（`Data` 或 `URL` + `MediaType`） | 通常 user |
 | `tool_call` | `ToolCallValue` | 仅 assistant |
 | `tool_result` | `ToolResultValue` | 仅 tool / user |
-| `reasoning` | `Text` | 思维链 |
-| `custom` | `Media` | 开放模态：`audio/*`、`video/*`、`application/pdf`…… |
+| `reasoning` | `Text` | assistant；**输入侧 adapter 不回传** |
+| `custom` | `Media`（MIME + Data/URL） | 开放模态 |
 
-`PartCustom` 用 MIME 承载未知扩展，**不必改词汇表**。adapter 不支持某种 MIME 时应返回 `ErrBadRequest`，禁止静默丢弃。
+`PartCustom` 用 IANA MIME 承载音频、视频、PDF 及未来类型，**不必改词汇表**。adapter 不支持某种 MIME 必须 `ErrBadRequest`，禁止静默丢。
 
-docx / xlsx / pptx **不属于**对话词汇表——它们是 zip+XML 容器，没有「每页渲染成图」的视觉管线。应用层先解析成 Markdown / 图块再喂模型。纯文本（txt / md）读成字符串即可。
+构造器（节选）：`System` / `UserText` / `ToolMessage` / `Text` / `ImageURL` / `ImageData` / `Media` / `MediaURL` / `Call` / `Result` / `Reasoning`。
 
-### 请求
+**文件输入边界**（不是厂商偷懒，是格式本质）：
 
-`GenerateRequest` 是一次补全的完整描述。零值 = 交给 provider 默认，不设魔法值。
+| 格式 | 对话 API | 怎么喂模型 |
+|---|---|---|
+| 文本 txt/md | 当字符串 | `PartText` |
+| 图片 / 音频 / 视频 | 视觉或音视频块 | `PartImage` / `PartCustom` |
+| PDF | 三家都有视觉管线（文本层 + 每页渲染） | `PartCustom(application/pdf)` |
+| docx / xlsx / pptx | **没有一家原生进视觉管线** | 应用层先解析成 Markdown/图，再当 text/image |
+
+Office 文档是 zip+XML 容器，解析属于独立组件，不是本包。
+
+## 请求与响应
+
+`GenerateRequest` 零值 = 交给 provider 默认，不设魔法值。
 
 ```
-messages / tools / tool_choice
-temperature / top_p / max_tokens / stop
-response_format          JSON Schema 结构化输出
-audio                    官方对话接口的音频输出模态（voice + format）
-metadata                 审计透传；provider 不理解则忽略
+Messages / Tools / ToolChoice
+Temperature / TopP / MaxTokens / StopSequences
+ResponseFormat     text | json_object | json_schema
+Audio              官方对话接口的音频输出（voice + format）；仅 Completions
+Metadata           审计透传；provider 不理解则忽略
 ```
 
-`Audio` 仅 Chat Completions 线格式支持。Responses 变体必须显式 `bad_request`，禁止静默丢掉。
+`Audio` 是 OpenAI Chat Completions 官方 `audio` 参数，不是某家网关私货。Responses 线格式没有该字段——adapter 必须显式 `bad_request`，禁止当没看见。
 
-### 流事件
+`Response`：`Message` + `FinishReason`（stop / tool_calls / length / content_filter / error）+ `TokenUsage`（含 cached input）。
 
-`Stream` 是增量的 `Generate`。channel 在 `done` 或 `error` 后必然关闭；ctx 取消以 `EventError` 收尾。
+`Clone` 深拷贝拦截会改的字段（标量指针、ToolChoice、ResponseFormat、Audio、Metadata）。Messages / Tools 切片级复制、元素共享。waterfall 监听器应 `req.Clone()` 再改，避免污染调用方。
+
+## 流事件
+
+channel 在 `done` 或 `error` 后必然关闭；`ctx` 取消以 `EventError` 收尾再关。`range` 即可。
 
 | Kind | 含义 |
 |---|---|
 | `text_delta` / `reasoning_delta` | 文本 / 思维链增量 |
-| `tool_call_begin` / `tool_call_delta` | 工具调用开始（CallID/Name）与参数片段 |
+| `tool_call_begin` / `tool_call_delta` | 工具开始（CallID/Name）与参数 JSON 片段 |
 | `error` | 失败，此后关闭 |
-| `done` | 聚合 `Response`（含 Usage、FinishReason），此后关闭 |
+| `done` | 聚合 `Response`，此后关闭 |
 
-**有意不做 audio 增量事件。** 音频半帧对逐字 UI 无意义；适配器在流内聚合，随 `done` 的 Message 以 `custom` 块交付。
+`Index`：0 = 文本/思维链，1 起 = 工具调用（按到达顺序）。
 
-`Index`：0 = 文本 / 思维链，1 起 = 工具调用（按到达顺序）。
+**有意不做 audio 增量事件。** 半帧音频对逐字 UI 无意义；适配器在流内聚合，随 `done` 的 Message 以 `custom` 块交付。
 
-### 错误
+## 错误
 
-`Error{Kind, Provider, StatusCode}`。可重试性由 `Kind` **唯一**决定：
+```go
+type Error struct {
+    Kind       ErrKind
+    Provider   string // 注册中心自身错误为 ""
+    StatusCode int    // 非 HTTP 为 0
+    Detail     string
+    Err        error
+}
+```
 
-| Kind | 可重试 |
-|---|---|
-| `rate_limit` / `network` / `provider` | 是 |
-| `auth` / `bad_request` / `context_length` / `content_filter` / `no_model` / `canceled` | 否 |
+可重试性由 `Kind` **唯一**决定（`KindOf` / `IsRetryable`）：
 
-`KindOf` / `IsRetryable` 供上层退避与 failover。重试本身不在本包。
+| Kind | 可重试 | 典型来源 |
+|---|---|---|
+| `rate_limit` / `network` / `provider` | 是 | 429、传输失败、5xx |
+| `auth` / `bad_request` / `context_length` / `content_filter` / `no_model` / `canceled` | 否 | 凭据、参数、超长、安全策略、取消 |
+
+本包**不做重试**。上层按 Kind 退避或 failover。
 
 ## 注册中心
+
+kernel 服务键：`llm.ServiceKey`（`"pulse.llm"`）。也可以直接 `NewRegistry` 当库用。
 
 ```go
 ctx := kernel.New()
 defer ctx.Dispose()
 
 reg := llm.NewRegistry(ctx)
-_ = openai.Register(ctx, reg) // 可逆效应：插件卸载则工厂收回
+_ = openai.Register(ctx, reg) // 一次登记两个 OpenAI 变体；可逆
 
 _ = reg.Declare("main", llm.Config{
-    Provider: "openai",
+    Provider: "openai",          // 已 RegisterProvider 的名字
     Model:    "gpt-4o",
-    APIKey:   os.Getenv("OPENAI_API_KEY"),
-    BaseURL:  "", // 空 = 官方端点；填网关即接兼容服务
+    APIKey:   os.Getenv("OPENAI_API_KEY"), // 应用凭据用各家官方变量名
+    BaseURL:  "",                          // 空 = 官方端点；填网关地址即兼容服务
 })
 model, err := reg.Open("main")
 ```
 
-拦截 seam（能力挂载，不包裹实例）：
+包内测试门控用的是 `PULSE_OPENAI_API_KEY` / `PULSE_OPENAI_BASE_URL` / `PULSE_OPENAI_MODEL`（以及 MiMo 的 `PULSE_MIMO_*`），和上面应用示例的 `OPENAI_API_KEY` 不是同一组名字。
 
-- `pulse.llm.before_generate`（waterfall，载荷 `*GenerateRequest`）：路由、默认参数、脱敏、限流。监听器应 `req.Clone()` 后改写再 `next`。
-- `pulse.llm.after_response`（emit，载荷值类型 `Response`）：计量、审计、缓存。观察者改不了调用方结果。
+`RegisterProvider(scope, name, factory)` 是内核效应：adapter 应传入自己 `Apply` 的 Context，插件卸载则工厂与已开实例一并收回。同名覆盖 = 撤旧，该 provider 下已开实例立即关闭。
 
-与 `loop` 层分工：本包管 token 级；loop 管 agent 决策级（审批、轨迹）。两层不重复。
+拦截 seam（不包裹实例）：
+
+- `pulse.llm.before_generate`（waterfall，`*GenerateRequest`）：路由、默认参数、脱敏、限流
+- `pulse.llm.after_response`（emit，值类型 `Response`）：计量、审计；观察者改不了调用方结果
+
+与 loop 分工：本包 token 级；loop 决策级（审批、轨迹）。
+
+也可用 `llm.Plugin()` 把 Registry Provide 到所在作用域，卸载时 `Close` 全部实例。
 
 ## 最小调用
 
@@ -107,28 +153,32 @@ fmt.Println(resp.Message.Text())
 
 ch, err := model.Stream(ctx, req)
 for ev := range ch {
-    if ev.Kind == llm.EventTextDelta {
+    switch ev.Kind {
+    case llm.EventTextDelta:
         fmt.Print(ev.Text)
+    case llm.EventError:
+        log.Println(ev.Err)
     }
 }
 ```
 
-多模态输入只给词汇表块，映射由 adapter 完成：
+多模态只给词汇表块，线格式由 adapter 映射：
 
 ```go
 req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
     llm.Text("这张图里有什么"),
     llm.ImageURL("https://example.com/cat.png", "image/png"),
-    llm.MediaURL("video/mp4", "https://example.com/clip.mp4"),
 }})
 ```
 
+TTS（Completions）：`req.Audio = &llm.AudioOutput{Voice: "alloy", Format: "wav"}`，响应里 `PartCustom(audio/*)`；`transcript` 非空会多一个文本块。
+
 ## 有意钉死
 
-- SDK / 传输层自动重试默认关闭：重试与 failover 属上层编排。
-- 输入侧 reasoning 块不回传（Completions 线格式无此概念；Responses 的有状态链依赖 `PreviousResponseID`）。
-- `Clone` 只深拷贝拦截会改的字段（标量指针、ToolChoice、ResponseFormat、Audio、Metadata）。Messages / Tools 切片级复制、元素共享。
+- 传输层自动重试默认关闭。
+- 输入侧 reasoning 不回传。
+- 未知 MIME / 变体不支持的字段：显式 `bad_request`，不静默丢。
 
 ## 不做
 
-会话存储、重试 failover、子 agent、音频独立端点（`/v1/audio/speech` 等——ASR/TTS 走对话线格式）、Azure/Bedrock 专用签名、Office 文档原生理解。
+会话存储、重试 failover、子 agent、独立语音端点（`/v1/audio/speech` 等；ASR/TTS 走对话线格式）、Azure/Bedrock 专用签名、Office 文档原生理解。
