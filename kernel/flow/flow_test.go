@@ -126,40 +126,35 @@ func TestCascadeSkip(t *testing.T) {
 	}
 }
 
-func TestWaitAny(t *testing.T) {
+func TestDuplicateProviderRejected(t *testing.T) {
 	g := New(context.Background())
-	mustAdd(t, g, NewNode("src", nil, Deps(Provides(kA), Provides(kB)), func(rc *RunCtx) error {
-		if err := Skip(rc, kA); err != nil {
-			return err
-		}
-		return Set(rc, kB, "val")
+	mustAdd(t, g, NewNode("a", nil, Provides(kA), func(rc *RunCtx) error {
+		return Set(rc, kA, "1")
 	}))
-	mustAdd(t, g, NewNode("any", Deps(Requires(kA), Requires(kB)), Provides(kC), func(rc *RunCtx) error {
-		got, err := WaitAny(rc, kA.asRef(), kB.asRef())
-		if err != nil || got.Name != "b" || got.Skipped {
-			t.Fatalf("WaitAny = %+v err=%v", got, err)
-		}
-		return Set(rc, kC, "ok")
+	err := g.Add(NewNode("b", nil, Provides(kA), func(rc *RunCtx) error {
+		return Set(rc, kA, "2")
 	}))
-	if err := g.Run(); err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("expected duplicate provider error")
 	}
+}
 
-	// 两边都 skip
-	g2 := New(context.Background())
-	mustAdd(t, g2, NewNode("src", nil, Deps(Provides(kA), Provides(kB)), func(rc *RunCtx) error {
-		_ = Skip(rc, kA)
-		return Skip(rc, kB)
+func TestSelfEdgeRejected(t *testing.T) {
+	g := New(context.Background())
+	err := g.Add(NewNode("loop", Requires(kA), Provides(kA), func(rc *RunCtx) error {
+		return nil
 	}))
-	mustAdd(t, g2, NewNode("any", Deps(Requires(kA), Requires(kB)), Provides(kC), func(rc *RunCtx) error {
-		_, err := WaitAny(rc, kA.asRef(), kB.asRef())
-		if !errors.Is(err, ErrSkipped) {
-			t.Fatalf("want ErrSkipped, got %v", err)
-		}
-		return err
-	}))
-	if err := g2.Run(); err != nil {
-		t.Fatalf("all-skip is not a graph failure: %v", err)
+	if err == nil {
+		t.Fatal("expected self-edge error")
+	}
+}
+
+func TestDuplicateNodeIDRejected(t *testing.T) {
+	g := New(context.Background())
+	mustAdd(t, g, NewNode("n", nil, Provides(kA), func(rc *RunCtx) error { return Skip(rc, kA) }))
+	err := g.Add(NewNode("n", nil, Provides(kB), func(rc *RunCtx) error { return Skip(rc, kB) }))
+	if err == nil {
+		t.Fatal("expected duplicate id error")
 	}
 }
 

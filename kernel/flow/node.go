@@ -95,8 +95,8 @@ func (rc *RunCtx) NodeID() string {
 	return rc.node.id
 }
 
-// Fork 派生一层可独立取消的 RunCtx（对齐 v1 AspectContext）。
-// 子层取消不影响父层；父层取消会通过 context 传播到子层。
+// Fork 只派生取消上下文，不复制写入记录或声明权限：
+// allowed / wrote 与父层共享。切面用它打断 Wait，不是独立写入事务。
 func (rc *RunCtx) Fork() *RunCtx {
 	cp := *rc
 	cp.ctx, cp.cancel = context.WithCancel(rc.ctx)
@@ -183,19 +183,6 @@ func Set[T any](rc *RunCtx, k Key[T], v T) error {
 	return nil
 }
 
-// SetOrUpdate 覆盖为最新值。已跳过则冲突。
-func SetOrUpdate[T any](rc *RunCtx, k Key[T], v T) error {
-	ref := k.asRef()
-	if err := rc.must(ref, true); err != nil {
-		return err
-	}
-	if err := rc.g.slotOf(ref).updateValue(v); err != nil {
-		return err
-	}
-	rc.wrote[ref.name] = struct{}{}
-	return nil
-}
-
 // Skip 将一条 Provide 标记为跳过。已就绪则冲突。
 func Skip[T any](rc *RunCtx, k Key[T]) error {
 	ref := k.asRef()
@@ -229,52 +216,4 @@ func WaitAll(rc *RunCtx, keys ...keyRef) error {
 		return skipErr(skipped...)
 	}
 	return nil
-}
-
-// WaitAnyResult 是 WaitAny 的到达结果。
-type WaitAnyResult struct {
-	Name    string
-	Skipped bool
-}
-
-// WaitAny 等待任一 key 以「值」到达。先到跳过则继续等其余；
-// 全部跳过 → ErrSkipped。
-func WaitAny(rc *RunCtx, keys ...keyRef) (WaitAnyResult, error) {
-	if len(keys) == 0 {
-		return WaitAnyResult{}, fmt.Errorf("flow: WaitAny requires at least one key")
-	}
-	type arr struct {
-		k   keyRef
-		err error
-	}
-	ch := make(chan arr, len(keys))
-	for _, k := range keys {
-		if err := rc.must(k, false); err != nil {
-			return WaitAnyResult{}, err
-		}
-		k := k
-		go func() {
-			_, err := rc.g.slotOf(k).wait(rc.ctx)
-			ch <- arr{k: k, err: err}
-		}()
-	}
-	var skipped []string
-	pending := len(keys)
-	for pending > 0 {
-		select {
-		case <-rc.ctx.Done():
-			return WaitAnyResult{}, rc.ctx.Err()
-		case a := <-ch:
-			pending--
-			if a.err == nil {
-				return WaitAnyResult{Name: a.k.name}, nil
-			}
-			if a.err == ErrSkipped {
-				skipped = append(skipped, a.k.name)
-				continue
-			}
-			return WaitAnyResult{}, a.err
-		}
-	}
-	return WaitAnyResult{Skipped: true}, skipErr(skipped...)
 }

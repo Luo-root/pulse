@@ -12,9 +12,10 @@ type Graph struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	keys    keyRegistry
-	slots   map[string]*slot
-	slotsMu sync.Mutex
+	keys     keyRegistry
+	producer map[string]string // provide key → node id；Add 时拒绝多生产者
+	slots    map[string]*slot
+	slotsMu  sync.Mutex
 
 	nodes   []*Node
 	aspects []Aspect
@@ -48,9 +49,10 @@ func New(ctx context.Context, opts ...Option) *Graph {
 	}
 	c, cancel := context.WithCancel(ctx)
 	g := &Graph{
-		ctx:    c,
-		cancel: cancel,
-		slots:  make(map[string]*slot),
+		ctx:      c,
+		cancel:   cancel,
+		slots:    make(map[string]*slot),
+		producer: make(map[string]string),
 	}
 	for _, o := range opts {
 		o(g)
@@ -71,17 +73,43 @@ func (g *Graph) Add(n *Node) error {
 	if g.started {
 		return ErrGraphStarted
 	}
-	for _, k := range append(append([]keyRef{}, n.requires...), n.provides...) {
+	if n.id == "" {
+		return fmt.Errorf("flow: empty node id")
+	}
+	for _, existing := range g.nodes {
+		if existing.id == n.id {
+			return fmt.Errorf("flow: duplicate node id %q", n.id)
+		}
+	}
+	seenReq := make(map[string]struct{}, len(n.requires))
+	for _, k := range n.requires {
+		if _, ok := seenReq[k.name]; ok {
+			return fmt.Errorf("flow: node %s declares %q twice in Requires", n.id, k.name)
+		}
+		seenReq[k.name] = struct{}{}
 		if err := g.keys.register(k); err != nil {
 			return err
 		}
+		g.slotOfLocked(k)
+	}
+	for _, k := range n.provides {
+		if _, ok := seenReq[k.name]; ok {
+			return fmt.Errorf("flow: node %s both requires and provides %q", n.id, k.name)
+		}
+		if err := g.keys.register(k); err != nil {
+			return err
+		}
+		if owner, ok := g.producer[k.name]; ok && owner != n.id {
+			return fmt.Errorf("flow: key %q already provided by node %s", k.name, owner)
+		}
+		g.producer[k.name] = n.id
 		g.slotOfLocked(k)
 	}
 	g.nodes = append(g.nodes, n)
 	return nil
 }
 
-// Seed 在运行前写入初始值（等同外部 SetOnce）。
+// Seed 在运行前写入初始值（幂等首写）。
 func Seed[T any](g *Graph, k Key[T], v T) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()

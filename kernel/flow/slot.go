@@ -51,24 +51,6 @@ func (s *slot) resolveValue(v any) error {
 	}
 }
 
-// updateValue 覆盖为最新值并保持就绪。已跳过：冲突。
-func (s *slot) updateValue(v any) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	switch s.state {
-	case slotSkipped:
-		return ErrConflict
-	case slotReady:
-		s.value = v
-		return nil
-	default:
-		s.value = v
-		s.state = slotReady
-		close(s.done)
-		return nil
-	}
-}
-
 // resolveSkip 标记跳过。已跳过：忽略。已就绪：冲突。
 func (s *slot) resolveSkip() error {
 	s.mu.Lock()
