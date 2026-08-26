@@ -66,6 +66,10 @@ Messages / Tools / ToolChoice
 Temperature / TopP / MaxTokens / StopSequences
 ResponseFormat     text | json_object | json_schema
 Audio              官方对话接口的音频输出（voice + format）；仅 Completions
+Reasoning          Effort（OpenAI）/ BudgetTokens（Anthropic extended thinking）
+Output             Verbosity / Effort / Logprobs / TopLogprobs
+TopK               Anthropic 原生；OpenAI 兼容网关注入
+Options            请求级长尾参数（adapter 按名取用，未知键忽略）
 Metadata           审计透传；provider 不理解则忽略
 ```
 
@@ -73,7 +77,7 @@ Metadata           审计透传；provider 不理解则忽略
 
 `Response`：`Message` + `FinishReason`（stop / tool_calls / length / content_filter / error）+ `TokenUsage`（含 cached input）。
 
-`Clone` 深拷贝拦截会改的字段（标量指针、ToolChoice、ResponseFormat、Audio、Metadata）。Messages / Tools 切片级复制、元素共享。waterfall 监听器应 `req.Clone()` 再改，避免污染调用方。
+`Clone` 深拷贝拦截会改的字段（标量指针、ToolChoice、ResponseFormat、Audio、Reasoning、Output、Options、Metadata）。Messages / Tools 切片级复制、元素共享。waterfall 监听器应 `req.Clone()` 再改，避免污染调用方。
 
 ## 流事件
 
@@ -208,8 +212,10 @@ TTS（Completions）：`req.Audio = &llm.AudioOutput{Voice: "alloy", Format: "wa
 | `ToolChoice` / `ToolAuto|None|Any|Specific` | nil = provider 默认。Specific 时填 `Name` |
 | `ResponseFormat` / `FormatText|JSONObject|JSONSchema` | nil = 纯文本 |
 | `AudioOutput` | Completions 音频输出；`Format` 空 = provider 默认 |
+| `ReasoningOptions` | `Effort`（OpenAI）/ `BudgetTokens`（Anthropic extended thinking） |
+| `OutputOptions` | `Verbosity` / `Effort` / `Logprobs` / `TopLogprobs`；adapter 不支持会显式拒绝 |
 | `GenerateRequest` / `NewRequest` | 完整请求；零值交 provider |
-| `(*GenerateRequest).Clone` | 拦截改写用；Messages/Tools 元素共享 |
+| `(*GenerateRequest).Clone` | 拦截改写用；深拷贝 Reasoning/Output/Options 与标量字段 |
 | `FinishReason` 五个常量 | stop / tool_calls / length / content_filter / error |
 | `TokenUsage` / `Total` | 输入、输出、cached；`Total` = 输入+输出 |
 | `Response` | Message + FinishReason + Usage |
