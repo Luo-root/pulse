@@ -10,8 +10,8 @@ import (
 // Graph.Run / Graph.Err 不会把单纯的跳过当成 error 返回。
 var ErrSkipped = errors.New("flow: skipped")
 
-// SkipError 携带被跳过的 Key 名，便于 WaitAll / WaitAny 的调用方
-// 区分「哪几条边没走」。errors.Is(err, ErrSkipped) 仍成立。
+// SkipError 携带被跳过的 Key 名，便于 WaitAll 的调用方区分哪些输入
+// 走了跳过。errors.Is(err, ErrSkipped) 仍成立。
 type SkipError struct {
 	Keys []string
 }
@@ -36,4 +36,5 @@ var (
 	ErrConflict        = errors.New("flow: slot already resolved with a conflicting state")
 	ErrGraphStarted    = errors.New("flow: graph already started")
 	ErrGraphNotStarted = errors.New("flow: graph has not started")
+	ErrDuplicateSource = errors.New("flow: key already has a source")
 )

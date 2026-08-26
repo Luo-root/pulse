@@ -13,7 +13,7 @@ type Graph struct {
 	cancel context.CancelFunc
 
 	keys     keyRegistry
-	producer map[string]string // provide key → node id；Add 时拒绝多生产者
+	producer map[string]string // key → "seed" 或 node id；每种来源至多一个
 	slots    map[string]*slot
 	slotsMu  sync.Mutex
 
@@ -92,17 +92,21 @@ func (g *Graph) Add(n *Node) error {
 		}
 		g.slotOfLocked(k)
 	}
+	seenProv := make(map[string]struct{}, len(n.provides))
 	for _, k := range n.provides {
 		if _, ok := seenReq[k.name]; ok {
 			return fmt.Errorf("flow: node %s both requires and provides %q", n.id, k.name)
 		}
+		if _, ok := seenProv[k.name]; ok {
+			return fmt.Errorf("flow: node %s declares %q twice in Provides", n.id, k.name)
+		}
+		seenProv[k.name] = struct{}{}
 		if err := g.keys.register(k); err != nil {
 			return err
 		}
-		if owner, ok := g.producer[k.name]; ok && owner != n.id {
-			return fmt.Errorf("flow: key %q already provided by node %s", k.name, owner)
+		if err := g.claimSource(k.name, n.id); err != nil {
+			return err
 		}
-		g.producer[k.name] = n.id
 		g.slotOfLocked(k)
 	}
 	g.nodes = append(g.nodes, n)
@@ -120,6 +124,9 @@ func Seed[T any](g *Graph, k Key[T], v T) error {
 	if err := g.keys.register(ref); err != nil {
 		return err
 	}
+	if err := g.claimSource(ref.name, "seed"); err != nil {
+		return err
+	}
 	return g.slotOfLocked(ref).resolveValue(v)
 }
 
@@ -134,7 +141,19 @@ func SkipSeed[T any](g *Graph, k Key[T]) error {
 	if err := g.keys.register(ref); err != nil {
 		return err
 	}
+	if err := g.claimSource(ref.name, "seed"); err != nil {
+		return err
+	}
 	return g.slotOfLocked(ref).resolveSkip()
+}
+
+// claimSource 保证每个 Key 只有一种来源：外部 Seed/SkipSeed，或恰好一个节点。
+func (g *Graph) claimSource(name, owner string) error {
+	if prev, ok := g.producer[name]; ok && prev != owner {
+		return fmt.Errorf("%w: %q already sourced by %s", ErrDuplicateSource, name, prev)
+	}
+	g.producer[name] = owner
+	return nil
 }
 
 func (g *Graph) slotOf(k keyRef) *slot {

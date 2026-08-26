@@ -149,6 +149,74 @@ func TestSelfEdgeRejected(t *testing.T) {
 	}
 }
 
+func TestSeedAndNodeProviderConflict(t *testing.T) {
+	g := New(context.Background())
+	if err := Seed(g, kA, "in"); err != nil {
+		t.Fatal(err)
+	}
+	err := g.Add(NewNode("load", nil, Provides(kA), func(rc *RunCtx) error {
+		return Set(rc, kA, "from-node")
+	}))
+	if !errors.Is(err, ErrDuplicateSource) {
+		t.Fatalf("Seed then Add: want ErrDuplicateSource, got %v", err)
+	}
+
+	g2 := New(context.Background())
+	mustAdd(t, g2, NewNode("load", nil, Provides(kA), func(rc *RunCtx) error {
+		return Set(rc, kA, "from-node")
+	}))
+	err = Seed(g2, kA, "in")
+	if !errors.Is(err, ErrDuplicateSource) {
+		t.Fatalf("Add then Seed: want ErrDuplicateSource, got %v", err)
+	}
+}
+
+func TestSkipSeedAndNodeProviderConflict(t *testing.T) {
+	g := New(context.Background())
+	if err := SkipSeed(g, kA); err != nil {
+		t.Fatal(err)
+	}
+	err := g.Add(NewNode("load", nil, Provides(kA), func(rc *RunCtx) error {
+		return Set(rc, kA, "from-node")
+	}))
+	if !errors.Is(err, ErrDuplicateSource) {
+		t.Fatalf("SkipSeed then Add: want ErrDuplicateSource, got %v", err)
+	}
+
+	g2 := New(context.Background())
+	mustAdd(t, g2, NewNode("load", nil, Provides(kA), func(rc *RunCtx) error {
+		return Set(rc, kA, "from-node")
+	}))
+	err = SkipSeed(g2, kA)
+	if !errors.Is(err, ErrDuplicateSource) {
+		t.Fatalf("Add then SkipSeed: want ErrDuplicateSource, got %v", err)
+	}
+}
+
+func TestEmptyNodeIDRejected(t *testing.T) {
+	g := New(context.Background())
+	err := g.Add(NewNode("", nil, Provides(kA), func(rc *RunCtx) error { return nil }))
+	if err == nil {
+		t.Fatal("expected empty id error")
+	}
+}
+
+func TestDuplicateRequiresRejected(t *testing.T) {
+	g := New(context.Background())
+	err := g.Add(NewNode("n", Deps(Requires(kA), Requires(kA)), Provides(kB), func(rc *RunCtx) error { return nil }))
+	if err == nil {
+		t.Fatal("expected duplicate requires error")
+	}
+}
+
+func TestDuplicateProvidesRejected(t *testing.T) {
+	g := New(context.Background())
+	err := g.Add(NewNode("n", nil, Deps(Provides(kA), Provides(kA)), func(rc *RunCtx) error { return nil }))
+	if err == nil {
+		t.Fatal("expected duplicate provides error")
+	}
+}
+
 func TestDuplicateNodeIDRejected(t *testing.T) {
 	g := New(context.Background())
 	mustAdd(t, g, NewNode("n", nil, Provides(kA), func(rc *RunCtx) error { return Skip(rc, kA) }))

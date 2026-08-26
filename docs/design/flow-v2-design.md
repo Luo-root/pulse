@@ -100,7 +100,8 @@ err := g.Run()
 - 全量提交 + 阻塞等数据。去掉 ants 池、`GetStats`、`ResizePool`。
 - `WithMaxRunning(n)`：`n<=0` 无限（默认）；`n>0` 为进入 `Run` 前的信号量。等数据不占名额，拿到全部输入、真正执行时才 Acquire。
 - `Graph` API：`New` / `Add` / `Seed` / `SkipSeed` / `Run` / `Start`+`Wait` / `Err`。
-- `Add` 拒绝：空 id、重复 id、同一节点既 Require 又 Provide 某 Key、两个节点 Provide 同一 Key。
+- `Add` 拒绝：空 id、重复 id、同一节点重复 Require/Provide、同一节点既 Require 又 Provide 某 Key、两个节点 Provide 同一 Key。
+- 每个 Key 恰有一种来源：`Seed` / `SkipSeed`（外部输入）或恰好一个节点的 Provides，二者不可并存。重复声明返回 `ErrDuplicateSource`。
 
 ### 切面
 
@@ -126,7 +127,7 @@ type Aspect interface {
 
 - 同名不同类型的 Key 拒绝。
 - Set 二次静默忽略；Set 与 Skip 冲突显式报错。
-- 每个 Provide Key 至多一个生产者。
+- 每个 Key 恰有一种来源：外部 Seed/SkipSeed，或恰好一个节点输出。
 - 漏写的 Provides 在 Run 返回后自动 Skip。
 - 输入被跳过 → 不跑 Run，输出全跳过。
 - 节点 error ≠ 跳过。error 取消整图；跳过只影响依赖链。
