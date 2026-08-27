@@ -151,3 +151,35 @@ type Aspect interface {
 7. Timeout 切面取消能打断 Wait；Recovery 把 panic 收成首错。
 8. `WithMaxRunning(1)` 时两个无依赖节点串行进入 Run。
 9. `go test -race ./kernel/flow/` 全绿。
+
+## 演进路线
+
+> 状态：方向共识（2026-08-27），按依赖关系排序；每一步动工前单独开 Issue 钉边界，不在此处预先实现。
+
+### E1 观测 seam：节点生命周期事件
+
+**现状缺口**：切面只有一个 `Around(rc, next)`，包住「等待输入 + 执行」整段。观测方拿不到「等待输入何时开始/结束」，只能给出 node_total_ms；examples 的观测原型因此明确拒绝伪造 wait/run 拆分（见 examples/03-flow-agent/README「时间统计怎么读」）。
+
+**第一消费者是装配层桥**（demoapp/bridge.go，已有 FlowAspect 原型）：flow 出 typed 事实，桥折成日志写 Sink——正式 observability 包不 import flow，不做消费者（见 [observability-v1-design.md](observability-v1-design.md) D1），避免从后门把业务依赖请回核心观测包。
+
+**计划**：在框架内增加三个只读事件位——NodeWaiting（开始阻塞等输入，即进入 WaitAll）、NodeRunning（拿到全部输入、Acquire 之后、进入用户 Run 之前）、NodeFinished（终止态 + 状态原因）。粒度与 examples/03 的诚实边界对齐；注意 Skip 与超时路径没有 Running，直接 Finished。验收证据：装配层桥能输出单节点的 wait_ms / run_ms 分段。
+
+**非目标**：不做指标聚合、导出器、采样配置——那些是 observability 包的事，flow 只暴露事实。
+
+### E2 结构化编排：JSON/YAML 流程定义（更先进形态）
+
+**方向**：用 JSON/YAML 等结构化语言声明流程图——节点列表、Requires/Provides 关系、Seed 输入、可选的 Timeout/Retry 参数——由运行时装配成 Graph。目标是让流程描述脱离 Go 源码，可被配置管理、跨语言工具消费。
+
+**前置依赖**（缺一不动工）：
+
+1. **节点注册语义稳定**：序列化的只是「ID + 声明 + 配置」，节点实现必须是具名可寻址的（类似 kernel Loader 的 Factory 注册表）。Add 期全部校验规则（来源唯一、自环拒绝等）原样适用于反序列化路径；
+2. **可序列化的输入 Schema**：多模态消息、附件字节不适合直接放 YAML——需要定义外部输入的引用方式（如 Seed 引用文件/环境/上游服务），这可能与记忆层的 Session/Context 设计产生交集，需先对齐；
+3. **E1 落地且装配层能消费 wait/run**：声明式图的问题定位比代码图更依赖节点分段耗时；kernel 装配日志解决不了这类排障，E1 是它的排障前提。
+
+**明确的边界立场**：YAML 编排不引入 OR/竞速、不改 AND 汇聚语义、不新增表达式求值引擎做条件路由——条件分支仍然是「分类节点 Set/Skip」。声明式是图的**另一种书写方式**，不是另一种执行模型。
+
+### 与其他组件的关系
+
+- **E1 → 装配层桥**：flow 出 typed 事实；桥折成 wait_ms/run_ms 写 Sink。正式 observability 包不 import flow，只提供信封与出口；
+- **E2 → memory 层**：外部输入引用若涉及会话/上下文来源，遵循 memory 设计稿中「model-visible 投影不可破坏」的不变式；
+- 全部演进不破坏本篇已钉死的契约：三态槽位、AND 汇聚、来源唯一、失败显式。
