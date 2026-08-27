@@ -108,8 +108,7 @@ func main() {
         └── before_tool_call Waterfall：HITL 挂载点
 ```
 
-设计蓝图与 v1 → v2 的迁移顺序见 [`docs/design/plugin-kernel-v2.md
-- docs/design/kernel-local-events.md`](docs/design/plugin-kernel-v2.md)。
+设计蓝图与 v1 → v2 的迁移顺序见 [`docs/design/plugin-kernel-v2.md`](docs/design/plugin-kernel-v2.md)；请求级局部事件派发见 [`docs/design/kernel-local-events.md`](docs/design/kernel-local-events.md)。
 
 ## 设计边界
 
