@@ -64,11 +64,11 @@
 
 ```go
 type Sink interface {
-    Write(context.Context, Record)
+    Write(Record) // 无 ctx：kernel Emit 路径不带 context
 }
 ```
 
-内置 SlogSink（stderr）/ MemorySink（测试断言）/ MultiSink（扇出）。导出器（otel/prometheus）将来以「新增 Sink 实现」方式接入，不动包结构。
+内置 SlogSink（stderr）/ MemorySink（测试断言）/ MultiSink（扇出）。`Time` 为零时由内置 Sink 补 wall clock。导出器（otel/prometheus）将来以「新增 Sink 实现」方式接入，不动包结构。
 
 ### 3.3 kernel 侧新增公开面
 

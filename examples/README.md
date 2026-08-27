@@ -4,20 +4,23 @@
 
 | 层 | 新增验证点 | 依赖 |
 |---|---|---|
-| [01-chat](01-chat/README.md) | `kernel.Context` 装配 `llm.Registry` 与 provider adapter；统一 content-block 输入模型 | kernel、llm、openai/anthropic |
-| [02-react](02-react/README.md) | ReAct 回合、工具调用、**四种 HITL 模式（含终端交互审批）**、跨轮 history 归属 | 上一层 + loop |
+| [01-chat](01-chat/README.md) | `kernel.Context` 装配 `llm.Registry` 与 provider adapter；统一 content-block 输入模型 | kernel、llm、openai/anthropic、observability |
+| [02-react](02-react/README.md) | ReAct 回合、工具调用、**四种 HITL 模式（含终端交互审批）**、每请求 `reqScope`+Bridge、跨轮 history 归属 | 上一层 + loop |
 | [03-flow-agent](03-flow-agent/README.md) | 一次请求的图编排：AND 汇聚、外部 Seed、失败取消、节点级时间统计 | 上一层 + kernel/flow |
 
 ## 共享层：examples/internal/
 
 ```text
 internal/
-  demoapp/        启动装配与交互协议
-    host.go       dotenv 加载、kernel.New、插件注册、ChatModel 打开
+  demoapp/        启动装配与交互协议 + 请求级观测桥
+    host.go       dotenv、kernel.New、Bootstrap 最先 Use、ChatModel 打开
+    bridge.go     请求级 Bridge：挂 reqScope，吃 EmitLocal / WaterfallLocal
+    hitl.go       四种 HITL 模式（监听挂在与 Agent 相同的 reqScope）
     input.go      多模态输入 -> []llm.Part 的唯一转换点
     repl.go       命令解析 + 交互循环（可单测，不依赖真实 stdin）
-  observability/  观测插件原型
 ```
+
+正式观测包在仓库根 `observability/`（只依赖 kernel）。examples **没有** `internal/observability/` 原型，也不再提供 `Reporter` 服务。
 
 ### demoapp.Host 做了什么
 
@@ -25,11 +28,19 @@ internal/
 
 ```text
 kernel.New()
-  -> Use(llm.Plugin())            # Registry 成为服务 pulse.llm，卸载时 Close 全部实例
-  -> openai.Register / anthropic.Register   # 工厂登记为可逆 Effect
-  -> Use(observability.Plugin())  # 订阅 llm/loop 公开事件，Provide Reporter
-  -> reg.Declare("main", cfg)     # 命名实例声明
-  -> reg.Open("main")             # 打开并缓存，经过 before_generate 包装
+  -> Use(observability.Bootstrap(hostID, sink))  # 必须最先；订阅 fiber_state / loader_action
+  -> Use(llm.Plugin())                           # Registry 成为服务 pulse.llm
+  -> openai.Register / anthropic.Register        # 工厂登记为可逆 Effect
+  -> reg.Declare("main", cfg)                    # 命名实例声明
+  -> reg.Open("main")                            # 打开并缓存，经过 before_generate 包装
+```
+
+每轮请求（02/03）再：
+
+```text
+reqScope := host.Ctx.Derive()
+bridge   := host.NewBridge(reqScope)             # TraceID = Host.NewTraceID()
+HITL / Agent 都挂同一 reqScope（Local 派发下否则听不到）
 ```
 
 `host.Close()` 之后，上述注册按 LIFO 全部回收：事件监听摘除、Registry 关闭、已开模型失效。这就是「对环境的修改都登记为 Effect」的直接验证。
@@ -85,7 +96,8 @@ go test  ./examples/internal/...
 
 ## 观测日志
 
-全部走 stderr 结构化输出，字段固定：`trace_id`、`layer`（kernel/llm/loop/tool/flow）、`event`、`duration_ms`、`status`，以及模态计数（`text_parts`、`image_parts`、`custom_parts`、`inline_media_bytes`）。
+- **装配期**：`observability.Bootstrap` → `MemorySink` / `SlogSink`，字段见 [`observability/README_zh.md`](../observability/README_zh.md)（`host_id`、`source=kernel`、`event`、Fiber 状态）。
+- **运行期**：`demoapp.Bridge` 把 llm/loop/flow 事实折进同一 Sink（`source=bridge`，必填 `trace_id`）；token / turn summary 等装不进信封的指标走 slog 附加键。
 
 隐私边界：记录**元数据**（次数、字节长度、耗时、状态），不记录 prompt 内容、附件内容、密钥和思维链。
 

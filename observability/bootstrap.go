@@ -12,8 +12,9 @@ import (
 //
 //  1. 必须是 host 上**最先 Use 的插件**——kernel 事件不回放，后装
 //     只能靠快照横幅兜底，之前的迁移不进 Sink；
-//  2. 监听登记在本插件 Apply 的私有子 ctx 上（全树收集可听整树事件，
-//     包括 host 根销毁时的 T7）；不要把观测监听手动挂到 root；
+//  2. 监听登记在本插件 Apply 的私有子 ctx 上；fiber_state / loader_action
+//     仍走全树 Emit，因此能收到宿主树上的装配事件。树销毁本身不发
+//     逐 Fiber T7 事件（见 observability-v1-design.md §4）；
 //  3. hostID 由调用方提供（进程内唯一即可），出现在横幅与全部
 //     kernel 记录中。
 func Bootstrap(hostID string, sink Sink) kernel.Plugin {

@@ -3,6 +3,7 @@ package observability
 import (
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // SlogSink 把记录写为 slog 结构化日志（默认 stderr）。
@@ -13,11 +14,15 @@ type SlogSink struct {
 
 // Write 实现 Sink。字段顺序固定，便于 grep 与日志聚合分组。
 func (s SlogSink) Write(r Record) {
+	r = stampTime(r)
 	logger := s.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	attrs := make([]any, 0, 16)
+	attrs := make([]any, 0, 18)
+	if !r.Time.IsZero() {
+		attrs = append(attrs, "time", r.Time.Format(time.RFC3339Nano))
+	}
 	if r.HostID != "" {
 		attrs = append(attrs, "host_id", r.HostID)
 	}
@@ -63,6 +68,7 @@ type MemorySink struct {
 
 // Write 实现 Sink。
 func (s *MemorySink) Write(r Record) {
+	r = stampTime(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.records = append(s.records, r)

@@ -166,9 +166,16 @@ _ = kernel.Waterfall(ctx, Tick, 0)     // around 链回流
 _ = kernel.Parallel(ctx, Tick, 0)      // 并发；返回 []error 或 nil
 ```
 
-事件名全局唯一；同名不同类型在注册时被拒绝。waterfall **不支持 prepend**。派发是全树广播（先序：根到叶），监听随作用域销毁自动摘除。`On` 与 `OnWaterfall` 混用时两类独立派发、互不干扰。
+事件名全局唯一；同名不同类型在注册时被拒绝。waterfall **不支持 prepend**。监听随作用域销毁自动摘除。`On` 与 `OnWaterfall` 混用时两类独立派发、互不干扰。
 
-`Emit` 里单个监听器 panic **向上传播**；`Parallel` 把 panic 收成 error。
+派发分两层（详见 [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md)）：
+
+| API | 语义 | 适用 |
+|---|---|---|
+| `Emit` / `Waterfall` / `Parallel` | 从 root 全树广播 | 宿主级观察（如 fiber_state / loader_action） |
+| `EmitLocal` / `WaterfallLocal` | 只本 scope，不向父/子/兄弟 | 请求级事实（tool / turn / HITL / llm generate） |
+
+`Emit` 里单个监听器 panic **向上传播**；`Parallel` 把 panic 收成 error。`EmitLocal` / `WaterfallLocal` 对 nil scope 安全（no-op / 原样返回）。
 
 ## 有意钉死
 

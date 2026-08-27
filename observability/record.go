@@ -72,14 +72,25 @@ type Record struct {
 
 // Sink 是记录出口。实现必须并发安全且不得长时间阻塞调用方
 // （Emit 处于 kernel 派发路径上）。
+//
+// 契约：无 context.Context——kernel Emit 路径不带 ctx；需要截止时间
+// 的导出器自行持有内部队列，不把阻塞回传到派发路径。
 type Sink interface {
 	Write(r Record)
+}
+
+// stampTime 在 Time 为零时补 wall clock，避免调用方漏填导致死字段。
+func stampTime(r Record) Record {
+	if r.Time.IsZero() {
+		r.Time = time.Now()
+	}
+	return r
 }
 
 // MultiSink 扇出到多个 Sink；nil 成员跳过。
 type MultiSink []Sink
 
-// Write 实现 Sink。
+// Write 实现 Sink。Time 由叶子 Sink（SlogSink / MemorySink）补齐。
 func (s MultiSink) Write(r Record) {
 	for _, sink := range s {
 		if sink != nil {
@@ -87,6 +98,3 @@ func (s MultiSink) Write(r Record) {
 		}
 	}
 }
-
-// contextKey 避免 lint：Write 无 ctx 参数（kernel Emit 不带 ctx），
-// 包内部异步场景用 background。

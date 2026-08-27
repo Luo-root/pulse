@@ -17,6 +17,7 @@ v2 以可逆效应和依赖响应式为内核，先落地插件内核、模型�
 | [`llm/anthropic`](llm/anthropic/README_zh.md) | Anthropic Messages 官方 SDK 适配器 | `anthropic.Register()` |
 | [`loop`](loop/README_zh.md) | 无状态 ReAct 回合执行器，工具调用与 HITL 决策事件 | `loop.NewAgent()` |
 | [`kernel/flow`](kernel/flow/README_zh.md) | 数据就绪驱动的节点编排（槽位三态含跳过） | `flow.New(ctx)` |
+| [`observability`](observability/README_zh.md) | 正式观测包：Bootstrap + Record + Sink（只依赖 kernel） | `observability.Bootstrap()` |
 | [`examples`](examples/README.md) | 渐进装配示例：chat / ReAct+HITL / flow 编排 | `go run ./examples/01-chat` |
 
 ## 快速上手：模型 + ReAct 工具回合
@@ -94,18 +95,20 @@ func main() {
   ├── kernel.Context
   │     ├── ServiceKey：类型安全服务
   │     ├── Effect：卸载即还原
-  │     ├── Event：Emit / Waterfall / Parallel
+  │     ├── Event：Emit/Waterfall/Parallel（全树）+ EmitLocal/WaterfallLocal（本 scope）
   │     └── Plugin / Fiber / Loader：依赖响应式装载
+  │
+  ├── observability.Bootstrap   # 最先 Use；旁路订阅 fiber_state / loader_action
   │
   ├── llm.Registry
   │     └── ChatModel
   │           ├── openai：Chat Completions / Responses
   │           └── anthropic：Messages
   │
-  └── loop.Agent
-        ├── 模型推理
+  └── loop.Agent（建议挂 reqScope）
+        ├── 模型推理（llm.WithEventScope → Local）
         ├── ToolSet 工具调用
-        └── before_tool_call Waterfall：HITL 挂载点
+        └── before_tool_call WaterfallLocal：HITL 挂载点
 ```
 
 设计蓝图与 v1 → v2 的迁移顺序见 [`docs/design/plugin-kernel-v2.md`](docs/design/plugin-kernel-v2.md)；请求级局部事件派发见 [`docs/design/kernel-local-events.md`](docs/design/kernel-local-events.md)。
@@ -126,7 +129,7 @@ go build ./...
 go test ./...
 
 # v2 核心回归（无真实 API）
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./observability/
 
 # 单独测试 provider adapter
 go test -race -skip TestLive ./llm/openai/
@@ -142,7 +145,9 @@ kernel/                    v2 插件内核
   flow/                    数据就绪驱动的节点图
 llm/                       v2 模型词汇表、Registry 与 provider adapter
 loop/                      v2 无状态 ReAct 回合
+observability/             v2 正式观测包（Bootstrap / Record / Sink）
 docs/design/               架构设计与迁移文档
+examples/                  渐进装配示例 + demoapp 请求级桥
 ```
 
 ## 许可证

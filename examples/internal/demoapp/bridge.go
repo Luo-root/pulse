@@ -105,23 +105,27 @@ func (b *Bridge) install(scope *kernel.Context) error {
 	return nil
 }
 
-// FlowPeak 记录 flow 切面观测到的并发存活峰值（原子）。
-type FlowPeak struct{ v atomic.Int32 }
+// FlowPeak 记录 flow 切面观测到的并发存活峰值。
+// alive = 当前仍在切面内的节点数；peak = 历史最大值（不会因 defer 回落）。
+type FlowPeak struct {
+	alive atomic.Int32
+	peak  atomic.Int32
+}
 
-// Peak 返回当前峰值。
-func (p *FlowPeak) Peak() int32 { return p.v.Load() }
+// Peak 返回历史并发存活峰值。
+func (p *FlowPeak) Peak() int32 { return p.peak.Load() }
 
 // FlowAspect 返回本轮 Graph 的观测切面：node_total_ms + 并发存活峰值。
 func (b *Bridge) FlowAspect(peak *FlowPeak) flow.Aspect {
 	return flow.AspectFunc(func(rc *flow.RunCtx, next func(*flow.RunCtx) error) error {
-		cur := peak.v.Add(1)
+		cur := peak.alive.Add(1)
 		for {
-			old := peak.v.Load()
-			if cur <= old || peak.v.CompareAndSwap(old, cur) {
+			old := peak.peak.Load()
+			if cur <= old || peak.peak.CompareAndSwap(old, cur) {
 				break
 			}
 		}
-		defer peak.v.Add(-1)
+		defer peak.alive.Add(-1)
 
 		started := time.Now()
 		err := next(rc)
@@ -130,7 +134,7 @@ func (b *Bridge) FlowAspect(peak *FlowPeak) flow.Aspect {
 		case err == nil:
 		case errors.Is(err, flow.ErrSkipped):
 			status = "skipped"
-		case rc.Context().Err() != nil:
+		case rc != nil && rc.Context().Err() != nil:
 			status = "canceled"
 		default:
 			status = "failed"

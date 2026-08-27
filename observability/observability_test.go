@@ -303,12 +303,19 @@ func TestBannerSummaryShape(t *testing.T) {
 	}
 }
 
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
+// 内置 Sink 在 Time 为零时补 wall clock，避免 Record.Time 成死字段。
+func TestSinkStampsZeroTime(t *testing.T) {
+	sink := &MemorySink{}
+	before := time.Now()
+	sink.Write(Record{HostID: "h", Source: SourceKernel, Event: EventHostReady})
+	recs := sink.Snapshot()
+	if len(recs) != 1 {
+		t.Fatalf("want 1 record, got %d", len(recs))
 	}
-	return false
+	if recs[0].Time.IsZero() {
+		t.Fatal("MemorySink must stamp Time when caller leaves it zero")
+	}
+	if recs[0].Time.Before(before) {
+		t.Fatalf("stamped time %v before write started %v", recs[0].Time, before)
+	}
 }

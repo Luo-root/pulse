@@ -196,8 +196,9 @@ func (c *Context) dispose() {
 	c.onServiceChange = nil
 	c.mu.Unlock()
 
-	// 先级联卸载插件实例，再失效事件总线：fiber_state（T7）要在
-	// 全树总线仍可达时发出去——观测包的横幅与卸载轨迹依赖这一点。
+	// 先级联卸载插件实例，再失效事件总线。
+	// 注意：forceUnload 是静默的——树销毁不发逐 Fiber fiber_state（T7 裁决）；
+	// 宿主终止以 Dispose 后 Sink 零残留 + 快照终态呈现。
 	// （私有效应最后回收，回调里仍可安全触碰本 Context 方法。）
 	for _, f := range fibers {
 		f.forceUnload()

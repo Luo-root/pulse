@@ -257,8 +257,4 @@ func GetRegistry(h *Host) (*llm.Registry, bool) {
 	return kernel.Get(h.Ctx, llm.ServiceKey)
 }
 
-// ObservabilityReporter 从宿主读取观测（v1 正式包无 Reporter 服务；
-// 保留桥式 API 以兼容测试断言）。
-func ObservabilityReporter(h *Host) *FlowPeak {
-	return h.Peak
-}
+
