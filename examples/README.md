@@ -96,8 +96,9 @@ go test  ./examples/internal/...
 
 ## 观测日志
 
-- **装配期**：`observability.Bootstrap` → `MemorySink` / `SlogSink`，字段见 [`observability/README_zh.md`](../observability/README_zh.md)（`host_id`、`source=kernel`、`event`、Fiber 状态）。
-- **运行期**：`demoapp.Bridge` 把 llm/loop/flow 事实折进同一 Sink（`source=bridge`，必填 `trace_id`）；token / turn summary 等装不进信封的指标走 slog 附加键。
+- **装配期**（三层共用）：`observability.Bootstrap` → `MemorySink` / `SlogSink`，字段见 [`observability/README_zh.md`](../observability/README_zh.md)（`host_id`、`source=kernel`、`event`、Fiber 状态）。
+- **运行期**（仅 02 / 03）：每请求 `demoapp.Bridge` 把 llm/loop/flow 事实折进同一 Sink（`source=bridge`，必填 `trace_id`）；token / turn summary 等装不进信封的指标走 slog 附加键。
+- **01-chat 刻意没有运行期 Bridge**：本层只验证装配 + 词汇表，直接 `Model.Generate`；llm Local 事件会落到 Registry ctx，但没有请求级桥去听——这是分层收窄，不是漏装。
 
 隐私边界：记录**元数据**（次数、字节长度、耗时、状态），不记录 prompt 内容、附件内容、密钥和思维链。
 
