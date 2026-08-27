@@ -160,7 +160,9 @@ type Aspect interface {
 
 **现状缺口**：切面只有一个 `Around(rc, next)`，包住「等待输入 + 执行」整段。观测方拿不到「等待输入何时开始/结束」，只能给出 node_total_ms；examples 的观测原型因此明确拒绝伪造 wait/run 拆分（见 examples/03-flow-agent/README「时间统计怎么读」）。
 
-**计划**：在框架内增加三个只读事件位——NodeWaiting（开始阻塞等输入）、NodeRunning（拿到全部输入、Acquire 后进入用户 Run）、NodeFinished（终止态 + 状态原因）。形态倾向 kernel 事件键或独立轻量监听接口，动工时依 observability 包的实际需要定；**先有消费者再定 API 形状**，避免为将来设计空接口。验收证据：observability 能输出单节点的 wait_ms / run_ms 分段。
+**第一消费者是装配层桥**（demoapp/bridge.go，已有 FlowAspect 原型）：flow 出 typed 事实，桥折成日志写 Sink——正式 observability 包不 import flow，不做消费者（见 [observability-v1-design.md](observability-v1-design.md) D1），避免从后门把业务依赖请回核心观测包。
+
+**计划**：在框架内增加三个只读事件位——NodeWaiting（开始阻塞等输入，即进入 WaitAll）、NodeRunning（拿到全部输入、Acquire 之后、进入用户 Run 之前）、NodeFinished（终止态 + 状态原因）。粒度与 examples/03 的诚实边界对齐；注意 Skip 与超时路径没有 Running，直接 Finished。验收证据：装配层桥能输出单节点的 wait_ms / run_ms 分段。
 
 **非目标**：不做指标聚合、导出器、采样配置——那些是 observability 包的事，flow 只暴露事实。
 
@@ -172,7 +174,7 @@ type Aspect interface {
 
 1. **节点注册语义稳定**：序列化的只是「ID + 声明 + 配置」，节点实现必须是具名可寻址的（类似 kernel Loader 的 Factory 注册表）。Add 期全部校验规则（来源唯一、自环拒绝等）原样适用于反序列化路径；
 2. **可序列化的输入 Schema**：多模态消息、附件字节不适合直接放 YAML——需要定义外部输入的引用方式（如 Seed 引用文件/环境/上游服务），这可能与记忆层的 Session/Context 设计产生交集，需先对齐；
-3. **observability 就绪**：声明式图的问题定位比代码图更依赖结构化日志与 wait/run 分段，E1 是它的排障前提。
+3. **E1 落地且装配层能消费 wait/run**：声明式图的问题定位比代码图更依赖节点分段耗时；kernel 装配日志解决不了这类排障，E1 是它的排障前提。
 
 **明确的边界立场**：YAML 编排不引入 OR/竞速、不改 AND 汇聚语义、不新增表达式求值引擎做条件路由——条件分支仍然是「分类节点 Set/Skip」。声明式是图的**另一种书写方式**，不是另一种执行模型。
 
