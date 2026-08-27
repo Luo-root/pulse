@@ -17,7 +17,9 @@ kernel.New()
 
 进程退出时 `host.Close()` → `Dispose` 按 LIFO unwind：观测监听摘除、Registry Close、已打开的模型失效。
 
-「卸载即还原」的回收断言不靠注释代码肉眼观察（进程退出后 OS 回收一切，无法验证），而是由同进程单元测试钉死：`demoapp_test.go` 的 `TestHostCloseReclaimsServices` 在 `host.Close()` 之后断言 Sink 记录数不再增长（Dispose 后零残留）。正式观测包不提供 `Reporter` 服务；运行期指标由后续层的 `demoapp.Bridge` 写入同一 Sink。
+「卸载即还原」的回收断言不靠注释代码肉眼观察（进程退出后 OS 回收一切，无法验证），而是由同进程单元测试钉死：`demoapp_test.go` 的 `TestHostCloseReclaimsServices` 在 `host.Close()` 之后断言 Registry 服务消失且 Sink 记录数不再增长（Dispose 后零残留）。正式观测包不提供 `Reporter` 服务。
+
+本层**不创建**请求级 `Bridge` / `reqScope`：只验证装配与词汇表，直接 `host.Model.Generate`。运行期 `source=bridge` 记录从 02-react 起才出现；这是刻意收窄，不是漏装。
 
 ## 消息词汇表：一个输入模型，两种线格式
 

@@ -18,10 +18,12 @@
 //
 //	context.go  [Context]：服务仓库 + 效应跟踪器 + 作用域树节点
 //	service.go  [ServiceKey]：类型安全的服务键，Provide / Get
-//	events.go   [EventKey]：事件总线（emit / waterfall / parallel 三种派发模式；
-//	            Go 的同步调用天然串行累积，不设独立的 serial 入口）
+//	events.go   [EventKey]：事件总线——全树 Emit/Waterfall/Parallel，
+//	            另有请求级 EmitLocal/WaterfallLocal（只本 scope）；
+//	            Go 的同步调用天然串行累积，不设独立的 serial 入口
 //	plugin.go   [Plugin]/[Fiber]：插件声明与惯性生命周期状态机
 //	loader.go   [Loader]：声明式配置树 + 增量调和
+//	diagnostics.go / snapshot.go：fiber_state / loader_action 与只读快照
 //
 // # 与 Cordis（TypeScript）的有意差异
 //

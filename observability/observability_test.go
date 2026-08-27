@@ -220,10 +220,9 @@ func TestWaitingForInSnapshots(t *testing.T) {
 	}
 }
 
-// 树销毁的可观测契约：dispose 完成后零残留写入；
-// 每 fiber 的树销毁迁移（T7）当前不经过事件总线（kernel dispose
-// 先 clear 自身总线，挂监听位置无法可靠存活）——终态一致性由
-// FiberSnapshots 快照验证（横幅语义本就基于快照）。
+// 树销毁的可观测契约：dispose 完成后零残留写入。
+// T7 裁决：forceUnload 静默，不发逐 Fiber fiber_state；验收是
+// Dispose 后 Sink 零增量（见 observability-v1-design.md §4）。
 func TestTreeDisposeZeroResidual(t *testing.T) {
 	r := newRecorder()
 	host := newTracedHost(t, r.sink)
@@ -317,5 +316,192 @@ func TestSinkStampsZeroTime(t *testing.T) {
 	}
 	if recs[0].Time.Before(before) {
 		t.Fatalf("stamped time %v before write started %v", recs[0].Time, before)
+	}
+}
+
+
+// blockingDepPlugin 可在 Apply 中阻塞，用于制造 Close 与 doLoad 竞态（T8b）。
+type blockingDepPlugin struct {
+	key     kernel.ServiceKey[string]
+	block   *atomic.Bool
+	entered chan struct{}
+	gate    chan struct{}
+}
+
+func (p *blockingDepPlugin) Inject() []kernel.Dependency {
+	return []kernel.Dependency{kernel.Require(p.key)}
+}
+
+func (p *blockingDepPlugin) Apply(c *kernel.Context) error {
+	_, _ = kernel.Get(c, p.key)
+	if p.block != nil && p.block.Load() {
+		p.entered <- struct{}{}
+		<-p.gate
+		return errors.New("boom after close")
+	}
+	return nil
+}
+
+// T8b：Apply 进行中 Close → loading→inactive，且进入 Sink。
+func TestCloseDuringLoadingEmitsT8b(t *testing.T) {
+	r := newRecorder()
+	host := newTracedHost(t, r.sink)
+	defer host.Dispose()
+
+	key := kernel.NewServiceKey[string]("obs.test.t8b")
+	disposeDep, err := kernel.Provide(host, key, "dep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := &atomic.Bool{}
+	entered := make(chan struct{}, 1)
+	gate := make(chan struct{})
+	p := &blockingDepPlugin{key: key, block: block, entered: entered, gate: gate}
+
+	f, err := kernel.Use(host, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.WaitState(2*time.Second, kernel.StateActive); err != nil {
+		t.Fatal(err)
+	}
+
+	disposeDep()
+	if err := f.WaitState(2*time.Second, kernel.StateInactive); err != nil {
+		t.Fatal(err)
+	}
+	nBefore := len(r.transitionsOf(f.Name()))
+
+	block.Store(true)
+	if _, err := kernel.Provide(host, key, "dep-v2"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("doLoad did not enter Apply")
+	}
+	f.Close()
+	close(gate)
+	if err := f.WaitState(2*time.Second, kernel.StateInactive); err != nil {
+		t.Fatal(err)
+	}
+
+	additional := r.transitionsOf(f.Name())[nBefore:]
+	saw := false
+	for _, tr := range additional {
+		if tr == [2]string{"loading", "inactive"} {
+			saw = true
+			break
+		}
+	}
+	if !saw {
+		t.Fatalf("missing T8b loading->inactive in Sink; additional=%v", additional)
+	}
+}
+
+func loaderKinds(sink *MemorySink) []string {
+	var out []string
+	for _, rec := range sink.Snapshot() {
+		if rec.Event == EventLoaderAction {
+			out = append(out, rec.LoaderKind)
+		}
+	}
+	return out
+}
+
+func countKind(kinds []string, want string) int {
+	n := 0
+	for _, k := range kinds {
+		if k == want {
+			n++
+		}
+	}
+	return n
+}
+
+// LoaderAction 四分支：mount / recreate / disable / unmount；noop 静默。
+func TestLoaderActionFourKinds(t *testing.T) {
+	r := newRecorder()
+	host := newTracedHost(t, r.sink)
+	defer host.Dispose()
+
+	l := kernel.NewLoader(host)
+	l.MustRegister("nop", func() kernel.Plugin { return nopPlugin{} })
+
+	if err := l.Reconcile([]kernel.Entry{
+		{ID: "a", Name: "nop", Config: map[string]any{"v": 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	kinds := loaderKinds(r.sink)
+	if countKind(kinds, string(kernel.ActionMount)) < 1 {
+		t.Fatalf("want mount, got %v", kinds)
+	}
+	nAfterMount := len(kinds)
+
+	// 无变化：noop 静默
+	if err := l.Reconcile([]kernel.Entry{
+		{ID: "a", Name: "nop", Config: map[string]any{"v": 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(loaderKinds(r.sink)) != nAfterMount {
+		t.Fatalf("noop must be silent; kinds grew %v", loaderKinds(r.sink)[nAfterMount:])
+	}
+
+	// Config 变 → recreate（另有后续 mount）
+	if err := l.Reconcile([]kernel.Entry{
+		{ID: "a", Name: "nop", Config: map[string]any{"v": 2}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	kinds = loaderKinds(r.sink)
+	if countKind(kinds, string(kernel.ActionRecreate)) < 1 {
+		t.Fatalf("want recreate, got %v", kinds)
+	}
+
+	// Disabled → disable
+	if err := l.Reconcile([]kernel.Entry{
+		{ID: "a", Name: "nop", Disabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	kinds = loaderKinds(r.sink)
+	if countKind(kinds, string(kernel.ActionDisable)) < 1 {
+		t.Fatalf("want disable, got %v", kinds)
+	}
+
+	// 先恢复再移除 → unmount
+	if err := l.Reconcile([]kernel.Entry{
+		{ID: "a", Name: "nop"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Reconcile(nil); err != nil {
+		t.Fatal(err)
+	}
+	kinds = loaderKinds(r.sink)
+	if countKind(kinds, string(kernel.ActionUnmount)) < 1 {
+		t.Fatalf("want unmount, got %v", kinds)
+	}
+
+	// 四动作都必须进正式 Record（SourceKernel + LoaderKind）
+	for _, want := range []string{
+		string(kernel.ActionMount),
+		string(kernel.ActionRecreate),
+		string(kernel.ActionDisable),
+		string(kernel.ActionUnmount),
+	} {
+		found := false
+		for _, rec := range r.sink.Snapshot() {
+			if rec.Event == EventLoaderAction && rec.LoaderKind == want && rec.Source == SourceKernel {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("Record missing loader_action kind %s", want)
+		}
 	}
 }
