@@ -180,6 +180,6 @@ type Aspect interface {
 
 ### 与其他组件的关系
 
-- **E1 → observability 正式化**：flow 事件是 observability 的数据源之一，两包同步设计 API 形状（flow 出事实，observability 定消费接口）；
+- **E1 → 装配层桥**：flow 出 typed 事实；桥折成 wait_ms/run_ms 写 Sink。正式 observability 包不 import flow，只提供信封与出口；
 - **E2 → memory 层**：外部输入引用若涉及会话/上下文来源，遵循 memory 设计稿中「model-visible 投影不可破坏」的不变式；
 - 全部演进不破坏本篇已钉死的契约：三态槽位、AND 汇聚、来源唯一、失败显式。
