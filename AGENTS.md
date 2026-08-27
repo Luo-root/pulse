@@ -9,7 +9,7 @@ Go library (`github.com/Luo-root/pulse`) — an AI Agent framework under v2 reco
 ```bash
 go build ./...          # verify compilation
 go test ./...           # run all tests
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/   # v2 core regression (no live API)
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./observability/   # v2 core regression (no live API)
 ```
 
 - Requires **Go 1.25.0+** (toolchain auto-downloads if missing).
@@ -24,8 +24,9 @@ kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin
   flow/                     # data-driven node graph: typed keys, skip-as-arrival, aspects
 llm/                        # v2 model layer: content-block vocabulary, ChatModel, Registry, openai/ + anthropic/ adapters
 loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL decision events
+observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
 docs/design/               # design docs (plugin-kernel-v2.md, flow-v2-design.md, kernel-local-events.md, observability-v1-design.md)
-examples/                   # 渐进装配示例（chat / react / flow）与观测原型
+examples/                   # 渐进装配示例（chat / react / flow）+ demoapp 装配层桥
 skills/                     # Example skill definitions (*.md with YAML frontmatter, gitignored)
 ```
 

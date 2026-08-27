@@ -64,11 +64,11 @@
 
 ```go
 type Sink interface {
-    Write(context.Context, Record)
+    Write(Record) // 无 ctx：kernel Emit 路径不带 context
 }
 ```
 
-内置 SlogSink（stderr）/ MemorySink（测试断言）/ MultiSink（扇出）。导出器（otel/prometheus）将来以「新增 Sink 实现」方式接入，不动包结构。
+内置 SlogSink（stderr）/ MemorySink（测试断言）/ MultiSink（扇出）。`Time` 为零时由内置 Sink 补 wall clock。导出器（otel/prometheus）将来以「新增 Sink 实现」方式接入，不动包结构。
 
 ### 3.3 kernel 侧新增公开面
 
@@ -102,6 +102,8 @@ func (f *Fiber) Name() string   // Loader=Entry.ID；裸 Use=类型名#序号
 
 派发规则：**改 state 的锁外 Emit；from==to 不发**（消除 settleSync/doLoad 双 loading；T2 仅剩 failed→loading 重试）。
 
+**T7 不作为事件（评审定案 2026-08-27）**：`Context.dispose()` 先清自身事件总线再级联卸载，每 Fiber 的树销毁迁移无法可靠穿越「已 clear 的总线」。因此 T7 **不产生 fiber_state 记录**；宿主终止以 host 级语义呈现——Dispose 后 Sink 零残留 + 快照横幅终态。这与 SpringBoot 关机日志的惯例一致（context closing/stopped，而非逐 Bean 迁移）。
+
 | # | 触发 | plugin.go 行号 | From → To | 备注 |
 |---|---|---|---|---|
 | T1 | settleSync | :171 | inactive→loading | 装配期首次评估 |
@@ -110,7 +112,6 @@ func (f *Fiber) Name() string   // Loader=Entry.ID；裸 Use=类型名#序号
 | T4 | doLoad 失败 | :285 | loading→failed | Err=apply err |
 | T5 | doLoad 成功 | :290 | loading→active | |
 | T6 | doUnload | :298/:308 | active→unloading→inactive | 依赖消失驱动 |
-| T7 | forceUnload（树级联销毁） | :320 | current→inactive | 无单独 unloading 过渡 |
 | T8a | Close（Active 回收） | :344/:348 | active→unloading→inactive | 手动 Close |
 | T8b | Close 打断 Loading | :277 | loading→inactive | doLoad 内 closed 竞态 |
 
@@ -132,20 +133,12 @@ LoaderAction 对照 Reconcile 三阶段实际分支：removed→unmount、Name/C
 
 ### Dispose 后零残留
 
-三路径必须全部满足：手动 `Host.Close`（T8a）、Close 打断 Loading（T8b）、host 树销毁（T7）。验收手段：MemorySink 增量断言。
-
-### T7 可达性约束（实现者必读）
-
-dispose 顺序为 events.clear → forceUnload → 递归 children。因此：
-
-1. Bootstrap 只在自己的 Apply(c) 私有子 ctx 上 On（全树收集使子总线听得到 T7）；
-2. 不把观测监听登记到 host root（root 总线先 clear，会错过 T7）;
-3. T7 在 forceUnload 锁外 Emit，且先于 children dispose。
+两路径必须全部满足：手动 `Host.Close`（T8a）与 Close 打断 Loading（T8b）；host 树销毁按 §4 T7 裁决不发事件，验收为 **Dispose 返回后 Sink 零增量**（MemorySink 断言）。
 
 ## 6. examples 改造
 
 - 删除 `examples/internal/observability/`
-- demoapp 新增 `bridge.go`：llm/loop 事件 → 桥记录类型写同一 Sink；FlowAspect 迁入；trace_id 由 bridge 生成并注入 llm/loop/tool/flow 四层记录
+- demoapp 新增 `bridge.go`：llm/loop 事件折进 Record 信封写同一 Sink；运行期记录同时填 HostID（宿主稳定标识）与 TraceID（每次请求独立生成）——D3 两层关联在桥处合流
 - `demoapp.Open` 装配顺序改为 **Bootstrap 最先 Use**
 
 ## 7. 明确不做
@@ -156,7 +149,7 @@ Collector 概念本身 · otel/prometheus 导出器 · 采样与动态级别 · 
 
 ## 8. 测试计划摘要
 
-1. 迁移矩阵 T1–T8b 全覆盖（重点：T7 锁外可达、T8b 竞态、from==to 抑制）
+1. 迁移矩阵 T1–T6/T8a/T8b 全覆盖（重点：T8b 竞态、from==to 抑制）；树销毁不发事件（T7 裁决），以 Dispose 后零增量断言替代
 2. 快照横幅两种场景：后装 Boot 只保横幅；最先装则全轨迹
 3. host_id 隔离与 Dispose 后三路径零增量
 4. Reconcile 四动作一致；noop 静默

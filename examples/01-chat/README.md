@@ -8,16 +8,16 @@
 
 ```text
 kernel.New()
-  -> Use(llm.Plugin())                    # Registry 装载为服务 "pulse.llm"
-  -> openai.Register / anthropic.Register # adapter 工厂登记为可逆 Effect
-  -> Use(observability.Plugin(...))       # 订阅 before_generate / after_response
-  -> reg.Declare("main", cfg)             # 命名实例声明
-  -> reg.Open("main")                     # 打开并缓存
+  -> Use(observability.Bootstrap(hostID, sink))   # 必须最先；订阅 fiber_state / loader_action
+  -> Use(llm.Plugin())                            # Registry 装载为服务 "pulse.llm"
+  -> openai.Register / anthropic.Register         # adapter 工厂登记为可逆 Effect
+  -> reg.Declare("main", cfg)                     # 命名实例声明
+  -> reg.Open("main")                             # 打开并缓存
 ```
 
 进程退出时 `host.Close()` → `Dispose` 按 LIFO unwind：观测监听摘除、Registry Close、已打开的模型失效。
 
-「卸载即还原」的回收断言不靠注释代码肉眼观察（进程退出后 OS 回收一切，无法验证），而是由同进程单元测试钉死：`demoapp_test.go` 的 `TestHostCloseReclaimsServices` 在 `host.Close()` 之后断言 `llm.Registry` 与观测 Reporter 的服务绑定均已从仓库消失。
+「卸载即还原」的回收断言不靠注释代码肉眼观察（进程退出后 OS 回收一切，无法验证），而是由同进程单元测试钉死：`demoapp_test.go` 的 `TestHostCloseReclaimsServices` 在 `host.Close()` 之后断言 Sink 记录数不再增长（Dispose 后零残留）。正式观测包不提供 `Reporter` 服务；运行期指标由后续层的 `demoapp.Bridge` 写入同一 Sink。
 
 ## 消息词汇表：一个输入模型，两种线格式
 
@@ -34,7 +34,7 @@ demo 层只构造 `llm.Part`，从不碰 OpenAI/Anthropic 的 wire format：
 两个关键设计在此落地：
 
 1. **能力矩阵是显式契约**：Anthropic 不吃音频视频时返回分类错误，而不是静默丢弃或假装发送。demo 不在上层 catch 掉这个错误糊弄过去——真机跑 Anthropic + `/file x.wav` 你会看到失败和原因。
-2. **多模态从第一层就是一等公民**：REPL 输入经 `Input.Message()` 变成带 Part 的用户消息，与纯文本走完全相同的通路。日志里的 `text_parts/image_parts/custom_parts/inline_media_bytes` 就是这条通路的计量。
+2. **多模态从第一层就是一等公民**：REPL 输入经 `Input.Message()` 变成带 Part 的用户消息，与纯文本走完全相同的通路。
 
 Generate 是同步路径；Model 同时暴露 `Stream`，本层未展示（文本增量演示放在 02-react 的 `RunStream`）。
 

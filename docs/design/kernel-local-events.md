@@ -51,7 +51,7 @@ WaterfallLocal(c, key, payload)  // 只 c 本层 around；nil 安全原样返回
 
 - Bootstrap / fiber_state / loader_action：**继续全树 Emit**
 - 请求级 Bridge：挂 `reqScope`，吃 Local 事件
-- #19 在本契约落地前保持 blocked（并发隔离未交付）
+- 本契约已落地（PR [#21](https://github.com/Luo-root/pulse/pull/21)）：`TestRequestBridgesDoNotCrossTalk` / `llm/local_isolation_test.go` / `loop/local_isolation_test.go` 钉住隔离；#19 不再因 Local 阻塞
 
 ## 不做
 

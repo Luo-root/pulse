@@ -16,7 +16,7 @@ func decide(t *testing.T, scope *kernel.Context, name string) (bool, string) {
 	t.Helper()
 	btc := &loop.BeforeToolCall{Call: llm.ToolCall{ID: "t1", Name: name,
 		Arguments: json.RawMessage(`{"path":"/tmp/x"}`)}}
-	got := kernel.Waterfall(scope, loop.EventBeforeToolCall, btc)
+	got := kernel.WaterfallLocal(scope, loop.EventBeforeToolCall, btc)
 	return got.Rejected, got.RejectReason
 }
 

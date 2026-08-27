@@ -23,7 +23,7 @@ type Plugin interface {
 // Dependency 是一条依赖声明。用 Require 构造；字段不公开，
 // 依赖的种类由内核演进，插件只通过 Require 表达。
 type Dependency struct {
-	name string
+	name  string
 	check func(c *Context) bool
 }
 
@@ -49,8 +49,8 @@ func Func(apply func(c *Context) error) Plugin { return &funcPlugin{apply: apply
 
 type funcPlugin struct{ apply func(c *Context) error }
 
-func (p *funcPlugin) Inject() []Dependency            { return nil }
-func (p *funcPlugin) Apply(c *Context) error          { return p.apply(c) }
+func (p *funcPlugin) Inject() []Dependency   { return nil }
+func (p *funcPlugin) Apply(c *Context) error { return p.apply(c) }
 
 // FiberState 描述插件实例的生命周期状态。
 //
@@ -100,6 +100,7 @@ type Fiber struct {
 	plugin Plugin
 	host   *Context
 	inject []Dependency
+	name   string // 稳定诊断名：Loader=Entry.ID；裸 Use=类型名#序号
 
 	mu        sync.Mutex
 	state     FiberState
@@ -124,6 +125,7 @@ func Use(host *Context, p Plugin) (*Fiber, error) {
 		host:   host,
 		inject: p.Inject(),
 	}
+	f.setName(diagnosticName(p, fiberSeq.Add(1)))
 
 	// 订阅挂载层的服务变更（变更通知会从变更层广播到全树），
 	// 仅当变更触及自己声明的依赖名时才标记脏。
@@ -168,8 +170,9 @@ func (f *Fiber) settleSync() {
 		f.mu.Unlock()
 		return
 	}
-	f.state = StateLoading
+	ch, ok := f.lockedTransition(StateLoading, nil)
 	f.mu.Unlock()
+	f.emitTransition(ch, ok) // T1: inactive→loading
 	f.doLoad()
 }
 
@@ -189,12 +192,19 @@ func (f *Fiber) Err() error {
 
 // satisfied 判断全部依赖是否可达（须持有 f.mu）。
 func (f *Fiber) satisfied() bool {
+	return len(f.unsatisfiedLocked()) == 0
+}
+
+// unsatisfiedLocked 返回当前未满足的依赖服务名列表（须持有 f.mu）；
+// 顺序按 Inject 声明序，供快照诊断使用。
+func (f *Fiber) unsatisfiedLocked() []string {
+	var out []string
 	for _, d := range f.inject {
 		if !d.satisfied(f.host) {
-			return false
+			out = append(out, d.depName())
 		}
 	}
-	return true
+	return out
 }
 
 // markDirty 标记需要重新收敛，并确保恰有一个收敛协程在跑。
@@ -245,18 +255,15 @@ func (f *Fiber) settleLoop() {
 // doLoad 执行装载。
 // 执行期间不持有 f.mu；Apply 内部可以自由 Use 子插件、Provide 服务。
 func (f *Fiber) doLoad() {
-	f.mu.Lock()
-	f.state = StateLoading
-	f.applyErr = nil
-	f.mu.Unlock()
+	ch, ok := f.transition(StateLoading, nil)
+	f.emitTransition(ch, ok) // T2: failed→loading（重试路径；首次 from==to 不发）
 
 	ctx, derr := f.host.Derive()
 	if derr != nil {
 		// 宿主已销毁：等价于被卸载——forceUnload 已将（或即将将）
 		// 本实例标记为 closed/inactive，这里不产生任何副作用。
-		f.mu.Lock()
-		f.state = StateInactive
-		f.mu.Unlock()
+		ch, ok := f.transition(StateInactive, nil)
+		f.emitTransition(ch, ok) // T3: loading→inactive
 		return
 	}
 	var err error
@@ -274,28 +281,31 @@ func (f *Fiber) doLoad() {
 		// Apply 执行期间实例被 Close / 宿主销毁：立即回滚本次装载，
 		// 不得让副作用以 Active 形态存活在已注销的实例上。
 		ctx.Dispose()
-		f.state = StateInactive
-		f.applyErr = nil
+		ch, ok := f.lockedTransition(StateInactive, nil)
 		f.mu.Unlock()
+		f.emitTransition(ch, ok) // T8b: loading→inactive（Close 竞态）
 		return
 	}
 	if err != nil {
 		ctx.Dispose()
-		f.applyErr = err
-		f.state = StateFailed
+		ch, ok = f.lockedTransition(StateFailed, err)
 		f.mu.Unlock()
+		f.emitTransition(ch, ok) // T4: loading→failed
 		return
 	}
 	f.ctx = ctx
-	f.state = StateActive
+	ch, ok = f.lockedTransition(StateActive, nil)
 	f.mu.Unlock()
+	f.emitTransition(ch, ok) // T5: loading→active
 }
 
 // doUnload 执行卸载：丢弃私有作用域（其中一切注册按 LIFO 回收，
 // 绑定撤除自动广播通知，从而驱动下游插件卸载）。
 func (f *Fiber) doUnload() {
+	ch1, ok1 := f.transition(StateUnloading, nil) // T6a: active→unloading（自带锁）
+	f.emitTransition(ch1, ok1)
+
 	f.mu.Lock()
-	f.state = StateUnloading
 	ctx := f.ctx
 	f.ctx = nil
 	f.mu.Unlock()
@@ -304,9 +314,8 @@ func (f *Fiber) doUnload() {
 		ctx.Dispose()
 	}
 
-	f.mu.Lock()
-	f.state = StateInactive
-	f.mu.Unlock()
+	ch2, ok2 := f.transition(StateInactive, nil) // T6b: unloading→inactive（自带锁）
+	f.emitTransition(ch2, ok2)
 }
 
 // forceUnload 由宿主作用域销毁时调用：整棵树都在拆除，不再广播
@@ -320,6 +329,7 @@ func (f *Fiber) forceUnload() {
 	f.state = StateInactive
 	f.ctx = nil
 }
+
 
 // Close 主动卸载并注销本实例：撤销订阅、从宿主摘除、回收副作用。
 // 幂等。
@@ -341,12 +351,16 @@ func (f *Fiber) Close() {
 
 	if state == StateActive && ctx != nil {
 		f.mu.Lock()
-		f.state = StateUnloading
+		ch1, ok1 := f.lockedTransition(StateUnloading, nil)
 		f.mu.Unlock()
-		ctx.Dispose()
+		f.emitTransition(ch1, ok1) // T8a-1: active→unloading
+
+		ctx.Dispose() // 私有作用域 LIFO 回收发生在 unloading 态，与 doUnload 时序一致
+
 		f.mu.Lock()
-		f.state = StateInactive
+		ch2, ok2 := f.lockedTransition(StateInactive, nil)
 		f.mu.Unlock()
+		f.emitTransition(ch2, ok2) // T8a-2: unloading→inactive
 	}
 
 	f.host.mu.Lock()

@@ -196,6 +196,17 @@ func (c *Context) dispose() {
 	c.onServiceChange = nil
 	c.mu.Unlock()
 
+	// 先级联卸载插件实例，再失效事件总线。
+	// 注意：forceUnload 是静默的——树销毁不发逐 Fiber fiber_state（T7 裁决）；
+	// 宿主终止以 Dispose 后 Sink 零残留 + 快照终态呈现。
+	// （私有效应最后回收，回调里仍可安全触碰本 Context 方法。）
+	for _, f := range fibers {
+		f.forceUnload()
+	}
+	for i := len(kids) - 1; i >= 0; i-- {
+		kids[i].dispose()
+	}
+
 	// 已死作用域的事件总线立即失效。
 	c.events.clear()
 
@@ -205,12 +216,6 @@ func (c *Context) dispose() {
 		c.parent.removeChild(c)
 	}
 
-	for _, f := range fibers {
-		f.forceUnload()
-	}
-	for i := len(kids) - 1; i >= 0; i-- {
-		kids[i].dispose()
-	}
 	for i := len(effects) - 1; i >= 0; i-- {
 		effects[i].dispose()
 	}

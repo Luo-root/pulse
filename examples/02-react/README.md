@@ -2,6 +2,8 @@
 
 验证 `loop.Agent` 的核心语义：工具回合、多轮 history、以及 **before_tool_call 上挂载的真实 HITL 审批**。前一层（01-chat）的 kernel + Registry 装配在本层原样复用，不重复验证。
 
+本层起每轮请求创建独立 `reqScope` + `Bridge` + `Agent`（`WithEventScope(reqScope)`）；tool / turn / HITL / llm 事件走 `EmitLocal` / `WaterfallLocal`，请求之间不串扰。
+
 ## 四种 HITL 模式：PULSE_DEMO_HITL
 
 | 值 | 行为 | 验证什么 |
@@ -41,7 +43,7 @@ go run ./examples/02-react
 2. **fail-closed**。审批输入不可读（如 EOF）时按拒绝处理，绝不静默放行。
 3. **阻塞安全的前提（已在代码里解决）**。REPL 与审批器共享同一个 `LineSource`（单一行缓冲、同一 goroutine 顺序消费），审批时输入的 `y/n/a` 不会被 REPL 预读缓冲抢走。多 Agent 并发审批仍是服务化通道的范畴，demo 不伪装支持。
 
-HITL 的实现是普通内核插件（`demoapp.InstallHITL`）：一个 `kernel.OnWaterfall` 监听器 + 会话信任表。它随 `host.Close()` 自动摘除——审批能力本身也是 Effect 管理 的可组合组件，这是比硬编码 if 更本质的架构验证。
+HITL 的实现是挂在**请求 scope** 上的 `kernel.OnWaterfall` 监听器（`demoapp.InstallHITL`）+ 会话信任表，不是独立 Plugin。每轮 `reqScope` 与 Agent / Bridge 共用；loop 用 `WaterfallLocal` 派发 `before_tool_call`，所以监听必须装在同一 scope，否则听不到。监听随 `reqScope.Dispose()` 自动摘除。
 
 ## 多轮 history 归属
 

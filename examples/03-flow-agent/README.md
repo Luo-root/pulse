@@ -67,7 +67,7 @@ Skip 留给另一种情况：「这条路径根本不该走」。如果加了意
 
 ## 时间统计怎么读
 
-观测切面通过 `WithAspects(reporter.FlowAspect())` 安装在所有节点外围：
+观测切面通过 `WithAspects(bridge.FlowAspect(host.Peak))` 安装在所有节点外围（`bridge` = 本请求 `demoapp.Bridge`）：
 
 ```text
 切面包裹的范围 = [等待输入] + [执行用户 Run] 整段

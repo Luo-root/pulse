@@ -6,13 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
-	"github.com/Luo-root/pulse/examples/internal/observability"
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/llm/anthropic"
 	"github.com/Luo-root/pulse/llm/openai"
+	"github.com/Luo-root/pulse/observability"
 )
 
 // Flags 是三个 demo 共用的环境/CLI 配置。
@@ -26,16 +27,27 @@ type Flags struct {
 	AllowTool string // allowlist 模式的白名单；空则仅 lookup
 	HITL      string // 原始 PULSE_DEMO_HITL，便于横幅展示
 	Scripted  bool
-	TraceID   string
 }
 
 // Host 是一次 demo 运行的 kernel 宿主。
 type Host struct {
 	Ctx      *kernel.Context
 	Registry *llm.Registry
-	Reporter *observability.Reporter
+	Sink     *observability.MemorySink
+	Peak     *FlowPeak
 	Model    llm.ChatModel
 	Flags    Flags
+
+	hostID string        // 宿主生命周期稳定标识（装配/横幅用）
+	seq    atomic.Uint64 // 每请求 trace_id 序号源
+}
+
+// HostID 返回宿主稳定标识。
+func (h *Host) HostID() string { return h.hostID }
+
+// NewTraceID 为每次用户请求生成独立 trace 标识（D3：与 hostID 分层）。
+func (h *Host) NewTraceID() string {
+	return fmt.Sprintf("%s-req-%d", h.hostID, h.seq.Add(1))
 }
 
 func init() {
@@ -108,7 +120,6 @@ func LoadFlagsFromEnv() Flags {
 		DenyTool:  os.Getenv("PULSE_DEMO_DENY_TOOL"),
 		AllowTool: os.Getenv("PULSE_DEMO_ALLOW_TOOL"),
 		HITL:      os.Getenv("PULSE_DEMO_HITL"),
-		TraceID:   getenv("PULSE_DEMO_TRACE_ID", fmt.Sprintf("demo-%d", time.Now().UnixMilli())),
 	}
 	if f.APIKey == "" {
 		switch f.Provider {
@@ -139,11 +150,23 @@ func LoadFlagsFromEnv() Flags {
 	return f
 }
 
-// Open 装配 kernel、Registry、观测插件和 ChatModel。
+// Open 装配 kernel、Registry、观测（Bootstrap 最先 Use）和 ChatModel。
 // scripted 非空时覆盖默认脚本响应。
 func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	host := kernel.New()
+
+	// D3 两层标识：hostID 稳定（宿主装配期），trace_id 每请求独立生成。
+	hostID := fmt.Sprintf("host-%d", time.Now().UnixNano())
+
+	// observability.Bootstrap 必须最先 Use：kernel 事件不回放，
+	// 后装只能靠快照横幅兜底当前视图，历史轨迹不保证。
+	sink := &observability.MemorySink{}
+	if _, err := kernel.Use(host, observability.Bootstrap(hostID, sink)); err != nil {
+		host.Dispose()
+		return nil, err
+	}
+
 	if _, err := kernel.Use(host, llm.Plugin()); err != nil {
 		host.Dispose()
 		return nil, err
@@ -161,25 +184,32 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 		host.Dispose()
 		return nil, err
 	}
-	sink := observability.SlogSink{Logger: slog.Default()}
-	if _, err := kernel.Use(host, observability.Plugin(flags.TraceID, sink)); err != nil {
-		host.Dispose()
-		return nil, err
-	}
-	reporter, ok := kernel.Get(host, observability.ServiceKey)
-	if !ok {
-		host.Dispose()
-		return nil, fmt.Errorf("demo: observability reporter not provided")
-	}
 	var model llm.ChatModel
-	var err error
 	if flags.Scripted {
 		if len(scripted) == 0 {
 			scripted = []*llm.Response{llm.Resp("Pulse v2 用插件内核、模型词汇表和无状态 ReAct 回合组成。")}
 		}
-		model = llm.NewScripted(scripted...)
+		// 经 Registry 注册并打开：脚本模型同样穿过 observed 包装，
+		// 使 before_generate / after_response（及其上的桥事件）对脚本
+		// 路径也成立，而不是绕开整个观测链。
+		if _, err := reg.RegisterProvider(host, "scripted", func(llm.Config) (llm.ChatModel, error) {
+			return llm.NewScripted(scripted...), nil
+		}); err != nil {
+			host.Dispose()
+			return nil, err
+		}
+		if err := reg.Declare("main", llm.Config{Provider: "scripted", Model: "scripted"}); err != nil {
+			host.Dispose()
+			return nil, err
+		}
+		var err error
+		model, err = reg.Open("main")
+		if err != nil {
+			host.Dispose()
+			return nil, err
+		}
 	} else {
-		if err = reg.Declare("main", llm.Config{
+		if err := reg.Declare("main", llm.Config{
 			Provider: flags.Provider,
 			Model:    flags.Model,
 			APIKey:   flags.APIKey,
@@ -188,14 +218,29 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 			host.Dispose()
 			return nil, err
 		}
+		var err error
 		model, err = reg.Open("main")
 		if err != nil {
 			host.Dispose()
 			return nil, err
 		}
 	}
-	return &Host{Ctx: host, Registry: reg, Reporter: reporter, Model: model, Flags: flags}, nil
+	return &Host{
+		Ctx: host, Registry: reg, Sink: sink, Peak: &FlowPeak{},
+		Model: model, Flags: flags, hostID: hostID,
+	}, nil
 }
+
+// NewBridge 为一次请求创建观测桥（TraceID = NewTraceID），并把监听
+// 安装到 scope（建议传每轮请求自己的子作用域；随其销毁自动摘除）。
+func (h *Host) NewBridge(scope *kernel.Context) (*Bridge, error) {
+	b := &Bridge{Sink: h.Sink, HostID: h.hostID, TraceID: h.NewTraceID()}
+	if err := b.install(scope); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
 
 // Close 回收 kernel 作用域及全部效应。
 func (h *Host) Close() {
@@ -212,14 +257,4 @@ func GetRegistry(h *Host) (*llm.Registry, bool) {
 	return kernel.Get(h.Ctx, llm.ServiceKey)
 }
 
-// ObservabilityReporter 从宿主读取观测 Reporter（缺省时返回 nil）。
-func ObservabilityReporter(h *Host) *observability.Reporter {
-	if h == nil || h.Ctx == nil {
-		return nil
-	}
-	r, ok := kernel.Get(h.Ctx, observability.ServiceKey)
-	if !ok {
-		return nil
-	}
-	return r
-}
+

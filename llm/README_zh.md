@@ -150,12 +150,19 @@ model, err := reg.Open("main")
 
 `RegisterProvider(scope, name, factory)` 是内核效应：adapter 应传入自己 `Apply` 的 Context，插件卸载则工厂与已开实例一并收回。同名覆盖 = 撤旧，该 provider 下已开实例立即关闭。
 
-拦截 seam（不包裹实例）：
+拦截 seam（不包裹实例；派发走 **Local**）：
 
-- `pulse.llm.before_generate`（waterfall，`*GenerateRequest`）：路由、默认参数、脱敏、限流
-- `pulse.llm.after_response`（emit，值类型 `Response`）：计量、审计；观察者改不了调用方结果
+- `pulse.llm.before_generate`（WaterfallLocal，`*GenerateRequest`）：路由、默认参数、脱敏、限流
+- `pulse.llm.after_response`（EmitLocal，值类型 `Response`）：计量、审计；观察者改不了调用方结果
 
-与 loop 分工：本包 token 级；loop 决策级（审批、轨迹）。
+请求级 scope 注入（选项 A）：
+
+```go
+ctx = llm.WithEventScope(ctx, reqScope) // loop 在调模型前会做这一步
+// observed：优先 EventScopeFrom(ctx)；没有则回退 Registry 构造时的 ctx（仍 Local）
+```
+
+与 loop 分工：本包 token 级；loop 决策级（审批、轨迹）。请求级 Bridge 必须挂在同一 `reqScope`，否则听不到 Local 事件。
 
 也可用 `llm.Plugin()` 把 Registry Provide 到所在作用域，卸载时 `Close` 全部实例。
 
@@ -252,7 +259,8 @@ TTS（Completions）：`req.Audio = &llm.AudioOutput{Voice: "alloy", Format: "wa
 | `EventBeforeGenerate` / `EventAfterResponse` | waterfall `*GenerateRequest` / emit 值 `Response` |
 | `Config` | Provider / Model / BaseURL / APIKey / Options |
 | `Factory` | `func(Config) (ChatModel, error)` |
-| `Registry` / `NewRegistry` | 工厂 + 命名实例。传入的 Context 是拦截事件的派发作用域 |
+| `Registry` / `NewRegistry` | 工厂 + 命名实例。构造 Context 是无请求 scope 时的 Local 回退派发域 |
+| `WithEventScope` / `EventScopeFrom` | 把请求 scope 注入 `context.Context`，供 observed Local 派发 |
 | `Plugin` | 把 Registry Provide 到作用域；卸载时 `Close` |
 | `RegisterProvider` | 可逆登记工厂；同名覆盖关闭该 provider 已开实例 |
 | `Declare` | 声明命名实例；重复同 id 替换并关旧实例 |

@@ -128,6 +128,9 @@ func (l *Loader) Reconcile(entries []Entry) error {
 		if _, keep := want[id]; !keep {
 			toClose = append(toClose, f)
 			closing[id] = struct{}{}
+			Emit(l.host, EventLoaderAction, LoaderAction{
+				Kind: ActionUnmount, EntryID: id,
+			})
 		}
 	}
 	for id, e := range want {
@@ -135,20 +138,33 @@ func (l *Loader) Reconcile(entries []Entry) error {
 		if cur != nil && cur.Name == e.Name &&
 			sameConfig(cur.Config, e.Config) && cur.Disabled == e.Disabled {
 			newEntries[id] = cloneEntry(e)
-			continue // 无变化
+			continue // 无变化：不派发 LoaderAction（无 noop）
 		}
+		recreate := cur != nil && !e.Disabled // Name/Config/Disabled 翻转产生的重建
 		if old, ok := l.fibers[id]; ok {
 			toClose = append(toClose, old)
 			closing[id] = struct{}{}
+			if recreate {
+				Emit(l.host, EventLoaderAction, LoaderAction{
+					Kind: ActionRecreate, EntryID: id, Name: e.Name,
+				})
+			}
 		}
 		if e.Disabled {
 			newEntries[id] = cloneEntry(e)
+			Emit(l.host, EventLoaderAction, LoaderAction{
+				Kind: ActionDisable, EntryID: id, Name: e.Name,
+			})
 			continue // 保留记录但不装载
 		}
 		factory, ok := l.factories[e.Name]
 		if !ok {
-			errs = append(errs, fmt.Errorf("kernel: entry %q references unknown plugin %q", id, e.Name))
+			err := fmt.Errorf("kernel: entry %q references unknown plugin %q", id, e.Name)
+			errs = append(errs, err)
 			newEntries[id] = cloneEntry(e)
+			Emit(l.host, EventLoaderAction, LoaderAction{
+				Kind: ActionDisable, EntryID: id, Name: e.Name, Err: err,
+			})
 			continue
 		}
 		plans = append(plans, mountPlan{id: id, cfg: cloneConfig(e.Config), factory: factory})
@@ -159,6 +175,7 @@ func (l *Loader) Reconcile(entries []Entry) error {
 	// ---- 阶段二：解锁执行回收与装载 ----
 	for _, f := range toClose {
 		f.Close()
+		// unmount 动作跟随 Close 派发；recreate 的旧实例卸载同样算 unmount。
 	}
 
 	type mountedFiber struct {
@@ -170,9 +187,15 @@ func (l *Loader) Reconcile(entries []Entry) error {
 		f, err := l.mount(m.cfg, m.factory)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("kernel: entry %q (%s): %w", m.id, newEntries[m.id].Name, err))
+			Emit(l.host, EventLoaderAction, LoaderAction{
+				Kind: ActionMount, EntryID: m.id, Name: newEntries[m.id].Name, Err: err,
+			})
 			continue
 		}
 		mountedList = append(mountedList, mountedFiber{id: m.id, f: f})
+		Emit(l.host, EventLoaderAction, LoaderAction{
+			Kind: ActionMount, EntryID: m.id, Name: newEntries[m.id].Name,
+		})
 	}
 
 	// ---- 阶段三：持锁提交结果 ----

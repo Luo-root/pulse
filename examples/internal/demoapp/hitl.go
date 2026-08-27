@@ -47,13 +47,22 @@ func ParseHITLMode(v string) (HITLMode, error) {
 // 参数来源约定：denylist 读 DenyTool（PULSE_DEMO_DENY_TOOL）；allowlist 只读
 // AllowTool（PULSE_DEMO_ALLOW_TOOL）——两个变量语义相反，禁止互相复用。
 //
+// Local 派发下，scope 必须是 Agent 的 event scope（通常是每轮 reqScope），
+// 否则 HITL 听不到 before_tool_call。interactive 的 SessionTrust 可跨轮复用：
+// 传入已有 trust（via InstallHITLWithTrust），或首次调用返回的 trust 留给下轮。
+//
 // 并发边界：interactive 依赖「同一 goroutine 内、loop 回合工具串行执行」这一事实，
 // 与 REPL 共享同一个 LineSource（单一行缓冲，顺序消费），不会互相抢行；
 // 多 Agent 并发审批需要服务化通道，不属于本 demo。
 func InstallHITL(scope *kernel.Context, mode HITLMode, denyTool, allowTool, hint string, in io.Reader, out io.Writer) (*SessionTrust, error) {
+	return InstallHITLWithTrust(scope, mode, denyTool, allowTool, hint, in, out, nil)
+}
+
+// InstallHITLWithTrust 同 InstallHITL，但允许传入已有 SessionTrust（跨轮 always）。
+func InstallHITLWithTrust(scope *kernel.Context, mode HITLMode, denyTool, allowTool, hint string, in io.Reader, out io.Writer, trust *SessionTrust) (*SessionTrust, error) {
 	switch mode {
 	case HITLOff:
-		return nil, nil
+		return trust, nil
 	case HITLDenylist:
 		deny := denyTool
 		_, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
@@ -65,7 +74,7 @@ func InstallHITL(scope *kernel.Context, mode HITLMode, denyTool, allowTool, hint
 				}
 				return next(btc)
 			})
-		return nil, err
+		return trust, err
 	case HITLAllowlist:
 		allow := parseNameList(allowTool)
 		if len(allow) == 0 {
@@ -80,9 +89,11 @@ func InstallHITL(scope *kernel.Context, mode HITLMode, denyTool, allowTool, hint
 				}
 				return next(btc)
 			})
-		return nil, err
+		return trust, err
 	case HITLInteractive:
-		trust := newSessionTrust()
+		if trust == nil {
+			trust = newSessionTrust()
+		}
 		listener := newConsoleApprover(hint, NewLineSource(in), out, trust)
 		_, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall, listener.approve)
 		return trust, err

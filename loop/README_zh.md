@@ -34,7 +34,7 @@ agent, err := loop.NewAgent(model,
     loop.WithToolSet(tools),
     loop.WithSystemPrompt("你是助手"),
     loop.WithMaxSteps(0),          // 默认就是 0 = 不限制
-    loop.WithEventScope(host),     // 可选：轨迹进宿主作用域树
+    loop.WithEventScope(reqScope), // 可选：请求级 scope；事件走 EmitLocal/WaterfallLocal
 )
 
 var history []*llm.Message
@@ -82,7 +82,7 @@ type Result struct {
 | `WithToolSet` | nil = 纯对话 | 见 ToolSet |
 | `WithSystemPrompt` | 空 | 每回合插在工作缓冲最前 |
 | `WithMaxSteps` | **0 = 不限制** | `<=0` 都归一为无限。需要安全阀再显式设正数 |
-| `WithEventScope` | nil | 传入宿主或其子作用域才派发事件 |
+| `WithEventScope` | nil | 传入 scope 才派发；**请求级事实用 `EmitLocal`/`WaterfallLocal`**，建议每请求独立子作用域 |
 
 几十上百次工具调用是常态，所以默认不限步。
 
@@ -105,19 +105,21 @@ type ToolSet interface {
 
 token 级（路由、限流、计量）挂 `llm.before_generate` / `after_response`。本包只管 agent 决策。`scope == nil` 时下列全部是空操作。
 
+派发一律走 **Local**（只本 scope，不向父/子/兄弟）。调用模型前会 `llm.WithEventScope(ctx, a.scope)`，让 llm 拦截也落到同一请求 scope。
+
 | 事件 | 模式 | 何时 |
 |---|---|---|
-| `pulse.loop.turn_start` | emit | 回合开始，带 Input + History |
-| `pulse.loop.step_start` | emit | 每个推理-行动步 |
-| `pulse.loop.after_model` | emit | 模型响应就绪（含 Usage） |
-| `pulse.loop.before_tool_call` | **waterfall** | 工具执行前 |
-| `pulse.loop.after_tool_call` | emit | 执行完或被拒绝 |
-| `pulse.loop.turn_end` | emit | 任意退出路径恰好一次 |
+| `pulse.loop.turn_start` | EmitLocal | 回合开始，带 Input + History |
+| `pulse.loop.step_start` | EmitLocal | 每个推理-行动步 |
+| `pulse.loop.after_model` | EmitLocal | 模型响应就绪（含 Usage） |
+| `pulse.loop.before_tool_call` | **WaterfallLocal** | 工具执行前 |
+| `pulse.loop.after_tool_call` | EmitLocal | 执行完或被拒绝 |
+| `pulse.loop.turn_end` | EmitLocal | 任意退出路径恰好一次 |
 
-HITL 挂在 `before_tool_call`：
+HITL 挂在 `before_tool_call`（与 Agent 同一 `reqScope`）：
 
 ```go
-_, _ = kernel.OnWaterfall(host, loop.EventBeforeToolCall,
+_, _ = kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
     func(btc *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
         if dangerous(btc.Call) {
             btc.Rejected = true
