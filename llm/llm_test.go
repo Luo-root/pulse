@@ -118,9 +118,10 @@ func TestInterceptionEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 调用方的原请求不得被监听器污染（Clone 隔离）：
+	// 请求级 scope：监听挂在 ctx（Registry 宿主），Generate 注入同一 scope，
+	// observed 对该 scope Local 派发——选项 A 的正确口径。
 	callerReq := NewRequest(UserText("q"))
-	if _, err := model.Generate(context.Background(), callerReq); err != nil {
+	if _, err := model.Generate(WithEventScope(context.Background(), ctx), callerReq); err != nil {
 		t.Fatal(err)
 	}
 	if v := capturedMax.Load(); v != 128 {
@@ -137,7 +138,7 @@ func TestInterceptionEvents(t *testing.T) {
 }
 
 // #1（llm 版）：限流插件挂在兄弟作用域，其 before_generate 监听
-// 必须能被 Generate 触达（事件全树广播）。
+// 默认不可见（Local 派发）；同 scope 才可见。
 func TestSiblingPluginSeesInterceptionEvents(t *testing.T) {
 	ctx, reg := setupRegistry(t) // llm 插件的私有作用域在 root 之下
 
@@ -165,18 +166,36 @@ func TestSiblingPluginSeesInterceptionEvents(t *testing.T) {
 	}
 
 	model, _ := reg.Open("main")
-	if _, err := model.Generate(context.Background(), NewRequest(UserText("q"))); err != nil {
+	// Local 派发：监听在兄弟私有作用域，Generate 注入 Registry 宿主 scope，
+	// 兄弟默认听不到——这正是请求隔离要的边界。
+	if _, err := model.Generate(WithEventScope(context.Background(), ctx), NewRequest(UserText("q"))); err != nil {
 		t.Fatal(err)
 	}
-	if hit.Load() == 0 {
-		t.Fatal("sibling plugin's before_generate listener never invoked")
+	if hit.Load() != 0 {
+		t.Fatalf("sibling must NOT see Local events from registry scope, hit=%d", hit.Load())
+	}
+
+	// 对照：把监听挂到同一请求 scope，Local 才能触达。
+	var hitSame atomic.Int32
+	if _, err := kernel.OnWaterfall(ctx, EventBeforeGenerate,
+		func(req *GenerateRequest, next func(*GenerateRequest) *GenerateRequest) *GenerateRequest {
+			hitSame.Add(1)
+			return next(req)
+		}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.Generate(WithEventScope(context.Background(), ctx), NewRequest(UserText("q2"))); err != nil {
+		t.Fatal(err)
+	}
+	if hitSame.Load() == 0 {
+		t.Fatal("same-scope listener never invoked")
 	}
 
 	// #2（llm 版）：兄弟插件卸载 => 其监听随私有作用域回收。
 	fr.Close()
 	if hit.Load() > 0 {
 		before := hit.Load()
-		_, _ = model.Generate(context.Background(), NewRequest(UserText("q2")))
+		_, _ = model.Generate(WithEventScope(context.Background(), ctx), NewRequest(UserText("q3")))
 		if hit.Load() != before {
 			t.Fatal("unloaded plugin's listener still firing")
 		}
@@ -461,7 +480,7 @@ func TestInterceptionStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ch, err := model.Stream(context.Background(), NewRequest(UserText("q")))
+	ch, err := model.Stream(WithEventScope(context.Background(), ctx), NewRequest(UserText("q")))
 	if err != nil {
 		t.Fatal(err)
 	}
