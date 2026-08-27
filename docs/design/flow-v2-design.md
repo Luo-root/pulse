@@ -1,7 +1,9 @@
 # flow v2：数据就绪驱动的节点编排
 
 > 状态：Accepted（设计拍板 2026-08-26）
+> 实现状态：**核心契约已落地**（`kernel/flow/` + 包 README + 测试 + examples/03）；**E1/E2 未开工**（E1 = Issue [#25](https://github.com/Luo-root/pulse/issues/25)）
 > 包位置：`kernel/flow/`
+> 公开 API 权威摘要：[`kernel/flow/README_zh.md`](../../kernel/flow/README_zh.md)（本篇保留理念、钉死契约与演进；API 段为与实现同形的摘要，避免双维护完整导出表）
 > 前置：v1 `components/flowchart` 已按 breaking 决策删除；本篇从源码提炼理念并给出 v2 契约。
 
 ## 理念（四条）
@@ -35,7 +37,9 @@
 
 flow 可独立使用（只吃 `context.Context`），也可把取消挂到 `kernel.Context` 上。运行数据**不进**服务仓库。
 
-## API 草案
+## 已实现 API（摘要）
+
+完整导出表与用法见包 README。此处只钉与契约相关的形态，避免与 README 双维护：
 
 ```go
 package flow // import "github.com/Luo-root/pulse/kernel/flow"
@@ -43,21 +47,29 @@ package flow // import "github.com/Luo-root/pulse/kernel/flow"
 var Summary = flow.NewKey[string]("summary")
 var Docs    = flow.NewKey[[]Doc]("docs")
 
-g := flow.New(ctx) // ctx 可以是 context.Background()
-g.Add(flow.NewNode("summarize",
+g := flow.New(ctx,
+    flow.WithMaxRunning(0),       // <=0 = 无限（默认）
+    flow.WithAspects(/* 全局 */), // 可选
+)
+_ = g.Add(flow.NewNode("summarize",
     flow.Requires(Docs),
     flow.Provides(Summary),
     func(rc *flow.RunCtx) error {
-        docs, err := flow.Get(rc, Docs) // 类型安全，无断言
-        if err != nil {                 // 含 ErrSkipped
+        docs, err := flow.Get(rc, Docs) // 类型安全；跳过 → ErrSkipped / *SkipError
+        if err != nil {
             return err
         }
         return flow.Set(rc, Summary, summarize(docs))
     },
 ))
-g.Seed(Docs, input)
+_ = flow.Seed(g, Docs, input) // 包级泛型函数，不是 g.Seed
 err := g.Run()
 ```
+
+- 异型 Requires/Provides 合并用 `Deps(...)`；节点级切面是 `NewNode` 末尾 variadic `Aspect`。
+- 外部输入：`Seed` / `SkipSeed`（包函数）。图执行：`Run` 或 `Start`+`Wait`；`Err()` 读首错。
+- 读 API（`Get` / `TryGet` / `WaitAll`）校验的是节点 `allowed`（Requires∪Provides）；**写**（`Set`/`Skip`）仍只允许声明过的 Provides。
+- 契约错误常量：`ErrSkipped`（及带 Keys 的 `*SkipError`）、`ErrConflict`、`ErrUndeclared`、`ErrDuplicateSource`、`ErrNextCalledTwice`、`ErrGraphStarted`、`ErrGraphNotStarted`。
 
 ### Key
 
@@ -88,7 +100,7 @@ err := g.Run()
 
 1. **全部 Requires 已就绪(值)** → 执行 `Run`。`Run` 返回 nil 且 Provides 都已 Set 或 Skip，节点正常结束。未写的 Provides 在 `Run` 返回后**自动 Skip**（节点有责任写完；漏写 = 这条输出被跳过，不是永远阻塞下游）。
 2. **任一 Requires 为跳过** → **不执行 `Run`**，全部 Provides 标记跳过，级联。
-3. **`Run` 返回 error** → 记录首错 + 取消整次运行。不把失败翻译成跳过。
+3. **`Run` 返回 error** → 记录首错 + 取消整次运行。工作流语义上不把失败翻译成 `ErrSkipped`；但框架仍可对未写 Provides 做**取消清理 Skip**（见「语义钉死」），以免等待者死等。
 4. **节点自己对某条 Provide 调用 `Skip`** → 只跳过那一条，其余 Provides 仍按 1 处理。这是分支的一等表达：分类节点对未选中的边 `Skip`，对选中的边 `Set`。
 
 工作流结束条件：所有节点进入终止态（跑完 / 被跳过 / 因首错取消）。没有人永远等。
@@ -99,7 +111,7 @@ err := g.Run()
 
 - 全量提交 + 阻塞等数据。去掉 ants 池、`GetStats`、`ResizePool`。
 - `WithMaxRunning(n)`：`n<=0` 无限（默认）；`n>0` 为进入 `Run` 前的信号量。等数据不占名额，拿到全部输入、真正执行时才 Acquire。
-- `Graph` API：`New` / `Add` / `Seed` / `SkipSeed` / `Run` / `Start`+`Wait` / `Err`。
+- `Graph` API：`New` / `Add` / `Run` / `Start`+`Wait` / `Err`；外部输入是包函数 `Seed` / `SkipSeed`。
 - `Add` 拒绝：空 id、重复 id、同一节点重复 Require/Provide、同一节点既 Require 又 Provide 某 Key、两个节点 Provide 同一 Key。
 - 每个 Key 至多一种来源身份：外部 `Seed` / `SkipSeed`，或一个节点的 `Provides`，二者不可并存。外部来源可重复声明：重复 `Seed` 按槽位首写处理，重复 `SkipSeed` 幂等，`Seed` 与 `SkipSeed` 的值/跳过冲突返回 `ErrConflict`；不同来源身份冲突返回 `ErrDuplicateSource`。
 
@@ -128,10 +140,11 @@ type Aspect interface {
 - 同名不同类型的 Key 拒绝。
 - Set 二次静默忽略；Set 与 Skip 冲突显式报错。
 - 每个 Key 至多一种来源身份：外部 Seed/SkipSeed，或一个节点输出；重复外部声明仍按槽位首写与值/Skip 冲突规则处理。
-- 漏写的 Provides 在 Run 返回后自动 Skip。
+- 漏写的 Provides 在 Run **成功返回**后自动 Skip。
 - 输入被跳过 → 不跑 Run，输出全跳过。
-- 节点 error ≠ 跳过。error 取消整图；跳过只影响依赖链。
-- `Run()` 的 error 不含 `ErrSkipped`。
+- **节点 error ≠ 跳过（工作流语义）**：error 记录为首错并取消整图；`Run()` / `Err()` 返回该 error，**不会**把失败伪装成 `ErrSkipped`。
+- **取消清理 Skip（实现契约，2026-08-27 拍板）**：节点因 error / 输入 Skip 结束时，框架仍可对**未写入的 Provides** 执行 Skip，目的只是解开仍阻塞在这些槽位上的等待者，避免图在取消路径上死等。这不等于「失败翻译成跳过」——下游若因清理 Skip 而不跑，是解阻塞的后果；调用方判断失败仍只看 `Run()` 的 error。
+- `Run()` 的 error 不含单纯的 `ErrSkipped`（跳过是正常终止路径）。
 - 运行数据不进 kernel 服务仓库。
 
 ## 不做
@@ -147,7 +160,7 @@ type Aspect interface {
 3. 分支：分类节点 Set 一边、Skip 另一边；未选中下游不执行，工作流正常结束。
 4. 级联跳过：A skip → B（依赖 A）不跑且输出 skip → C（依赖 B）不跑。
 5. 多生产者 Provide 同一 Key → Add 拒绝。
-6. 节点 error → Run() 非 nil，未跑完的节点因取消结束，不把失败写成 skip。
+6. 节点 error → Run() 非 nil（不是 ErrSkipped）；未跑完的节点因取消结束；未写 Provide 可被清理 Skip 解阻塞。
 7. Timeout 切面取消能打断 Wait；Recovery 把 panic 收成首错。
 8. `WithMaxRunning(1)` 时两个无依赖节点串行进入 Run。
 9. `go test -race ./kernel/flow/` 全绿。
@@ -158,9 +171,11 @@ type Aspect interface {
 
 ### E1 观测 seam：节点生命周期事件
 
-**现状缺口**：切面只有一个 `Around(rc, next)`，包住「等待输入 + 执行」整段。观测方拿不到「等待输入何时开始/结束」，只能给出 node_total_ms；examples 的观测原型因此明确拒绝伪造 wait/run 拆分（见 examples/03-flow-agent/README「时间统计怎么读」）。
+> 跟踪：[Issue #25](https://github.com/Luo-root/pulse/issues/25)（规格已开，未实现）
 
-**第一消费者是装配层桥**（demoapp/bridge.go，已有 FlowAspect 原型）：flow 出 typed 事实，桥折成日志写 Sink——正式 observability 包不 import flow，不做消费者（见 [observability-v1-design.md](observability-v1-design.md) D1），避免从后门把业务依赖请回核心观测包。
+**现状缺口**：切面只有一个 `Around(rc, next)`，包住「等待输入 + 执行」整段。观测方拿不到「等待输入何时开始/结束」，只能给出整段耗时；examples/03 的桥因此记 `flow.node_finished` + `Duration`（= total），并明确拒绝伪造 wait/run 拆分（见 examples/03-flow-agent/README「时间统计怎么读」）。
+
+**第一消费者是装配层桥**（`examples/internal/demoapp/bridge.go` 的 `FlowAspect`）：flow 出 typed 事实，桥折成 Record 写同一 Sink——正式 observability 包不 import flow，不做消费者（见 [observability-v1-design.md](observability-v1-design.md) D1）。
 
 **计划**：在框架内增加三个只读事件位——NodeWaiting（开始阻塞等输入，即进入 WaitAll）、NodeRunning（拿到全部输入、Acquire 之后、进入用户 Run 之前）、NodeFinished（终止态 + 状态原因）。粒度与 examples/03 的诚实边界对齐；注意 Skip 与超时路径没有 Running，直接 Finished。验收证据：装配层桥能输出单节点的 wait_ms / run_ms 分段。
 
