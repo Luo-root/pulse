@@ -243,11 +243,13 @@ _ = kernel.Parallel(ctx, Tick, 0)      // 并发；返回 []error 或 nil
 |---|---|---|
 | `EventKey[P]` / `NewEventKey` | 类型安全事件键 | 包级 `var Tick = NewEventKey[int]("pulse.x.tick")` |
 | `(EventKey).Name` | 事件名 | |
-| `On` | 观察监听（Emit 与 Parallel 共用） | `func(*P)`，注册是效应 |
+| `On` | 观察监听（Emit / Parallel / Local 共用） | `func(*P)`，注册是效应 |
 | `OnWaterfall` | around 监听 | `func(P, next func(P) P) P`；不调 next 即短路 |
-| `Emit` | 同步按序派发观察者 | `*P` 就地改，对后续可见；panic 上抛 |
-| `Waterfall` | around 链 | 无监听器原样返回载荷 |
-| `Parallel` | 并发观察 | 各拿副本；返回 `[]error`（panic 已转换）或 nil |
+| `Emit` / `Waterfall` / `Parallel` | **全树**派发 | 宿主级观察；`Parallel` 返回 `[]error` 或 nil |
+| `EmitLocal` / `WaterfallLocal` | **只本 scope** | 请求级事实；nil scope 安全 |
+| `EventFiberState` / `EventLoaderAction` | 装配期 typed 事件键 | Bootstrap 旁路订阅；载荷为 struct |
+| `FiberSnapshots` / `FiberSnapshot` | 只读全树快照 | 横幅用；值类型，无活指针 |
+| `(*Fiber).Name` | 诊断名 | Loader=`Entry.ID`；裸 Use=类型名#序号 |
 
 ## 不做
 

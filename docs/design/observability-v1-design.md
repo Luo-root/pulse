@@ -25,16 +25,16 @@
 ```text
 ┌─────────────────────────────────────────────────────┐
 │ 装配层（demoapp / 未来宿主）                          │
-│   bootstrap.go 桥：llm/loop 事件 → 桥自己的记录类型    │
-│   trace_id 生成注入（四层贯通在这里实现）              │
+│   bridge.go：llm/loop/flow 事件 → Record 写同一 Sink  │
+│   Host.NewTraceID 注入（四层贯通在这里实现）          │
 │   FlowAspect（node_total_ms / alive_nodes_peak）      │
 └───────────────┬─────────────────────────────────────┘
                 │ 只依赖 observability.Sink
 ┌───────────────▼─────────────────────────────────────┐
 │ observability/（本包）                                │
 │   Record 信封 / Sink 三实现 / Bootstrap                │
-│   On(pulse.kernel.fiber_state|loader_action) → Record │
-│   SnapshotBanner(hostID)                              │
+│   On(fiber_state|loader_action) → Record              │
+│   Bootstrap Apply 末尾 writeBanner（内部，非导出）    │
 └───────────────┬─────────────────────────────────────┘
                 │ kernel.On / kernel.Emit（typed）
 ┌───────────────▼─────────────────────────────────────┐
@@ -102,18 +102,20 @@ func (f *Fiber) Name() string   // Loader=Entry.ID；裸 Use=类型名#序号
 
 派发规则：**改 state 的锁外 Emit；from==to 不发**（消除 settleSync/doLoad 双 loading；T2 仅剩 failed→loading 重试）。
 
-**T7 不作为事件（评审定案 2026-08-27）**：`Context.dispose()` 先清自身事件总线再级联卸载，每 Fiber 的树销毁迁移无法可靠穿越「已 clear 的总线」。因此 T7 **不产生 fiber_state 记录**；宿主终止以 host 级语义呈现——Dispose 后 Sink 零残留 + 快照横幅终态。这与 SpringBoot 关机日志的惯例一致（context closing/stopped，而非逐 Bean 迁移）。
+**T7 不作为事件（评审定案 2026-08-27）**：`Context.dispose()` 的时序是 **先** `forceUnload`（静默，不发 `fiber_state`）与 children 级联，**再** `events.clear()`（见 `kernel/context.go`）。树销毁路径因此本来就不会发出逐 Fiber 迁移；T7 **不产生 fiber_state 记录**。宿主终止以 host 级语义呈现——Dispose 后 Sink 零残留 + 快照横幅终态。这与 SpringBoot 关机日志的惯例一致（context closing/stopped，而非逐 Bean 迁移）。
 
-| # | 触发 | plugin.go 行号 | From → To | 备注 |
+行号会漂；定位以符号 / 注释锚点为准（`plugin.go` 内 `// T*: …` 注释）。下表行号为 2026-08-27 main 快照，仅作跳转辅助：
+
+| # | 触发 | 锚点（plugin.go） | From → To | 备注 |
 |---|---|---|---|---|
-| T1 | settleSync | :171 | inactive→loading | 装配期首次评估 |
-| T2 | doLoad 开始 | :249 | failed→loading | 仅 Failed 重试出现 |
-| T3 | doLoad 宿主销毁 | :258 | loading→inactive | Apply 中宿主没了 |
-| T4 | doLoad 失败 | :285 | loading→failed | Err=apply err |
-| T5 | doLoad 成功 | :290 | loading→active | |
-| T6 | doUnload | :298/:308 | active→unloading→inactive | 依赖消失驱动 |
-| T8a | Close（Active 回收） | :344/:348 | active→unloading→inactive | 手动 Close |
-| T8b | Close 打断 Loading | :277 | loading→inactive | doLoad 内 closed 竞态 |
+| T1 | settleSync | `settleSync` / :175 | inactive→loading | 装配期首次评估 |
+| T2 | doLoad 开始 | `doLoad` / :259 | failed→loading | 仅 Failed 重试出现；首次 from==to 不发 |
+| T3 | doLoad 宿主销毁 | `doLoad` Derive 失败 / :266 | loading→inactive | Apply 前宿主没了 |
+| T4 | doLoad 失败 | `doLoad` / :293 | loading→failed | Err=apply err |
+| T5 | doLoad 成功 | `doLoad` / :299 | loading→active | |
+| T6 | doUnload | `doUnload` / :305+:317 | active→unloading→inactive | 依赖消失驱动 |
+| T8a | Close（Active 回收） | `Close` / :356+:363 | active→unloading→inactive | 手动 Close |
+| T8b | Close 打断 Loading | `doLoad` closed 分支 / :286 | loading→inactive | Apply 中 Close 竞态 |
 
 LoaderAction 对照 Reconcile 三阶段实际分支：removed→unmount、Name/Config 变→recreate、Disabled→disable、plans→mount；mount 失败逐条带 Err；无变化静默（无 noop）。
 
@@ -151,7 +153,7 @@ Collector 概念本身 · otel/prometheus 导出器 · 采样与动态级别 · 
 
 1. 迁移矩阵 T1–T6/T8a/T8b 全覆盖（重点：T8b 竞态、from==to 抑制）；树销毁不发事件（T7 裁决），以 Dispose 后零增量断言替代
 2. 快照横幅两种场景：后装 Boot 只保横幅；最先装则全轨迹
-3. host_id 隔离与 Dispose 后三路径零增量
+3. host_id 隔离；Dispose 后**两路径**零增量（T8a 手动 Close、T8b Close 打断 Loading）+ 树销毁 T7 零增量（不发逐 Fiber 事件）
 4. Reconcile 四动作一致；noop 静默
 5. Record 表面测试：无 map、装配段在桥记录中零值
 6. examples 回归 + trace_id 桥内四层贯通

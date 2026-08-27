@@ -148,13 +148,19 @@ Registry —— kernel 服务 "pulse.llm"（生命周期随 llm.Plugin，卸载�
 observed 包装的 ChatModel（消费方接口）
 ```
 
-每次调用经过两个内核事件，能力挂载不需要包裹任何实例：
+每次调用经过两个内核事件，能力挂载不需要包裹任何实例。派发走
+**Local**（`WaterfallLocal` / `EmitLocal`）：优先 `llm.EventScopeFrom(ctx)`
+（loop 调模型前会 `llm.WithEventScope(ctx, reqScope)`），没有请求 scope
+时回退 Registry 构造时的 ctx（仍 Local，不是全树）：
 
-- `pulse.llm.before_generate`（waterfall，载荷 `*GenerateRequest`）：可就地
+- `pulse.llm.before_generate`（WaterfallLocal，载荷 `*GenerateRequest`）：可就地
   改写请求——路由、默认参数注入、脱敏、限流检查都在监听器里做
   （监听器应 `req.Clone()` 后改写再 next 委托，避免污染调用方）；
-- `pulse.llm.after_response`（emit，载荷值类型 `Response`）：计量、审计、
+- `pulse.llm.after_response`（EmitLocal，载荷值类型 `Response`）：计量、审计、
   缓存观察——观察者拿到只读快照，改不了调用方的结果。
+
+请求级 Bridge / HITL 必须挂在同一 `reqScope`，否则听不到 Local 事件。
+宿主级观察（fiber_state / loader_action）仍走全树 `Emit`，见 §3 #9。
 
 ### 5.3 有意为之的边界
 
@@ -178,9 +184,11 @@ observed 包装的 ChatModel（消费方接口）
   "一切皆插件"约束的是内核里的能力服务，不要求把每个库对象都
   塞进 Loader。若未来出现 bundle 级消费者（CLI/server 装配），
   在对应 P 级再补装配入口；
-- 每一步派发事件（step/start、tool/call、turn/end），拦截点即扩展点
-  （对标 DSH turn flow）；before_tool_call 为 waterfall，是 HITL
-  审批与权限策略的标准挂载点；
+- 每一步派发事件（turn_start / step_start / after_model / tool /
+  turn_end），拦截点即扩展点（对标 DSH turn flow）；全部走
+  **EmitLocal / WaterfallLocal**（只本 scope）。`before_tool_call` 为
+  WaterfallLocal，是 HITL 审批与权限策略的标准挂载点——监听必须与
+  Agent 挂在同一 `reqScope`，否则 Local 派发下听不到；
 - usage 统计从 llm.Response.Usage 取，不再各处拼装；
 - 交付验收：mock 模型跑通多轮工具循环；事件监听器能完整还原执行轨迹；
   压测（500 步长回合 / 32 并发 / 事件洪峰 / 协程泄漏）全绿。

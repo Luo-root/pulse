@@ -48,8 +48,8 @@ func TestOpenScriptedGenerate(t *testing.T) {
 	}
 }
 
-// host.Close 后 Effect 全部回收：Registry 服务绑定应从仓库消失。
-// 这是 kernel「卸载即还原」在同进程内的可断言验证（进程退出交给 OS 不算证据）。
+// host.Close 后 Effect 全部回收：Registry 服务绑定应从仓库消失；
+// Sink 记录数不再增长（Dispose 零残留）。
 func TestHostCloseReclaimsServices(t *testing.T) {
 	h, err := Open(Flags{Scripted: true})
 	if err != nil {
@@ -58,10 +58,11 @@ func TestHostCloseReclaimsServices(t *testing.T) {
 	if _, ok := GetRegistry(h); !ok {
 		t.Fatal("registry should be provided before close")
 	}
-	// 观测桥随宿主销毁而停止：Close 后 Sink 记录数不再增长。
 	nBefore := h.Sink.Len()
 	h.Close()
-	time.Sleep(50 * time.Millisecond)
+	if _, ok := GetRegistry(h); ok {
+		t.Fatal("registry service binding must be gone after Close")
+	}
 	if h.Sink.Len() != nBefore {
 		t.Fatalf("records leaked after close: %d -> %d", nBefore, h.Sink.Len())
 	}
@@ -78,14 +79,24 @@ func TestHostAndTraceIDSeparation(t *testing.T) {
 
 	t1 := h.NewTraceID()
 	t2 := h.NewTraceID()
+	hostID := h.HostID()
 	if t1 == t2 {
 		t.Fatalf("trace ids must differ per request: %q", t1)
 	}
-	if !strings.HasPrefix(t1, h.HostID()) {
-		t.Fatalf("trace id %q should carry host prefix %q", t1, h.HostID())
+	if !strings.HasPrefix(t1, hostID) {
+		t.Fatalf("trace id %q should carry host prefix %q", t1, hostID)
 	}
-	if h.HostID() != h.HostID() {
-		t.Fatal("host id must be stable")
+	// 同宿主跨 NewTraceID 调用 hostID 必须稳定。
+	if h.HostID() != hostID {
+		t.Fatalf("host id drifted: %q -> %q", hostID, h.HostID())
+	}
+	h2, err := Open(Flags{Scripted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h2.Close()
+	if h2.HostID() == hostID {
+		t.Fatalf("two Open() hosts must have different host ids: %q", hostID)
 	}
 }
 
