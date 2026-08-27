@@ -74,7 +74,8 @@ err := g.Run()
 ### Key
 
 - `Key[T]`：name + 类型。同名不同类型在 `NewKey` / 注册期拒绝（对齐 `ServiceKey`）。
-- 节点只能 `Get` 声明过的 Requires、`Set` 声明过的 Provides。碰未声明的 Key → 显式错误，不是静默写到黑板上。
+- 读（`Get` / `TryGet` / `WaitAll`）校验节点 `allowed`（Requires∪Provides）；写（`Set` / `Skip`）只允许 Provides。碰未声明的 Key → 显式错误，不是静默写到黑板上。
+- **惯例**：不要 `Get` 自己尚未写出的 Provide——会阻塞到自己（或清理路径）写入，通常是逻辑错误；读 Provides 主要给切面/诊断，不是鼓励自读未写输出。
 
 ### 槽位写入
 

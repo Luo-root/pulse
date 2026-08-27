@@ -12,8 +12,9 @@
 //	未就绪 | 已就绪(值) | 已跳过
 //
 // 任一输入跳过 → 不执行 Run，全部输出跳过（级联）。节点可对单条
-// Provide 主动 Skip（分支）。Run 漏写的 Provides 返回后自动 Skip，
-// 下游不会永远等待。节点返回的 error 取消整图，不会被翻译成跳过。
+// Provide 主动 Skip（分支）。Run 成功返回后漏写的 Provides 自动 Skip；
+// 节点 error / 输入 Skip 结束时，未写 Provide 也可被清理 Skip（只为
+// 解阻塞）。error 取消整图，Run/Err 仍返回原错误，不会伪装成 ErrSkipped。
 //
 // 与 kernel 同构、不同层：kernel 管服务装卸载，flow 管一次运行内的
 // 数据到达。运行数据不进服务仓库。切面签名对齐 Waterfall：
