@@ -303,18 +303,32 @@ type observed struct {
 	reg   *Registry
 }
 
+// eventScope 解析本次调用的派发作用域：
+//   - ctx 带请求级 scope（loop 注入）→ 用它做 Local 派发，Bridge 才能只听本请求；
+//   - 否则回退到 Registry 宿主 scope，仍走 Local（不再全树广播）。
+//
+// 禁止「EmitLocal(reg.ctx)」却指望挂在 reqScope 的监听收到——那两条不等价。
+func (o *observed) eventScope(ctx context.Context) *kernel.Context {
+	if s := EventScopeFrom(ctx); s != nil {
+		return s
+	}
+	return o.reg.ctx
+}
+
 func (o *observed) Generate(ctx context.Context, req *GenerateRequest) (*Response, error) {
-	req = kernel.Waterfall(o.reg.ctx, EventBeforeGenerate, req)
+	scope := o.eventScope(ctx)
+	req = kernel.WaterfallLocal(scope, EventBeforeGenerate, req)
 	resp, err := o.inner.Generate(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	kernel.Emit(o.reg.ctx, EventAfterResponse, *resp)
+	kernel.EmitLocal(scope, EventAfterResponse, *resp)
 	return resp, nil
 }
 
 func (o *observed) Stream(ctx context.Context, req *GenerateRequest) (<-chan StreamEvent, error) {
-	req = kernel.Waterfall(o.reg.ctx, EventBeforeGenerate, req)
+	scope := o.eventScope(ctx)
+	req = kernel.WaterfallLocal(scope, EventBeforeGenerate, req)
 	src, err := o.inner.Stream(ctx, req)
 	if err != nil {
 		return nil, err
@@ -326,7 +340,7 @@ func (o *observed) Stream(ctx context.Context, req *GenerateRequest) (<-chan Str
 			out <- ev
 			if ev.Kind == EventDone {
 				if ev.Response != nil {
-					kernel.Emit(o.reg.ctx, EventAfterResponse, *ev.Response)
+					kernel.EmitLocal(scope, EventAfterResponse, *ev.Response)
 				}
 				return
 			}

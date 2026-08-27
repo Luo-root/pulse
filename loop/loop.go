@@ -97,20 +97,16 @@ func NewAgent(model llm.ChatModel, opts ...Option) (*Agent, error) {
 	return a, nil
 }
 
-// emit 是 scope nil 安全的事件派发。
+// emit 是 scope nil 安全的**请求局部**事件派发（EmitLocal）。
+// 请求级事实不得走全树 Emit，否则兄弟 reqScope 上的 Bridge/HITL 会串扰。
 func emit[P any](scope *kernel.Context, k kernel.EventKey[P], payload P) {
-	if scope == nil {
-		return
-	}
-	kernel.Emit(scope, k, payload)
+	kernel.EmitLocal(scope, k, payload)
 }
 
-// waterfallOf 是 scope nil 安全的 waterfall 派发。
+// waterfallOf 是 scope nil 安全的**请求局部** waterfall（WaterfallLocal）。
+// HITL（before_tool_call）必须走此路径，否则 A 的拒绝策略会进 B 的 around 链。
 func waterfallOf[P any](scope *kernel.Context, k kernel.EventKey[P], payload P) P {
-	if scope == nil {
-		return payload
-	}
-	return kernel.Waterfall(scope, k, payload)
+	return kernel.WaterfallLocal(scope, k, payload)
 }
 
 // Run 执行一个回合（非流式便捷入口，等价于不带 onDelta 的 RunStream）。
@@ -175,7 +171,10 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 		emit(a.scope, EventStepStart, StepStart{Step: step})
 		req := &llm.GenerateRequest{Messages: msgs, Tools: defs}
 
-		ch, err := a.model.Stream(ctx, req)
+		// 把请求 scope 注入模型调用 ctx：llm.observed 从中取出后
+		// 对该 scope EmitLocal/WaterfallLocal，挂在 reqScope 的 Bridge
+		// 才能只听到本请求（禁止只改 Local(reg.ctx)）。
+		ch, err := a.model.Stream(llm.WithEventScope(ctx, a.scope), req)
 		if err != nil {
 			res.StoppedBy = StopError
 			return res, fmt.Errorf("loop: step %d: %w", step, err)
