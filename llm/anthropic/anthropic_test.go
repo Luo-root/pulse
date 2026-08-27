@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,50 @@ import (
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
 )
+
+func TestMain(m *testing.M) {
+	loadDotEnv()
+	os.Exit(m.Run())
+}
+
+// loadDotEnv 从仓库根的 .env 读入尚未设置的环境变量。
+// .env 已被 gitignore，专供本机真机冒烟；解析失败静默忽略。
+func loadDotEnv() {
+	dir, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	for i := 0; i < 6; i++ {
+		p := filepath.Join(dir, ".env")
+		data, err := os.ReadFile(p)
+		if err == nil {
+			applyDotEnv(data)
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return
+		}
+		dir = parent
+	}
+}
+
+func applyDotEnv(data []byte) {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if os.Getenv(k) == "" {
+			_ = os.Setenv(k, v)
+		}
+	}
+}
 
 // ---- 测试基建 ----
 

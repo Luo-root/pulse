@@ -24,7 +24,8 @@ kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin
   flow/                     # data-driven node graph: typed keys, skip-as-arrival, aspects
 llm/                        # v2 model layer: content-block vocabulary, ChatModel, Registry, openai/ + anthropic/ adapters
 loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL decision events
-docs/design/                # design docs (plugin-kernel-v2.md, flow-v2-design.md)
+docs/design/               # design docs (plugin-kernel-v2.md, flow-v2-design.md)
+examples/                   # 渐进装配示例（chat / react / flow）与观测原型
 skills/                     # Example skill definitions (*.md with YAML frontmatter, gitignored)
 ```
 

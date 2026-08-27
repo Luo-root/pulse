@@ -1,7 +1,7 @@
 # Pulse
 
 [![Go Version](https://img.shields.io/badge/Go-1.25.0-blue.svg)](https://go.dev/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **Pulse** 是一个正在进行 v2 重构的 Go AI Agent 框架。
 
@@ -16,7 +16,8 @@ v2 以可逆效应和依赖响应式为内核，先落地插件内核、模型�
 | [`llm/openai`](llm/openai/README_zh.md) | OpenAI Chat Completions + Responses 官方 SDK 适配器 | `openai.Register()` |
 | [`llm/anthropic`](llm/anthropic/README_zh.md) | Anthropic Messages 官方 SDK 适配器 | `anthropic.Register()` |
 | [`loop`](loop/README_zh.md) | 无状态 ReAct 回合执行器，工具调用与 HITL 决策事件 | `loop.NewAgent()` |
-| [`kernel/flow`](docs/design/flow-v2-design.md) | 数据就绪驱动的节点编排（槽位三态含跳过） | `flow.New(ctx)` |
+| [`kernel/flow`](kernel/flow/README_zh.md) | 数据就绪驱动的节点编排（槽位三态含跳过） | `flow.New(ctx)` |
+| [`examples`](examples/README.md) | 渐进装配示例：chat / ReAct+HITL / flow 编排 | `go run ./examples/01-chat` |
 
 ## 快速上手：模型 + ReAct 工具回合
 
@@ -146,4 +147,4 @@ docs/design/               架构设计与迁移文档
 
 ## 许可证
 
-[Apache License 2.0](LICENSE)
+[MIT License](LICENSE)

@@ -101,7 +101,7 @@ err := g.Run()
 - `WithMaxRunning(n)`：`n<=0` 无限（默认）；`n>0` 为进入 `Run` 前的信号量。等数据不占名额，拿到全部输入、真正执行时才 Acquire。
 - `Graph` API：`New` / `Add` / `Seed` / `SkipSeed` / `Run` / `Start`+`Wait` / `Err`。
 - `Add` 拒绝：空 id、重复 id、同一节点重复 Require/Provide、同一节点既 Require 又 Provide 某 Key、两个节点 Provide 同一 Key。
-- 每个 Key 恰有一种来源：`Seed` / `SkipSeed`（外部输入）或恰好一个节点的 Provides，二者不可并存。重复声明返回 `ErrDuplicateSource`。
+- 每个 Key 至多一种来源身份：外部 `Seed` / `SkipSeed`，或一个节点的 `Provides`，二者不可并存。外部来源可重复声明：重复 `Seed` 按槽位首写处理，重复 `SkipSeed` 幂等，`Seed` 与 `SkipSeed` 的值/跳过冲突返回 `ErrConflict`；不同来源身份冲突返回 `ErrDuplicateSource`。
 
 ### 切面
 
@@ -112,7 +112,7 @@ type Aspect interface {
 ```
 
 - `rc.Fork()` 只派生取消上下文，不复制写入记录和声明权限；core 用切面级 ctx 做 `Get`/`WaitAll`，超时能打断等数据。
-- 全局切面 + 节点切面，先全局后节点，外层先跑。
+- 全局切面 + 节点切面，先全局后节点，外层先跑。每个切面每次 `Around` 调用只能调用 `next` 至多一次；重复（含并发）调用返回 `ErrNextCalledTwice`，节点不会重入。
 - **内建、不可关**：Recovery（panic → 首错 + 取消）。
 - **可选**：Timeout、Retry。
 - **不移植**：
@@ -127,7 +127,7 @@ type Aspect interface {
 
 - 同名不同类型的 Key 拒绝。
 - Set 二次静默忽略；Set 与 Skip 冲突显式报错。
-- 每个 Key 恰有一种来源：外部 Seed/SkipSeed，或恰好一个节点输出。
+- 每个 Key 至多一种来源身份：外部 Seed/SkipSeed，或一个节点输出；重复外部声明仍按槽位首写与值/Skip 冲突规则处理。
 - 漏写的 Provides 在 Run 返回后自动 Skip。
 - 输入被跳过 → 不跑 Run，输出全跳过。
 - 节点 error ≠ 跳过。error 取消整图；跳过只影响依赖链。
@@ -142,7 +142,7 @@ type Aspect interface {
 
 ## 验收
 
-1. 线性：A→B→C，类型安全 Get/Set，二次 SetOnce 忽略。
+1. 线性：A→B→C，类型安全 Get/Set，二次 Set 忽略。
 2. 并行汇聚：C 的 Requires(Aout, Bout) 在 A、B 都完成后才跑。
 3. 分支：分类节点 Set 一边、Skip 另一边；未选中下游不执行，工作流正常结束。
 4. 级联跳过：A skip → B（依赖 A）不跑且输出 skip → C（依赖 B）不跑。

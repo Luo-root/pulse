@@ -23,5 +23,5 @@
 // 并发默认无限；WithMaxRunning(n) 只限制同时进入 Run 的节点数，
 // 等数据不占名额。
 //
-// 每个 Key 恰有一种来源：Seed/SkipSeed 或恰好一个节点的 Provides。
+// 每个 Key 至多一种来源身份：外部 Seed/SkipSeed 或一个节点的 Provides。
 package flow
