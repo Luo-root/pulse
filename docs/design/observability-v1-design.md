@@ -44,6 +44,8 @@
 
 划线：**正式包** = Fiber 状态机、Loader 动作、启动清单、Dispose 后不再写。**桥** = token 计数、HITL 结果、flow 节点耗时——同一 stderr 出口、不同记录形状。
 
+「同一出口」的实现语义：桥把运行期事实**折进 Record 信封**（Time/HostID/TraceID/Source/Event/Duration/Status）再 `Sink.Write`；token 数等无法装进信封的业务指标走 SlogSink 的附加键输出。同一出口 ≠ 官方 Record 变成万能袋，也不允许桥绕过 Sink 另开一路输出。
+
 ## 3. 数据契约
 
 ### 3.1 Record 信封
@@ -88,11 +90,13 @@ var EventLoaderAction = NewEventKey[LoaderAction]("pulse.kernel.loader_action")
 type FiberSnapshot struct {
     Name string; State FiberState; Err error; WaitingFor []string // 拷贝
 }
-func (c *Context) FiberSnapshots() []FiberSnapshot
+func (c *Context) FiberSnapshots() []FiberSnapshot   // 从 root 扫整棵树
 func (f *Fiber) Name() string   // Loader=Entry.ID；裸 Use=类型名#序号
 ```
 
 不加实例方法 `WaitingFor()`：防内部切片泄漏；等待列表只在快照中输出。
+
+**扫整棵树是横幅的 blocker**：Bootstrap 在自己的私有子 ctx 上 Apply，业务插件是兄弟子树——只 dump 本层 `c.fibers` 的话横幅永远看不见它们。实现为 root 起点全树遍历 + 锁内拷贝。
 
 ## 4. 状态迁移矩阵（唯一事实源）
 
