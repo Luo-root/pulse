@@ -62,30 +62,40 @@ func run() error {
 		return err
 	}
 
-	// REPL 与审批器共享同一 LineSource：一个行缓冲、同 goroutine 顺序消费，
-	// 审批时输入的 y/n/a 不会被 Loop 的预读缓冲抢走。
+	// REPL 与审批器共享同一 LineSource：一个行缓冲、同 goroutine 顺序消费。
 	stdin := demoapp.NewLineSource(os.Stdin)
-	trust, err := demoapp.InstallHITL(host.Ctx, mode, flags.DenyTool, flags.AllowTool, toolHint, stdin, os.Stdout)
-	if err != nil {
-		return err
-	}
-
-	agent, err := loop.NewAgent(host.Model,
-		loop.WithToolSet(tools),
-		loop.WithSystemPrompt("你是 Pulse 示例助手。需要事实时调用 lookup；删除类操作调用 delete_file。后续轮次必须结合对话历史回答。"),
-		loop.WithEventScope(host.Ctx),
-	)
-	if err != nil {
-		return err
-	}
+	var trust *demoapp.SessionTrust // interactive 跨轮 always 复用
 
 	var history []*llm.Message
-	fmt.Printf("02-react provider=%s model=%s scripted=%v hitl=%s deny=%q allow=%q\n",
-		flags.Provider, flags.Model, flags.Scripted, mode, flags.DenyTool, flags.AllowTool)
+	fmt.Printf("02-react provider=%s model=%s scripted=%v hitl=%s deny=%q allow=%q host=%s\n",
+		flags.Provider, flags.Model, flags.Scripted, mode, flags.DenyTool, flags.AllowTool, host.HostID())
 	if mode == demoapp.HITLInteractive {
 		fmt.Println("interactive 模式：危险调用会暂停等待你在终端批准（y/n/a）")
 	}
 	return demoapp.Loop(stdin, os.Stdout, func(msg *llm.Message) ([]*llm.Message, error) {
+		// 每轮独立 reqScope + Bridge + Agent + HITL：
+		// Local 派发下 HITL 必须挂在与 Agent 相同的 reqScope，否则听不到。
+		reqScope, err := host.Ctx.Derive()
+		if err != nil {
+			return nil, err
+		}
+		defer reqScope.Dispose()
+		bridge, err := host.NewBridge(reqScope)
+		if err != nil {
+			return nil, err
+		}
+		trust, err = demoapp.InstallHITLWithTrust(reqScope, mode, flags.DenyTool, flags.AllowTool, toolHint, stdin, os.Stdout, trust)
+		if err != nil {
+			return nil, err
+		}
+		agent, err := loop.NewAgent(host.Model,
+			loop.WithToolSet(tools),
+			loop.WithSystemPrompt("你是 Pulse 示例助手。需要事实时调用 lookup；删除类操作调用 delete_file。后续轮次必须结合对话历史回答。"),
+			loop.WithEventScope(reqScope),
+		)
+		if err != nil {
+			return nil, err
+		}
 		res, err := agent.RunStream(context.Background(), func(delta string) {
 			fmt.Print(delta)
 		}, history, msg)
@@ -101,7 +111,8 @@ func run() error {
 		if trust != nil && len(trust.Names()) > 0 {
 			extra = fmt.Sprintf(" session_trust=%v", trust.Names())
 		}
-		fmt.Printf("stopped_by=%s steps=%d history=%d%s\n", res.StoppedBy, res.Steps, len(history), extra)
+		fmt.Printf("stopped_by=%s steps=%d history=%d trace=%s%s\n",
+			res.StoppedBy, res.Steps, len(history), bridge.TraceID, extra)
 		return res.Messages, nil
 	}, func() int { return len(history) })
 }

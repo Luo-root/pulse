@@ -50,16 +50,22 @@ v2 的目标：把 Cordis 的思想以 Go 的方式重新实现为 pulse 的内�
 | 5 | 不做 realm/isolate 多租户隔离 | 当前无场景；键名前缀约定已够用，留有扩展点 |
 | 6 | 不做代码级 HMR | Go 无法卸载已加载代码。Loader 的"重载"是状态级的：dispose 旧 Fiber、同一工厂重建新实例 |
 | 7 | waterfall 监听器契约只有注册顺序，不支持 prepend | 契约最小化；需要优先级时显式分层注册 |
-| 8 | 事件三种派发模式（Emit/Waterfall/Parallel），不设独立 Serial | Cordis 的 serial 与 emit 差异在 await 与否；Go 同步调用天然串行累积（监听器经 `*P` 就地修改、对后续可见），两模式实现完全相同——保留两个入口只会让人误以为有行为差异 |
+| 8 | 事件三种全树派发模式（Emit/Waterfall/Parallel），不设独立 Serial | Cordis 的 serial 与 emit 差异在 await 与否；Go 同步调用天然串行累积（监听器经 `*P` 就地修改、对后续可见），两模式实现完全相同——保留两个入口只会让人误以为有行为差异 |
+| 9 | 另增请求级局部派发（EmitLocal/WaterfallLocal），与全树并存 | 全树广播保留给宿主级观察（fiber_state / loader_action）；请求级事实（tool/turn/HITL/llm generate）必须 Local，否则兄弟 reqScope 会串扰。详见 [kernel-local-events.md](kernel-local-events.md) |
 
 ### 有意钉死的语义（有测试背书，不是漏测）
 
 - **同名覆盖即撤旧，不还原前值**：后到的 `Provide` 覆盖旧绑定并广播变更；
   覆盖者卸载后服务消失、依赖方自动卸载——被覆盖方的旧 dispose 是空操作，
   不复活前值。两个插件抢同一服务名视为装配错误，行为可预期且可观测。
-- **事件派发为全树广播**：任意作用域派发，整棵树（根到叶、层内注册顺序）
-  上该事件的监听都会收到——兄弟作用域的策略插件因此能拦截彼此；
-  监听本身是 Effect，随注册方作用域销毁自动摘除。
+- **事件派发默认全树广播**：`Emit` / `Waterfall` / `Parallel` 从 root 遍历整棵树
+  （根到叶、层内注册顺序）——兄弟作用域的策略插件因此能拦截彼此；
+  监听本身是 Effect，随注册方作用域销毁自动摘除。这是宿主级观察的契约。
+- **请求级事实走局部派发**：`EmitLocal` / `WaterfallLocal` 只碰本层 `eventBus`，
+  不向父/子/兄弟广播。loop 的 turn/tool/HITL 与 llm 的 before_generate /
+  after_response（经请求 scope 注入后）必须走 Local；否则双请求 Bridge 会
+  把 A 的事件复制进 B（实测 `cross-talk: A=1 B=1`）。全树广播原则没有被推翻，
+  而是显式分层：宿主级仍全树，请求级必须局部。
 - **条目配置是实例私有的**：Loader 经由可选接口 `Configurable.Configure`
   把 `Entry.Config` 交给对应实例（对齐 Cordis 把 config 绑进 apply 参数），
   不经过全局服务仓库，多实例互不覆盖、卸载互不影响。
@@ -81,11 +87,13 @@ var Key = kernel.NewServiceKey[*Registry]("pulse.llm")
 dispose, _ := kernel.Provide(ctx, Key, reg)   // 自动登记为效应；覆盖=撤旧装新
 reg, ok := kernel.Get(ctx, Key)               // 全局仓库查找 + 类型断言
 
-// 事件（三种派发模式）
+// 事件（全树三种 + 请求局部两种）
 var EvReq = kernel.NewEventKey[*Req]("x.req")
 kernel.OnWaterfall(ctx, EvReq, func(r *Req, next func(*Req) *Req) *Req { ... }) // around 链
-kernel.On(ctx, EvOther, func(p *P))           // Emit / Parallel 共用签名
-out := kernel.Waterfall(ctx, EvReq, req)      // 可短路、可改写
+kernel.On(ctx, EvOther, func(p *P))           // Emit / Parallel / Local 共用签名
+out := kernel.Waterfall(ctx, EvReq, req)      // 全树：可短路、可改写
+kernel.EmitLocal(reqScope, EvOther, p)        // 请求局部：只本 scope
+out = kernel.WaterfallLocal(reqScope, EvReq, req) // HITL 必须 Local
 
 // 插件（依赖响应式）
 p := &MyPlugin{}                              // Inject() + Apply(c)

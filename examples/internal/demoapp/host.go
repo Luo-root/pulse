@@ -35,7 +35,6 @@ type Host struct {
 	Registry *llm.Registry
 	Sink     *observability.MemorySink
 	Peak     *FlowPeak
-	Bridge   *Bridge
 	Model    llm.ChatModel
 	Flags    Flags
 
@@ -185,14 +184,6 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 		host.Dispose()
 		return nil, err
 	}
-	h := &Host{Ctx: host, Registry: reg, Sink: sink, Peak: &FlowPeak{}, Flags: flags, hostID: hostID}
-	bridge, err := InstallBridge(host, sink, hostID)
-	if err != nil {
-		host.Dispose()
-		return nil, err
-	}
-	h.Bridge = bridge
-
 	var model llm.ChatModel
 	if flags.Scripted {
 		if len(scripted) == 0 {
@@ -234,9 +225,22 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 			return nil, err
 		}
 	}
-	h.Model = model
-	return h, nil
+	return &Host{
+		Ctx: host, Registry: reg, Sink: sink, Peak: &FlowPeak{},
+		Model: model, Flags: flags, hostID: hostID,
+	}, nil
 }
+
+// NewBridge 为一次请求创建观测桥（TraceID = NewTraceID），并把监听
+// 安装到 scope（建议传每轮请求自己的子作用域；随其销毁自动摘除）。
+func (h *Host) NewBridge(scope *kernel.Context) (*Bridge, error) {
+	b := &Bridge{Sink: h.Sink, HostID: h.hostID, TraceID: h.NewTraceID()}
+	if err := b.install(scope); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
 
 // Close 回收 kernel 作用域及全部效应。
 func (h *Host) Close() {
