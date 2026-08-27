@@ -185,13 +185,15 @@ kernel/flow
   │  flow 自有 typed observer（默认 no-op）
   ▼
 装配层桥（demoapp.Bridge / 未来宿主）
-  │  订阅 flow observer；折成 Record（source=bridge）
-  │  填 HostID / TraceID / wait_ms / run_ms → Sink.Write
+  │  订阅 flow observer；折成 **两条** Record（source=bridge）
+  │  flow.node_wait_finished / flow.node_run_finished
+  │  各用现有 Duration；填 HostID / TraceID → Sink.Write
   ▼
 observability/
   │  只提供 Record / Sink / Bootstrap
   │  只依赖 kernel（fiber_state / loader_action）
   ✗  不 import flow，不订阅 Node* 事件
+  ✗  官方 Record **不扩** WaitMs/RunMs 字段
 ```
 
 | 层 | 认识什么 | 不认识什么 |
@@ -207,7 +209,18 @@ observability/
 - flow **自有** typed observer / 钩子，默认 no-op；`WithObserver(...)`（名称实现时可微调）挂到 Graph。
 - **禁止** E1 直接 `kernel.Emit`：flow 必须保持「只吃 `context.Context`、可独立使用」，不强迫 import kernel 事件总线。
 - flow **禁止** 直接 `observability.Sink.Write` 或 import 正式观测包。
-- Aspect（Timeout/Retry）继续做控制流；**wait_ms / run_ms 必须来自新事件分段**，禁止再用 `Around` 整段耗时冒充分段。
+- Aspect（Timeout/Retry）继续做控制流；**wait/run 必须来自新事件分段**，禁止再用 `Around` 整段耗时冒充分段。
+
+#### 桥如何把 wait/run 写进信封（钉死，2026-08-28）
+
+官方 `Record` 只有一个 `Duration`，且 observability-v1 **明确官方 Record 不扩字段**（token 走 slog 附加键）。因此桥侧采用**两条记录**，各用现有 `Duration`：
+
+| 桥事件名 | Duration 含义 | 何时写 |
+|---|---|---|
+| `flow.node_wait_finished` | wait 段墙钟 | 离开 Waiting（进入 Running，或因 Skip/超时直接 Finished） |
+| `flow.node_run_finished` | run 段墙钟 | 仅当发过 Running 时，在 Finished 时写 |
+
+不写第三条「total」冒充分段；需要 total 时由消费方把两段相加。验收「分别断言 wait/run」对这两条 Record 断言即可。
 
 #### 三个只读事件
 
@@ -217,12 +230,22 @@ observability/
 | NodeRunning | WaitAll 成功且 `acquire` 之后、用户 `Run` 之前 | Skip / 超时打断 Wait → **不发** Running，直接 Finished |
 | NodeFinished | 节点终止态已确定之后 | **在 skip 清理之后**发，带状态原因（completed / skipped / failed / canceled） |
 
-验收证据：装配层桥能对线性链节点分别断言 wait_ms 与 run_ms（或等价字段）；Skip 级联与 Timeout 打断 Wait 的路径有 Finished、无 Running。
+**每节点次数（钉死）**：Waiting ≤ 1、Running ≤ 1、Finished = 1。`Retry` 的 `next()` 包住整段 core；多次 attempt **不得**重复打 Waiting/Running。Retry 的多次 Run（含 delay）计入同一次 Running→Finished 的 run 墙钟。
+
+Timeout 现返回 `fmt.Errorf("flow: node … timeout…")`，不是 `context.Canceled`：Finished 原因归 `failed` 即可；`canceled` 留给图/ctx 取消。
+
+验收证据：装配层桥能对线性链节点分别断言两条 Duration；Skip 级联与 Timeout 打断 Wait 的路径有 Finished、无 Running、无 `flow.node_run_finished`。
+
+#### 实现约束
+
+- observer 从 `runNode` 的每节点 goroutine 调用 → **必须并发安全**，或由 Graph 串行回调
+- observer panic / error **不得**变成节点失败（只读 seam）
+- 埋点位置在 innermost core 时，须用「每节点已发过 Waiting/Running」门闩，防止 Retry 双打点
 
 #### 非目标
 
 - 指标聚合、导出器、采样配置（observability / 宿主的事）
-- 正式观测包增加 `OnFlowNode*` API
+- 正式观测包增加 `OnFlowNode*` API，或给 Record 加 `WaitMs`/`RunMs`
 - 改 AND / Skip / 失败显式 / 取消清理 Skip 等已钉死契约
 - E2 JSON/YAML（另项）
 
@@ -240,6 +263,6 @@ observability/
 
 ### 与其他组件的关系
 
-- **E1 → 装配层桥**：flow 出 typed 事实；桥折成 wait_ms/run_ms 写 Sink。正式 observability 包不 import flow，只提供信封与出口；
+- **E1 → 装配层桥**：flow 出 typed 事实；桥折成两条 Record（`flow.node_wait_finished` / `flow.node_run_finished`，各用 `Duration`）写 Sink。正式 observability 包不 import flow，只提供信封与出口；
 - **E2 → memory 层**：外部输入引用若涉及会话/上下文来源，遵循 memory 设计稿中「model-visible 投影不可破坏」的不变式；
 - 全部演进不破坏本篇已钉死的契约：三态槽位、AND 汇聚、来源唯一、失败显式。
