@@ -104,9 +104,10 @@ func main() {
 
 节点中的 `Get` / `Set` 只允许访问已声明的 Key：
 
-- `Get` / `TryGet` / `WaitAll` 只能读取 `Requires`；
+- `Get` / `TryGet` / `WaitAll` 可读节点 `allowed`（Requires∪Provides）；
 - `Set` / `Skip` 只能写入 `Provides`；
 - 未声明、同名不同类型等错误会显式返回，不能把数据静默写到共享黑板。
+- 惯例：不要 `Get` 自己尚未写出的 Provide（会死等）；读 Provides 主要给切面/诊断。
 
 当同一个节点需要不同泛型类型的多个输入或输出时，用 `Deps` 合并声明：
 
@@ -196,6 +197,7 @@ split := flow.NewNode(
 - `Set` 与 `Skip` 不能混用在同一槽位上；冲突返回 `ErrConflict`。
 - 节点的任一 `Requires` 为 skipped 时，框架不会执行该节点 `Run`，而是把该节点所有 `Provides` 标记为 skipped。
 - `Run` 正常返回但遗漏某个 `Provides` 时，框架自动 `Skip` 漏写输出，避免下游永远等待。
+- 节点返回 error 时：`Graph.Run` / `Err` 仍返回该 error（**不会**伪装成 `ErrSkipped`）；框架仍可对**未写 Provide** 做 Skip，只为解开等待者（取消清理），不等于把失败翻译成跳过。
 - `ErrSkipped` 不是 `Graph.Run` 的失败结果；它只表示某次读取或等待遇到了跳过。
 
 `Get` 在读取 skipped 槽位时返回可被 `errors.Is(err, flow.ErrSkipped)` 判断的错误。`TryGet` 用于不阻塞检查：

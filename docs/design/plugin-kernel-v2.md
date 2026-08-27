@@ -212,14 +212,23 @@ observed 包装的 ChatModel（消费方接口）
   （model-visible means logged），为多轮回放/fork 打地基；
 - gorm/sqlite 存储实现为存储 seam 的实现插件。
 
-### P3 flowchart 重构（大改，单独立项）
+### P3 数据流编排（已由 flow v2 承接）
 
-- DAG 编排思路保留（拓扑并行执行 + 拦截器是对的）；
-- 实现层重构方向：节点 = Plugin（依赖注入取代手工传参）、数据槽 =
-  类型安全 DataSlot[T]、retry/timeout/circuit-breaker 拦截器改挂在
-  内核事件管线上；
-- 与 loop 的关系重新定义：workflow 是 loop 的上游规划者或下游批处理
-  执行器，两者通过服务互相发现而不是 import。
+> **状态：已落地。** 原「flowchart 重构」方向已被
+> [flow-v2-design.md](flow-v2-design.md) 取代并 Accepted；实现包为
+> `kernel/flow/`。下列旧设想**明确废弃**，勿再当路线图：
+>
+> - ~~节点 = Plugin / 依赖注入取代手工传参~~（flow 节点是库对象，吃
+>   `context.Context`，不进 Loader）；
+> - ~~circuit-breaker 挂内核事件管线~~（熔断是跨运行服务治理，与
+>   「一次运行一个世界」冲突，flow 有意不做）；
+> - ~~显式边表 + 拓扑排序器~~（flow 用 Requires/Provides 隐式依赖，
+>   AND 汇聚，无边对象）。
+>
+> 现行契约：三态槽位、AND-only、Skip 级联、失败显式、Aspect 洋葱链。
+> 与 loop **正交**（节点函数里可构造 Agent；二者不通过服务互相发现）。
+> 未完成的演进只剩 E1 生命周期事件（Issue #25）与 E2 声明式装图，
+> 均不破坏已钉死契约；细节见 flow 设计文演进段。
 
 ### 持续约束
 
