@@ -3,6 +3,7 @@ package flow
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestLinear(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		// 二次 SetOnce 忽略
+		// 二次 Set 忽略
 		if err := Set(rc, kB, v+"!"); err != nil {
 			return err
 		}
@@ -190,6 +191,115 @@ func TestSkipSeedAndNodeProviderConflict(t *testing.T) {
 	err = SkipSeed(g2, kA)
 	if !errors.Is(err, ErrDuplicateSource) {
 		t.Fatalf("Add then SkipSeed: want ErrDuplicateSource, got %v", err)
+	}
+}
+
+func TestRepeatedSeedSemantics(t *testing.T) {
+	g := New(context.Background())
+	if err := Seed(g, kA, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Seed(g, kA, "ignored"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	v, ok, skipped, err := TryGet(inspect(g), kA)
+	if err != nil || !ok || skipped || v != "first" {
+		t.Fatalf("got %q ok=%v skipped=%v err=%v", v, ok, skipped, err)
+	}
+
+	g = New(context.Background())
+	if err := SkipSeed(g, kA); err != nil {
+		t.Fatal(err)
+	}
+	if err := SkipSeed(g, kA); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, skipped, err = TryGet(inspect(g), kA)
+	if err != nil || ok || !skipped {
+		t.Fatalf("ok=%v skipped=%v err=%v", ok, skipped, err)
+	}
+
+	g = New(context.Background())
+	if err := Seed(g, kA, "value"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SkipSeed(g, kA); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Seed then SkipSeed: want ErrConflict, got %v", err)
+	}
+}
+
+func TestEmptyGraphStartWait(t *testing.T) {
+	g := New(context.Background())
+	if err := g.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAspectNextCalledOnce(t *testing.T) {
+	g := New(context.Background())
+	var runs atomic.Int32
+	aspect := AspectFunc(func(rc *RunCtx, next func(*RunCtx) error) error {
+		if err := next(rc); err != nil {
+			return err
+		}
+		return next(rc)
+	})
+	mustAdd(t, g, NewNode("n", nil, Provides(kA), func(rc *RunCtx) error {
+		runs.Add(1)
+		return Set(rc, kA, "value")
+	}, aspect))
+	if err := g.Run(); !errors.Is(err, ErrNextCalledTwice) {
+		t.Fatalf("want ErrNextCalledTwice, got %v", err)
+	}
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("node ran %d times, want 1", got)
+	}
+}
+
+func TestAspectConcurrentNextCalledOnce(t *testing.T) {
+	g := New(context.Background())
+	var runs atomic.Int32
+	aspect := AspectFunc(func(rc *RunCtx, next func(*RunCtx) error) error {
+		release := make(chan struct{})
+		results := make(chan error, 2)
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-release
+				results <- next(rc)
+			}()
+		}
+		close(release)
+		wg.Wait()
+		close(results)
+		var first error
+		for err := range results {
+			if err != nil {
+				first = err
+			}
+		}
+		return first
+	})
+	mustAdd(t, g, NewNode("n", nil, Provides(kA), func(rc *RunCtx) error {
+		runs.Add(1)
+		return Set(rc, kA, "value")
+	}, aspect))
+	if err := g.Run(); !errors.Is(err, ErrNextCalledTwice) {
+		t.Fatalf("want ErrNextCalledTwice, got %v", err)
+	}
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("node ran %d times, want 1", got)
 	}
 }
 

@@ -3,6 +3,7 @@ package flow
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,7 +23,13 @@ func buildChain(aspects []Aspect, core func(*RunCtx) error) func(*RunCtx) error 
 		a := aspects[i]
 		next := invoker
 		invoker = func(rc *RunCtx) error {
-			return a.Around(rc, next)
+			var called atomic.Bool
+			return a.Around(rc, func(nextRC *RunCtx) error {
+				if !called.CompareAndSwap(false, true) {
+					return ErrNextCalledTwice
+				}
+				return next(nextRC)
+			})
 		}
 	}
 	return invoker

@@ -37,4 +37,5 @@ var (
 	ErrGraphStarted    = errors.New("flow: graph already started")
 	ErrGraphNotStarted = errors.New("flow: graph has not started")
 	ErrDuplicateSource = errors.New("flow: key already has a source")
+	ErrNextCalledTwice = errors.New("flow: aspect next called more than once")
 )
