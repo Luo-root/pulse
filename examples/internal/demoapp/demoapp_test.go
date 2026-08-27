@@ -132,3 +132,11 @@ func TestBridgeWritesRuntimeRecords(t *testing.T) {
 		t.Fatalf("no generate_finished record among %d new records", len(h.Sink.Snapshot())-before)
 	}
 }
+
+// 请求级 Bridge 隔离契约：两个同时存活的请求 scope 不得互相收到对方的
+// tool/turn/llm 事件。当前被 #20（EmitLocal/WaterfallLocal）阻塞——
+// kernel.Emit 全树广播会把 A 的事件复制进 B。落地 #20 后去掉 Skip，
+// 并补强 HITL 双策略隔离与 llm.generate_finished 隔离；不要为变绿弱化断言。
+func TestRequestBridgesDoNotCrossTalk(t *testing.T) {
+	t.Skip("blocked by #20: EmitLocal/WaterfallLocal required for request-scoped isolation")
+}
