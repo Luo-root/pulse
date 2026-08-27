@@ -133,20 +133,12 @@ LoaderAction 对照 Reconcile 三阶段实际分支：removed→unmount、Name/C
 
 ### Dispose 后零残留
 
-三路径必须全部满足：手动 `Host.Close`（T8a）、Close 打断 Loading（T8b）、host 树销毁（T7）。验收手段：MemorySink 增量断言。
-
-### T7 可达性约束（实现者必读）
-
-dispose 顺序为 events.clear → forceUnload → 递归 children。因此：
-
-1. Bootstrap 只在自己的 Apply(c) 私有子 ctx 上 On（全树收集使子总线听得到 T7）；
-2. 不把观测监听登记到 host root（root 总线先 clear，会错过 T7）;
-3. T7 在 forceUnload 锁外 Emit，且先于 children dispose。
+两路径必须全部满足：手动 `Host.Close`（T8a）与 Close 打断 Loading（T8b）；host 树销毁按 §4 T7 裁决不发事件，验收为 **Dispose 返回后 Sink 零增量**（MemorySink 断言）。
 
 ## 6. examples 改造
 
 - 删除 `examples/internal/observability/`
-- demoapp 新增 `bridge.go`：llm/loop 事件 → 桥记录类型写同一 Sink；FlowAspect 迁入；trace_id 由 bridge 生成并注入 llm/loop/tool/flow 四层记录
+- demoapp 新增 `bridge.go`：llm/loop 事件折进 Record 信封写同一 Sink；运行期记录同时填 HostID（宿主稳定标识）与 TraceID（每次请求独立生成）——D3 两层关联在桥处合流
 - `demoapp.Open` 装配顺序改为 **Bootstrap 最先 Use**
 
 ## 7. 明确不做
@@ -157,7 +149,7 @@ Collector 概念本身 · otel/prometheus 导出器 · 采样与动态级别 · 
 
 ## 8. 测试计划摘要
 
-1. 迁移矩阵 T1–T8b 全覆盖（重点：T7 锁外可达、T8b 竞态、from==to 抑制）
+1. 迁移矩阵 T1–T6/T8a/T8b 全覆盖（重点：T8b 竞态、from==to 抑制）；树销毁不发事件（T7 裁决），以 Dispose 后零增量断言替代
 2. 快照横幅两种场景：后装 Boot 只保横幅；最先装则全轨迹
 3. host_id 隔离与 Dispose 后三路径零增量
 4. Reconcile 四动作一致；noop 静默

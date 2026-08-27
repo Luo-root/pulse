@@ -97,9 +97,12 @@ func run() error {
 	}
 
 	var history []*llm.Message
-	fmt.Printf("03-flow-agent provider=%s model=%s scripted=%v\n", flags.Provider, flags.Model, flags.Scripted)
+	fmt.Printf("03-flow-agent provider=%s model=%s scripted=%v host=%s\n",
+		flags.Provider, flags.Model, flags.Scripted, host.HostID())
 	return demoapp.Loop(os.Stdin, os.Stdout, func(msg *llm.Message) ([]*llm.Message, error) {
-		res, dur, err := runGraph(host, agent, retriever, history, msg, flags.TraceID)
+		// 每次请求独立 trace_id（D3 两层标识：host 稳定 / 逐请求变化）。
+		traceID := host.NewTraceID()
+		res, dur, err := runGraph(host, agent, retriever, history, msg, traceID)
 		if err != nil {
 			return nil, err
 		}
@@ -118,7 +121,7 @@ func runGraph(host *demoapp.Host, agent *loop.Agent, retriever Retriever, histor
 	// 不设 WithMaxRunning：本图是线性链，没有可并行执行的窗口；上限
 	// 的真实效果（拿齐输入才占名额、等数据不占）留给扩图者验证。
 	g := flow.New(context.Background(),
-		flow.WithAspects(demoapp.FlowAspect(host.Sink, traceID, host.Peak)),
+		flow.WithAspects(host.Bridge.FlowAspect(host.Peak)),
 	)
 	if err := flow.Seed(g, UserInput, user); err != nil {
 		return nil, 0, err

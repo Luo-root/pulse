@@ -2,10 +2,12 @@ package demoapp
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Luo-root/pulse/llm"
+	"github.com/Luo-root/pulse/observability"
 )
 
 func TestInputMessageMultimodal(t *testing.T) {
@@ -30,7 +32,7 @@ func TestInputMessageMultimodal(t *testing.T) {
 }
 
 func TestOpenScriptedGenerate(t *testing.T) {
-	h, err := Open(Flags{Scripted: true, TraceID: "t-scripted"}, llm.Resp("hello from scripted"))
+	h, err := Open(Flags{Scripted: true}, llm.Resp("hello from scripted"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +49,7 @@ func TestOpenScriptedGenerate(t *testing.T) {
 // host.Close 后 Effect 全部回收：Registry 服务绑定应从仓库消失。
 // 这是 kernel「卸载即还原」在同进程内的可断言验证（进程退出交给 OS 不算证据）。
 func TestHostCloseReclaimsServices(t *testing.T) {
-	h, err := Open(Flags{Scripted: true, TraceID: "t-close"})
+	h, err := Open(Flags{Scripted: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,5 +62,73 @@ func TestHostCloseReclaimsServices(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if h.Sink.Len() != nBefore {
 		t.Fatalf("records leaked after close: %d -> %d", nBefore, h.Sink.Len())
+	}
+}
+
+// D3 两层标识：同宿主 hostID 稳定；每次请求 trace_id 独立且不同，
+// 并携带宿主前缀便于日志聚合分组。
+func TestHostAndTraceIDSeparation(t *testing.T) {
+	h, err := Open(Flags{Scripted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	t1 := h.NewTraceID()
+	t2 := h.NewTraceID()
+	if t1 == t2 {
+		t.Fatalf("trace ids must differ per request: %q", t1)
+	}
+	if !strings.HasPrefix(t1, h.HostID()) {
+		t.Fatalf("trace id %q should carry host prefix %q", t1, h.HostID())
+	}
+	if h.HostID() != h.HostID() {
+		t.Fatal("host id must be stable")
+	}
+}
+
+// 桥运行期事实写入统一 Sink：generate_finished 同时携带 HostID 与桥的
+// 请求级 TraceID（桥创建时生成；host 前缀保证日志聚合可分组）。
+func TestBridgeWritesRuntimeRecords(t *testing.T) {
+	h, err := Open(Flags{Scripted: true}, llm.Resp("bridge ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	if h.Bridge == nil || h.Bridge.TraceID == "" {
+		t.Fatal("bridge trace id should be set at install time")
+	}
+	before := len(h.Sink.Snapshot())
+	_, genErr := h.Model.Generate(context.Background(), llm.NewRequest(llm.UserText("hi")))
+	time.Sleep(50 * time.Millisecond)
+	if genErr != nil {
+		t.Fatal(genErr)
+	}
+
+	found := false
+	for _, rec := range h.Sink.Snapshot()[before:] {
+		if rec.Event != "llm.generate_finished" {
+			continue
+		}
+		found = true
+		if rec.Source != observability.SourceBridge {
+			t.Fatalf("source = %s", rec.Source)
+		}
+		if rec.HostID != h.HostID() {
+			t.Fatalf("host mismatch: %q vs %q", rec.HostID, h.HostID())
+		}
+		if rec.TraceID != h.Bridge.TraceID {
+			t.Fatalf("trace mismatch: %q vs bridge %q", rec.TraceID, h.Bridge.TraceID)
+		}
+		if rec.Status == "" {
+			t.Fatal("status should be set")
+		}
+		if !strings.HasPrefix(rec.TraceID, rec.HostID) {
+			t.Fatalf("trace %q should carry host prefix %q", rec.TraceID, rec.HostID)
+		}
+	}
+	if !found {
+		t.Fatalf("no generate_finished record among %d new records", len(h.Sink.Snapshot())-before)
 	}
 }

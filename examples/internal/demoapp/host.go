@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Luo-root/pulse/kernel"
@@ -26,7 +27,6 @@ type Flags struct {
 	AllowTool string // allowlist 模式的白名单；空则仅 lookup
 	HITL      string // 原始 PULSE_DEMO_HITL，便于横幅展示
 	Scripted  bool
-	TraceID   string
 }
 
 // Host 是一次 demo 运行的 kernel 宿主。
@@ -35,8 +35,20 @@ type Host struct {
 	Registry *llm.Registry
 	Sink     *observability.MemorySink
 	Peak     *FlowPeak
+	Bridge   *Bridge
 	Model    llm.ChatModel
 	Flags    Flags
+
+	hostID string        // 宿主生命周期稳定标识（装配/横幅用）
+	seq    atomic.Uint64 // 每请求 trace_id 序号源
+}
+
+// HostID 返回宿主稳定标识。
+func (h *Host) HostID() string { return h.hostID }
+
+// NewTraceID 为每次用户请求生成独立 trace 标识（D3：与 hostID 分层）。
+func (h *Host) NewTraceID() string {
+	return fmt.Sprintf("%s-req-%d", h.hostID, h.seq.Add(1))
 }
 
 func init() {
@@ -109,7 +121,6 @@ func LoadFlagsFromEnv() Flags {
 		DenyTool:  os.Getenv("PULSE_DEMO_DENY_TOOL"),
 		AllowTool: os.Getenv("PULSE_DEMO_ALLOW_TOOL"),
 		HITL:      os.Getenv("PULSE_DEMO_HITL"),
-		TraceID:   getenv("PULSE_DEMO_TRACE_ID", fmt.Sprintf("demo-%d", time.Now().UnixMilli())),
 	}
 	if f.APIKey == "" {
 		switch f.Provider {
@@ -146,10 +157,13 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	host := kernel.New()
 
+	// D3 两层标识：hostID 稳定（宿主装配期），trace_id 每请求独立生成。
+	hostID := fmt.Sprintf("host-%d", time.Now().UnixNano())
+
 	// observability.Bootstrap 必须最先 Use：kernel 事件不回放，
 	// 后装只能靠快照横幅兜底当前视图，历史轨迹不保证。
 	sink := &observability.MemorySink{}
-	if _, err := kernel.Use(host, observability.Bootstrap(flags.TraceID, sink)); err != nil {
+	if _, err := kernel.Use(host, observability.Bootstrap(hostID, sink)); err != nil {
 		host.Dispose()
 		return nil, err
 	}
@@ -171,18 +185,38 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 		host.Dispose()
 		return nil, err
 	}
-	h := &Host{Ctx: host, Registry: reg, Sink: sink, Peak: &FlowPeak{}, Flags: flags}
-	if _, err := InstallBridge(host, sink, flags.TraceID); err != nil {
+	h := &Host{Ctx: host, Registry: reg, Sink: sink, Peak: &FlowPeak{}, Flags: flags, hostID: hostID}
+	bridge, err := InstallBridge(host, sink, hostID)
+	if err != nil {
 		host.Dispose()
 		return nil, err
 	}
+	h.Bridge = bridge
 
 	var model llm.ChatModel
 	if flags.Scripted {
 		if len(scripted) == 0 {
 			scripted = []*llm.Response{llm.Resp("Pulse v2 用插件内核、模型词汇表和无状态 ReAct 回合组成。")}
 		}
-		model = llm.NewScripted(scripted...)
+		// 经 Registry 注册并打开：脚本模型同样穿过 observed 包装，
+		// 使 before_generate / after_response（及其上的桥事件）对脚本
+		// 路径也成立，而不是绕开整个观测链。
+		if _, err := reg.RegisterProvider(host, "scripted", func(llm.Config) (llm.ChatModel, error) {
+			return llm.NewScripted(scripted...), nil
+		}); err != nil {
+			host.Dispose()
+			return nil, err
+		}
+		if err := reg.Declare("main", llm.Config{Provider: "scripted", Model: "scripted"}); err != nil {
+			host.Dispose()
+			return nil, err
+		}
+		var err error
+		model, err = reg.Open("main")
+		if err != nil {
+			host.Dispose()
+			return nil, err
+		}
 	} else {
 		if err := reg.Declare("main", llm.Config{
 			Provider: flags.Provider,

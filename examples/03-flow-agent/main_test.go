@@ -50,7 +50,7 @@ func (c *capturingModel) lastText() string {
 
 func newTestHost(t *testing.T) *demoapp.Host {
 	t.Helper()
-	h, err := demoapp.Open(demoapp.Flags{Scripted: true, TraceID: "t-flow"}, llm.Resp("ok"))
+	h, err := demoapp.Open(demoapp.Flags{Scripted: true}, llm.Resp("ok"))
 	if err != nil {
 		t.Fatal(err)
 	}
