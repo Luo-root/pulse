@@ -172,15 +172,59 @@ type Aspect interface {
 
 ### E1 观测 seam：节点生命周期事件
 
-> 跟踪：[Issue #25](https://github.com/Luo-root/pulse/issues/25)（规格已开，未实现）
+> 跟踪：[Issue #25](https://github.com/Luo-root/pulse/issues/25)（规格钉边界中，**未实现**）
+> 拍板补充（2026-08-27）：派发载体 = **flow 自有 typed observer**；与正式 `observability/` 的关系见下。
 
 **现状缺口**：切面只有一个 `Around(rc, next)`，包住「等待输入 + 执行」整段。观测方拿不到「等待输入何时开始/结束」，只能给出整段耗时；examples/03 的桥因此记 `flow.node_finished` + `Duration`（= total），并明确拒绝伪造 wait/run 拆分（见 examples/03-flow-agent/README「时间统计怎么读」）。
 
-**第一消费者是装配层桥**（`examples/internal/demoapp/bridge.go` 的 `FlowAspect`）：flow 出 typed 事实，桥折成 Record 写同一 Sink——正式 observability 包不 import flow，不做消费者（见 [observability-v1-design.md](observability-v1-design.md) D1）。
+#### 与 observability 的分层（钉死）
 
-**计划**：在框架内增加三个只读事件位——NodeWaiting（开始阻塞等输入，即进入 WaitAll）、NodeRunning（拿到全部输入、Acquire 之后、进入用户 Run 之前）、NodeFinished（终止态 + 状态原因）。粒度与 examples/03 的诚实边界对齐；注意 Skip 与超时路径没有 Running，直接 Finished。验收证据：装配层桥能输出单节点的 wait_ms / run_ms 分段。
+```text
+kernel/flow
+  │  NodeWaiting / NodeRunning / NodeFinished
+  │  flow 自有 typed observer（默认 no-op）
+  ▼
+装配层桥（demoapp.Bridge / 未来宿主）
+  │  订阅 flow observer；折成 Record（source=bridge）
+  │  填 HostID / TraceID / wait_ms / run_ms → Sink.Write
+  ▼
+observability/
+  │  只提供 Record / Sink / Bootstrap
+  │  只依赖 kernel（fiber_state / loader_action）
+  ✗  不 import flow，不订阅 Node* 事件
+```
 
-**非目标**：不做指标聚合、导出器、采样配置——那些是 observability 包的事，flow 只暴露事实。
+| 层 | 认识什么 | 不认识什么 |
+|---|---|---|
+| flow observer | 节点生命周期事实 | Sink、HostID、TraceID、slog |
+| 装配层桥 | flow 事件 + 请求 TraceID + Sink | 不进正式观测包源码树 |
+| `observability/` | kernel 装配事件 + 通用信封/出口 | llm / loop / **flow** |
+
+一句话：**observer 是 flow 的扩展 seam；observability 仍是通用信封；桥是唯一把二者接上的地方。** 对齐 [observability-v1-design.md](observability-v1-design.md) D1。
+
+#### 派发载体（钉死）
+
+- flow **自有** typed observer / 钩子，默认 no-op；`WithObserver(...)`（名称实现时可微调）挂到 Graph。
+- **禁止** E1 直接 `kernel.Emit`：flow 必须保持「只吃 `context.Context`、可独立使用」，不强迫 import kernel 事件总线。
+- flow **禁止** 直接 `observability.Sink.Write` 或 import 正式观测包。
+- Aspect（Timeout/Retry）继续做控制流；**wait_ms / run_ms 必须来自新事件分段**，禁止再用 `Around` 整段耗时冒充分段。
+
+#### 三个只读事件
+
+| 事件 | 触发点（对照 `runNode`） | 备注 |
+|---|---|---|
+| NodeWaiting | 进入 WaitAll 之前 | 开始阻塞等输入 |
+| NodeRunning | WaitAll 成功且 `acquire` 之后、用户 `Run` 之前 | Skip / 超时打断 Wait → **不发** Running，直接 Finished |
+| NodeFinished | 节点终止态已确定之后 | **在 skip 清理之后**发，带状态原因（completed / skipped / failed / canceled） |
+
+验收证据：装配层桥能对线性链节点分别断言 wait_ms 与 run_ms（或等价字段）；Skip 级联与 Timeout 打断 Wait 的路径有 Finished、无 Running。
+
+#### 非目标
+
+- 指标聚合、导出器、采样配置（observability / 宿主的事）
+- 正式观测包增加 `OnFlowNode*` API
+- 改 AND / Skip / 失败显式 / 取消清理 Skip 等已钉死契约
+- E2 JSON/YAML（另项）
 
 ### E2 结构化编排：JSON/YAML 流程定义（更先进形态）
 
