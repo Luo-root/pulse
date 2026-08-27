@@ -248,3 +248,50 @@ func Waterfall[P any](c *Context, k EventKey[P], payload P) P {
 	}
 	return next(payload)
 }
+
+// localListeners 只收集 c 本层 eventBus 上的监听器：不走 root()、
+// 不向父链冒泡、不向子树广播。这是 EmitLocal / WaterfallLocal 的
+// 派发边界——请求级隔离的 API 契约，不是文档建议。
+func (c *Context) localListeners(name string, kinds ...listenerKind) []*listener {
+	if c == nil {
+		return nil
+	}
+	return c.events.copyMatching(name, kinds...)
+}
+
+// EmitLocal 只派发到 c 自身的观察监听器。
+//
+// 与 Emit 的分工：
+//   - Emit：从 root 全树广播（宿主级观察，如 fiber_state / loader_action）；
+//   - EmitLocal：只本 scope（请求级观察，如 tool/turn/llm generate）。
+//
+// nil scope 安全：直接返回。父链/子树/兄弟 scope 上的监听收不到。
+func EmitLocal[P any](c *Context, k EventKey[P], payload P) {
+	if c == nil {
+		return
+	}
+	for _, l := range c.localListeners(k.name, listenerObserve) {
+		fn := l.fn.(func(*P))
+		fn(&payload)
+	}
+}
+
+// WaterfallLocal 只在 c 自身跑 around 链。
+//
+// 与 Waterfall 的分工同 EmitLocal / Emit。HITL（before_tool_call）
+// 必须走本函数，否则 A 请求的拒绝/改写会进 B 的 around 链。
+//
+// nil scope 安全：原样返回载荷。
+func WaterfallLocal[P any](c *Context, k EventKey[P], payload P) P {
+	if c == nil {
+		return payload
+	}
+	next := func(p P) P { return p }
+	ls := c.localListeners(k.name, listenerWaterfall)
+	for i := len(ls) - 1; i >= 0; i-- {
+		fn := ls[i].fn.(func(P, func(P) P) P)
+		prevNext := next
+		next = func(p P) P { return fn(p, prevNext) }
+	}
+	return next(payload)
+}
