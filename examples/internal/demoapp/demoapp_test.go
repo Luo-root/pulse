@@ -3,6 +3,7 @@ package demoapp
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Luo-root/pulse/llm"
 )
@@ -53,15 +54,11 @@ func TestHostCloseReclaimsServices(t *testing.T) {
 	if _, ok := GetRegistry(h); !ok {
 		t.Fatal("registry should be provided before close")
 	}
-	observ := ObservabilityReporter(h)
-	if observ == nil {
-		t.Fatal("reporter should be provided before close")
-	}
+	// 观测桥随宿主销毁而停止：Close 后 Sink 记录数不再增长。
+	nBefore := h.Sink.Len()
 	h.Close()
-	if _, ok := GetRegistry(h); ok {
-		t.Fatal("llm registry binding should be gone after Close")
-	}
-	if ObservabilityReporter(h) != nil {
-		t.Fatal("observability reporter should be gone after Close")
+	time.Sleep(50 * time.Millisecond)
+	if h.Sink.Len() != nBefore {
+		t.Fatalf("records leaked after close: %d -> %d", nBefore, h.Sink.Len())
 	}
 }

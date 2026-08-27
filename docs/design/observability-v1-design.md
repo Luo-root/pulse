@@ -102,6 +102,8 @@ func (f *Fiber) Name() string   // Loader=Entry.ID；裸 Use=类型名#序号
 
 派发规则：**改 state 的锁外 Emit；from==to 不发**（消除 settleSync/doLoad 双 loading；T2 仅剩 failed→loading 重试）。
 
+**T7 不作为事件（评审定案 2026-08-27）**：`Context.dispose()` 先清自身事件总线再级联卸载，每 Fiber 的树销毁迁移无法可靠穿越「已 clear 的总线」。因此 T7 **不产生 fiber_state 记录**；宿主终止以 host 级语义呈现——Dispose 后 Sink 零残留 + 快照横幅终态。这与 SpringBoot 关机日志的惯例一致（context closing/stopped，而非逐 Bean 迁移）。
+
 | # | 触发 | plugin.go 行号 | From → To | 备注 |
 |---|---|---|---|---|
 | T1 | settleSync | :171 | inactive→loading | 装配期首次评估 |
@@ -110,7 +112,6 @@ func (f *Fiber) Name() string   // Loader=Entry.ID；裸 Use=类型名#序号
 | T4 | doLoad 失败 | :285 | loading→failed | Err=apply err |
 | T5 | doLoad 成功 | :290 | loading→active | |
 | T6 | doUnload | :298/:308 | active→unloading→inactive | 依赖消失驱动 |
-| T7 | forceUnload（树级联销毁） | :320 | current→inactive | 无单独 unloading 过渡 |
 | T8a | Close（Active 回收） | :344/:348 | active→unloading→inactive | 手动 Close |
 | T8b | Close 打断 Loading | :277 | loading→inactive | doLoad 内 closed 竞态 |
 

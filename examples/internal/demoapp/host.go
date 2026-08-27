@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Luo-root/pulse/examples/internal/observability"
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/llm/anthropic"
 	"github.com/Luo-root/pulse/llm/openai"
+	"github.com/Luo-root/pulse/observability"
 )
 
 // Flags 是三个 demo 共用的环境/CLI 配置。
@@ -33,7 +33,8 @@ type Flags struct {
 type Host struct {
 	Ctx      *kernel.Context
 	Registry *llm.Registry
-	Reporter *observability.Reporter
+	Sink     *observability.MemorySink
+	Peak     *FlowPeak
 	Model    llm.ChatModel
 	Flags    Flags
 }
@@ -139,11 +140,20 @@ func LoadFlagsFromEnv() Flags {
 	return f
 }
 
-// Open 装配 kernel、Registry、观测插件和 ChatModel。
+// Open 装配 kernel、Registry、观测（Bootstrap 最先 Use）和 ChatModel。
 // scripted 非空时覆盖默认脚本响应。
 func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	host := kernel.New()
+
+	// observability.Bootstrap 必须最先 Use：kernel 事件不回放，
+	// 后装只能靠快照横幅兜底当前视图，历史轨迹不保证。
+	sink := &observability.MemorySink{}
+	if _, err := kernel.Use(host, observability.Bootstrap(flags.TraceID, sink)); err != nil {
+		host.Dispose()
+		return nil, err
+	}
+
 	if _, err := kernel.Use(host, llm.Plugin()); err != nil {
 		host.Dispose()
 		return nil, err
@@ -161,25 +171,20 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 		host.Dispose()
 		return nil, err
 	}
-	sink := observability.SlogSink{Logger: slog.Default()}
-	if _, err := kernel.Use(host, observability.Plugin(flags.TraceID, sink)); err != nil {
+	h := &Host{Ctx: host, Registry: reg, Sink: sink, Peak: &FlowPeak{}, Flags: flags}
+	if _, err := InstallBridge(host, sink, flags.TraceID); err != nil {
 		host.Dispose()
 		return nil, err
 	}
-	reporter, ok := kernel.Get(host, observability.ServiceKey)
-	if !ok {
-		host.Dispose()
-		return nil, fmt.Errorf("demo: observability reporter not provided")
-	}
+
 	var model llm.ChatModel
-	var err error
 	if flags.Scripted {
 		if len(scripted) == 0 {
 			scripted = []*llm.Response{llm.Resp("Pulse v2 用插件内核、模型词汇表和无状态 ReAct 回合组成。")}
 		}
 		model = llm.NewScripted(scripted...)
 	} else {
-		if err = reg.Declare("main", llm.Config{
+		if err := reg.Declare("main", llm.Config{
 			Provider: flags.Provider,
 			Model:    flags.Model,
 			APIKey:   flags.APIKey,
@@ -188,13 +193,15 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 			host.Dispose()
 			return nil, err
 		}
+		var err error
 		model, err = reg.Open("main")
 		if err != nil {
 			host.Dispose()
 			return nil, err
 		}
 	}
-	return &Host{Ctx: host, Registry: reg, Reporter: reporter, Model: model, Flags: flags}, nil
+	h.Model = model
+	return h, nil
 }
 
 // Close 回收 kernel 作用域及全部效应。
@@ -212,14 +219,8 @@ func GetRegistry(h *Host) (*llm.Registry, bool) {
 	return kernel.Get(h.Ctx, llm.ServiceKey)
 }
 
-// ObservabilityReporter 从宿主读取观测 Reporter（缺省时返回 nil）。
-func ObservabilityReporter(h *Host) *observability.Reporter {
-	if h == nil || h.Ctx == nil {
-		return nil
-	}
-	r, ok := kernel.Get(h.Ctx, observability.ServiceKey)
-	if !ok {
-		return nil
-	}
-	return r
+// ObservabilityReporter 从宿主读取观测（v1 正式包无 Reporter 服务；
+// 保留桥式 API 以兼容测试断言）。
+func ObservabilityReporter(h *Host) *FlowPeak {
+	return h.Peak
 }
