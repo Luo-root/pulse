@@ -7,6 +7,7 @@
 | [01-chat](01-chat/README.md) | `kernel.Context` 装配 `llm.Registry` 与 provider adapter；统一 content-block 输入模型 | kernel、llm、openai/anthropic、observability |
 | [02-react](02-react/README.md) | ReAct 回合、工具调用、**四种 HITL 模式（含终端交互审批）**、每请求 `reqScope`+Bridge、跨轮 history 归属 | 上一层 + loop |
 | [03-flow-agent](03-flow-agent/README.md) | 一次请求的图编排：AND 汇聚、外部 Seed、失败取消、节点级时间统计 | 上一层 + kernel/flow |
+| [04-flow-dag](04-flow-dag/README.md) | **并行双召回 + Skip 分支 + AND**；E1 Observer 峰值；E2 YAML 同构装图 | 上一层 + flow/yaml |
 
 ## 共享层：examples/internal/
 
