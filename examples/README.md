@@ -1,6 +1,6 @@
 # Pulse v2 examples
 
-渐进装配示例，对应 [Issue #13](https://github.com/Luo-root/pulse/issues/13)（04 见 [#34](https://github.com/Luo-root/pulse/issues/34)）。四层示例逐级叠加，每一层都验证上一层暴露出的装配问题：
+渐进装配示例，对应 [Issue #13](https://github.com/Luo-root/pulse/issues/13)（04 见 [#34](https://github.com/Luo-root/pulse/issues/34)，05 见 [#52](https://github.com/Luo-root/pulse/issues/52)）。五层示例逐级叠加，每一层都验证上一层暴露出的装配问题：
 
 | 层 | 新增验证点 | 依赖 |
 |---|---|---|
@@ -8,6 +8,7 @@
 | [02-react](02-react/README.md) | ReAct 回合、工具调用、**四种 HITL 模式（含终端交互审批）**、每请求 `reqScope`+Bridge、跨轮 history 归属 | 上一层 + loop |
 | [03-flow-agent](03-flow-agent/README.md) | 一次请求的图编排：AND 汇聚、外部 Seed、失败取消、节点级时间统计 | 上一层 + kernel/flow |
 | [04-flow-dag](04-flow-dag/README.md) | **并行双召回 + Skip 分支 + AND**；E1 Observer 峰值；E2 YAML 同构装图 | 上一层 + flow/yaml |
+| [05-tools-sources](05-tools-sources/README.md) | **toolset 本地 / MCP Source / Skills** 三路装配对照（Scripted，无真 API） | toolset、toolset/mcp、skills |
 
 ## 共享层：examples/internal/
 
@@ -95,7 +96,8 @@ go run ./examples/01-chat
 go run ./examples/02-react
 go run ./examples/03-flow-agent
 go run ./examples/04-flow-dag
-go test  ./examples/internal/... ./examples/04-flow-dag/
+go run ./examples/05-tools-sources
+go test  ./examples/internal/... ./examples/04-flow-dag/ ./examples/05-tools-sources/
 ```
 
 ## 观测日志

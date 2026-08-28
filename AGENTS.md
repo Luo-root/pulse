@@ -9,7 +9,7 @@ Go library (`github.com/Luo-root/pulse`) — an AI Agent framework under v2 reco
 ```bash
 go build ./...          # verify compilation
 go test ./...           # run all tests
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/ ./skills/ ./observability/ ./examples/04-flow-dag/   # v2 core + flow example
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/ ./skills/ ./observability/ ./examples/04-flow-dag/ ./examples/05-tools-sources/   # v2 core + flow/tools examples
 ```
 
 - Requires **Go 1.25.0+** (toolchain auto-downloads if missing).
@@ -29,7 +29,7 @@ skills/                     # v2 Skills 装载器（agentskills.io）；Skill �
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1
                            # memory-layer-*-design.md 若出现仅为草案，勿当 Accepted
-examples/                   # 01–04 渐进示例
+examples/                   # 01–05 渐进示例
   internal/demoapp/         # 示例私有装配层（库包本身无 internal/；此处不违反「库无 internal」）
   skills/                   # 示例 Skill 材料（历史私有 frontmatter 键会被装载器忽略）
 ```

@@ -2,6 +2,8 @@ package skills_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,12 +42,26 @@ func TestOpenListLoadSorted(t *testing.T) {
 	if len(list) != 2 || list[0].Name != "alpha" || list[1].Name != "zeta" {
 		t.Fatalf("list=%v", list)
 	}
-	body, err := l.Load(context.Background(), "alpha")
+	content, err := l.Load(context.Background(), "alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(body, "# Alpha") || strings.Contains(body, "description:") {
-		t.Fatalf("body should be markdown without frontmatter: %q", body)
+	if content.Name != "alpha" {
+		t.Fatalf("name=%q", content.Name)
+	}
+	if !strings.Contains(content.Body, "# Alpha") || strings.Contains(content.Body, "description:") {
+		t.Fatalf("body should be markdown without frontmatter: %q", content.Body)
+	}
+	wantDir := filepath.Join(root, "alpha")
+	if content.Directory != wantDir {
+		t.Fatalf("Directory=%q want %q", content.Directory, wantDir)
+	}
+	wantLoc := filepath.Join(wantDir, "SKILL.md")
+	if content.Location != wantLoc {
+		t.Fatalf("Location=%q want %q", content.Location, wantLoc)
+	}
+	if list[0].Location != wantLoc || list[0].Dir != wantDir {
+		t.Fatalf("List Meta Location/Dir not set: %+v", list[0])
 	}
 }
 
@@ -141,12 +157,12 @@ func TestLoadUsesOpenSnapshot(t *testing.T) {
 	if list[0].Description != "Original description for snapshot test" {
 		t.Fatalf("List should keep snapshot meta: %q", list[0].Description)
 	}
-	body, err := l.Load(context.Background(), "demo")
+	content, err := l.Load(context.Background(), "demo")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(body, "Original body") || strings.Contains(body, "Changed body") {
-		t.Fatalf("Load should keep snapshot body: %q", body)
+	if !strings.Contains(content.Body, "Original body") || strings.Contains(content.Body, "Changed body") {
+		t.Fatalf("Load should keep snapshot body: %q", content.Body)
 	}
 }
 
@@ -203,6 +219,162 @@ func TestUnknownSkill(t *testing.T) {
 	_, err = l.Load(context.Background(), "nope")
 	if err == nil || !strings.Contains(err.Error(), "unknown") {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestCatalogOmitsDirectory(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "alpha", "name: alpha\ndescription: Alpha skill catalog entry", "# A\n")
+	writeSkill(t, root, "zeta", "name: zeta\ndescription: Zeta skill catalog entry", "# Z\n")
+	l, err := skills.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := l.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := skills.Catalog(list)
+	if len(cat) != 2 || cat[0].Name != "alpha" || cat[1].Name != "zeta" {
+		t.Fatalf("%+v", cat)
+	}
+	b, err := json.Marshal(cat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if strings.Contains(s, "Dir") || strings.Contains(s, "directory") || strings.Contains(s, root) {
+		t.Fatalf("Catalog must not leak directories: %s", s)
+	}
+	if !strings.Contains(s, `"name":"alpha"`) || !strings.Contains(s, `"description":"Alpha skill catalog entry"`) {
+		t.Fatalf("%s", s)
+	}
+}
+
+func TestLoadListsResources(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "demo", "name: demo\ndescription: Demo skill with scripts and references", "# Demo\nUse scripts/run.py\n")
+	scripts := filepath.Join(root, "demo", "scripts")
+	refs := filepath.Join(root, "demo", "references")
+	if err := os.MkdirAll(scripts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(refs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scripts, "run.py"), []byte("print(1)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(refs, "note.md"), []byte("note\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// ignored trees
+	if err := os.MkdirAll(filepath.Join(root, "demo", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "demo", ".git", "config"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := skills.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := l.Load(context.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(content.Resources, ",")
+	if !strings.Contains(joined, "scripts/run.py") || !strings.Contains(joined, "references/note.md") {
+		t.Fatalf("resources=%v", content.Resources)
+	}
+	for _, r := range content.Resources {
+		if r == "SKILL.md" || strings.HasPrefix(r, ".git/") {
+			t.Fatalf("unexpected resource %q", r)
+		}
+	}
+	if content.Directory != filepath.Join(root, "demo") {
+		t.Fatalf("Directory=%q", content.Directory)
+	}
+	if content.ResourcesNext != "" {
+		t.Fatalf("small skill should fit one page, next=%q", content.ResourcesNext)
+	}
+}
+
+func TestListResourcesPagination(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "demo", "name: demo\ndescription: Demo skill for resource pagination", "# Demo\n")
+	filesDir := filepath.Join(root, "demo", "files")
+	if err := os.MkdirAll(filesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 70 个文件 → 默认页 64，首页必有 Next；翻页后凑齐全集。
+	for i := 0; i < 70; i++ {
+		name := fmt.Sprintf("f%02d.txt", i)
+		if err := os.WriteFile(filepath.Join(filesDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	l, err := skills.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := l.Load(context.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content.Resources) != 64 {
+		t.Fatalf("first page len=%d want 64", len(content.Resources))
+	}
+	if content.ResourcesNext == "" {
+		t.Fatal("ResourcesNext should be set when truncated")
+	}
+	// 首页必须是字典序前 64，不依赖 Walk 顺序
+	if content.Resources[0] != "files/f00.txt" || content.Resources[63] != "files/f63.txt" {
+		t.Fatalf("sorted first page unexpected: first=%q last=%q", content.Resources[0], content.Resources[63])
+	}
+	if content.ResourcesNext != "files/f63.txt" {
+		t.Fatalf("Next=%q want files/f63.txt", content.ResourcesNext)
+	}
+
+	page2, err := l.ListResources(context.Background(), "demo", content.ResourcesNext, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page2.Resources) != 6 || page2.Next != "" {
+		t.Fatalf("page2=%+v", page2)
+	}
+	if page2.Resources[0] != "files/f64.txt" || page2.Resources[5] != "files/f69.txt" {
+		t.Fatalf("page2 resources=%v", page2.Resources)
+	}
+
+	// 显式小页：limit=10 翻 7 页
+	seen := map[string]bool{}
+	after := ""
+	pages := 0
+	for {
+		p, err := l.ListResources(context.Background(), "demo", after, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		for _, r := range p.Resources {
+			if seen[r] {
+				t.Fatalf("duplicate %q", r)
+			}
+			seen[r] = true
+		}
+		if p.Next == "" {
+			break
+		}
+		after = p.Next
+		if pages > 20 {
+			t.Fatal("pagination did not terminate")
+		}
+	}
+	if pages != 7 || len(seen) != 70 {
+		t.Fatalf("pages=%d seen=%d", pages, len(seen))
 	}
 }
 

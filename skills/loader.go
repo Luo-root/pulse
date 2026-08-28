@@ -3,6 +3,7 @@ package skills
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,10 +11,18 @@ import (
 	"sync"
 )
 
-// Loader 是 Skills 装载面（设计示意接口的实现契约）。
+// maxListedResources 限制激活时枚举的资源数量，避免巨大 skill 目录刷爆上下文。
+const maxListedResources = 64
+
+// Loader 是 Skills 装载面。
 type Loader interface {
 	List(ctx context.Context) ([]Meta, error)
-	Load(ctx context.Context, name string) (body string, err error)
+	// Load 返回结构化激活结果（正文 + 目录 + 资源首页），不执行脚本。
+	Load(ctx context.Context, name string) (Content, error)
+	// ListResources 按字典序分页列出 skill 内资源相对路径。
+	// after 为空从首页开始；非空则返回严格大于 after 的下一页。
+	// limit<=0 时使用默认页大小。
+	ListResources(ctx context.Context, name, after string, limit int) (ResourcePage, error)
 	ReadFile(ctx context.Context, name, rel string) ([]byte, error)
 }
 
@@ -84,6 +93,7 @@ func (l *FSLoader) rescan() error {
 			return fmt.Errorf("skills: duplicate name %q", meta.Name)
 		}
 		meta.Dir = skillDir
+		meta.Location = skillFile
 		next[meta.Name] = indexed{meta: meta, body: body}
 	}
 	l.mu.Lock()
@@ -92,7 +102,7 @@ func (l *FSLoader) rescan() error {
 	return nil
 }
 
-// List 实现 Loader：按 name 字典序返回快照。
+// List 实现 Loader：按 name 字典序返回快照（宿主完整 Meta）。
 func (l *FSLoader) List(ctx context.Context) ([]Meta, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -107,17 +117,47 @@ func (l *FSLoader) List(ctx context.Context) ([]Meta, error) {
 	return out, nil
 }
 
-// Load 实现 Loader：返回 Open/rescan 时缓存的 Markdown 正文（已剥 frontmatter）。
-// 不重读磁盘，与 List 共用同一快照——符合「下次扫描生效」。
-func (l *FSLoader) Load(ctx context.Context, name string) (string, error) {
+// Load 实现 Loader：返回结构化激活结果。
+// Body 来自扫描快照；Resources 为排序后的首页（不预读文件内容）。
+func (l *FSLoader) Load(ctx context.Context, name string) (Content, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return Content{}, err
 	}
 	e, err := l.lookup(name)
 	if err != nil {
-		return "", err
+		return Content{}, err
 	}
-	return e.body, nil
+	page, err := l.listResourcePage(e.meta.Dir, "", maxListedResources)
+	if err != nil {
+		return Content{}, fmt.Errorf("skills: list resources %q: %w", name, err)
+	}
+	return Content{
+		Name:          e.meta.Name,
+		Body:          e.body,
+		Directory:     e.meta.Dir,
+		Location:      e.meta.Location,
+		Resources:     page.Resources,
+		ResourcesNext: page.Next,
+	}, nil
+}
+
+// ListResources 实现 Loader：资源相对路径分页。
+func (l *FSLoader) ListResources(ctx context.Context, name, after string, limit int) (ResourcePage, error) {
+	if err := ctx.Err(); err != nil {
+		return ResourcePage{}, err
+	}
+	e, err := l.lookup(name)
+	if err != nil {
+		return ResourcePage{}, err
+	}
+	if limit <= 0 {
+		limit = maxListedResources
+	}
+	page, err := l.listResourcePage(e.meta.Dir, after, limit)
+	if err != nil {
+		return ResourcePage{}, fmt.Errorf("skills: list resources %q: %w", name, err)
+	}
+	return page, nil
 }
 
 // ReadFile 实现 Loader：读取 skill 目录内相对路径。
@@ -153,6 +193,65 @@ func (l *FSLoader) lookup(name string) (indexed, error) {
 	return e, nil
 }
 
+func (l *FSLoader) listResourcePage(skillDir, after string, limit int) (ResourcePage, error) {
+	all, err := collectResources(skillDir)
+	if err != nil {
+		return ResourcePage{}, err
+	}
+	return pageResources(all, after, limit), nil
+}
+
+func collectResources(skillDir string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(skillDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			base := d.Name()
+			if base == ".git" || base == "node_modules" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(skillDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "SKILL.md" {
+			return nil
+		}
+		// 统一用斜杠，方便进模型上下文 / 稳定排序
+		out = append(out, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// pageResources 在已排序全集上切片；Next 为当前页最后一项（供 after 游标）。
+func pageResources(all []string, after string, limit int) ResourcePage {
+	if limit <= 0 {
+		limit = maxListedResources
+	}
+	start := 0
+	if after != "" {
+		start = sort.Search(len(all), func(i int) bool { return all[i] > after })
+	}
+	if start >= len(all) {
+		return ResourcePage{}
+	}
+	end := start + limit
+	if end >= len(all) {
+		return ResourcePage{Resources: append([]string(nil), all[start:]...)}
+	}
+	page := append([]string(nil), all[start:end]...)
+	return ResourcePage{Resources: page, Next: page[len(page)-1]}
+}
+
 func safeJoin(skillDir, rel string) (string, error) {
 	if rel == "" {
 		return "", fmt.Errorf("skills: empty relative path")
@@ -160,7 +259,6 @@ func safeJoin(skillDir, rel string) (string, error) {
 	if filepath.IsAbs(rel) {
 		return "", fmt.Errorf("skills: absolute path rejected")
 	}
-	// Normalize and reject parent traversal.
 	clean := filepath.Clean(rel)
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("skills: path escapes skill directory")
@@ -169,7 +267,6 @@ func safeJoin(skillDir, rel string) (string, error) {
 		return "", fmt.Errorf("skills: invalid path")
 	}
 	joined := filepath.Join(skillDir, clean)
-	// Ensure joined is still under skillDir.
 	skillAbs, err := filepath.Abs(skillDir)
 	if err != nil {
 		return "", err
