@@ -61,7 +61,7 @@ func TestNamePrefixAndConflict(t *testing.T) {
 	defer host.Dispose()
 	reg := toolset.NewRegistry()
 
-	// 先占住最终名
+	// 先占住最终名 fs_read，逼出「先挂上一条再撞名」的半截路径
 	if _, err := reg.Register(host, toolset.Registration{
 		Def:    llm.ToolDef{Name: "fs_read"},
 		Fn:     func(context.Context, json.RawMessage) (string, error) { return "local", nil },
@@ -72,7 +72,11 @@ func TestNamePrefixAndConflict(t *testing.T) {
 	}
 
 	client := &mockClient{}
-	client.setTools(mcpsrc.Tool{Name: "read", Description: "r"})
+	// ok → fs_ok 先成功；read → fs_read 再撞名；回滚后 fs_ok 也必须消失
+	client.setTools(
+		mcpsrc.Tool{Name: "ok", Description: "ok"},
+		mcpsrc.Tool{Name: "read", Description: "r"},
+	)
 	src, err := mcpsrc.NewSource(reg, mcpsrc.Config{
 		ID:          "fs",
 		Client:      client,
@@ -86,10 +90,17 @@ func TestNamePrefixAndConflict(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "already registered") {
 		t.Fatalf("want conflict, got %v", err)
 	}
-	// 冲突回滚：不得留下半截 mcp 登记；local 仍在
+	// 冲突整源回滚：不得留下半截 mcp 登记（含已成功的 fs_ok）；local 仍在
 	defs := reg.AsToolSet().Definitions()
 	if len(defs) != 1 || defs[0].Name != "fs_read" {
-		t.Fatalf("after conflict defs=%v", defs)
+		t.Fatalf("after conflict defs=%v want only local fs_read", defs)
+	}
+	if _, _, ok := reg.LookupMeta("fs_ok"); ok {
+		t.Fatal("fs_ok must be rolled back with DisposeSource")
+	}
+	srcMeta, _, ok := reg.LookupMeta("fs_read")
+	if !ok || srcMeta != "local" {
+		t.Fatalf("local fs_read must remain, meta=%q ok=%v", srcMeta, ok)
 	}
 }
 
