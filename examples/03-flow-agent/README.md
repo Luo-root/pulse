@@ -69,11 +69,11 @@ Skip 留给另一种情况：「这条路径根本不该走」。如果加了意
 
 生命周期观察通过 `WithObserver(bridge.FlowObserver(host.Peak))` 安装（`bridge` = 本请求 `demoapp.Bridge`）。E1 三段事件驱动两条桥记录，各用官方 `Duration`：
 
-| 记录 | Duration 含义 |
-|---|---|
-| `flow.node_wait_finished` | Waiting → Running（或 Skip/超时直接 Finished）的 wait 墙钟 |
-| `flow.node_run_finished` | Running → Finished 的 run 墙钟（仅发过 Running 时写出） |
-| `alive_nodes_peak` | Waiting..Finished 之间同时存活的节点峰值（≠ `WithMaxRunning` 执行并发） |
+| 记录 | Duration 含义 | 节点身份 |
+|---|---|---|
+| `flow.node_wait_finished` | Waiting → Running（或 Skip/超时直接 Finished）的 wait 墙钟 | `FiberName` = nodeID |
+| `flow.node_run_finished` | Running → Finished 的 run 墙钟（仅发过 Running 时写出） | `FiberName` = nodeID |
+| `alive_nodes_peak` | Waiting..Finished 之间同时存活的节点峰值（≠ `WithMaxRunning` 执行并发） | — |
 
 Skip / 超时打断 Wait：有 wait 记录与 Finished，**无** `flow.node_run_finished`。Retry 不重复打 Waiting/Running。
 

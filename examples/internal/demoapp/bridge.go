@@ -151,15 +151,17 @@ func (b *Bridge) FlowObserver(peak *FlowPeak) flow.Observer {
 	var mu sync.Mutex
 	states := make(map[string]*nodeState)
 
-	write := func(event, status string, d time.Duration, err error) {
+	// FiberName 借官方信封的实例诊断名槽位填 nodeID，不扩 Record 字段。
+	write := func(nodeID, event, status string, d time.Duration, err error) {
 		b.Sink.Write(observability.Record{
-			HostID:   b.HostID,
-			TraceID:  b.TraceID,
-			Source:   observability.SourceBridge,
-			Event:    event,
-			Status:   status,
-			Duration: d,
-			Err:      err,
+			HostID:    b.HostID,
+			TraceID:   b.TraceID,
+			Source:    observability.SourceBridge,
+			Event:     event,
+			Status:    status,
+			Duration:  d,
+			Err:       err,
+			FiberName: nodeID,
 		})
 	}
 
@@ -183,7 +185,7 @@ func (b *Bridge) FlowObserver(peak *FlowPeak) flow.Observer {
 				st.ran = true
 				st.runStart = time.Now()
 				mu.Unlock()
-				write(EventFlowNodeWaitFinished, "running", d, nil)
+				write(nodeID, EventFlowNodeWaitFinished, "running", d, nil)
 				return
 			}
 			mu.Unlock()
@@ -199,11 +201,11 @@ func (b *Bridge) FlowObserver(peak *FlowPeak) flow.Observer {
 				return
 			}
 			if !st.waitDone {
-				write(EventFlowNodeWaitFinished, status, time.Since(st.waitStart), err)
+				write(nodeID, EventFlowNodeWaitFinished, status, time.Since(st.waitStart), err)
 				return
 			}
 			if st.ran {
-				write(EventFlowNodeRunFinished, status, time.Since(st.runStart), err)
+				write(nodeID, EventFlowNodeRunFinished, status, time.Since(st.runStart), err)
 			}
 		},
 	}

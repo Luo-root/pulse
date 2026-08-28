@@ -216,12 +216,12 @@ observability/
 
 官方 `Record` 只有一个 `Duration`，且 observability-v1 **明确官方 Record 不扩字段**（token 走 slog 附加键）。因此桥侧采用**两条记录**，各用现有 `Duration`：
 
-| 桥事件名 | Duration 含义 | 何时写 |
-|---|---|---|
-| `flow.node_wait_finished` | wait 段墙钟 | 离开 Waiting（进入 Running，或因 Skip/超时直接 Finished） |
-| `flow.node_run_finished` | run 段墙钟 | 仅当发过 Running 时，在 Finished 时写 |
+| 桥事件名 | Duration 含义 | 何时写 | 节点身份 |
+|---|---|---|---|
+| `flow.node_wait_finished` | wait 段墙钟 | 离开 Waiting（进入 Running，或因 Skip/超时直接 Finished） | `FiberName` = nodeID（借诊断名槽位，不扩信封） |
+| `flow.node_run_finished` | run 段墙钟 | 仅当发过 Running 时，在 Finished 时写 | 同上 |
 
-不写第三条「total」冒充分段；需要 total 时由消费方把两段相加。验收「分别断言 wait/run」对这两条 Record 断言即可。
+不写第三条「total」冒充分段；需要 total 时由消费方把两段相加。验收「分别断言 wait/run」对这两条 Record 按 `FiberName` 区分节点。
 
 #### 三个只读事件
 

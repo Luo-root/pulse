@@ -42,11 +42,17 @@ func TestBridgeFlowObserverWritesWaitAndRunRecords(t *testing.T) {
 		switch rec.Event {
 		case EventFlowNodeWaitFinished:
 			waits++
+			if rec.FiberName != "n" {
+				t.Fatalf("wait FiberName = %q, want n", rec.FiberName)
+			}
 			if rec.Status != "running" {
 				t.Fatalf("wait status = %q", rec.Status)
 			}
 		case EventFlowNodeRunFinished:
 			runs++
+			if rec.FiberName != "n" {
+				t.Fatalf("run FiberName = %q, want n", rec.FiberName)
+			}
 			if rec.Status != string(flow.NodeCompleted) {
 				t.Fatalf("run status = %q", rec.Status)
 			}
@@ -92,5 +98,59 @@ func TestBridgeFlowObserverSkipHasWaitNoRun(t *testing.T) {
 	}
 	if waits != 1 || runs != 0 {
 		t.Fatalf("skip path waits=%d runs=%d", waits, runs)
+	}
+}
+
+// 线性两节点链：wait/run 必须能按 FiberName（nodeID）区分。
+func TestBridgeFlowObserverTwoNodeChainIdentities(t *testing.T) {
+	sink := &observability.MemorySink{}
+	b := &Bridge{Sink: sink, HostID: "h", TraceID: "t-3"}
+	k1 := flow.NewKey[string]("demo.chain.1")
+	k2 := flow.NewKey[string]("demo.chain.2")
+	k3 := flow.NewKey[string]("demo.chain.3")
+	g := flow.New(context.Background(), flow.WithObserver(b.FlowObserver(nil)))
+	if err := flow.Seed(g, k1, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Add(flow.NewNode("extract", flow.Requires(k1), flow.Provides(k2), func(rc *flow.RunCtx) error {
+		v, err := flow.Get(rc, k1)
+		if err != nil {
+			return err
+		}
+		return flow.Set(rc, k2, v)
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Add(flow.NewNode("answer", flow.Requires(k2), flow.Provides(k3), func(rc *flow.RunCtx) error {
+		v, err := flow.Get(rc, k2)
+		if err != nil {
+			return err
+		}
+		return flow.Set(rc, k3, v)
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	waitNodes := map[string]int{}
+	runNodes := map[string]int{}
+	for _, rec := range sink.Snapshot() {
+		if rec.Source != observability.SourceBridge {
+			continue
+		}
+		switch rec.Event {
+		case EventFlowNodeWaitFinished:
+			waitNodes[rec.FiberName]++
+		case EventFlowNodeRunFinished:
+			runNodes[rec.FiberName]++
+		}
+	}
+	for _, id := range []string{"extract", "answer"} {
+		if waitNodes[id] != 1 || runNodes[id] != 1 {
+			t.Fatalf("node %s waits=%d runs=%d; waitMap=%v runMap=%v",
+				id, waitNodes[id], runNodes[id], waitNodes, runNodes)
+		}
 	}
 }

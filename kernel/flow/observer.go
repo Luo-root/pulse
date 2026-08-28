@@ -1,9 +1,5 @@
 package flow
 
-import (
-	"fmt"
-)
-
 // NodeFinishReason 是 NodeFinished 的终止原因。
 type NodeFinishReason string
 
@@ -95,13 +91,7 @@ func (g *Graph) notify(fn func(Observer)) {
 	if g == nil || g.observer == nil || fn == nil {
 		return
 	}
-	defer func() {
-		if rec := recover(); rec != nil {
-			// 只读 seam：记录到 stderr 形态的字符串不够；保持静默，
-			// 测试可用自定义 observer 自证。避免引入 log 依赖。
-			_ = fmt.Sprintf("flow: observer panic: %v", rec)
-		}
-	}()
+	defer func() { _ = recover() }() // 只读 seam：panic 静默，不升格为节点失败
 	fn(g.observer)
 }
 
