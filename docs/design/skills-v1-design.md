@@ -162,13 +162,19 @@ type CatalogEntry struct {
     Description string `json:"description"`
 }
 
-// Content 是激活结果：正文 + 目录 + 可选资源相对路径清单。
+// Content 是激活结果：正文 + 目录 + 资源首页。
 type Content struct {
-    Name      string
-    Body      string   // 已剥 frontmatter
-    Directory string   // skill 根；相对路径脚本以此为根
-    Location  string
-    Resources []string // 相对路径，不预读内容
+    Name          string
+    Body          string   // 已剥 frontmatter
+    Directory     string   // skill 根；相对路径脚本以此为根
+    Location      string
+    Resources     []string // 相对路径首页（已排序），不预读内容
+    ResourcesNext string   // 非空则还有下一页
+}
+
+type ResourcePage struct {
+    Resources []string
+    Next      string // after 游标；空=没有更多
 }
 
 // Loader 负责扫描与按名加载。不执行脚本。
@@ -176,6 +182,8 @@ type Loader interface {
     List(ctx context.Context) ([]Meta, error)
     // Load 返回结构化激活结果。不含任何「执行」语义。
     Load(ctx context.Context, name string) (Content, error)
+    // ListResources 按字典序分页列资源；after 为空从首页，limit<=0 用默认页大小。
+    ListResources(ctx context.Context, name, after string, limit int) (ResourcePage, error)
     // ReadFile 读取该 skill 目录内相对路径（scripts/references/assets/...）。
     // rel 必须落在该 skill 目录内；拒绝 ".." 与绝对路径。
     ReadFile(ctx context.Context, name, rel string) ([]byte, error)

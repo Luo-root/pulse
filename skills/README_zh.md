@@ -10,7 +10,7 @@ Agent Skills 装载器（Accepted：[`docs/design/skills-v1-design.md`](../docs/
 | 层 | API | 给模型什么 |
 |---|---|---|
 | Discovery Catalog | `Catalog(List(...))` | 仅 `name` + `description` |
-| Activation | `Load(name)` → `Content` | `Body` + **`Directory`** + 可选 `Resources` |
+| Activation | `Load(name)` → `Content` | `Body` + **`Directory`** + 资源首页；超限用 `ResourcesNext` + `ListResources` 翻页 |
 
 `Directory` 只在激活结果里返回：SKILL.md 里的 `scripts/...` 等相对路径以此为根；通用命令行工具设 working directory 即可跑脚本，**不必**再造专用 script 执行工具。
 
@@ -30,12 +30,16 @@ loader, err := skills.Open("/path/to/skill-root")
 metas, err := loader.List(ctx)                 // 宿主完整 Meta（含 Dir/Location）
 catalog := skills.Catalog(metas)               // 短表：name+description
 content, err := loader.Load(ctx, "pdf")        // Content{Body, Directory, Resources...}
+if content.ResourcesNext != "" {
+    page, err := loader.ListResources(ctx, "pdf", content.ResourcesNext, 0)
+    _ = page
+}
 b, err := loader.ReadFile(ctx, "pdf", "references/FORMS.md")
 ```
 
 每个 skill 是子目录 + `SKILL.md`；`name` 必须与目录名一致。
 
-**装配语义**：某个子目录有 `SKILL.md` 但 frontmatter 非法 → **整个 `Open` 失败**（尽早暴露）。没有 `SKILL.md` 的子目录会被跳过。`List` 与 `Load` 的正文共用 `Open` 扫描快照；磁盘改了要再 `Open`。`Load` 激活时会枚举资源相对路径（默认最多 64，跳过 `SKILL.md` / `.git` / `node_modules`），不预读文件内容。`ReadFile` 仍按需读盘，路径必须落在扫描到的 skill 目录内。
+**装配语义**：某个子目录有 `SKILL.md` 但 frontmatter 非法 → **整个 `Open` 失败**（尽早暴露）。没有 `SKILL.md` 的子目录会被跳过。`List` 与 `Load` 的正文共用 `Open` 扫描快照；磁盘改了要再 `Open`。`Load` 激活时枚举资源相对路径：**先收集并字典序排序，再切首页**（默认 64）；超限设 `ResourcesNext`，用 `ListResources(name, after, limit)` 翻页。跳过 `SKILL.md` / `.git` / `node_modules`，不预读文件内容。`ReadFile` 仍按需读盘，路径必须落在扫描到的 skill 目录内。
 
 ## 示例材料
 

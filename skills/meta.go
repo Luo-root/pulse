@@ -30,11 +30,18 @@ type Meta struct {
 // Content 是激活结果（tier 2）：正文 + 目录 + 可选资源清单。
 // 目录给模型/命令行工具解析 SKILL.md 内相对路径；不必再造专用 script 工具。
 type Content struct {
-	Name      string   `json:"name"`
-	Body      string   `json:"body"`                // 已剥 frontmatter 的 Markdown
-	Directory string   `json:"directory"`           // skill 根目录（绝对路径）
-	Location  string   `json:"location"`            // SKILL.md 绝对路径
-	Resources []string `json:"resources,omitempty"` // 相对 skill 根的资源路径（不预读内容）
+	Name          string   `json:"name"`
+	Body          string   `json:"body"`                     // 已剥 frontmatter 的 Markdown
+	Directory     string   `json:"directory"`                // skill 根目录（绝对路径）
+	Location      string   `json:"location"`                 // SKILL.md 绝对路径
+	Resources     []string `json:"resources,omitempty"`      // 相对 skill 根；已排序首页
+	ResourcesNext string   `json:"resources_next,omitempty"` // 非空则还有下一页，交给 ListResources
+}
+
+// ResourcePage 是资源清单的一页（相对路径，不预读内容）。
+type ResourcePage struct {
+	Resources []string `json:"resources"`
+	Next      string   `json:"next,omitempty"` // 下一页 after 游标；空=没有更多
 }
 
 // CatalogEntry 是披露给模型的最小集（tier 1）。
