@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -82,13 +83,29 @@ func TestChitchatSkipsRetrieves(t *testing.T) {
 	if !strings.Contains(res.Final, "闲聊") {
 		t.Fatalf("final=%q", res.Final)
 	}
+	var smalltalkRun bool
+	waitSkip := map[string]bool{}
 	for _, rec := range sink.Snapshot() {
-		if rec.Event != demoapp.EventFlowNodeRunFinished {
-			continue
+		switch rec.Event {
+		case demoapp.EventFlowNodeRunFinished:
+			switch rec.FiberName {
+			case "retrieve_local", "retrieve_web", "merge", "answer":
+				t.Fatalf("chitchat must not run %s", rec.FiberName)
+			case "smalltalk":
+				smalltalkRun = true
+			}
+		case demoapp.EventFlowNodeWaitFinished:
+			if rec.Status == string(flow.NodeSkipped) {
+				waitSkip[rec.FiberName] = true
+			}
 		}
-		switch rec.FiberName {
-		case "retrieve_local", "retrieve_web", "merge", "answer":
-			t.Fatalf("chitchat must not run %s", rec.FiberName)
+	}
+	if !smalltalkRun {
+		t.Fatal("chitchat must run smalltalk")
+	}
+	for _, id := range []string{"retrieve_local", "retrieve_web"} {
+		if !waitSkip[id] {
+			t.Fatalf("%s should have skipped wait record", id)
 		}
 	}
 }
@@ -214,42 +231,63 @@ func TestYAMLIsomorphicFactAndChitchat(t *testing.T) {
 	}
 }
 
-func TestYAMLTimeoutOnSlowNode(t *testing.T) {
-	reg := flow.NewRegistry()
-	in := flow.NewKey[string]("t.in")
-	out := flow.NewKey[string]("t.out")
-	flow.MustRegisterKey(reg, in)
-	flow.MustRegisterKey(reg, out)
-	reg.MustRegister("slow", func(rc *flow.RunCtx) error {
-		select {
-		case <-rc.Context().Done():
-			return rc.Context().Err()
-		case <-time.After(time.Second):
-			return flow.Set(rc, out, "late")
-		}
-	})
-	inTag, _ := reg.TypeTagOf("t.in")
-	outTag, _ := reg.TypeTagOf("t.out")
-	doc := fmt.Sprintf(`
-seeds:
-  - key: { name: t.in, type: %q }
-    from: { kind: literal, value: "x" }
-nodes:
-  - id: slow
-    uses: slow
-    requires: [{ name: t.in, type: %q }]
-    provides: [{ name: t.out, type: %q }]
-    timeout: 30ms
-`, inTag, inTag, outTag)
-	g, plan, err := flowyaml.Load([]byte(doc), reg, flowyaml.LoadOptions{})
+func TestRetrieveLocalTimeoutOnDAG(t *testing.T) {
+	local0, web0 := defaultRetrievers()
+	local := memoryRetriever{source: "local", delay: time.Second, docs: local0.(memoryRetriever).docs}
+	web := memoryRetriever{source: "web", delay: 5 * time.Millisecond, docs: web0.(memoryRetriever).docs}
+	deps, _, _ := testDeps(local, web)
+	deps.localAspects = []flow.Aspect{flow.Timeout(30 * time.Millisecond)}
+
+	_, _, err := runDAG("flow Requires", deps)
+	if err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("want retrieve_local timeout, got %v", err)
+	}
+}
+
+type flakyRetriever struct {
+	inner   Retriever
+	fails   int
+	attempts int
+}
+
+func (f *flakyRetriever) Search(ctx context.Context, query string, limit int) ([]Document, error) {
+	f.attempts++
+	if f.attempts <= f.fails {
+		return nil, errors.New("transient web error")
+	}
+	return f.inner.Search(ctx, query, limit)
+}
+
+func TestRetrieveWebRetryOnDAG(t *testing.T) {
+	local, web0 := defaultRetrievers()
+	flaky := &flakyRetriever{inner: web0, fails: 2}
+	deps, sink, _ := testDeps(local, flaky)
+	deps.webAspects = []flow.Aspect{flow.Retry(5, time.Millisecond)}
+
+	res, _, err := runDAG("flow Requires", deps)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(res.Final, "事实回答") {
+		t.Fatalf("final=%q", res.Final)
 	}
-	err = g.Run()
-	if err == nil || !strings.Contains(err.Error(), "timeout") {
-		t.Fatalf("want timeout, got %v", err)
+	if flaky.attempts != 3 {
+		t.Fatalf("attempts=%d, want 3 (2 fail + 1 ok)", flaky.attempts)
+	}
+	// E1：Retry 不重复打 Waiting/Running
+	waits, runs := 0, 0
+	for _, rec := range sink.Snapshot() {
+		if rec.FiberName != "retrieve_web" {
+			continue
+		}
+		switch rec.Event {
+		case demoapp.EventFlowNodeWaitFinished:
+			waits++
+		case demoapp.EventFlowNodeRunFinished:
+			runs++
+		}
+	}
+	if waits != 1 || runs != 1 {
+		t.Fatalf("retrieve_web waits=%d runs=%d (Retry must not double-fire)", waits, runs)
 	}
 }

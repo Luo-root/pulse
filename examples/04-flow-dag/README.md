@@ -70,4 +70,5 @@ go test ./examples/04-flow-dag/ -v
 - `TestChitchatSkipsRetrieves`
 - `TestRetrieveFailureCancelsGraph`
 - `TestYAMLIsomorphicFactAndChitchat`（代码图 vs YAML Final 全等）
-- `TestYAMLTimeoutOnSlowNode`
+- `TestRetrieveLocalTimeoutOnDAG`（Timeout 挂在真实 `retrieve_local`）
+- `TestRetrieveWebRetryOnDAG`（Retry 挂在真实 `retrieve_web`；E1 不双打点）

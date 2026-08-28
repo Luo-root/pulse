@@ -92,12 +92,14 @@ type DAGResult struct {
 }
 
 type dagDeps struct {
-	local Retriever
-	web   Retriever
-	sink  observability.Sink
-	peak  *demoapp.FlowPeak
-	host  string
-	trace string
+	local        Retriever
+	web          Retriever
+	sink         observability.Sink
+	peak         *demoapp.FlowPeak
+	host         string
+	trace        string
+	localAspects []flow.Aspect // 可选：挂在 retrieve_local（Timeout/Retry 教学）
+	webAspects   []flow.Aspect // 可选：挂在 retrieve_web
 }
 
 // buildDAG 构造并行双召回 + Skip 分支图；Run 与 YAML 工厂同源（newDAGRuns）。
@@ -120,6 +122,7 @@ func buildDAG(deps dagDeps) (*flow.Graph, *string, error) {
 		flow.Deps(flow.Requires(FactGate), flow.Requires(UserText)),
 		flow.Provides(LocalDocs),
 		runs.retrieveLocal,
+		deps.localAspects...,
 	)); err != nil {
 		return nil, nil, err
 	}
@@ -127,6 +130,7 @@ func buildDAG(deps dagDeps) (*flow.Graph, *string, error) {
 		flow.Deps(flow.Requires(FactGate), flow.Requires(UserText)),
 		flow.Provides(WebDocs),
 		runs.retrieveWeb,
+		deps.webAspects...,
 	)); err != nil {
 		return nil, nil, err
 	}
