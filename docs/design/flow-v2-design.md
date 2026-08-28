@@ -176,7 +176,7 @@ type Aspect interface {
 > 实现状态：**已落地**（`WithObserver` + `runNode` 埋点 + demoapp 桥两条 Record）；规格拍板见下。
 > 拍板补充（2026-08-27/28）：派发载体 = **flow 自有 typed observer**；与正式 `observability/` 的关系见下。
 
-**现状缺口**：切面只有一个 `Around(rc, next)`，包住「等待输入 + 执行」整段。观测方拿不到「等待输入何时开始/结束」，只能给出整段耗时；examples/03 的桥因此记 `flow.node_finished` + `Duration`（= total），并明确拒绝伪造 wait/run 拆分（见 examples/03-flow-agent/README「时间统计怎么读」）。
+**当时缺口（已解决）**：E1 开工前，切面只有一个 `Around(rc, next)`，包住「等待 + 执行」整段，桥只能记 total（旧事件名 `flow.node_finished`），并拒绝伪造 wait/run。现已由 `WithObserver` + 桥两条 Record（`flow.node_wait_finished` / `flow.node_run_finished`，`FiberName`=nodeID）落地；下文保留分层与契约，不再用现在时描述旧缺口。
 
 #### 与 observability 的分层（钉死）
 
@@ -188,7 +188,7 @@ kernel/flow
 装配层桥（demoapp.Bridge / 未来宿主）
   │  订阅 flow observer；折成 **两条** Record（source=bridge）
   │  flow.node_wait_finished / flow.node_run_finished
-  │  各用现有 Duration；填 HostID / TraceID → Sink.Write
+  │  各用现有 Duration；填 HostID / TraceID / FiberName=nodeID → Sink.Write
   ▼
 observability/
   │  只提供 Record / Sink / Bootstrap
