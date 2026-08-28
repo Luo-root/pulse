@@ -27,7 +27,7 @@ loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL de
 toolset/                    # v2 可逆工具注册（pulse.tools）+ AsToolSet；mcp/ 为 Source 抽象（mock Client）
                             # Skills ≠ Source，边界见 docs/design/toolset-v1-design.md
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
-docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1
+docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1
                            # memory-layer-*-design.md 若出现仅为草案，勿当 Accepted
 examples/                   # 01–04 渐进示例
   internal/demoapp/         # 示例私有装配层（库包本身无 internal/；此处不违反「库无 internal」）
