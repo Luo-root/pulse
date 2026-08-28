@@ -86,9 +86,9 @@ func (c *SDKClient) ListTools(ctx context.Context) ([]Tool, error) {
 // CallTool 实现 [Client]。
 //
 // 传输/协议错误（未知工具、会话已关等）返回 err。
-// MCP 工具业务失败（CallToolResult.IsError=true）按协议应让模型看见
-// Content：本适配器返回拼接文本且 err=nil，由 loop 以普通工具结果回传；
-// 文本前缀 "tool error: " 便于区分成功输出。
+// MCP 工具业务失败（CallToolResult.IsError=true）也返回 err（内容为
+// Content 文本，不加 "tool error: " 前缀）——交给 loop.Execute 路径
+// 统一加前缀并置 Part.IsError=true，与 mock Client 的 failCall 一致。
 func (c *SDKClient) CallTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -120,7 +120,7 @@ func (c *SDKClient) CallTool(ctx context.Context, name string, args json.RawMess
 		if text == "" {
 			text = "tool error"
 		}
-		return "tool error: " + text, nil
+		return "", fmt.Errorf("%s", text)
 	}
 	return text, nil
 }

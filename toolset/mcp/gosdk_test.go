@@ -95,7 +95,7 @@ func TestSDKClientListAndCallViaSource(t *testing.T) {
 	}
 }
 
-func TestSDKClientToolBusinessErrorAsText(t *testing.T) {
+func TestSDKClientToolBusinessErrorAsError(t *testing.T) {
 	client, cleanup := startInMemoryPair(t, func(s *sdkmcp.Server) {
 		sdkmcp.AddTool(s, &sdkmcp.Tool{Name: "fail"}, func(_ context.Context, _ *sdkmcp.CallToolRequest, _ struct{}) (*sdkmcp.CallToolResult, any, error) {
 			return nil, nil, errors.New("boom")
@@ -104,11 +104,87 @@ func TestSDKClientToolBusinessErrorAsText(t *testing.T) {
 	defer cleanup()
 
 	out, err := client.CallTool(context.Background(), "fail", json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("protocol err unexpected: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("want err containing boom, got out=%q err=%v", out, err)
 	}
-	if !strings.Contains(out, "boom") || !strings.HasPrefix(out, "tool error:") {
-		t.Fatalf("out=%q", out)
+	if strings.Contains(err.Error(), "tool error:") {
+		t.Fatalf("adapter must not double-prefix; err=%v", err)
+	}
+	if out != "" {
+		t.Fatalf("out should be empty on business error, got %q", out)
+	}
+}
+
+func TestSDKClientBusinessErrorSetsLoopIsError(t *testing.T) {
+	client, cleanup := startInMemoryPair(t, func(s *sdkmcp.Server) {
+		sdkmcp.AddTool(s, &sdkmcp.Tool{Name: "fail"}, func(_ context.Context, _ *sdkmcp.CallToolRequest, _ struct{}) (*sdkmcp.CallToolResult, any, error) {
+			return nil, nil, errors.New("boom")
+		})
+	})
+	defer cleanup()
+
+	host := kernel.New()
+	defer host.Dispose()
+	reg := toolset.NewRegistry()
+	src, err := mcpsrc.NewSource(reg, mcpsrc.Config{
+		ID: "err", Client: client, DefaultRisk: toolset.RiskReadonly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.Sync(host, context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	var after *loop.AfterToolCall
+	if _, err := kernel.On(host, loop.EventAfterToolCall, func(p *loop.AfterToolCall) {
+		cp := *p
+		after = &cp
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	model := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "fail", Arguments: json.RawMessage(`{}`)}),
+		llm.Resp("acked"),
+	)
+	agent, err := loop.NewAgent(model, loop.WithToolSet(reg.AsToolSet()), loop.WithEventScope(host))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := agent.Run(context.Background(), nil, llm.UserText("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, m := range res.Messages {
+		if m == nil {
+			continue
+		}
+		for _, p := range m.Parts {
+			if p.Kind == llm.PartToolResult && p.ToolResultValue != nil && p.ToolResultValue.IsError {
+				found = true
+				text := ""
+				for _, c := range p.ToolResultValue.Content {
+					if c.Kind == llm.PartText {
+						text += c.Text
+					}
+				}
+				if !strings.Contains(text, "boom") {
+					t.Fatalf("tool result text=%q", text)
+				}
+				if strings.Count(text, "tool error:") != 1 {
+					t.Fatalf("want single loop prefix, got %q", text)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected ToolResult IsError=true in Messages")
+	}
+	if after == nil || after.Err == nil {
+		t.Fatalf("AfterToolCall.Err should be set, after=%v", after)
 	}
 }
 
