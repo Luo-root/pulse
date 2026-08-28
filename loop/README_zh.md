@@ -13,6 +13,9 @@ Agent 接收对话历史与本轮输入，驱动「模型 ↔ 工具」直到模
 | 会话存储 | 调用方持有 `history`；P2 session 再补 |
 | 重试 / failover | 上层编排；`llm.KindOf` 是弹药 |
 | 硬接某家模型或某套工具 | 只依赖 `llm.ChatModel` 与 `ToolSet` |
+| 填齐请求采样/限长字段 | Agent 组请求主要带 Messages/Tools；Temperature / **MaxTokens** 等由调用方经 `before_generate` 或显式 `GenerateRequest` 补齐 |
+
+**和 Anthropic 的缝**：Messages 线格式 **MaxTokens 必填**（`nil` → `ErrBadRequest`）。本包不填、也不设魔法默认。装配层（如 `examples/internal/demoapp`）可用 `before_generate` 仅在空值时注入默认——这是宿主示范，不是给 Agent 加完整请求 Option 面。
 
 Agent 是库对象，不是插件。`WithEventScope(nil)`（默认）零派发、零内核足迹。
 
@@ -139,6 +142,7 @@ _, _ = kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
 - `Messages` 仅本回合产出，调用方自己 append 成多轮历史
 - 工具失败 ≠ 回合失败
 - 不做子 agent、不做多模态工具结果（Execute 返回字符串）
+- 不把 `MaxTokens` / Temperature 等请求参数焊进 Agent；provider 必填项归装配层或显式请求
 
 ## 导出一览
 

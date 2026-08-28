@@ -288,3 +288,58 @@ func TestAnthropicMaxTokensDefaultInstalled(t *testing.T) {
 		t.Fatalf("MaxTokens after default inject = %v, want %d", seen, defaultAnthropicMaxTokens)
 	}
 }
+
+// 01-chat 路径：不 NewBridge、不 WithEventScope，observed 回退 Registry.EventScope()。
+// 必须由 Open 时挂在该 scope 上的默认注入补 MaxTokens，否则 anthropic 会 ErrBadRequest。
+func TestAnthropicMaxTokensDefaultOnRegistryFallback(t *testing.T) {
+	h, err := Open(Flags{Scripted: true}, llm.Resp("ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	scope := h.Registry.EventScope()
+	if scope == nil {
+		t.Fatal("registry event scope nil")
+	}
+
+	var seen *int
+	_, err = kernel.OnWaterfall(scope, llm.EventBeforeGenerate,
+		func(req *llm.GenerateRequest, next func(*llm.GenerateRequest) *llm.GenerateRequest) *llm.GenerateRequest {
+			out := next(req) // 内层含 Open 安装的 Registry-scope 默认注入
+			seen = out.MaxTokens
+			return out
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 刻意不带 EventScope：走 Registry 回退 Local（01-chat）。
+	_, genErr := h.Model.Generate(context.Background(), llm.NewRequest(llm.UserText("hi")))
+	if genErr != nil {
+		t.Fatal(genErr)
+	}
+	if seen == nil || *seen != defaultAnthropicMaxTokens {
+		t.Fatalf("registry-fallback MaxTokens = %v, want %d", seen, defaultAnthropicMaxTokens)
+	}
+
+	// 已有值不被覆盖
+	preset := 128
+	var seen2 *int
+	_, err = kernel.OnWaterfall(scope, llm.EventBeforeGenerate,
+		func(req *llm.GenerateRequest, next func(*llm.GenerateRequest) *llm.GenerateRequest) *llm.GenerateRequest {
+			req.MaxTokens = &preset
+			out := next(req)
+			seen2 = out.MaxTokens
+			return out
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, genErr = h.Model.Generate(context.Background(), llm.NewRequest(llm.UserText("hi2")))
+	if genErr != nil {
+		t.Fatal(genErr)
+	}
+	if seen2 == nil || *seen2 != preset {
+		t.Fatalf("preset MaxTokens overwritten: %v, want %d", seen2, preset)
+	}
+}

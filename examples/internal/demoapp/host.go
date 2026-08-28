@@ -228,10 +228,11 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 			return nil, err
 		}
 	}
-	// Anthropic MaxTokens 必填：loop 组请求不填该字段。装配层在宿主上
-	// 挂一次默认（无 reqScope 的 Generate 走 Registry 回退 Local）；
-	// 每请求 NewBridge 还会在 reqScope 再挂一次（Local 只打本 scope）。
-	if err := InstallAnthropicMaxTokensDefault(host); err != nil {
+	// Anthropic MaxTokens 必填：loop 组请求不填该字段。
+	// 无 reqScope 时 observed 回退 Registry.EventScope()（llm.Plugin
+	// Apply 私有子 ctx）。EmitLocal 不向父冒泡——挂 host 根无效。
+	// 每请求 NewBridge 还会在 reqScope 再挂一次。
+	if err := InstallAnthropicMaxTokensDefault(reg.EventScope()); err != nil {
 		host.Dispose()
 		return nil, err
 	}
