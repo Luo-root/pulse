@@ -84,6 +84,8 @@ $env:PULSE_DEMO_ALLOW_TOOL = "lookup"      # allowlist 白名单；空则仅 loo
 
 凭据走 `.env` 或官方变量（`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`）；两者皆缺省时自动降级 ScriptedModel。
 
+**Anthropic / MaxTokens**：`loop.Agent` 组请求不填 `MaxTokens`，而 Anthropic Messages **必填**。demoapp 在宿主与每请求 `NewBridge` 的 scope 上挂 `before_generate`，仅当为空时注入默认 `4096`（装配层示范，不是给 Agent 加完整请求 Option 面）。自己直连 Anthropic 时请显式设 `req.MaxTokens`。
+
 ## 运行
 
 启动时自动读取仓库根 `.env`（已被 gitignore）。

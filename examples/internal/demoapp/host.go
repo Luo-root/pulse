@@ -228,15 +228,44 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 			return nil, err
 		}
 	}
+	// Anthropic MaxTokens 必填：loop 组请求不填该字段。装配层在宿主上
+	// 挂一次默认（无 reqScope 的 Generate 走 Registry 回退 Local）；
+	// 每请求 NewBridge 还会在 reqScope 再挂一次（Local 只打本 scope）。
+	if err := InstallAnthropicMaxTokensDefault(host); err != nil {
+		host.Dispose()
+		return nil, err
+	}
+
 	return &Host{
 		Ctx: host, Registry: reg, Sink: sink, Peak: &FlowPeak{},
 		Model: model, Flags: flags, hostID: hostID,
 	}, nil
 }
 
+// defaultAnthropicMaxTokens 是装配层示范默认值，不是 loop/Agent 的 Option 面。
+const defaultAnthropicMaxTokens = 4096
+
+// InstallAnthropicMaxTokensDefault 在 scope 上挂 before_generate：仅当
+// MaxTokens 为空时填默认。不区分 provider（OpenAI 有 MaxTokens 也无害）；
+// 目的是让 anthropic 路径不被 ErrBadRequest 打穿。监听随 scope 销毁摘除。
+func InstallAnthropicMaxTokensDefault(scope *kernel.Context) error {
+	_, err := kernel.OnWaterfall(scope, llm.EventBeforeGenerate,
+		func(req *llm.GenerateRequest, next func(*llm.GenerateRequest) *llm.GenerateRequest) *llm.GenerateRequest {
+			if req != nil && req.MaxTokens == nil {
+				v := defaultAnthropicMaxTokens
+				req.MaxTokens = &v
+			}
+			return next(req)
+		})
+	return err
+}
+
 // NewBridge 为一次请求创建观测桥（TraceID = NewTraceID），并把监听
 // 安装到 scope（建议传每轮请求自己的子作用域；随其销毁自动摘除）。
 func (h *Host) NewBridge(scope *kernel.Context) (*Bridge, error) {
+	if err := InstallAnthropicMaxTokensDefault(scope); err != nil {
+		return nil, err
+	}
 	b := &Bridge{Sink: h.Sink, HostID: h.hostID, TraceID: h.NewTraceID()}
 	if err := b.install(scope); err != nil {
 		return nil, err

@@ -12,22 +12,28 @@
 //	// res.Messages      → 本回合新产生的消息（assistant/tool 交替）
 //	// 多轮对话 = history = append(history, input..., res.Messages...)
 //
-// # 扩展点全部事件化
+// # 扩展点全部事件化（请求级 Local）
 //
-// 结构化轨迹通过内核事件暴露（订阅即插拔、随作用域回收）：
+// 结构化轨迹通过内核事件暴露（订阅即插拔、随作用域回收）。
+// 派发一律走 EmitLocal / WaterfallLocal（只本 scope）；监听必须挂在
+// 与 Agent 相同的 reqScope 上，否则听不到：
 //
-//	pulse.loop.turn_start        emit      回合开始（携带输入）
-//	pulse.loop.step_start        emit      每个推理-行动步开始
-//	pulse.loop.after_model       emit      模型响应就绪（含 Usage）
-//	pulse.loop.before_tool_call  waterfall 工具执行前——可改写参数，
-//	                                         置 Rejected 并短路即拒绝执行
-//	                                         （HITL 审批 / 权限策略挂载点）
-//	pulse.loop.after_tool_call   emit      工具执行完成（含时长与错误）
-//	pulse.loop.turn_end          emit      回合结束（终止原因、累计用量）
+//	pulse.loop.turn_start        EmitLocal       回合开始（携带输入）
+//	pulse.loop.step_start        EmitLocal       每个推理-行动步开始
+//	pulse.loop.after_model       EmitLocal       模型响应就绪（含 Usage）
+//	pulse.loop.before_tool_call  WaterfallLocal  工具执行前——可改写参数，
+//	                                             置 Rejected 并短路即拒绝执行
+//	                                             （HITL 审批 / 权限策略挂载点）
+//	pulse.loop.after_tool_call   EmitLocal       工具执行完成（含时长与错误）
+//	pulse.loop.turn_end          EmitLocal       回合结束（终止原因、累计用量）
 //
 // 与 llm 层的拦截事件分工：llm.before_generate 管 token 级关注点
 // （路由、限流、脱敏），loop 层管 agent 决策级关注点（审批、审计、
-// 轨迹）——两层不重复。
+// 轨迹）——两层不重复。Agent 调模型前会 llm.WithEventScope(ctx, scope)。
+//
+// 请求字段：Agent 组装的 GenerateRequest 主要带 Messages/Tools；
+// Temperature / MaxTokens 等由调用方经 before_generate 或显式请求补齐
+// （Anthropic 的 MaxTokens 必填，见 llm/anthropic）。
 //
 // 文本增量（流式 UI）走独立的 onDelta 回调，与结构化事件分离。
 package loop

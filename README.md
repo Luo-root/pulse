@@ -16,9 +16,10 @@ v2 以可逆效应和依赖响应式为内核，先落地插件内核、模型�
 | [`llm/openai`](llm/openai/README_zh.md) | OpenAI Chat Completions + Responses 官方 SDK 适配器 | `openai.Register()` |
 | [`llm/anthropic`](llm/anthropic/README_zh.md) | Anthropic Messages 官方 SDK 适配器 | `anthropic.Register()` |
 | [`loop`](loop/README_zh.md) | 无状态 ReAct 回合执行器，工具调用与 HITL 决策事件 | `loop.NewAgent()` |
-| [`kernel/flow`](kernel/flow/README_zh.md) | 数据就绪驱动的节点编排（槽位三态含跳过） | `flow.New(ctx)` |
+| [`kernel/flow`](kernel/flow/README_zh.md) | 数据就绪驱动的节点编排（槽位三态、Skip、E1 Observer） | `flow.New(ctx)` |
+| [`kernel/flow/yaml`](kernel/flow/yaml/README_zh.md) | E2 YAML 声明式装图（拓扑归属 A：Factory 只给 Run） | `flowyaml.Load` |
 | [`observability`](observability/README_zh.md) | 正式观测包：Bootstrap + Record + Sink（只依赖 kernel） | `observability.Bootstrap()` |
-| [`examples`](examples/README.md) | 渐进装配示例：chat / ReAct+HITL / flow 编排 | `go run ./examples/01-chat` |
+| [`examples`](examples/README.md) | 渐进示例 01–04：chat / ReAct+HITL / 线性 flow / 并行 DAG | `go run ./examples/01-chat` |
 
 ## 快速上手：模型 + ReAct 工具回合
 
@@ -103,12 +104,16 @@ func main() {
   ├── llm.Registry
   │     └── ChatModel
   │           ├── openai：Chat Completions / Responses
-  │           └── anthropic：Messages
+  │           └── anthropic：Messages（MaxTokens 必填）
   │
-  └── loop.Agent（建议挂 reqScope）
-        ├── 模型推理（llm.WithEventScope → Local）
-        ├── ToolSet 工具调用
-        └── before_tool_call WaterfallLocal：HITL 挂载点
+  ├── loop.Agent（建议挂 reqScope）
+  │     ├── 模型推理（llm.WithEventScope → Local）
+  │     ├── ToolSet 工具调用
+  │     └── before_tool_call WaterfallLocal：HITL 挂载点
+  │
+  └── kernel/flow（+ flow/yaml）
+        ├── Graph：AND / Skip / Observer
+        └── YAML 装图：Registry + SeedPlan（装配层执行 IO）
 ```
 
 设计蓝图与 v1 → v2 的迁移顺序见 [`docs/design/plugin-kernel-v2.md`](docs/design/plugin-kernel-v2.md)；请求级局部事件派发见 [`docs/design/kernel-local-events.md`](docs/design/kernel-local-events.md)。
@@ -129,7 +134,7 @@ go build ./...
 go test ./...
 
 # v2 核心回归（无真实 API）
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./observability/
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./observability/ ./examples/04-flow-dag/
 
 # 单独测试 provider adapter
 go test -race -skip TestLive ./llm/openai/
@@ -142,12 +147,13 @@ OpenAI / Anthropic / MiniMax / MiMo 的真实 API 冒烟测试都由环境变量
 
 ```text
 kernel/                    v2 插件内核
-  flow/                    数据就绪驱动的节点图
+  flow/                    数据就绪驱动的节点图 + Observer
+  flow/yaml/               E2 YAML 声明式装图
 llm/                       v2 模型词汇表、Registry 与 provider adapter
 loop/                      v2 无状态 ReAct 回合
 observability/             v2 正式观测包（Bootstrap / Record / Sink）
-docs/design/               架构设计与迁移文档
-examples/                  渐进装配示例 + demoapp 请求级桥
+docs/design/               架构设计与迁移文档（Accepted；memory 调研稿另计）
+examples/                  01–04 渐进示例 + internal/demoapp 装配层桥
 ```
 
 ## 许可证
