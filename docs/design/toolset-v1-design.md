@@ -1,10 +1,10 @@
 # Toolset v1 设计：可逆工具注册 + loop.ToolSet 适配 + MCP 来源 + Skills 业界对齐
 
-> 状态：**Draft → 评审修订中**（PR [#39](https://github.com/Luo-root/pulse/pull/39) 评论已接受 D1–D8；契约缝与 §10 已按推荐口径写入，待标 Accepted）
+> 状态：**Accepted**（Issue [#38](https://github.com/Luo-root/pulse/issues/38)，PR [#39](https://github.com/Luo-root/pulse/pull/39) 评审定案 2026-08-28）
 > 包位置（拟）：`toolset/`（公开库包）；Skills 装载与 MCP 客户端作为来源插件，不进 `loop/`
 > 前置：kernel / Local 事件 / loop.ToolSet / observability v1 / flow v2 已落地
 > 对齐：路径 A（注册归 toolset、执行与 HITL 仍归 loop）；Skills 跟 [Agent Skills](https://agentskills.io/home) 通行标准，不做 Pulse 特例
-> Issue：[#38](https://github.com/Luo-root/pulse/issues/38)
+> 实现：按 §8 T1→T2 另开实现 PR；T3 MCP / T4 Skills 装载器另票
 
 ## 0. 一句话定位
 
@@ -35,7 +35,7 @@
 MCP / 本地工具插件 → 向 Registry 注册；dispose / DisposeSource = 撤销注册
 ```
 
-本篇标 Accepted 的同一文档 PR（或紧随的纯文档 PR）必须改 P1 措辞，避免双事实源；**不要拖到 T1 代码 PR 才改**。
+P1 措辞已在本 Accepted 文档 PR 同批修订 `plugin-kernel-v2.md`，避免双事实源。
 
 ## 2. 分层与归属
 
@@ -267,7 +267,7 @@ v1 不做：
 | `WithToolSet(mem)` | 继续合法 |
 | 生产装配 | `WithToolSet(registry.AsToolSet())` |
 | demo HITL | 可增强为 `LookupMeta` 读 Risk；默认行为不变 |
-| P1 文档措辞 | 随本设计 Accepted **同批**修订 |
+| P1 文档措辞 | 已随本设计 Accepted **同批**修订 |
 
 无强制大爆炸迁移：旧代码不改也能跑；新能力走 Registry。
 
@@ -288,7 +288,7 @@ v1 不做：
 
 | 阶段 | 交付 | 验收 |
 |---|---|---|
-| **T0 文档** | 本草案 + Issue #38 + PR #39；P1 措辞同批修订 | D1–D8 Accepted；§10 已拍板；契约缝入库 |
+| **T0 文档** | 本设计 Accepted + Issue #38 + PR #39；P1 措辞同批修订 | D1–D8 Accepted；§10 已拍板；契约缝入库；P1 无双事实源 |
 | **T1 Registry** | `toolset` 包：Plugin、Register/dispose、`DisposeSource`、AsToolSet、Risk 必填、冲突/排序/回合语义测试 | `go test -race ./toolset/...`；可用两个假来源插件测掉线撤销（不必等 MCP） |
 | **T2 示例迁移** | demoapp 可选改用 Registry 注册 lookup；HITL 可选读 Risk | `02-react` 行为不变；可与 T1 同 PR |
 | **T3 MCP 来源** | **另开实现 Issue/PR**：最小 MCP client 来源插件（可先 mock transport） | 上线注册 / `DisposeSource` / 前缀配置 / 冲突失败 |

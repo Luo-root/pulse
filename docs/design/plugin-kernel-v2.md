@@ -196,14 +196,27 @@ observed 包装的 ChatModel（消费方接口）
 
 ### P1 工具体系
 
-- 新包 `toolset/`：ToolRegistry 作为 kernel 服务（`pulse.tools`）；
-- 每个工具一个插件（fs / command / web …），注册即可逆；
-- 执行管线事件化：before_execute（waterfall，审批/沙箱挂载点）→
-  execute → after_execute（emit，审计）；
-- 权限分级（readonly/readwrite/dangerous）沿用 v1 设计，审批策略作为
-  监听 before_execute 的独立插件；
-- MCP client 改造为工具来源插件：MCP server 掉线 = 撤销其工具注册 =
-  依赖它的能力自动降级。
+> **设计已 Accepted：** [toolset-v1-design.md](toolset-v1-design.md)
+> （Issue [#38](https://github.com/Luo-root/pulse/issues/38)，2026-08-28）。
+> 下列为与该文对齐后的路线图摘要；细节以 toolset-v1 正文为准。
+> 旧设想「`before_execute → execute → after_execute` 独立执行管线」**废弃**——
+> 审批与轨迹继续走已落地的 `loop.before_tool_call` / `after_tool_call`（Local）。
+
+- 新包 `toolset/`：`Registry` 作为 kernel 服务（`pulse.tools`），
+  `AsToolSet()` 适配现有 `loop.ToolSet`（路径 A：`toolset` import `loop`，
+  反之不然）；`MemToolSet` 保留作轻量/测试实现；
+- 工具来源可逆注册（本地插件 / 未来 fs·command·web / MCP）：
+  `Register` + dispose；批量按来源撤销用 `DisposeSource`（禁止 Name 前缀猜）；
+- **不**另开执行事件总线。HITL / 权限策略监听
+  `pulse.loop.before_tool_call`（WaterfallLocal）；审计看
+  `after_tool_call`（EmitLocal）。同一回合 `Definitions` 是 loop 快照——
+  来源中途掉线不收缩本回合工具列表，只影响 Execute 与后续回合；
+- 权限分级（Readonly / ReadWrite / Dangerous）是 Registry **宿主侧元数据**，
+  不进 `llm.ToolDef`；Register **必填** Risk（零值拒绝，禁止默认只读 fail-open）；
+- MCP = 工具来源插件（另 PR）：掉线 = `DisposeSource`；模型可见名全局扁平唯一，
+  冲突在 Register 前由宿主 `name_prefix` 定名，禁止静默改名；
+- Skills 对齐 [agentskills.io](https://agentskills.io/specification)
+  （规程包 + 渐进披露，Skill ≠ Tool）；装载器另开设计文，不在 P1 实现范围内。
 
 ### P2 记忆与会话
 
