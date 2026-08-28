@@ -1,7 +1,7 @@
 # flow v2：数据就绪驱动的节点编排
 
 > 状态：Accepted（设计拍板 2026-08-26）
-> 实现状态：**核心契约已落地**（`kernel/flow/` + 包 README + 测试 + examples/03）；**E1/E2 未开工**（E1 = Issue [#25](https://github.com/Luo-root/pulse/issues/25)）
+> 实现状态：**核心契约已落地**（`kernel/flow/` + 包 README + 测试 + examples/03）；**E1 已落地**（Issue [#25](https://github.com/Luo-root/pulse/issues/25) / PR #28）；**E2 未开工**
 > 包位置：`kernel/flow/`
 > 公开 API 权威摘要：[`kernel/flow/README_zh.md`](../../kernel/flow/README_zh.md)（本篇保留理念、钉死契约与演进；API 段为与实现同形的摘要，避免双维护完整导出表）
 > 前置：v1 `components/flowchart` 已按 breaking 决策删除；本篇从源码提炼理念并给出 v2 契约。
@@ -251,6 +251,8 @@ Timeout 现返回 `fmt.Errorf("flow: node … timeout…")`，不是 `context.Ca
 - E2 JSON/YAML（另项）
 
 ### E2 结构化编排：JSON/YAML 流程定义（更先进形态）
+
+> 跟踪：[Issue #29](https://github.com/Luo-root/pulse/issues/29)（规格阶段，**未实现**）
 
 **方向**：用 JSON/YAML 等结构化语言声明流程图——节点列表、Requires/Provides 关系、Seed 输入、可选的 Timeout/Retry 参数——由运行时装配成 Graph。目标是让流程描述脱离 Go 源码，可被配置管理、跨语言工具消费。
 
