@@ -314,6 +314,14 @@ g := flow.New(ctx, flow.WithObserver(obs))
 - observer panic **不得**变成节点失败。
 - 桥侧常见落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；节点身份放 `FiberName`（不扩官方信封）。见 `examples/03-flow-agent`。
 
+## 声明式装图（E2）
+
+JSON/YAML 装图在子包 [`yaml`](yaml/README_zh.md)：`Load` / `SeedPlan`。拓扑归属 A——YAML 必填 `id` / `uses` / `requires` / `provides`；`uses` 对应 `Registry` 上的 Run 工厂。
+
+- duration 字段用 Go `ParseDuration` 形态：`30s`、`100ms`（不要写裸数字当秒的歧义形式）。
+- `observer:` 文档提示位，`Load` **忽略**；观察者走 `LoadOptions.Graph`（如 `WithObserver`）。
+- `version` 缺省或 `1`；其它值拒绝。
+
 ## 声明期校验
 
 `Graph.Add` 在启动前尽早拒绝以下无效声明：
@@ -333,6 +341,7 @@ g := flow.New(ctx, flow.WithObserver(obs))
 |---|---|---|
 | 图 | `New` / `Graph.Add` / `Run` / `Start` / `Wait` / `Err` | 构造、声明与执行一次运行 |
 | 配置 | `WithMaxRunning` / `WithAspects` / `WithObserver` | 执行并发、全局切面、生命周期观察 |
+| 注册表（E2） | `Registry` / `NewRegistry` / `Register` / `RegisterKey` / `Lookup` / `ResolveKey` / `SeedByName` | 具名 Run 工厂 + Key 类型对账；实例非全局 |
 | Key | `Key[T]` / `NewKey` / `Name` | 类型化槽位标识 |
 | 节点 | `Node` / `NewNode` / `ID` | 声明节点 |
 | 依赖 | `Requires` / `Provides` / `Deps` | 声明节点输入与输出 |
@@ -353,4 +362,4 @@ g := flow.New(ctx, flow.WithObserver(obs))
 - 持久化、断点续跑、分布式执行；
 - 熔断、默认吞错等跨运行服务治理；
 - 未声明 Key 的黑板式任意读写；
-- JSON/YAML 声明式装图（E2，另项）。
+- 在 **核心包** 内依赖 yaml 解码库（E2 解析在子包 [`yaml`](yaml/)：`Load` / `SeedPlan`；拓扑归属 A：Factory 只给 Run）。

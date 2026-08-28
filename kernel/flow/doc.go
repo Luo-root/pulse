@@ -25,6 +25,9 @@
 // 发出 NodeWaiting / NodeRunning / NodeFinished；不走 kernel.Emit，
 // 也不写 observability.Sink——由装配层桥折成两条 Record。
 //
+// E2 装配：NewRegistry 登记 Run 工厂与 Key；声明式装图在子包
+// kernel/flow/yaml（YAML 拥有拓扑，Factory 只给 Run）。
+//
 // 并发默认无限；WithMaxRunning(n) 只限制同时进入 Run 的节点数，
 // 等数据不占名额。
 //

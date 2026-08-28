@@ -117,36 +117,31 @@ func (g *Graph) Add(n *Node) error {
 
 // Seed 在运行前写入初始值（幂等首写）。
 func Seed[T any](g *Graph, k Key[T], v T) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.started {
-		return ErrGraphStarted
-	}
-	ref := k.asRef()
-	if err := g.keys.register(ref); err != nil {
-		return err
-	}
-	if err := g.claimSource(ref.name, "seed"); err != nil {
-		return err
-	}
-	return g.slotOfLocked(ref).resolveValue(v)
+	return g.seedRef(k.asRef(), v, false)
 }
 
 // SkipSeed 在运行前将某 Key 标为跳过。
 func SkipSeed[T any](g *Graph, k Key[T]) error {
+	return g.seedRef(k.asRef(), nil, true)
+}
+
+// seedRef 是 Seed / SkipSeed / SeedByName 的共用路径。
+func (g *Graph) seedRef(ref keyRef, v any, skip bool) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.started {
 		return ErrGraphStarted
 	}
-	ref := k.asRef()
 	if err := g.keys.register(ref); err != nil {
 		return err
 	}
 	if err := g.claimSource(ref.name, "seed"); err != nil {
 		return err
 	}
-	return g.slotOfLocked(ref).resolveSkip()
+	if skip {
+		return g.slotOfLocked(ref).resolveSkip()
+	}
+	return g.slotOfLocked(ref).resolveValue(v)
 }
 
 // claimSource 保证每个 Key 只有一种来源：外部 Seed/SkipSeed，或恰好一个节点。
