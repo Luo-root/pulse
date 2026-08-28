@@ -250,6 +250,9 @@ const defaultAnthropicMaxTokens = 4096
 // MaxTokens 为空时填默认。不区分 provider（OpenAI 有 MaxTokens 也无害）；
 // 目的是让 anthropic 路径不被 ErrBadRequest 打穿。监听随 scope 销毁摘除。
 func InstallAnthropicMaxTokensDefault(scope *kernel.Context) error {
+	if scope == nil {
+		return fmt.Errorf("demo: anthropic MaxTokens default requires a scope (use Registry.EventScope or reqScope, not host root)")
+	}
 	_, err := kernel.OnWaterfall(scope, llm.EventBeforeGenerate,
 		func(req *llm.GenerateRequest, next func(*llm.GenerateRequest) *llm.GenerateRequest) *llm.GenerateRequest {
 			if req != nil && req.MaxTokens == nil {

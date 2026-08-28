@@ -302,6 +302,9 @@ func TestAnthropicMaxTokensDefaultOnRegistryFallback(t *testing.T) {
 	if scope == nil {
 		t.Fatal("registry event scope nil")
 	}
+	if scope == h.Ctx {
+		t.Fatal("EventScope must be llm.Plugin child, not host root (Local does not bubble)")
+	}
 
 	var seen *int
 	_, err = kernel.OnWaterfall(scope, llm.EventBeforeGenerate,
@@ -341,5 +344,12 @@ func TestAnthropicMaxTokensDefaultOnRegistryFallback(t *testing.T) {
 	}
 	if seen2 == nil || *seen2 != preset {
 		t.Fatalf("preset MaxTokens overwritten: %v, want %d", seen2, preset)
+	}
+}
+
+func TestInstallAnthropicMaxTokensDefaultNilScope(t *testing.T) {
+	err := InstallAnthropicMaxTokensDefault(nil)
+	if err == nil {
+		t.Fatal("want error on nil scope")
 	}
 }
