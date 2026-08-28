@@ -27,7 +27,7 @@ b, err := loader.ReadFile(ctx, "pdf-processing", "references/FORMS.md")
 
 ## 示例材料
 
-仓库示例在 [`examples/skills/`](../examples/skills/)（可能仍含历史私有 frontmatter 键；装载器会忽略，不升格为规范）。
+仓库示例在 [`examples/skills/`](../examples/skills/)：目前保留 `frontend-design`、`pptx` 两套可用规程包。
 
 ## 测试
 

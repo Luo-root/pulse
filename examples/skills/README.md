@@ -1,11 +1,18 @@
 # examples/skills
 
-示例 Skill 材料（原仓库根 `skills/`，已迁出以免与公开包 `skills/` 撞名）。
+与公开包 `skills/` 错开路径的示例规程包（[agentskills.io](https://agentskills.io/specification) 风格）。
 
-格式目标对齐 [agentskills.io](https://agentskills.io/specification)。部分历史文件仍含私有 frontmatter 键（`category` / `parameters` / `timeout` 等）——公开装载器会**忽略**这些键，不升格为规范。
+当前保留：
+
+| Skill | 用途 |
+|---|---|
+| `frontend-design` | 前端界面设计规程（Typography / Color / Motion 等指导） |
+| `pptx` | PPTX 创建/编辑/读取规程 + scripts / references |
+
+已移除旧式「伪工具」示例（依赖 `SKILL_ARGS`、私有 `parameters` 执行面，或缺环境无法用）：
+`web-researcher`、`code-summarizer`、`data-transformer`、`git-log-analyzer`、`system-info`。
 
 ```bash
 go test -race ./skills/...
-# 或手动：
 # loader, _ := skills.Open("examples/skills")
 ```
