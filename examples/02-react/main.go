@@ -8,8 +8,10 @@ import (
 	"strings"
 
 	"github.com/Luo-root/pulse/examples/internal/demoapp"
+	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/loop"
+	"github.com/Luo-root/pulse/toolset"
 )
 
 // toolHint 展示在审批提示里的说明文字（与 Flags.Prompt 无关——那是旧的一次性入口残留）。
@@ -42,25 +44,43 @@ func run() error {
 	}
 	defer host.Close()
 
-	tools := loop.NewMemToolSet()
-	if err := tools.Register(llm.ToolDef{
-		Name:        "lookup",
-		Description: "查找本地知识",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"topic":{"type":"string"}},"required":["topic"]}`),
-	}, func(_ context.Context, args json.RawMessage) (string, error) {
-		return `{"topic":"pulse","note":"plugin kernel + llm vocabulary + loop"}`, nil
+	// T2：用 toolset.Registry 注册工具，再 AsToolSet 交给 loop（行为与 MemToolSet 一致）。
+	if _, err := kernel.Use(host.Ctx, toolset.Plugin()); err != nil {
+		return err
+	}
+	reg, ok := kernel.Get(host.Ctx, toolset.ServiceKey)
+	if !ok {
+		return fmt.Errorf("02-react: pulse.tools not provided")
+	}
+	if _, err := reg.Register(host.Ctx, toolset.Registration{
+		Def: llm.ToolDef{
+			Name:        "lookup",
+			Description: "查找本地知识",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"topic":{"type":"string"}},"required":["topic"]}`),
+		},
+		Fn: func(_ context.Context, args json.RawMessage) (string, error) {
+			return `{"topic":"pulse","note":"plugin kernel + llm vocabulary + loop"}`, nil
+		},
+		Source: "local.lookup",
+		Risk:   toolset.RiskReadonly,
 	}); err != nil {
 		return err
 	}
-	if err := tools.Register(llm.ToolDef{
-		Name:        "delete_file",
-		Description: "删除文件，需要审批（模拟工具）",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
-	}, func(_ context.Context, args json.RawMessage) (string, error) {
-		return "deleted", nil
+	if _, err := reg.Register(host.Ctx, toolset.Registration{
+		Def: llm.ToolDef{
+			Name:        "delete_file",
+			Description: "删除文件，需要审批（模拟工具）",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+		},
+		Fn: func(_ context.Context, args json.RawMessage) (string, error) {
+			return "deleted", nil
+		},
+		Source: "local.delete_file",
+		Risk:   toolset.RiskDangerous,
 	}); err != nil {
 		return err
 	}
+	tools := reg.AsToolSet()
 
 	// REPL 与审批器共享同一 LineSource：一个行缓冲、同 goroutine 顺序消费。
 	stdin := demoapp.NewLineSource(os.Stdin)
