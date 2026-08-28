@@ -98,7 +98,7 @@ skill-name/
 Discovery：A（system / 开发者消息里的 Skills 短表）——起步必有
 回合前激活：装配层 Loader.Load → 写入本轮 input / 额外 system（I2）
 回合内激活：只读宿主工具 load_skill（I3）
-            → Execute 返回 SKILL.md 正文
+            → Execute 返回 Content（正文 + Directory + 可选 Resources）
             → 作为 tool result 进入 Messages
             → 该工具是 Tool（Registry + HITL），Skill 本身仍不是 Source
 
@@ -117,11 +117,12 @@ Discovery：A（system / 开发者消息里的 Skills 短表）——起步必�
 
 2. **Activation**  
    - **回合前**：宿主点名 → `Load` → 注入本轮 Messages（I2）  
-   - **回合内**：模型 `tool_call` → `load_skill` → tool result 带正文（I3）
+   - **回合内**：模型 `tool_call` → `load_skill` → tool result 带 `Content`（正文 + **Directory** + 可选资源清单）（I3）  
+   - Catalog（短表 / `list_skills`）**不含**目录；目录只在激活结果里给——相对路径脚本以此为根。
 
 3. **Resources**  
    模型/规程要求时，再读 `references/*`、`scripts/*` 等（可经 `ReadFile` 或只读宿主工具）。  
-   脚本执行必须通过已存在的 Tool；**本设计不发明执行面**。
+   脚本执行走**已有通用命令行 / 已注册 Tool**，working directory = `Content.Directory`；**本设计不发明专用 script 执行面**。
 
 ### 4.3 与 HITL / toolset
 
@@ -147,26 +148,43 @@ Host 配置 skills 根路径
 实现票可调整方法签名细节；此处只定职责。**不预留** `Execute` / `Activate` 空接口。
 
 ```go
-// 发现条目（进上下文的最小集）
+// Meta 是宿主侧完整扫描记录（含路径）；不要整表倒进模型上下文。
 type Meta struct {
     Name        string
     Description string
-    Dir         string // 绝对或根相对路径
+    Location    string // SKILL.md 绝对路径
+    Dir         string // skill 根目录（Location 父目录）
 }
 
-// Loader 负责扫描与按名加载正文/资源。不执行脚本。
+// CatalogEntry 是 Discovery 短表 / list_skills 的最小集。
+type CatalogEntry struct {
+    Name        string `json:"name"`
+    Description string `json:"description"`
+}
+
+// Content 是激活结果：正文 + 目录 + 可选资源相对路径清单。
+type Content struct {
+    Name      string
+    Body      string   // 已剥 frontmatter
+    Directory string   // skill 根；相对路径脚本以此为根
+    Location  string
+    Resources []string // 相对路径，不预读内容
+}
+
+// Loader 负责扫描与按名加载。不执行脚本。
 type Loader interface {
     List(ctx context.Context) ([]Meta, error)
-    // Load 返回该 skill 的 Markdown 指令正文（实现票决定是否剥 frontmatter）。
-    // 不含任何「执行」语义。
-    Load(ctx context.Context, name string) (body string, err error)
+    // Load 返回结构化激活结果。不含任何「执行」语义。
+    Load(ctx context.Context, name string) (Content, error)
     // ReadFile 读取该 skill 目录内相对路径（scripts/references/assets/...）。
     // rel 必须落在该 skill 目录内；拒绝 ".." 与绝对路径。
     ReadFile(ctx context.Context, name, rel string) ([]byte, error)
 }
+
+func Catalog(metas []Meta) []CatalogEntry
 ```
 
-- 装配层：`List` → 短表；回合前 `Load` → 注入 Messages  
+- 装配层：`Catalog(List(...))` → 短表；回合前 `Load` → 注入 Messages（含 Directory）  
 - I3：`load_skill` Tool 内部调 `Loader.Load`，**不**让 `Loader` 实现 `loop.ToolSet`  
 - `compatibility`：只存在 Meta/解析结果里；过滤若需要，实现票可加**可选** `func(Meta) bool` 回调，默认不过滤
 

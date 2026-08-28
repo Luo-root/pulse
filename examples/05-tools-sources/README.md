@@ -9,7 +9,7 @@
 | **Skills** | **Messages** 短表 + 只读工具 | `skills.Open(examples/skills)`；`list_skills` / `load_skill` |
 
 Skill ≠ Tool ≠ Source：规程短表进 system；真正执行仍是 `tool_call`。  
-`list_skills` 只返回 name+description；`load_skill` 激活结果带上 **Skill directory**（脚本相对路径以此为根；有通用命令行工具即可跑 `scripts/`，不必再造专用 script 工具）。
+`list_skills` 走 `skills.Catalog`，只返回 name+description；`load_skill` 直接返回 `skills.Content` JSON（`body` + **`directory`** + `resources`）。脚本相对路径以 `directory` 为根；有通用命令行工具即可跑 `scripts/`，不必再造专用 script 工具。
 
 ## 跑
 
@@ -29,4 +29,4 @@ go run ./examples/05-tools-sources
 
 - MCP 用 InMemory，不拉外部进程
 - 不做 HITL / REPL（见 02-react）
-- `load_skill` 是 **Tool**（RiskReadonly），用来把 SKILL.md 正文以 tool result 塞进 Messages
+- `load_skill` 是 **Tool**（RiskReadonly），把 `skills.Content` 以 tool result 塞进 Messages；Catalog 不含目录

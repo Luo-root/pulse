@@ -278,16 +278,8 @@ func registerSkillTools(scope *kernel.Context, reg *toolset.Registry, loader ski
 			if err != nil {
 				return "", err
 			}
-			// Catalog：只要 name+description，不把本机 Dir 倒进 Messages。
-			type row struct {
-				Name        string `json:"name"`
-				Description string `json:"description"`
-			}
-			rows := make([]row, 0, len(metas))
-			for _, m := range metas {
-				rows = append(rows, row{Name: m.Name, Description: m.Description})
-			}
-			b, err := json.Marshal(rows)
+			// Catalog：包 API 只给 name+description，不把本机 Dir 倒进 Messages。
+			b, err := json.Marshal(skills.Catalog(metas))
 			return string(b), err
 		},
 		Source: "skills.list",
@@ -298,7 +290,7 @@ func registerSkillTools(scope *kernel.Context, reg *toolset.Registry, loader ski
 	_, err := reg.Register(scope, toolset.Registration{
 		Def: llm.ToolDef{
 			Name:        "load_skill",
-			Description: "加载 Skill 正文，并返回该 skill 目录（只读；相对路径脚本以此为根）",
+			Description: "加载 Skill 激活结果（正文 + 目录 + 资源清单；相对路径脚本以 Directory 为根）",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`),
 		},
 		Fn: func(ctx context.Context, args json.RawMessage) (string, error) {
@@ -308,28 +300,13 @@ func registerSkillTools(scope *kernel.Context, reg *toolset.Registry, loader ski
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", err
 			}
-			body, err := loader.Load(ctx, p.Name)
+			content, err := loader.Load(ctx, p.Name)
 			if err != nil {
 				return "", err
 			}
-			metas, err := loader.List(ctx)
-			if err != nil {
-				return "", err
-			}
-			dir := ""
-			for _, m := range metas {
-				if m.Name == p.Name {
-					dir = m.Dir
-					break
-				}
-			}
-			if dir == "" {
-				return "", fmt.Errorf("skill %q directory unknown", p.Name)
-			}
-			// 目录给命令行工具拼相对路径用；不必再造专用 script 执行工具。
-			return "Skill directory: " + dir + "\n" +
-				"Relative paths in this skill are relative to the skill directory.\n\n" +
-				body, nil
+			// 直接消费 skills.Content；目录给通用命令行工具拼相对路径，不必再造专用 script 工具。
+			b, err := json.Marshal(content)
+			return string(b), err
 		},
 		Source: "skills.load",
 		Risk:   toolset.RiskReadonly,
@@ -340,11 +317,11 @@ func registerSkillTools(scope *kernel.Context, reg *toolset.Registry, loader ski
 func buildSystem(metas []skills.Meta) string {
 	var b strings.Builder
 	b.WriteString("你是 Pulse 05 示例助手。Tools 来自 toolset/MCP；Skills 短表如下（规程包，不是 Tools）：\n")
-	for _, m := range metas {
+	for _, e := range skills.Catalog(metas) {
 		b.WriteString("- ")
-		b.WriteString(m.Name)
+		b.WriteString(e.Name)
 		b.WriteString(": ")
-		b.WriteString(m.Description)
+		b.WriteString(e.Description)
 		b.WriteByte('\n')
 	}
 	b.WriteString("可用工具：lookup、delete_file、mcp_echo、list_skills、load_skill。")

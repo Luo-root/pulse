@@ -9,7 +9,7 @@ Go library (`github.com/Luo-root/pulse`) — an AI Agent framework under v2 reco
 ```bash
 go build ./...          # verify compilation
 go test ./...           # run all tests
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/ ./skills/ ./observability/ ./examples/04-flow-dag/   # v2 core + flow example
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/ ./skills/ ./observability/ ./examples/04-flow-dag/ ./examples/05-tools-sources/   # v2 core + flow/tools examples
 ```
 
 - Requires **Go 1.25.0+** (toolchain auto-downloads if missing).

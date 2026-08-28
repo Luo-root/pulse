@@ -84,7 +84,8 @@ func TestThreeSourcesDefinitionsAndRound(t *testing.T) {
 	if isErr["c3"] {
 		t.Fatalf("list_skills err: %q", listOut)
 	}
-	if strings.Contains(listOut, `Dir`) || strings.Contains(listOut, filepath.VolumeName(demo.Metas[0].Dir)+`\`) ||
+	if strings.Contains(listOut, `"directory"`) || strings.Contains(listOut, `Dir`) ||
+		strings.Contains(listOut, filepath.VolumeName(demo.Metas[0].Dir)+`\`) ||
 		strings.Contains(listOut, ":\\") || strings.Contains(listOut, "/Users/") || strings.Contains(listOut, "/home/") {
 		t.Fatalf("list_skills must not leak absolute Dir: %s", listOut)
 	}
@@ -96,34 +97,36 @@ func TestThreeSourcesDefinitionsAndRound(t *testing.T) {
 	if isErr["c4"] {
 		t.Fatalf("load_skill err: %q", loadOut)
 	}
-	if !strings.Contains(loadOut, "Skill directory:") {
-		t.Fatalf("load_skill must include skill directory: %q", loadOut)
+	var content struct {
+		Name      string   `json:"name"`
+		Body      string   `json:"body"`
+		Directory string   `json:"directory"`
+		Location  string   `json:"location"`
+		Resources []string `json:"resources"`
 	}
-	if !strings.Contains(loadOut, demo.Metas[0].Dir) && !strings.Contains(loadOut, "frontend-design") {
-		// directory path for frontend-design should appear
-		found := false
-		for _, m := range demo.Metas {
-			if m.Name == "frontend-design" && strings.Contains(loadOut, m.Dir) {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("load_skill missing absolute skill dir: %q", loadOut)
-		}
+	if err := json.Unmarshal([]byte(loadOut), &content); err != nil {
+		t.Fatalf("load_skill should return skills.Content JSON: %v raw=%q", err, loadOut)
 	}
+	if content.Name != "frontend-design" {
+		t.Fatalf("load name=%q", content.Name)
+	}
+	wantDir := ""
 	for _, m := range demo.Metas {
-		if m.Name == "frontend-design" && !strings.Contains(loadOut, m.Dir) {
-			t.Fatalf("load_skill should include Dir %q, got %q", m.Dir, loadOut)
+		if m.Name == "frontend-design" {
+			wantDir = m.Dir
+			break
 		}
 	}
-	if strings.Contains(loadOut, "\nname:") || strings.HasPrefix(strings.TrimSpace(loadOut), "---") {
-		// body should not re-include YAML frontmatter block as loaded content start;
-		// header lines come first, then body without frontmatter.
+	if wantDir == "" || content.Directory != wantDir {
+		t.Fatalf("Directory=%q want %q", content.Directory, wantDir)
 	}
-	if strings.Contains(loadOut, "name: frontend-design\n") {
-		t.Fatalf("load_skill body should not include frontmatter name field: %q", loadOut)
+	if content.Location != filepath.Join(wantDir, "SKILL.md") {
+		t.Fatalf("Location=%q", content.Location)
 	}
-	if !strings.Contains(loadOut, "distinctive") && !strings.Contains(loadOut, "frontend") {
-		t.Fatalf("load_skill body missing frontend-design content: %q", loadOut)
+	if strings.Contains(content.Body, "name: frontend-design\n") || strings.HasPrefix(strings.TrimSpace(content.Body), "---") {
+		t.Fatalf("body should not include frontmatter: %q", content.Body)
+	}
+	if !strings.Contains(content.Body, "distinctive") && !strings.Contains(content.Body, "frontend") {
+		t.Fatalf("body missing frontend-design content: %q", content.Body)
 	}
 }
