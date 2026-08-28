@@ -1,11 +1,11 @@
 # Skills v1 设计：业界对齐的规程包装载（渐进披露）
 
-> 状态：**Draft → 评审修订中**（PR [#47](https://github.com/Luo-root/pulse/pull/47) 评论已接受 S1–S8；激活缝与 §9 已按推荐口径写入，待标 Accepted）
+> 状态：**Accepted**（Issue [#46](https://github.com/Luo-root/pulse/issues/46)，PR [#47](https://github.com/Luo-root/pulse/pull/47) 评审定案 2026-08-28）
 > 包位置（拟）：公开 Go 包名 **`skills`**（**不**进 `loop/`，**不**做成 Source）。仓库根现有 gitignore 的 `skills/` 示例材料实现票迁到 `examples/skills/`（或改路径），避免与公开包撞名。
 > 前置：toolset T1–T3 + 官方 MCP Client 已落地；toolset-v1 Accepted 仅钉边界
 > 对齐：[Agent Skills Specification](https://agentskills.io/specification)；用户拍板「跟业界一致、不要特例独行」
 > 与 toolset：Skill **指导**使用已注册工具；**不**自动 `Register` ToolDef
-> Issue：[#46](https://github.com/Luo-root/pulse/issues/46)
+> 实现：按 §7 I1→I2→I3 另开实现 Issue/PR
 
 ## 0. 一句话定位
 
@@ -186,7 +186,7 @@ type Loader interface {
 
 | 阶段 | 交付 | 验收 |
 |---|---|---|
-| **D0** | 本文 Accepted + Issue #46 设计项关闭 | S1–S8 Accepted；§9 已拍板；激活缝入库 |
+| **D0** | 本文 Accepted + Issue #46 设计项关闭 | 已完成（2026-08-28） |
 | **I1** | 包 `skills`：扫描 + frontmatter 校验 + List/Load/ReadFile；示例材料迁出公开包路径 | 单测：合法/非法 name、目录穿越拒绝、私有字段忽略 |
 | **I2** | Discovery 短表 + **回合前**点名 `Load` 注入；测试 + 包 README（**不改 02-react**） | 可选独立小 example / 笔记，勿绑 02 |
 | **I3** | 只读宿主工具 `list_skills` / `load_skill`（`RiskReadonly`）——**回合内激活必要通道** | 工具走 Registry；Load 结果为 tool result；Skill 仍不是 Source |
