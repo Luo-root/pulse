@@ -54,6 +54,10 @@ agent, err := loop.NewAgent(model,
 
 子包 [`mcp`](mcp/README_zh.md)：`Client` 抽象 + `Source`/`Plugin` + 官方 go-sdk 适配（`ConnectSDK` / `ConnectCommand`）。Skills **不是** Source 插件。
 
+## 基础工具
+
+子包 [`builtins`](builtins/README_zh.md)：P0 `read`/`ls`/`glob`/`grep`/`exec`/`edit`/`write`，`builtins.Register(scope, reg, Options{Root:...})`。
+
 ## 测试
 
 ```bash
