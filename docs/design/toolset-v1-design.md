@@ -292,7 +292,7 @@ v1 不做：
 | **T1 Registry** | `toolset` 包：Plugin、Register/dispose、`DisposeSource`、AsToolSet、Risk 必填、冲突/排序/回合语义测试 | `go test -race ./toolset/...`；可用两个假来源插件测掉线撤销（不必等 MCP） |
 | **T2 示例迁移** | demoapp 可选改用 Registry 注册 lookup；HITL 可选读 Risk | `02-react` 行为不变；可与 T1 同 PR |
 | **T3 MCP 来源** | **另开实现 Issue/PR**：最小 MCP client 来源插件（可先 mock transport） | 上线注册 / `DisposeSource` / 前缀配置 / 冲突失败 |
-| **T4 Skills 装载器** | **另开设计文** + Issue（见 §10）；不在本文追加实现规格 | 按 agentskills.io；与 toolset 仅「工具已存在」交互 |
+| **T4 Skills 装载器** | 设计文 [`skills-v1-design.md`](skills-v1-design.md) + Issue [#46](https://github.com/Luo-root/pulse/issues/46)；不在本文追加实现规格 | 按 agentskills.io；与 toolset 仅「工具已存在」交互 |
 
 记忆层仍排在工具侧主路径之后。
 
