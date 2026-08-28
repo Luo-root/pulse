@@ -50,6 +50,10 @@ agent, err := loop.NewAgent(model,
 - **`LookupMeta`** 供 HITL/策略查 Source/Risk；查不到应 fail-closed。
 - **依赖**：`toolset` → `loop`；`loop` 不 import `toolset`。`MemToolSet` 仍可用于无 kernel 单测。
 
+## MCP 来源
+
+子包 [`mcp`](mcp/README_zh.md)：`Client` 抽象 + `Source`/`Plugin`。本仓库先用 mock Client 钉契约；换官方 go-sdk / mcp-go 只换 Client 实现。Skills **不是** Source 插件。
+
 ## 测试
 
 ```bash

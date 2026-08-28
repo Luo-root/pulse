@@ -24,7 +24,8 @@ kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin
   flow/                     # node graph + Observer；yaml/ 为 E2 装图子包
 llm/                        # v2 model layer: content-block vocabulary, ChatModel, Registry, openai/ + anthropic/ adapters
 loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL decision events
-toolset/                    # v2 可逆工具注册（pulse.tools）+ AsToolSet；MCP/Skills 边界见设计文
+toolset/                    # v2 可逆工具注册（pulse.tools）+ AsToolSet；mcp/ 为 Source 抽象（mock Client）
+                            # Skills ≠ Source，边界见 docs/design/toolset-v1-design.md
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1
                            # memory-layer-*-design.md 若出现仅为草案，勿当 Accepted
