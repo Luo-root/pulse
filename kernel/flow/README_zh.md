@@ -333,6 +333,7 @@ g := flow.New(ctx, flow.WithObserver(obs))
 |---|---|---|
 | 图 | `New` / `Graph.Add` / `Run` / `Start` / `Wait` / `Err` | 构造、声明与执行一次运行 |
 | 配置 | `WithMaxRunning` / `WithAspects` / `WithObserver` | 执行并发、全局切面、生命周期观察 |
+| 注册表（E2） | `Registry` / `NewRegistry` / `Register` / `RegisterKey` / `Lookup` / `ResolveKey` / `SeedByName` | 具名 Run 工厂 + Key 类型对账；实例非全局 |
 | Key | `Key[T]` / `NewKey` / `Name` | 类型化槽位标识 |
 | 节点 | `Node` / `NewNode` / `ID` | 声明节点 |
 | 依赖 | `Requires` / `Provides` / `Deps` | 声明节点输入与输出 |
@@ -353,4 +354,4 @@ g := flow.New(ctx, flow.WithObserver(obs))
 - 持久化、断点续跑、分布式执行；
 - 熔断、默认吞错等跨运行服务治理；
 - 未声明 Key 的黑板式任意读写；
-- JSON/YAML 声明式装图（E2，另项）。
+- 在 **核心包** 内依赖 yaml 解码库（E2 解析在子包 [`yaml`](yaml/)：`Load` / `SeedPlan`；拓扑归属 A：Factory 只给 Run）。

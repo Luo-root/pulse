@@ -252,8 +252,8 @@ Timeout 现返回 `fmt.Errorf("flow: node … timeout…")`，不是 `context.Ca
 
 ### E2 结构化编排：JSON/YAML 流程定义（更先进形态）
 
-> 跟踪：[Issue #29](https://github.com/Luo-root/pulse/issues/29)（规格阶段，**未实现**）
-> 规格补钉（2026-08-28，#29 审核）：下列条款在开实现子 Issue 前视为钉死。
+> 跟踪：规格 [#29](https://github.com/Luo-root/pulse/issues/29)；实现 [#32](https://github.com/Luo-root/pulse/issues/32)
+> 实现状态：进行中（`Registry` + `kernel/flow/yaml`）；规格补钉（2026-08-28）下列条款钉死。
 
 **目标（降调）**：用 JSON/YAML 声明流程图——节点列表、Requires/Provides、Seed 引用、可选内建 Timeout/Retry——由运行时装成 Graph。诚实目标是**配置与代码分离、可审查、可被工具生成**。节点实现仍是 Go 工厂时，YAML **不能**跨语言执行；「跨语言工具消费」不是本阶段目标。
 
