@@ -289,6 +289,31 @@ node := flow.NewNode(
 
 `RunCtx.Fork()` 只派生可取消 context，**共享**声明权限和写入记录；它不是独立写入事务。自定义切面可通过 `rc.Context()` 获取当前 context。
 
+## 生命周期观察（E1）
+
+`Observer` 是 flow **自有** typed 观察者，默认 no-op。它不走 `kernel.Emit`，也不写 `observability.Sink`——正式观测包不认识 flow；装配层桥（如 `demoapp.FlowObserver`）订阅后再折成两条 Record。
+
+```go
+obs := flow.ObserverFunc{
+    Waiting:  func(id string) { /* 进入 WaitAll 前 */ },
+    Running:  func(id string) { /* acquire 后、用户 Run 前 */ },
+    Finished: func(id string, reason flow.NodeFinishReason, err error) { /* skip 清理后 */ },
+}
+g := flow.New(ctx, flow.WithObserver(obs))
+```
+
+| 事件 | 何时 | 备注 |
+|---|---|---|
+| `OnNodeWaiting` | 进入 `WaitAll` 前 | 每节点 ≤ 1 |
+| `OnNodeRunning` | `WaitAll` 成功且 `acquire` 之后 | Skip / 超时打断 Wait → **不发** |
+| `OnNodeFinished` | 终止态确定且 skip 清理之后 | 原因：`completed` / `skipped` / `failed` / `canceled` |
+
+契约要点：
+
+- 每节点 Waiting/Running/Finished 至多一次；`Retry` 多次 attempt 不重复打点。
+- observer panic **不得**变成节点失败。
+- 桥侧常见落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；节点身份放 `FiberName`（不扩官方信封）。见 `examples/03-flow-agent`。
+
 ## 声明期校验
 
 `Graph.Add` 在启动前尽早拒绝以下无效声明：
@@ -307,7 +332,7 @@ node := flow.NewNode(
 | 分类 | 符号 | 用途 |
 |---|---|---|
 | 图 | `New` / `Graph.Add` / `Run` / `Start` / `Wait` / `Err` | 构造、声明与执行一次运行 |
-| 配置 | `WithMaxRunning` / `WithAspects` | 执行并发与全局切面 |
+| 配置 | `WithMaxRunning` / `WithAspects` / `WithObserver` | 执行并发、全局切面、生命周期观察 |
 | Key | `Key[T]` / `NewKey` / `Name` | 类型化槽位标识 |
 | 节点 | `Node` / `NewNode` / `ID` | 声明节点 |
 | 依赖 | `Requires` / `Provides` / `Deps` | 声明节点输入与输出 |
@@ -327,4 +352,5 @@ node := flow.NewNode(
 - 节点重跑、`SetOrUpdate` 或持续 reactive graph；
 - 持久化、断点续跑、分布式执行；
 - 熔断、默认吞错等跨运行服务治理；
-- 未声明 Key 的黑板式任意读写。
+- 未声明 Key 的黑板式任意读写；
+- JSON/YAML 声明式装图（E2，另项）。

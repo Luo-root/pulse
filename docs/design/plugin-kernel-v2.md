@@ -225,10 +225,11 @@ observed 包装的 ChatModel（消费方接口）
 > - ~~显式边表 + 拓扑排序器~~（flow 用 Requires/Provides 隐式依赖，
 >   AND 汇聚，无边对象）。
 >
-> 现行契约：三态槽位、AND-only、Skip 级联、失败显式、Aspect 洋葱链。
+> 现行契约：三态槽位、AND-only、Skip 级联、失败显式、Aspect 洋葱链、
+> E1 `Observer`（Issue #25 / PR #28 已落地）。
 > 与 loop **正交**（节点函数里可构造 Agent；二者不通过服务互相发现）。
-> 未完成的演进只剩 E1 生命周期事件（Issue #25）与 E2 声明式装图，
-> 均不破坏已钉死契约；细节见 flow 设计文演进段。
+> 未完成的演进只剩 **E2** 声明式装图（Issue #29），不破坏已钉死契约；
+> 细节见 flow 设计文演进段。
 
 ### 持续约束
 
