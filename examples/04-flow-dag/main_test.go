@@ -106,37 +106,17 @@ func TestRetrieveFailureCancelsGraph(t *testing.T) {
 	}
 }
 
-func TestYAMLIsomorphicFactPath(t *testing.T) {
-	local, web := defaultRetrievers()
-	reg := flow.NewRegistry()
-	flow.MustRegisterKey(reg, UserText)
-	flow.MustRegisterKey(reg, Intent)
-	flow.MustRegisterKey(reg, FactGate)
-	flow.MustRegisterKey(reg, ChatGate)
-	flow.MustRegisterKey(reg, LocalDocs)
-	flow.MustRegisterKey(reg, WebDocs)
-	flow.MustRegisterKey(reg, MergedDocs)
-
-	docTag, ok := reg.TypeTagOf("demo04.local_docs")
-	if !ok {
-		t.Fatal("missing local_docs type tag")
-	}
-	strTag, _ := reg.TypeTagOf("demo04.user_text")
-
-	final := new(string)
-	registerDAGFactories(reg, local, web, final)
-
-	doc := fmt.Sprintf(`
+func yamlDoc(strTag, docTag string, seed string) string {
+	return fmt.Sprintf(`
 version: 1
 seeds:
   - key: { name: demo04.user_text, type: %q }
-    from: { kind: literal, value: "flow Requires" }
+    from: { kind: literal, value: %q }
 nodes:
   - id: classify
     uses: demo04.classify
     requires: [{ name: demo04.user_text, type: %q }]
     provides:
-      - { name: demo04.intent, type: %q }
       - { name: demo04.fact_gate, type: %q }
       - { name: demo04.chat_gate, type: %q }
   - id: retrieve_local
@@ -170,20 +150,67 @@ nodes:
       - { name: demo04.chat_gate, type: %q }
       - { name: demo04.user_text, type: %q }
     provides: []
-`, strTag, strTag, strTag, strTag, strTag, strTag, strTag, docTag, strTag, strTag, docTag, docTag, docTag, docTag, strTag, strTag, docTag, strTag, strTag)
+`, strTag, seed, strTag, strTag, strTag, strTag, strTag, docTag, strTag, strTag, docTag, docTag, docTag, docTag, strTag, strTag, docTag, strTag, strTag)
+}
 
-	g, plan, err := flowyaml.Load([]byte(doc), reg, flowyaml.LoadOptions{})
-	if err != nil {
-		t.Fatal(err)
+func prepareYAMLReg(t *testing.T, local, web Retriever, final *string) (*flow.Registry, string, string) {
+	t.Helper()
+	reg := flow.NewRegistry()
+	flow.MustRegisterKey(reg, UserText)
+	flow.MustRegisterKey(reg, FactGate)
+	flow.MustRegisterKey(reg, ChatGate)
+	flow.MustRegisterKey(reg, LocalDocs)
+	flow.MustRegisterKey(reg, WebDocs)
+	flow.MustRegisterKey(reg, MergedDocs)
+	strTag, ok := reg.TypeTagOf("demo04.user_text")
+	if !ok {
+		t.Fatal("missing user_text type tag")
 	}
-	if err := plan.Apply(g, nil); err != nil {
-		t.Fatal(err)
+	docTag, ok := reg.TypeTagOf("demo04.local_docs")
+	if !ok {
+		t.Fatal("missing local_docs type tag")
 	}
-	if err := g.Run(); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(*final, "事实回答") {
-		t.Fatalf("yaml final=%q", *final)
+	registerDAGFactories(reg, local, web, final)
+	return reg, strTag, docTag
+}
+
+func TestYAMLIsomorphicFactAndChitchat(t *testing.T) {
+	local, web := defaultRetrievers()
+
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"fact", "flow Requires AND", "事实回答"},
+		{"chitchat", "你好", "闲聊"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			codeDeps, _, _ := testDeps(local, web)
+			codeRes, _, err := runDAG(tc.in, codeDeps)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			yamlFinal := new(string)
+			reg, strTag, docTag := prepareYAMLReg(t, local, web, yamlFinal)
+			g, plan, err := flowyaml.Load([]byte(yamlDoc(strTag, docTag, tc.in)), reg, flowyaml.LoadOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := plan.Apply(g, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := g.Run(); err != nil {
+				t.Fatal(err)
+			}
+			if *yamlFinal != codeRes.Final {
+				t.Fatalf("Final mismatch\ncode: %q\nyaml: %q", codeRes.Final, *yamlFinal)
+			}
+			if !strings.Contains(codeRes.Final, tc.want) {
+				t.Fatalf("final=%q want contain %q", codeRes.Final, tc.want)
+			}
+		})
 	}
 }
 

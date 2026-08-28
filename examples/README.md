@@ -1,6 +1,6 @@
 # Pulse v2 examples
 
-渐进装配示例，对应 [Issue #13](https://github.com/Luo-root/pulse/issues/13)。三层示例逐级叠加，每一层都验证上一层暴露出的装配问题：
+渐进装配示例，对应 [Issue #13](https://github.com/Luo-root/pulse/issues/13)（04 见 [#34](https://github.com/Luo-root/pulse/issues/34)）。四层示例逐级叠加，每一层都验证上一层暴露出的装配问题：
 
 | 层 | 新增验证点 | 依赖 |
 |---|---|---|
@@ -36,7 +36,7 @@ kernel.New()
   -> reg.Open("main")                            # 打开并缓存，经过 before_generate 包装
 ```
 
-每轮请求（02/03）再：
+每轮请求（02/03；04 用独立 Bridge+Observer，不必挂 HITL）再：
 
 ```text
 reqScope := host.Ctx.Derive()
@@ -92,13 +92,14 @@ $env:PULSE_DEMO_ALLOW_TOOL = "lookup"      # allowlist 白名单；空则仅 loo
 go run ./examples/01-chat
 go run ./examples/02-react
 go run ./examples/03-flow-agent
-go test  ./examples/internal/...
+go run ./examples/04-flow-dag
+go test  ./examples/internal/... ./examples/04-flow-dag/
 ```
 
 ## 观测日志
 
-- **装配期**（三层共用）：`observability.Bootstrap` → `MemorySink` / `SlogSink`，字段见 [`observability/README_zh.md`](../observability/README_zh.md)（`host_id`、`source=kernel`、`event`、Fiber 状态）。
-- **运行期**（仅 02 / 03）：每请求 `demoapp.Bridge` 把 llm/loop/flow 事实折进同一 Sink（`source=bridge`，必填 `trace_id`）；token / turn summary 等装不进信封的指标走 slog 附加键。
+- **装配期**（各层共用）：`observability.Bootstrap` → `MemorySink` / `SlogSink`，字段见 [`observability/README_zh.md`](../observability/README_zh.md)（`host_id`、`source=kernel`、`event`、Fiber 状态）。
+- **运行期**（02 / 03 / 04）：每请求 `demoapp.Bridge` 把 llm/loop/flow 事实折进同一 Sink（`source=bridge`，必填 `trace_id`）；token / turn summary 等装不进信封的指标走 slog 附加键。04 用 E1 `flow.node_wait_finished` / `flow.node_run_finished`（`FiberName`=nodeID）分段，不再用 Around 冒充 total。
 - **01-chat 刻意没有运行期 Bridge**：本层只验证装配 + 词汇表，直接 `Model.Generate`；llm Local 事件会落到 Registry ctx，但没有请求级桥去听——这是分层收窄，不是漏装。
 
 隐私边界：记录**元数据**（次数、字节长度、耗时、状态），不记录 prompt 内容、附件内容、密钥和思维链。
@@ -106,5 +107,5 @@ go test  ./examples/internal/...
 ## 当前不做
 
 - 记忆层、会话持久化（history 只活在进程内，退出即丢）
-- 真实向量库 / embedding（demo3 用内存关键词检索）
-- flow 的 wait/run 时间拆分（现有 seam 只有「切面包裹整段」，见 demo3 文档末尾）
+- 真实向量库 / embedding（demo3 / demo4 用内存关键词检索）
+- flow wait/run 的 otel 导出等（E1 分段已在 04 用两条 Record 落地；正式 observability 包仍不 import flow）
