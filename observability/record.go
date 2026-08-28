@@ -4,7 +4,7 @@
 // 分层纪律（方案 A）：本包只 import kernel，绝不 import llm/loop/flow。
 // 它只认识两样东西——kernel 发出的装配期事实（typed 事件），以及
 // 下游的 Sink 出口。运行期业务事件（token 计数、HITL 结果、节点耗时）
-// 由装配层桥（如 examples/demoapp/bridge.go）订阅后折进 Record 信封写
+// 由装配层桥（如 examples/internal/demoapp/bridge.go）订阅后折进 Record 信封写
 // 同一 Sink，不经过本包。
 //
 // 接入姿态（v1 仅一种）：

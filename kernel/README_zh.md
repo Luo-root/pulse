@@ -17,15 +17,17 @@ kernel 用同一套 `Context` 同时记住「现在有什么」和「曾经改�
 | 时间可组合 | 卸载即还原 | 每次修改以 `Effect` 登记撤销函数；作用域 `Dispose` 时按 LIFO unwind |
 | 空间可组合 | 依赖响应式 | `Plugin.Inject` 声明依赖；满足则装载，消失则卸载，恢复则重装。没有手工启动序列 |
 
-五个源文件对应五个概念：
+核心概念对应源文件：
 
 | 文件 | 概念 |
 |---|---|
 | `context.go` | `Context`：服务仓库 + 效应跟踪器 + 作用域树 |
 | `service.go` | `ServiceKey[T]`：类型安全的服务键，`Provide` / `Get` |
-| `events.go` | `EventKey[P]`：`On` + `Emit` / `Waterfall` / `Parallel` |
+| `events.go` | `EventKey[P]`：`On` + `Emit` / `Waterfall` / `Parallel` + Local |
 | `plugin.go` | `Plugin` / `Fiber`：声明与惯性生命周期 |
 | `loader.go` | `Loader`：声明式条目 + `Reconcile` 增量调和 |
+| `diagnostics.go` | `FiberStateChange` / `LoaderAction` typed 事件与诊断名 |
+| `snapshot.go` | `FiberSnapshots` 只读全树快照（横幅用） |
 
 ## 1. 作用域与效应
 

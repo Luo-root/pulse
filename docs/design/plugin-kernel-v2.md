@@ -173,7 +173,8 @@ observed 包装的 ChatModel（消费方接口）
 ## 6. 迁移路线图（围绕核心的重构计划）
 
 原则：**核心先站稳，能力逐个搬**。每个 P 级合入后 `go test ./...`
-保持绿线；旧 components/* 在迁移完成前原样保留可运行。
+保持绿线。**v1 `components/*` 已删除，不保留兼容层**（与根 README 一致）；
+后续能力只作为 v2 插件 / 新包重写。
 
 ### P0 agent-loop（已完成，PR #5）
 
@@ -226,10 +227,11 @@ observed 包装的 ChatModel（消费方接口）
 >   AND 汇聚，无边对象）。
 >
 > 现行契约：三态槽位、AND-only、Skip 级联、失败显式、Aspect 洋葱链、
-> E1 `Observer`（Issue #25 / PR #28 已落地）。
+> E1 `Observer`（Issue #25 / PR #28）、**E2 YAML 装图**（Issue #32 /
+> PR #33，`kernel/flow/yaml`；规格票 #29）。
 > 与 loop **正交**（节点函数里可构造 Agent；二者不通过服务互相发现）。
-> 未完成的演进只剩 **E2** 声明式装图（Issue #29），不破坏已钉死契约；
-> 细节见 flow 设计文演进段。
+> P3 数据流编排在 v2 侧已闭合；后续 flow 演进见 [flow-v2-design.md](flow-v2-design.md)，
+> 不再把「E2 未做」写进本迁移图。
 
 ### 持续约束
 

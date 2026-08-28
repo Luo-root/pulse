@@ -1,6 +1,6 @@
 # kernel/flow/yaml
 
-E2 声明式装图：把 YAML 装成 `flow.Graph` + `SeedPlan`。
+E2 声明式装图（**YAML only**）：把 YAML 装成 `flow.Graph` + `SeedPlan`。不提供 JSON 装图。
 
 拓扑归属 **A**：YAML 必填 `id` / `uses` / `requires` / `provides`；`uses` 对应 `flow.Registry` 上的 **Run 工厂**（`func(*RunCtx) error`），不返回 `*Node`。
 

@@ -24,10 +24,11 @@
 
 ```text
 ┌─────────────────────────────────────────────────────┐
-│ 装配层（demoapp / 未来宿主）                          │
-│   bridge.go：llm/loop/flow 事件 → Record 写同一 Sink  │
+│ 装配层（examples/internal/demoapp / 未来宿主）        │
+│   bridge.go：llm/loop 事件 + flow Observer → Sink     │
 │   Host.NewTraceID 注入（四层贯通在这里实现）          │
-│   FlowAspect（node_total_ms / alive_nodes_peak）      │
+│   flow：两条 Record（wait_finished / run_finished，   │
+│         FiberName=nodeID）；峰值是桥侧 Observer 计数  │
 └───────────────┬─────────────────────────────────────┘
                 │ 只依赖 observability.Sink
 ┌───────────────▼─────────────────────────────────────┐
@@ -35,6 +36,7 @@
 │   Record 信封 / Sink 三实现 / Bootstrap                │
 │   On(fiber_state|loader_action) → Record              │
 │   Bootstrap Apply 末尾 writeBanner（内部，非导出）    │
+│   ✗ 不 import flow，不订阅 NodeWaiting/Running        │
 └───────────────┬─────────────────────────────────────┘
                 │ kernel.On / kernel.Emit（typed）
 ┌───────────────▼─────────────────────────────────────┐
@@ -42,7 +44,7 @@
 └─────────────────────────────────────────────────────┘
 ```
 
-划线：**正式包** = Fiber 状态机、Loader 动作、启动清单、Dispose 后不再写。**桥** = token 计数、HITL 结果、flow 节点耗时——同一 stderr 出口、不同记录形状。
+划线：**正式包** = Fiber 状态机、Loader 动作、启动清单、Dispose 后不再写。**桥** = token 计数、HITL 结果、flow wait/run 分段——同一 stderr 出口、不同记录形状。E1 生命周期在 `kernel/flow.Observer` 定形，**故意不进**本包（方案 A）。
 
 「同一出口」的实现语义：桥把运行期事实**折进 Record 信封**（Time/HostID/TraceID/Source/Event/Duration/Status）再 `Sink.Write`；token 数等无法装进信封的业务指标走 SlogSink 的附加键输出。同一出口 ≠ 官方 Record 变成万能袋，也不允许桥绕过 Sink 另开一路输出。
 
@@ -145,7 +147,7 @@ LoaderAction 对照 Reconcile 三阶段实际分支：removed→unmount、Name/C
 
 ## 7. 明确不做
 
-Collector 概念本身 · otel/prometheus 导出器 · 采样与动态级别 · Web UI · 正式包内业务事件订阅 · flow Waiting/Running 占位接口（等 E1 有事实再定形）· Diagnostic 接口与组件发现（v2）· Waterfall 旁路 · Record map 逃生舱 · prompt/附件/密钥/思维链内容记录。
+Collector 概念本身 · otel/prometheus 导出器 · 采样与动态级别 · Web UI · 正式包内业务事件订阅 · 在本包订阅 flow NodeWaiting/Running/Finished（E1 已定形且归属 flow.Observer + 装配层桥，方案 A 禁止正式包 import flow）· Diagnostic 接口与组件发现（v2）· Waterfall 旁路 · Record map 逃生舱 · prompt/附件/密钥/思维链内容记录。
 
 每一条「不做」都对应一轮评审的具体反对意见；重开时需先推翻对应决策记录。
 

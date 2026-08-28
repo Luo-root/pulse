@@ -9,7 +9,7 @@ Go library (`github.com/Luo-root/pulse`) — an AI Agent framework under v2 reco
 ```bash
 go build ./...          # verify compilation
 go test ./...           # run all tests
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./observability/   # v2 core regression (no live API)
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./observability/ ./examples/04-flow-dag/   # v2 core + flow example
 ```
 
 - Requires **Go 1.25.0+** (toolchain auto-downloads if missing).
@@ -21,20 +21,22 @@ go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./observability/   #
 ```
 pulse.go                    # stub: package pulse (ignore)
 kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin+Fiber/Loader
-  flow/                     # data-driven node graph: typed keys, skip-as-arrival, aspects
+  flow/                     # node graph + Observer；yaml/ 为 E2 装图子包
 llm/                        # v2 model layer: content-block vocabulary, ChatModel, Registry, openai/ + anthropic/ adapters
 loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL decision events
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
-docs/design/               # design docs (plugin-kernel-v2.md, flow-v2-design.md, kernel-local-events.md, observability-v1-design.md)
-examples/                   # 渐进装配示例（chat / react / flow）+ demoapp 装配层桥
+docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1
+                           # memory-layer-*-design.md 若出现仅为草案，勿当 Accepted
+examples/                   # 01–04 渐进示例
+  internal/demoapp/         # 示例私有装配层（库包本身无 internal/；此处不违反「库无 internal」）
 skills/                     # Example skill definitions (*.md with YAML frontmatter, gitignored)
 ```
 
 ## Key conventions
 
-- **No `internal/` or `cmd/`** — this is a library, not a binary. All packages are public API.
+- **No `internal/` or `cmd/` in library packages** — this is a library, not a binary. All published packages are public API. `examples/internal/demoapp` is example-private scaffolding only.
 - **Functional options pattern** used throughout (`loop.WithToolSet()`, `flow.WithMaxRunning()`, etc.).
 - **Chinese comments and doc** are the norm; preserve them when editing.
-- **v2 vocabulary contract**: `llm.GenerateRequest` only carries cross-provider stable fields; when a provider wire format has no counterpart, the adapter returns `ErrBadRequest` — never silently drop parameters and never add `map[string]any` escape hatches.
-- **flow contract**: slots are pending | ready | skipped; skip is arrival, not failure; node error cancels the graph and is never rewritten as skip.
+- **v2 vocabulary contract**: `llm.GenerateRequest` only carries cross-provider stable fields; when a provider wire format has no counterpart, the adapter returns `ErrBadRequest` — never silently drop parameters and never add `map[string]any` escape hatches on the request vocabulary. `llm.Config.Options` is **client-level only** (org / timeout / headers / retries), not a request-parameter escape hatch.
+- **flow contract**: slots are pending | ready | skipped; skip is arrival, not failure; node error cancels the graph and is never rewritten as skip. Declarative graphs are **YAML only** (`kernel/flow/yaml`).
 - **Secrets**: never commit `.env`, API keys or tokens. Live tests are env-gated.

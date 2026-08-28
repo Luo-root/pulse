@@ -75,6 +75,17 @@ func NewRegistry(c *kernel.Context) *Registry {
 	}
 }
 
+// EventScope 返回拦截事件的 Local 派发作用域（通常是 llm.Plugin Apply
+// 的私有子 ctx）。无请求级 WithEventScope 时，observed 回退到这里。
+// 装配层若要在「01-chat 直连 Generate」路径上挂 before_generate，
+// 必须装到本 scope，而不是 host 根（EmitLocal 不向父冒泡）。
+func (r *Registry) EventScope() *kernel.Context {
+	if r == nil {
+		return nil
+	}
+	return r.ctx
+}
+
 // Plugin 返回提供本服务的内核插件：
 //   - Apply 时向所在作用域 Provide 一个绑定该作用域的 Registry；
 //   - 注册中心的生命周期与插件一致——卸载时关闭全部打开的实例。

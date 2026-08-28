@@ -28,7 +28,7 @@ model, _ := reg.Open("main")
 | 差异 | 映射 |
 |---|---|
 | system 不是消息角色，是顶层参数 | 全部 system 消息合并为 `System []TextBlockParam` |
-| **max_tokens 必填**，provider 无默认 | `req.MaxTokens == nil` → 显式 `ErrBadRequest`，不设魔法默认值 |
+| **max_tokens 必填**，provider 无默认 | `req.MaxTokens == nil` → 显式 `ErrBadRequest`，不设魔法默认值。`loop.Agent` 不填该字段；装配层（如 demoapp）可用 `before_generate` 补默认 |
 | 工具结果不是独立角色 | `RoleTool` → 只含 `tool_result` 块的 user 消息（Anthropic 要求 tool_result 在 user 轮首位） |
 | 音频 / 视频不支持 | `PartCustom(audio/*\|video/*)` → 显式 `ErrBadRequest` |
 | PDF 走 document 块 | `PartCustom(application/pdf)`：Data → base64 source，URL → url source |

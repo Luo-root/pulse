@@ -164,6 +164,8 @@ ctx = llm.WithEventScope(ctx, reqScope) // loop 在调模型前会做这一步
 
 与 loop 分工：本包 token 级；loop 决策级（审批、轨迹）。请求级 Bridge 必须挂在同一 `reqScope`，否则听不到 Local 事件。
 
+**和 loop 组请求的缝**：`loop.Agent` 组装的 `GenerateRequest` 主要带 Messages/Tools，**不填** Temperature / MaxTokens 等。Anthropic Messages 的 `MaxTokens` **必填**（`nil` → `ErrBadRequest`）。调用 Anthropic 时必须由装配层 `before_generate` 或显式请求补上；examples/demoapp 把默认挂在 `Registry.EventScope()`（01-chat 回退路径）和每请求 `reqScope`（02/03）上——不是给 Agent 加完整请求 Option 面，也不是挂 host 根。
+
 也可用 `llm.Plugin()` 把 Registry Provide 到所在作用域，卸载时 `Close` 全部实例。
 
 ## 最小调用
@@ -257,9 +259,10 @@ TTS（Completions）：`req.Audio = &llm.AudioOutput{Voice: "alloy", Format: "wa
 |---|---|
 | `ServiceKey` | kernel 服务键 `"pulse.llm"` |
 | `EventBeforeGenerate` / `EventAfterResponse` | waterfall `*GenerateRequest` / emit 值 `Response` |
-| `Config` | Provider / Model / BaseURL / APIKey / Options |
+| `Config` | Provider / Model / BaseURL / APIKey / Options（**仅客户端键**：organization / project / timeout_seconds / max_retries / headers；未知键忽略。禁止把 top_k / service_tier 等请求参数塞进 Options） |
 | `Factory` | `func(Config) (ChatModel, error)` |
 | `Registry` / `NewRegistry` | 工厂 + 命名实例。构造 Context 是无请求 scope 时的 Local 回退派发域 |
+| `(*Registry).EventScope` | 该回退派发域（Plugin Apply 的私有子 ctx）。无 `WithEventScope` 时 observed 回退到这里；装配层的 `before_generate` 必须挂本 scope，不能挂 host 根（EmitLocal 不向父冒泡） |
 | `WithEventScope` / `EventScopeFrom` | 把请求 scope 注入 `context.Context`，供 observed Local 派发 |
 | `Plugin` | 把 Registry Provide 到作用域；卸载时 `Close` |
 | `RegisterProvider` | 可逆登记工厂；同名覆盖关闭该 provider 已开实例 |
