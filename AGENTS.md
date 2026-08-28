@@ -2,14 +2,14 @@
 
 ## What this is
 
-Go library (`github.com/Luo-root/pulse`) — an AI Agent framework under v2 reconstruction. The v2 core is `kernel/` (plugin kernel + `kernel/flow` dataflow), `llm/` (provider-neutral model vocabulary + adapters) and `loop/` (stateless ReAct turn executor). The entire v1 `components/` tree has been removed. `pulse.go` at root is a stub (`package pulse`); it is not an entrypoint.
+Go library (`github.com/Luo-root/pulse`) — an AI Agent framework under v2 reconstruction. The v2 core is `kernel/` (plugin kernel + `kernel/flow` dataflow), `llm/` (provider-neutral model vocabulary + adapters), `loop/` (stateless ReAct turn executor) and `toolset/` (reversible tool registry adapting to `loop.ToolSet`). The entire v1 `components/` tree has been removed. `pulse.go` at root is a stub (`package pulse`); it is not an entrypoint.
 
 ## Build & test
 
 ```bash
 go build ./...          # verify compilation
 go test ./...           # run all tests
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./observability/ ./examples/04-flow-dag/   # v2 core + flow example
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/ ./observability/ ./examples/04-flow-dag/   # v2 core + flow example
 ```
 
 - Requires **Go 1.25.0+** (toolchain auto-downloads if missing).
@@ -24,8 +24,9 @@ kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin
   flow/                     # node graph + Observer；yaml/ 为 E2 装图子包
 llm/                        # v2 model layer: content-block vocabulary, ChatModel, Registry, openai/ + anthropic/ adapters
 loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL decision events
+toolset/                    # v2 可逆工具注册（pulse.tools）+ AsToolSet；MCP/Skills 边界见设计文
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
-docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1
+docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1
                            # memory-layer-*-design.md 若出现仅为草案，勿当 Accepted
 examples/                   # 01–04 渐进示例
   internal/demoapp/         # 示例私有装配层（库包本身无 internal/；此处不违反「库无 internal」）
