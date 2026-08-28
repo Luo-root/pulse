@@ -28,7 +28,6 @@ type FSLoader struct {
 type indexed struct {
 	meta Meta
 	body string // Open/rescan 时缓存的正文；Load 只返回快照
-	file string // SKILL.md 绝对路径（ReadFile 锚定 Dir 用）
 }
 
 // Open 扫描 root 并返回 Loader。
@@ -85,7 +84,7 @@ func (l *FSLoader) rescan() error {
 			return fmt.Errorf("skills: duplicate name %q", meta.Name)
 		}
 		meta.Dir = skillDir
-		next[meta.Name] = indexed{meta: meta, body: body, file: skillFile}
+		next[meta.Name] = indexed{meta: meta, body: body}
 	}
 	l.mu.Lock()
 	l.index = next
