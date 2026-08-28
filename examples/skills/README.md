@@ -7,7 +7,7 @@
 | Skill | 用途 |
 |---|---|
 | `frontend-design` | 前端界面设计规程（Typography / Color / Motion 等指导） |
-| `pptx` | PPTX 创建/编辑/读取规程 + scripts / references |
+| `pptx` | PPTX 创建/编辑/读取规程 + 少量 scripts/md（不含 OOXML schema 全文） |
 
 已移除旧式「伪工具」示例（依赖 `SKILL_ARGS`、私有 `parameters` 执行面，或缺环境无法用）：
 `web-researcher`、`code-summarizer`、`data-transformer`、`git-log-analyzer`、`system-info`。

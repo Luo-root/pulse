@@ -42,3 +42,6 @@ go.work.sum
 
 # Local scratch (docs preview, temp artifacts)
 tmp/
+# pptx skill: OOXML schema trees are huge; fetch from upstream if needed
+examples/skills/pptx/scripts/office/schemas/
+

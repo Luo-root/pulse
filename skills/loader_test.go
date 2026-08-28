@@ -125,6 +125,74 @@ func TestReadFileSafe(t *testing.T) {
 	}
 }
 
+func TestLoadUsesOpenSnapshot(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "demo", "name: demo\ndescription: Original description for snapshot test", "# Original body\n")
+	l, err := skills.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 改磁盘后不重新 Open：List/Load 仍应是快照
+	writeSkill(t, root, "demo", "name: demo\ndescription: Changed description after open scan", "# Changed body\n")
+	list, err := l.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list[0].Description != "Original description for snapshot test" {
+		t.Fatalf("List should keep snapshot meta: %q", list[0].Description)
+	}
+	body, err := l.Load(context.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "Original body") || strings.Contains(body, "Changed body") {
+		t.Fatalf("Load should keep snapshot body: %q", body)
+	}
+}
+
+func TestOpenFailsOnBadSkillDir(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "good", "name: good\ndescription: A valid skill that should not matter", "# Good\n")
+	writeSkill(t, root, "bad", "name: bad\ndescription: ", "# Bad\n")
+	_, err := skills.Open(root)
+	if err == nil || !strings.Contains(err.Error(), "description") {
+		t.Fatalf("Open should fail entire root on bad skill: %v", err)
+	}
+}
+
+func TestRejectConsecutiveHyphens(t *testing.T) {
+	root := t.TempDir()
+	dir := "bad--name"
+	if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: bad--name\ndescription: consecutive hyphens should fail validation\n---\n# X\n"
+	if err := os.WriteFile(filepath.Join(root, dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := skills.Open(root)
+	if err == nil || !strings.Contains(err.Error(), "consecutive") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestListRespectsContextCancel(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "demo", "name: demo\ndescription: Demo skill for context cancel test", "# D\n")
+	l, err := skills.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := l.List(ctx); err == nil {
+		t.Fatal("want canceled")
+	}
+	if _, err := l.Load(ctx, "demo"); err == nil {
+		t.Fatal("want canceled")
+	}
+}
+
 func TestUnknownSkill(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, root, "demo", "name: demo\ndescription: Demo skill for unknown name tests", "# D\n")

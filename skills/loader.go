@@ -27,10 +27,14 @@ type FSLoader struct {
 
 type indexed struct {
 	meta Meta
-	file string // SKILL.md 绝对路径
+	body string // Open/rescan 时缓存的正文；Load 只返回快照
+	file string // SKILL.md 绝对路径（ReadFile 锚定 Dir 用）
 }
 
-// Open 扫描 root 并返回 Loader。非法 skill 目录导致 Open 失败（装配期尽早暴露）。
+// Open 扫描 root 并返回 Loader。
+// 非法 skill 目录（有 SKILL.md 但 frontmatter 不合法）会导致整个 Open 失败——
+// 装配期尽早暴露；无 SKILL.md 的子目录会被跳过。
+// 技能文件变更默认下次 Open（或未来显式 Rescan）才生效：List 与 Load 共用扫描快照。
 func Open(root string) (*FSLoader, error) {
 	if root == "" {
 		return nil, fmt.Errorf("skills: root is required")
@@ -73,7 +77,7 @@ func (l *FSLoader) rescan() error {
 			}
 			return fmt.Errorf("skills: read %s: %w", skillFile, err)
 		}
-		meta, _, err := parseSkillFile(raw, dirName)
+		meta, body, err := parseSkillFile(raw, dirName)
 		if err != nil {
 			return fmt.Errorf("skills: %s: %w", dirName, err)
 		}
@@ -81,7 +85,7 @@ func (l *FSLoader) rescan() error {
 			return fmt.Errorf("skills: duplicate name %q", meta.Name)
 		}
 		meta.Dir = skillDir
-		next[meta.Name] = indexed{meta: meta, file: skillFile}
+		next[meta.Name] = indexed{meta: meta, body: body, file: skillFile}
 	}
 	l.mu.Lock()
 	l.index = next
@@ -104,7 +108,8 @@ func (l *FSLoader) List(ctx context.Context) ([]Meta, error) {
 	return out, nil
 }
 
-// Load 实现 Loader：返回剥除 frontmatter 后的 Markdown 正文。
+// Load 实现 Loader：返回 Open/rescan 时缓存的 Markdown 正文（已剥 frontmatter）。
+// 不重读磁盘，与 List 共用同一快照——符合「下次扫描生效」。
 func (l *FSLoader) Load(ctx context.Context, name string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -113,15 +118,7 @@ func (l *FSLoader) Load(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	raw, err := os.ReadFile(e.file)
-	if err != nil {
-		return "", fmt.Errorf("skills: load %q: %w", name, err)
-	}
-	_, body, err := parseSkillFile(raw, filepath.Base(e.meta.Dir))
-	if err != nil {
-		return "", fmt.Errorf("skills: load %q: %w", name, err)
-	}
-	return body, nil
+	return e.body, nil
 }
 
 // ReadFile 实现 Loader：读取 skill 目录内相对路径。

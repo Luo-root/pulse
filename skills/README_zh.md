@@ -25,9 +25,11 @@ b, err := loader.ReadFile(ctx, "pdf-processing", "references/FORMS.md")
 
 每个 skill 是子目录 + `SKILL.md`；`name` 必须与目录名一致。
 
+**装配语义**：某个子目录有 `SKILL.md` 但 frontmatter 非法 → **整个 `Open` 失败**（尽早暴露）。没有 `SKILL.md` 的子目录会被跳过。`List` 与 `Load` 共用 `Open` 时的扫描快照；磁盘上改了文件要再 `Open` 才生效。`ReadFile` 仍按需读盘，但路径必须落在扫描到的 skill 目录内。
+
 ## 示例材料
 
-仓库示例在 [`examples/skills/`](../examples/skills/)：目前保留 `frontend-design`、`pptx` 两套可用规程包。
+仓库示例在 [`examples/skills/`](../examples/skills/)：目前保留 `frontend-design`、`pptx` 两套可用规程包（不含 OOXML schema 树）。
 
 ## 测试
 
