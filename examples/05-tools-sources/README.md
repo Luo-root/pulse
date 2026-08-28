@@ -8,7 +8,8 @@
 | **MCP Source** | 同一 Registry → `Tools` | go-sdk InMemory server，前缀后为 `mcp_echo` |
 | **Skills** | **Messages** 短表 + 只读工具 | `skills.Open(examples/skills)`；`list_skills` / `load_skill` |
 
-Skill ≠ Tool ≠ Source：规程短表进 system；真正执行仍是 `tool_call`。
+Skill ≠ Tool ≠ Source：规程短表进 system；真正执行仍是 `tool_call`。  
+`list_skills` 只返回 name+description；`load_skill` 激活结果带上 **Skill directory**（脚本相对路径以此为根；有通用命令行工具即可跑 `scripts/`，不必再造专用 script 工具）。
 
 ## 跑
 

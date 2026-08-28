@@ -29,35 +29,14 @@ func run() error {
 	host := kernel.New()
 	defer host.Dispose()
 
-	if _, err := kernel.Use(host, toolset.Plugin()); err != nil {
-		return err
-	}
-	reg, ok := kernel.Get(host, toolset.ServiceKey)
-	if !ok {
-		return fmt.Errorf("pulse.tools not provided")
-	}
-
-	// --- 1) toolset 本地注册 ---
-	if err := registerLocal(host, reg); err != nil {
-		return err
-	}
-
-	// --- 2) MCP Source（InMemory，无外部进程）---
-	mcpCleanup, err := attachMCP(host, reg)
+	demo, err := setupDemo(host)
 	if err != nil {
 		return err
 	}
-	defer mcpCleanup()
+	defer demo.Close()
 
-	// --- 3) Skills Discovery 短表（进 Messages，不进 Tools）---
-	loader, metas, err := openSkills()
-	if err != nil {
-		return err
-	}
-	if err := registerSkillTools(host, reg, loader); err != nil {
-		return err
-	}
-
+	reg := demo.Reg
+	metas := demo.Metas
 	defs := reg.AsToolSet().Definitions()
 	fmt.Println("=== 05-tools-sources：三路装配对照 ===")
 	fmt.Println()
@@ -133,6 +112,47 @@ func run() error {
 		fmt.Printf("final: %s\n", res.Final.Text())
 	}
 	return nil
+}
+
+// demoBundle 是三路装配结果，供 main 与测试共用。
+type demoBundle struct {
+	Reg    *toolset.Registry
+	Metas  []skills.Meta
+	closeF func()
+}
+
+func (d *demoBundle) Close() {
+	if d != nil && d.closeF != nil {
+		d.closeF()
+		d.closeF = nil
+	}
+}
+
+func setupDemo(host *kernel.Context) (*demoBundle, error) {
+	if _, err := kernel.Use(host, toolset.Plugin()); err != nil {
+		return nil, err
+	}
+	reg, ok := kernel.Get(host, toolset.ServiceKey)
+	if !ok {
+		return nil, fmt.Errorf("pulse.tools not provided")
+	}
+	if err := registerLocal(host, reg); err != nil {
+		return nil, err
+	}
+	mcpCleanup, err := attachMCP(host, reg)
+	if err != nil {
+		return nil, err
+	}
+	loader, metas, err := openSkills()
+	if err != nil {
+		mcpCleanup()
+		return nil, err
+	}
+	if err := registerSkillTools(host, reg, loader); err != nil {
+		mcpCleanup()
+		return nil, err
+	}
+	return &demoBundle{Reg: reg, Metas: metas, closeF: mcpCleanup}, nil
 }
 
 func registerLocal(scope *kernel.Context, reg *toolset.Registry) error {
@@ -258,7 +278,16 @@ func registerSkillTools(scope *kernel.Context, reg *toolset.Registry, loader ski
 			if err != nil {
 				return "", err
 			}
-			b, err := json.Marshal(metas)
+			// Catalog：只要 name+description，不把本机 Dir 倒进 Messages。
+			type row struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			}
+			rows := make([]row, 0, len(metas))
+			for _, m := range metas {
+				rows = append(rows, row{Name: m.Name, Description: m.Description})
+			}
+			b, err := json.Marshal(rows)
 			return string(b), err
 		},
 		Source: "skills.list",
@@ -269,7 +298,7 @@ func registerSkillTools(scope *kernel.Context, reg *toolset.Registry, loader ski
 	_, err := reg.Register(scope, toolset.Registration{
 		Def: llm.ToolDef{
 			Name:        "load_skill",
-			Description: "加载 Skill 正文（只读；回合内激活通道）",
+			Description: "加载 Skill 正文，并返回该 skill 目录（只读；相对路径脚本以此为根）",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`),
 		},
 		Fn: func(ctx context.Context, args json.RawMessage) (string, error) {
@@ -279,7 +308,28 @@ func registerSkillTools(scope *kernel.Context, reg *toolset.Registry, loader ski
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", err
 			}
-			return loader.Load(ctx, p.Name)
+			body, err := loader.Load(ctx, p.Name)
+			if err != nil {
+				return "", err
+			}
+			metas, err := loader.List(ctx)
+			if err != nil {
+				return "", err
+			}
+			dir := ""
+			for _, m := range metas {
+				if m.Name == p.Name {
+					dir = m.Dir
+					break
+				}
+			}
+			if dir == "" {
+				return "", fmt.Errorf("skill %q directory unknown", p.Name)
+			}
+			// 目录给命令行工具拼相对路径用；不必再造专用 script 执行工具。
+			return "Skill directory: " + dir + "\n" +
+				"Relative paths in this skill are relative to the skill directory.\n\n" +
+				body, nil
 		},
 		Source: "skills.load",
 		Risk:   toolset.RiskReadonly,

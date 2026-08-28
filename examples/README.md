@@ -1,6 +1,6 @@
 # Pulse v2 examples
 
-渐进装配示例，对应 [Issue #13](https://github.com/Luo-root/pulse/issues/13)（04 见 [#34](https://github.com/Luo-root/pulse/issues/34)）。四层示例逐级叠加，每一层都验证上一层暴露出的装配问题：
+渐进装配示例，对应 [Issue #13](https://github.com/Luo-root/pulse/issues/13)（04 见 [#34](https://github.com/Luo-root/pulse/issues/34)，05 见 [#52](https://github.com/Luo-root/pulse/issues/52)）。五层示例逐级叠加，每一层都验证上一层暴露出的装配问题：
 
 | 层 | 新增验证点 | 依赖 |
 |---|---|---|
@@ -96,7 +96,8 @@ go run ./examples/01-chat
 go run ./examples/02-react
 go run ./examples/03-flow-agent
 go run ./examples/04-flow-dag
-go test  ./examples/internal/... ./examples/04-flow-dag/
+go run ./examples/05-tools-sources
+go test  ./examples/internal/... ./examples/04-flow-dag/ ./examples/05-tools-sources/
 ```
 
 ## 观测日志
