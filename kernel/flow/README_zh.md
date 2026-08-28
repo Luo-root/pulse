@@ -262,7 +262,7 @@ if err := g.Wait(); err != nil {
 
 ## 切面：超时与重试
 
-`Aspect` 与 `kernel.Waterfall` 同构：切面不调用 `next` 即可短路后续执行。每次 `Around` 调用对 `next` 最多只能调用一次；重复调用（包括并发调用）返回 `ErrNextCalledTwice`，不会让节点重入。全局切面通过 `flow.WithAspects` 安装；节点切面作为 `flow.NewNode` 的末尾参数传入。全局切面在外层、节点切面在内层。
+`Aspect` 与 `kernel.Waterfall` 同构：切面不调用 `next` 即可短路后续执行。每次 `Around` 内禁止**并发/重叠**调用 `next`（返回 `ErrNextCalledTwice`）；允许**顺序多次**（`Retry` 需要）。全局切面通过 `flow.WithAspects` 安装；节点切面作为 `flow.NewNode` 的末尾参数传入。全局切面在外层、节点切面在内层。E1 `Observer` 生命周期事件由每节点门闩保证 Waiting/Running 仍至多一次。
 
 ```go
 g := flow.New(ctx,
@@ -314,6 +314,7 @@ node := flow.NewNode(
 | 外部输入 | `Seed` / `SkipSeed` | 运行前解析槽位 |
 | 节点读写 | `Get` / `TryGet` / `WaitAll` / `Set` / `Skip` | 读取、等待、写入或跳过声明的 Key |
 | 切面 | `Aspect` / `AspectFunc` / `Timeout` / `Retry` | 环绕节点等待与执行 |
+| 观察者 | `Observer` / `ObserverFunc` / `MultiObserver` / `WithObserver` | E1 节点生命周期（Waiting/Running/Finished）；默认 no-op |
 | 运行上下文 | `RunCtx.Context` / `NodeID` / `Fork` / `Cancel` | 读取节点 context 与编写切面 |
 | 错误 | `ErrSkipped` / `ErrConflict` / `ErrUndeclared` / `ErrDuplicateSource` / `ErrNextCalledTwice` / `ErrGraphStarted` / `ErrGraphNotStarted` | 判断预期错误类别 |
 

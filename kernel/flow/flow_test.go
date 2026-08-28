@@ -3,7 +3,7 @@ package flow
 import (
 	"context"
 	"errors"
-	"sync"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -244,54 +244,49 @@ func TestEmptyGraphStartWait(t *testing.T) {
 	}
 }
 
-func TestAspectNextCalledOnce(t *testing.T) {
+// 顺序多次 next 合法（Retry 依赖）；第二次成功返回即可。
+func TestAspectSequentialNextAllowed(t *testing.T) {
 	g := New(context.Background())
 	var runs atomic.Int32
 	aspect := AspectFunc(func(rc *RunCtx, next func(*RunCtx) error) error {
 		if err := next(rc); err != nil {
 			return err
 		}
+		// 顺序再调一次：应成功（第二次 core 因槽位已写而 Set 静默）。
 		return next(rc)
 	})
 	mustAdd(t, g, NewNode("n", nil, Provides(kA), func(rc *RunCtx) error {
 		runs.Add(1)
 		return Set(rc, kA, "value")
 	}, aspect))
-	if err := g.Run(); !errors.Is(err, ErrNextCalledTwice) {
-		t.Fatalf("want ErrNextCalledTwice, got %v", err)
+	if err := g.Run(); err != nil {
+		t.Fatalf("sequential next must be allowed, got %v", err)
 	}
-	if got := runs.Load(); got != 1 {
-		t.Fatalf("node ran %d times, want 1", got)
+	if got := runs.Load(); got != 2 {
+		t.Fatalf("node ran %d times, want 2", got)
 	}
 }
 
 func TestAspectConcurrentNextCalledOnce(t *testing.T) {
 	g := New(context.Background())
 	var runs atomic.Int32
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
 	aspect := AspectFunc(func(rc *RunCtx, next func(*RunCtx) error) error {
-		release := make(chan struct{})
-		results := make(chan error, 2)
-		var wg sync.WaitGroup
-		for range 2 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				<-release
-				results <- next(rc)
-			}()
-		}
+		errCh := make(chan error, 1)
+		go func() { errCh <- next(rc) }()
+		<-started // 第一个已进入 core 并持有 depth
+		err2 := next(rc)
 		close(release)
-		wg.Wait()
-		close(results)
-		var first error
-		for err := range results {
-			if err != nil {
-				first = err
-			}
+		err1 := <-errCh
+		if !errors.Is(err2, ErrNextCalledTwice) {
+			return fmt.Errorf("overlapping next want ErrNextCalledTwice, got %v (first=%v)", err2, err1)
 		}
-		return first
+		return ErrNextCalledTwice
 	})
 	mustAdd(t, g, NewNode("n", nil, Provides(kA), func(rc *RunCtx) error {
+		started <- struct{}{}
+		<-release
 		runs.Add(1)
 		return Set(rc, kA, "value")
 	}, aspect))

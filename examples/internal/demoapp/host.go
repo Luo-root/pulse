@@ -16,6 +16,9 @@ import (
 	"github.com/Luo-root/pulse/observability"
 )
 
+// hostSeq 保证同纳秒内多次 Open 的 hostID 仍唯一。
+var hostSeq atomic.Uint64
+
 // Flags 是三个 demo 共用的环境/CLI 配置。
 // 用户输入一律走 REPL（Draft），这里不再承载一次性 Prompt/媒体入口。
 type Flags struct {
@@ -157,7 +160,7 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 	host := kernel.New()
 
 	// D3 两层标识：hostID 稳定（宿主装配期），trace_id 每请求独立生成。
-	hostID := fmt.Sprintf("host-%d", time.Now().UnixNano())
+	hostID := fmt.Sprintf("host-%d-%d", time.Now().UnixNano(), hostSeq.Add(1))
 
 	// observability.Bootstrap 必须最先 Use：kernel 事件不回放，
 	// 后装只能靠快照横幅兜底当前视图，历史轨迹不保证。

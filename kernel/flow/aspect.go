@@ -23,11 +23,15 @@ func buildChain(aspects []Aspect, core func(*RunCtx) error) func(*RunCtx) error 
 		a := aspects[i]
 		next := invoker
 		invoker = func(rc *RunCtx) error {
-			var called atomic.Bool
+			// 禁止并发/重叠调用 next（depth>1 → ErrNextCalledTwice）；
+			// 允许顺序多次（Retry 需要：1→0→1）。
+			var depth atomic.Int32
 			return a.Around(rc, func(nextRC *RunCtx) error {
-				if !called.CompareAndSwap(false, true) {
+				if depth.Add(1) > 1 {
+					depth.Add(-1)
 					return ErrNextCalledTwice
 				}
+				defer depth.Add(-1)
 				return next(nextRC)
 			})
 		}

@@ -42,3 +42,6 @@ go.work.sum
 
 # Skills directory (if managed separately)
 skills/
+
+# Local scratch (docs preview, temp artifacts)
+tmp/

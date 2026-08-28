@@ -21,6 +21,10 @@
 // Around(rc, next)。Recovery 内建；Timeout / Retry 可选。
 // CircuitBreaker 与 ErrorSwallow 不提供。
 //
+// E1 生命周期：WithObserver 挂自有 typed Observer（默认 no-op），
+// 发出 NodeWaiting / NodeRunning / NodeFinished；不走 kernel.Emit，
+// 也不写 observability.Sink——由装配层桥折成两条 Record。
+//
 // 并发默认无限；WithMaxRunning(n) 只限制同时进入 Run 的节点数，
 // 等数据不占名额。
 //

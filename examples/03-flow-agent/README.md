@@ -67,25 +67,15 @@ Skip 留给另一种情况：「这条路径根本不该走」。如果加了意
 
 ## 时间统计怎么读
 
-观测切面通过 `WithAspects(bridge.FlowAspect(host.Peak))` 安装在所有节点外围（`bridge` = 本请求 `demoapp.Bridge`）：
+生命周期观察通过 `WithObserver(bridge.FlowObserver(host.Peak))` 安装（`bridge` = 本请求 `demoapp.Bridge`）。E1 三段事件驱动两条桥记录，各用官方 `Duration`：
 
-```text
-切面包裹的范围 = [等待输入] + [执行用户 Run] 整段
-```
-
-因此日志语义是：
-
-| 字段 | 含义 | 本例实测 |
+| 记录 | Duration 含义 | 节点身份 |
 |---|---|---|
-| `node_finished duration_ms`（extract_text/retrieve） | 该节点从提交到完成的总时长，含等待 | ~0ms |
-| `node_finished duration_ms`（answer） | 含等待三个输入的全程 + Agent 回合全程 | ≈ 整次模型调用耗时 |
-| `flow duration_ms` | 首节点提交到最后节点终止 | ≈ answer 耗时（串行链下必然如此） |
-| `alive_nodes_peak` | 同时**存活于切面内**（含仍在等输入）的节点峰值 | 提交即进切面，线性链下等于节点总数 |
+| `flow.node_wait_finished` | Waiting → Running（或 Skip/超时直接 Finished）的 wait 墙钟 | `FiberName` = nodeID |
+| `flow.node_run_finished` | Running → Finished 的 run 墙钟（仅发过 Running 时写出） | `FiberName` = nodeID |
+| `alive_nodes_peak` | Waiting..Finished 之间同时存活的节点峰值（≠ `WithMaxRunning` 执行并发） | — |
 
-两个刻意的诚实边界：
-
-1. **`alive_nodes_peak` ≠ 执行并发**。示例图未设 `WithMaxRunning`（线性链没有可并行窗口，设了只是占位）；它拿到全部输入后才占执行名额、等数据不占名额。切面在 WaitAll 之外，所以把等待中的节点也计了进去——字段因此叫 alive 而不是 running。
-2. **无法拆分 wait_ms 与 run_ms**。现有 flow seam 只有一个 `Around`，框架没暴露「等待输入开始/结束」的位置，观测插件拿不到精确分段。当前各节点的 run 耗时靠对比得出（answer 总长 − 模型回合时长）；要精确拆分需要给 flow 增加 NodeWaiting/NodeRunning 类事件，这属于核心 API 演进，示例不做伪造。
+Skip / 超时打断 Wait：有 wait 记录与 Finished，**无** `flow.node_run_finished`。Retry 不重复打 Waiting/Running。
 
 ## 数据流全貌
 

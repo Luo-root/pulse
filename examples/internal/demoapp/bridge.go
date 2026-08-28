@@ -10,7 +10,6 @@
 package demoapp
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -105,8 +104,8 @@ func (b *Bridge) install(scope *kernel.Context) error {
 	return nil
 }
 
-// FlowPeak 记录 flow 切面观测到的并发存活峰值。
-// alive = 当前仍在切面内的节点数；peak = 历史最大值（不会因 defer 回落）。
+// FlowPeak 记录 flow observer 观测到的并发存活峰值。
+// alive = 当前仍在 Waiting..Finished 之间的节点数；peak = 历史最大值。
 type FlowPeak struct {
 	alive atomic.Int32
 	peak  atomic.Int32
@@ -115,41 +114,101 @@ type FlowPeak struct {
 // Peak 返回历史并发存活峰值。
 func (p *FlowPeak) Peak() int32 { return p.peak.Load() }
 
-// FlowAspect 返回本轮 Graph 的观测切面：node_total_ms + 并发存活峰值。
-func (b *Bridge) FlowAspect(peak *FlowPeak) flow.Aspect {
-	return flow.AspectFunc(func(rc *flow.RunCtx, next func(*flow.RunCtx) error) error {
-		cur := peak.alive.Add(1)
-		for {
-			old := peak.peak.Load()
-			if cur <= old || peak.peak.CompareAndSwap(old, cur) {
-				break
-			}
+func (p *FlowPeak) enter() {
+	if p == nil {
+		return
+	}
+	cur := p.alive.Add(1)
+	for {
+		old := p.peak.Load()
+		if cur <= old || p.peak.CompareAndSwap(old, cur) {
+			return
 		}
-		defer peak.alive.Add(-1)
+	}
+}
 
-		started := time.Now()
-		err := next(rc)
-		status := "completed"
-		switch {
-		case err == nil:
-		case errors.Is(err, flow.ErrSkipped):
-			status = "skipped"
-		case rc != nil && rc.Context().Err() != nil:
-			status = "canceled"
-		default:
-			status = "failed"
-		}
+func (p *FlowPeak) leave() {
+	if p != nil {
+		p.alive.Add(-1)
+	}
+}
+
+// 桥事件名（官方 Record 不扩字段；wait/run 分两条 Duration）。
+const (
+	EventFlowNodeWaitFinished = "flow.node_wait_finished"
+	EventFlowNodeRunFinished  = "flow.node_run_finished"
+)
+
+// FlowObserver 订阅 flow E1 生命周期，写出 wait/run 两条 Record，并更新峰值。
+// 不再用 Aspect.Around 整段耗时冒充分段。
+func (b *Bridge) FlowObserver(peak *FlowPeak) flow.Observer {
+	type nodeState struct {
+		waitStart time.Time
+		runStart  time.Time
+		ran       bool
+		waitDone  bool
+	}
+	var mu sync.Mutex
+	states := make(map[string]*nodeState)
+
+	// FiberName 借官方信封的实例诊断名槽位填 nodeID，不扩 Record 字段。
+	write := func(nodeID, event, status string, d time.Duration, err error) {
 		b.Sink.Write(observability.Record{
-			HostID:   b.HostID,
-			TraceID:  b.TraceID,
-			Source:   observability.SourceBridge,
-			Event:    "flow.node_finished",
-			Status:   status,
-			Duration: time.Since(started),
-			Err:      err,
+			HostID:    b.HostID,
+			TraceID:   b.TraceID,
+			Source:    observability.SourceBridge,
+			Event:     event,
+			Status:    status,
+			Duration:  d,
+			Err:       err,
+			FiberName: nodeID,
 		})
-		return err
-	})
+	}
+
+	return flow.ObserverFunc{
+		Waiting: func(nodeID string) {
+			mu.Lock()
+			states[nodeID] = &nodeState{waitStart: time.Now()}
+			mu.Unlock()
+			peak.enter()
+		},
+		Running: func(nodeID string) {
+			mu.Lock()
+			st := states[nodeID]
+			if st == nil {
+				st = &nodeState{waitStart: time.Now()}
+				states[nodeID] = st
+			}
+			if !st.waitDone {
+				d := time.Since(st.waitStart)
+				st.waitDone = true
+				st.ran = true
+				st.runStart = time.Now()
+				mu.Unlock()
+				write(nodeID, EventFlowNodeWaitFinished, "running", d, nil)
+				return
+			}
+			mu.Unlock()
+		},
+		Finished: func(nodeID string, reason flow.NodeFinishReason, err error) {
+			defer peak.leave()
+			status := string(reason)
+			mu.Lock()
+			st := states[nodeID]
+			delete(states, nodeID)
+			mu.Unlock()
+			if st == nil {
+				return
+			}
+			if !st.waitDone {
+				write(nodeID, EventFlowNodeWaitFinished, status, time.Since(st.waitStart), err)
+				return
+			}
+			if st.ran {
+				write(nodeID, EventFlowNodeRunFinished, status, time.Since(st.runStart), err)
+			}
+		},
+	}
 }
 
 // Write 让桥直接把自定义事实写进同一出口。

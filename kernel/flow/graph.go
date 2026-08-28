@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 // Graph 是一次运行的世界：节点集合 + 数据槽 + 首错 + 取消。
@@ -17,9 +18,10 @@ type Graph struct {
 	slots    map[string]*slot
 	slotsMu  sync.Mutex
 
-	nodes   []*Node
-	aspects []Aspect
-	maxRun  int // <=0 无限
+	nodes    []*Node
+	aspects  []Aspect
+	observer Observer
+	maxRun   int // <=0 无限
 
 	mu      sync.Mutex
 	started bool
@@ -255,9 +257,24 @@ func (g *Graph) runNode(n *Node) {
 	rc := newRunCtx(g, n, g.ctx)
 	defer rc.Cancel()
 
+	// 每节点生命周期事件至多一次（防 Retry 双打点）。
+	var waited, ran atomic.Bool
+	emitWaiting := func() {
+		if waited.CompareAndSwap(false, true) {
+			g.notify(func(o Observer) { o.OnNodeWaiting(n.id) })
+		}
+	}
+	emitRunning := func() {
+		if ran.CompareAndSwap(false, true) {
+			g.notify(func(o Observer) { o.OnNodeRunning(n.id) })
+		}
+	}
+
 	// 切面覆盖「等输入 + 执行」整段，这样 Timeout 能打断 Wait。
 	// MaxRunning 只在即将执行用户 Run 时占用。
+	// 生命周期埋点在 innermost core：Retry 重入时靠门闩只发一次。
 	chain := buildChain(append(append([]Aspect{}, g.aspects...), n.aspects...), func(rc *RunCtx) (err error) {
+		emitWaiting()
 		if err := WaitAll(rc, n.requires...); err != nil {
 			return err
 		}
@@ -266,6 +283,7 @@ func (g *Graph) runNode(n *Node) {
 		}
 		g.acquire()
 		defer g.release()
+		emitRunning()
 		defer func() {
 			if rec := recover(); rec != nil {
 				err = fmt.Errorf("flow: panic in node %s: %v", n.id, rec)
@@ -280,14 +298,17 @@ func (g *Graph) runNode(n *Node) {
 	err := chain(rc)
 	if isSkipped(err) {
 		g.skipAllOrUnwritten(n, rc, true)
+		g.notify(func(o Observer) { o.OnNodeFinished(n.id, NodeSkipped, err) })
 		return
 	}
 	if err != nil {
 		g.fail(err)
 		g.skipAllOrUnwritten(n, rc, true)
+		g.notify(func(o Observer) { o.OnNodeFinished(n.id, finishReason(err), err) })
 		return
 	}
 	g.skipAllOrUnwritten(n, rc, false)
+	g.notify(func(o Observer) { o.OnNodeFinished(n.id, NodeCompleted, nil) })
 }
 
 func (g *Graph) skipAllOrUnwritten(n *Node, rc *RunCtx, allIfNoneWritten bool) {
@@ -315,4 +336,8 @@ func (g *Graph) skipUnwritten(n *Node, rc *RunCtx) {
 
 func isSkipped(err error) bool {
 	return errors.Is(err, ErrSkipped)
+}
+
+func isCanceled(err error) bool {
+	return errors.Is(err, context.Canceled)
 }

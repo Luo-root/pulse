@@ -125,7 +125,7 @@ type Aspect interface {
 ```
 
 - `rc.Fork()` 只派生取消上下文，不复制写入记录和声明权限；core 用切面级 ctx 做 `Get`/`WaitAll`，超时能打断等数据。
-- 全局切面 + 节点切面，先全局后节点，外层先跑。每个切面每次 `Around` 调用只能调用 `next` 至多一次；重复（含并发）调用返回 `ErrNextCalledTwice`，节点不会重入。
+- 全局切面 + 节点切面，先全局后节点，外层先跑。每次 `Around` 内 **禁止并发/重叠** 调用 `next`（返回 `ErrNextCalledTwice`）；**允许顺序多次**（`Retry` 依赖此语义）。E1 生命周期事件靠每节点门闩保证 Waiting/Running 仍至多一次。
 - **内建、不可关**：Recovery（panic → 首错 + 取消）。
 - **可选**：Timeout、Retry。
 - **不移植**：
@@ -172,8 +172,9 @@ type Aspect interface {
 
 ### E1 观测 seam：节点生命周期事件
 
-> 跟踪：[Issue #25](https://github.com/Luo-root/pulse/issues/25)（规格钉边界中，**未实现**）
-> 拍板补充（2026-08-27）：派发载体 = **flow 自有 typed observer**；与正式 `observability/` 的关系见下。
+> 跟踪：[Issue #25](https://github.com/Luo-root/pulse/issues/25)
+> 实现状态：**已落地**（`WithObserver` + `runNode` 埋点 + demoapp 桥两条 Record）；规格拍板见下。
+> 拍板补充（2026-08-27/28）：派发载体 = **flow 自有 typed observer**；与正式 `observability/` 的关系见下。
 
 **现状缺口**：切面只有一个 `Around(rc, next)`，包住「等待输入 + 执行」整段。观测方拿不到「等待输入何时开始/结束」，只能给出整段耗时；examples/03 的桥因此记 `flow.node_finished` + `Duration`（= total），并明确拒绝伪造 wait/run 拆分（见 examples/03-flow-agent/README「时间统计怎么读」）。
 
@@ -215,12 +216,12 @@ observability/
 
 官方 `Record` 只有一个 `Duration`，且 observability-v1 **明确官方 Record 不扩字段**（token 走 slog 附加键）。因此桥侧采用**两条记录**，各用现有 `Duration`：
 
-| 桥事件名 | Duration 含义 | 何时写 |
-|---|---|---|
-| `flow.node_wait_finished` | wait 段墙钟 | 离开 Waiting（进入 Running，或因 Skip/超时直接 Finished） |
-| `flow.node_run_finished` | run 段墙钟 | 仅当发过 Running 时，在 Finished 时写 |
+| 桥事件名 | Duration 含义 | 何时写 | 节点身份 |
+|---|---|---|---|
+| `flow.node_wait_finished` | wait 段墙钟 | 离开 Waiting（进入 Running，或因 Skip/超时直接 Finished） | `FiberName` = nodeID（借诊断名槽位，不扩信封） |
+| `flow.node_run_finished` | run 段墙钟 | 仅当发过 Running 时，在 Finished 时写 | 同上 |
 
-不写第三条「total」冒充分段；需要 total 时由消费方把两段相加。验收「分别断言 wait/run」对这两条 Record 断言即可。
+不写第三条「total」冒充分段；需要 total 时由消费方把两段相加。验收「分别断言 wait/run」对这两条 Record 按 `FiberName` 区分节点。
 
 #### 三个只读事件
 

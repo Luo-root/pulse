@@ -130,7 +130,7 @@ func runGraph(host *demoapp.Host, agent *loop.Agent, retriever Retriever, histor
 	// 不设 WithMaxRunning：本图是线性链，没有可并行执行的窗口；上限
 	// 的真实效果（拿齐输入才占名额、等数据不占）留给扩图者验证。
 	g := flow.New(context.Background(),
-		flow.WithAspects(bridge.FlowAspect(host.Peak)),
+		flow.WithObserver(bridge.FlowObserver(host.Peak)),
 	)
 	if err := flow.Seed(g, UserInput, user); err != nil {
 		return nil, 0, err
