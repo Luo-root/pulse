@@ -253,19 +253,108 @@ Timeout 现返回 `fmt.Errorf("flow: node … timeout…")`，不是 `context.Ca
 ### E2 结构化编排：JSON/YAML 流程定义（更先进形态）
 
 > 跟踪：[Issue #29](https://github.com/Luo-root/pulse/issues/29)（规格阶段，**未实现**）
+> 规格补钉（2026-08-28，#29 审核）：下列条款在开实现子 Issue 前视为钉死。
 
-**方向**：用 JSON/YAML 等结构化语言声明流程图——节点列表、Requires/Provides 关系、Seed 输入、可选的 Timeout/Retry 参数——由运行时装配成 Graph。目标是让流程描述脱离 Go 源码，可被配置管理、跨语言工具消费。
+**目标（降调）**：用 JSON/YAML 声明流程图——节点列表、Requires/Provides、Seed 引用、可选内建 Timeout/Retry——由运行时装成 Graph。诚实目标是**配置与代码分离、可审查、可被工具生成**。节点实现仍是 Go 工厂时，YAML **不能**跨语言执行；「跨语言工具消费」不是本阶段目标。
 
-**前置依赖**（缺一不动工）：
+**前置依赖**：
 
-1. **节点注册语义稳定**：序列化的只是「ID + 声明 + 配置」，节点实现必须是具名可寻址的（类似 kernel Loader 的 Factory 注册表）。Add 期全部校验规则（来源唯一、自环拒绝等）原样适用于反序列化路径；
-2. **可序列化的输入 Schema**：多模态消息、附件字节不适合直接放 YAML——需要定义外部输入的引用方式（如 Seed 引用文件/环境/上游服务），这可能与记忆层的 Session/Context 设计产生交集，需先对齐；
-3. **E1 落地且装配层能消费 wait/run**：声明式图的问题定位比代码图更依赖节点分段耗时；kernel 装配日志解决不了这类排障，E1 是它的排障前提。
+| # | 前置 | 状态 |
+|---|---|---|
+| 1 | 节点注册语义稳定（具名工厂，不进 Loader） | 规格见下；**未实现** |
+| 2 | Seed 外部输入引用 Schema | 规格见下；**未实现** |
+| 3 | E1 落地且桥能消费 wait/run | **已满足**（#25 / #28） |
 
-**明确的边界立场**：YAML 编排不引入 OR/竞速、不改 AND 汇聚语义、不新增表达式求值引擎做条件路由——条件分支仍然是「分类节点 Set/Skip」。声明式是图的**另一种书写方式**，不是另一种执行模型。
+#### 边界立场（钉死）
+
+- 声明式是图的**另一种书写方式**，不是另一种执行模型。
+- 不引入 OR / WaitAny / 竞速；不新增表达式引擎做条件路由——条件仍是分类节点 Set/Skip。
+- 声明式**只**覆盖内建 `Timeout` / `Retry`（duration、attempts 是数据）。自定义 `Aspect` **不能**进 YAML，仍走代码 `NewNode(..., aspect)`。
+- 不改 AND / 三态槽位 / 失败显式 / 取消清理 Skip / E1 Observer。
+
+#### 节点注册（钉死：不是 Plugin）
+
+「类似 Loader」只指**具名工厂表**的形状，**禁止**把节点理解成 `kernel.Plugin`（P3 已废弃）。
+
+```go
+// 草图：名称实现时可微调；语义钉死。
+type NodeFactory func() *Node // 或返回 (id 声明 + Run) 的等价物；不进 kernel.Loader
+
+type Registry struct { /* 实例，非包级全局 */ }
+func NewRegistry() *Registry
+func (r *Registry) Register(name string, f NodeFactory) error
+func (r *Registry) MustRegister(name string, f NodeFactory)
+```
+
+- 用 **`NewRegistry()` 实例**，不用包级全局 `flow.Register`（避免测试互相污染；装配期对象，不属于「一次运行一个世界」）。
+- YAML 里 `uses: extract_text` 解析为 `reg` 上的工厂名；装图时 `factory()` → `*Node`，再 `g.Add`——**Add 期全部校验原样适用**。
+
+#### Key 序列化（钉死）
+
+`Key[T]` 在 YAML 里不能只写名字（会丢掉类型校验）。装图期编码：
+
+```yaml
+# name = Key 的稳定名；type = 注册期约定的类型记号（与 Go 侧 NewKey[T] 绑定）
+requires:
+  - { name: demo.user_input, type: "*llm.Message" }
+provides:
+  - { name: demo.query_text, type: string }
+```
+
+- 装图前 Registry / 类型表须能把 `(name, type)` 解析回已登记的 `Key[T]`；同名异型在装图期拒绝（对齐 `NewKey`）。
+- 具体 `type` 字符串规范（包路径？短名？）实现 Issue 再定，但**必须带类型维度**。
+
+#### Seed 引用枚举（钉死方向）
+
+多模态字节不进 YAML 正文。Seed 只写引用：
+
+| kind | 含义 | 例 |
+|---|---|---|
+| `literal` | 小标量 / JSON 字面量 | `value: "hello"` |
+| `env` | 环境变量 | `env: PULSE_DEMO_QUERY` |
+| `file` | 工作区内文件路径 | `path: ./input.json`（由宿主读入再 Seed） |
+| `context` | 宿主注入的请求上下文键 | `key: user_message`（与 memory/session 对齐时遵守 model-visible） |
+
+`SkipSeed` 对应 `skip: true` 或显式 skip 条目。装图 API 只生成「要 Seed / SkipSeed 哪些 Key」的计划；**实际读文件/环境由宿主执行**，flow 不偷偷 IO。
+
+#### 最小 YAML 例子（3 节点 + Seed）
+
+```yaml
+# 示意：与 examples/03 同构的线性链；不是最终 schema 冻结稿
+version: 1
+seeds:
+  - key: { name: demo.user_input, type: "*llm.Message" }
+    from: { kind: context, key: user_message }
+nodes:
+  - id: extract_text
+    uses: demo.extract_text          # Registry 工厂名
+    requires: [{ name: demo.user_input, type: "*llm.Message" }]
+    provides: [{ name: demo.query_text, type: string }]
+  - id: retrieve
+    uses: demo.retrieve
+    requires: [{ name: demo.query_text, type: string }]
+    provides: [{ name: demo.context_docs, type: "[]Document" }]
+    retry: { attempts: 2, delay: 100ms }   # 仅内建 Retry
+  - id: answer
+    uses: demo.answer
+    requires:
+      - { name: demo.user_input, type: "*llm.Message" }
+      - { name: demo.query_text, type: string }
+      - { name: demo.context_docs, type: "[]Document" }
+    provides: [{ name: demo.final_text, type: string }]
+    timeout: 30s                           # 仅内建 Timeout
+observer: host                             # 可选：由宿主挂 WithObserver；YAML 不内嵌桥
+```
+
+装图伪代码：`Parse → 对每个 node：factory → NewNode 等价物 → Add → 返回 Graph + SeedPlan`；宿主执行 SeedPlan 后再 `Run`。
+
+#### 实现约束 / 非目标
+
+- flow 装图包可放在 `kernel/flow` 子文件或 `kernel/flow/yaml`（实现时再定），**仍不得** import observability / llm（Key 类型记号是字符串，不是 import）。
+- 不做：自定义 Aspect 序列化、表达式条件、跨语言运行时、把节点注册进 `kernel.Loader`。
 
 ### 与其他组件的关系
 
-- **E1 → 装配层桥**：flow 出 typed 事实；桥折成两条 Record（`flow.node_wait_finished` / `flow.node_run_finished`，各用 `Duration`）写 Sink。正式 observability 包不 import flow，只提供信封与出口；
-- **E2 → memory 层**：外部输入引用若涉及会话/上下文来源，遵循 memory 设计稿中「model-visible 投影不可破坏」的不变式；
-- 全部演进不破坏本篇已钉死的契约：三态槽位、AND 汇聚、来源唯一、失败显式。
+- **E1 → 装配层桥**：flow 出 typed 事实；桥折成两条 Record（`flow.node_wait_finished` / `flow.node_run_finished`，各用 `Duration`，`FiberName`=nodeID）写 Sink。正式 observability 包不 import flow，只提供信封与出口；
+- **E2 → memory 层**：`context` 类 Seed 若涉及会话/上下文来源，遵循 memory 设计稿中「model-visible 投影不可破坏」的不变式；
+- 全部演进不破坏本篇已钉死的契约：三态槽位、AND 汇聚、来源唯一、失败显式、E1 Observer。
