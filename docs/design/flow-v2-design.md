@@ -272,13 +272,16 @@ Timeout 现返回 `fmt.Errorf("flow: node … timeout…")`，不是 `context.Ca
 - 声明式**只**覆盖内建 `Timeout` / `Retry`（duration、attempts 是数据）。自定义 `Aspect` **不能**进 YAML，仍走代码 `NewNode(..., aspect)`。
 - 不改 AND / 三态槽位 / 失败显式 / 取消清理 Skip / E1 Observer。
 
-#### 节点注册（钉死：不是 Plugin）
+#### 节点注册（钉死：YAML 拥有拓扑；Factory 只给 Run）
 
 「类似 Loader」只指**具名工厂表**的形状，**禁止**把节点理解成 `kernel.Plugin`（P3 已废弃）。
 
+**拓扑归属 A（2026-08-28 拍板）**：声明式既是另一种书写方式，**id / requires / provides 以 YAML 为准**。Go 侧工厂**只提供** `Run`（及可选的「代码侧切面」挂载点），不返回完整 `*Node`——否则 YAML 再写一遍边会变成废话或双源冲突。
+
 ```go
 // 草图：名称实现时可微调；语义钉死。
-type NodeFactory func() *Node // 或返回 (id 声明 + Run) 的等价物；不进 kernel.Loader
+type RunFunc func(*RunCtx) error
+type NodeFactory = RunFunc // 只给 Run；不进 kernel.Loader；不返回 *Node
 
 type Registry struct { /* 实例，非包级全局 */ }
 func NewRegistry() *Registry
@@ -287,7 +290,9 @@ func (r *Registry) MustRegister(name string, f NodeFactory)
 ```
 
 - 用 **`NewRegistry()` 实例**，不用包级全局 `flow.Register`（避免测试互相污染；装配期对象，不属于「一次运行一个世界」）。
-- YAML 里 `uses: extract_text` 解析为 `reg` 上的工厂名；装图时 `factory()` → `*Node`，再 `g.Add`——**Add 期全部校验原样适用**。
+- YAML **必填** `id` / `uses` / `requires` / `provides`；`uses` 解析为 `reg` 上的工厂名。
+- 装图：`NewNode(id, requires, provides, reg.Lookup(uses), timeout?, retry?)` → `g.Add`——**Add 期全部校验原样适用**。
+- 禁止 B 形态：Factory 返回完整 `*Node` 且 YAML 再声明边（除非实现 Issue 明确改拍板）。
 
 #### Key 序列化（钉死）
 
@@ -346,12 +351,26 @@ nodes:
 observer: host                             # 可选：由宿主挂 WithObserver；YAML 不内嵌桥
 ```
 
-装图伪代码：`Parse → 对每个 node：factory → NewNode 等价物 → Add → 返回 Graph + SeedPlan`；宿主执行 SeedPlan 后再 `Run`。
+装图伪代码：
+
+```text
+Parse(YAML)
+  → 对每个 node：
+       run := reg.Lookup(uses)                 // 只拿到 RunFunc
+       n   := NewNode(id, requires, provides, run,
+                      Timeout?, Retry?)      // 拓扑来自 YAML
+       // Timeout 在外、Retry 在内（默认洋葱顺序，与「外层先跑」一致）
+       g.Add(n)
+  → 返回 Graph + SeedPlan
+宿主执行 SeedPlan（读 env/file/context）后再 g.Run()
+```
 
 #### 实现约束 / 非目标
 
-- flow 装图包可放在 `kernel/flow` 子文件或 `kernel/flow/yaml`（实现时再定），**仍不得** import observability / llm（Key 类型记号是字符串，不是 import）。
-- 不做：自定义 Aspect 序列化、表达式条件、跨语言运行时、把节点注册进 `kernel.Loader`。
+- YAML 解析放到 **`kernel/flow/yaml`**（推荐），避免把 yaml 依赖塞进 flow 核心；核心仍不得 import observability / llm（Key 类型记号是字符串）。
+- `(name, type) → keyRef` 需要登记表（宿主或 flow 侧类型表在装图前注入），**不要**在装图包里 `import llm` 只为拿类型。
+- 同一节点同时写 `timeout` + `retry` 时默认：**Timeout 在外、Retry 在内**。
+- 不做：自定义 Aspect 序列化、表达式条件、跨语言运行时、把节点注册进 `kernel.Loader`、Factory 返回完整 `*Node` 与 YAML 双写拓扑。
 
 ### 与其他组件的关系
 
