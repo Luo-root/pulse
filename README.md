@@ -1,4 +1,4 @@
-# Pulse
+﻿# Pulse
 
 [![Go Version](https://img.shields.io/badge/Go-1.25.0-blue.svg)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -21,7 +21,7 @@ v2 以可逆效应和依赖响应式为内核，先落地插件内核、模型�
 | [`kernel/flow`](kernel/flow/README_zh.md) | 数据就绪驱动的节点编排（槽位三态、Skip、E1 Observer） | `flow.New(ctx)` |
 | [`kernel/flow/yaml`](kernel/flow/yaml/README_zh.md) | E2 YAML 声明式装图（拓扑归属 A：Factory 只给 Run） | `flowyaml.Load` |
 | [`observability`](observability/README_zh.md) | 正式观测包：Bootstrap + Record + Sink（只依赖 kernel） | `observability.Bootstrap()` |
-| [`examples`](examples/README.md) | 渐进示例 01–04：chat / ReAct+HITL / 线性 flow / 并行 DAG | `go run ./examples/01-chat` |
+| [`examples`](examples/README.md) | 渐进示例 01–05：chat / ReAct+HITL / flow / DAG / tools·MCP·Skills | `go run ./examples/01-chat` |
 
 ## 快速上手：模型 + ReAct 工具回合
 
@@ -155,7 +155,7 @@ llm/                       v2 模型词汇表、Registry 与 provider adapter
 loop/                      v2 无状态 ReAct 回合
 observability/             v2 正式观测包（Bootstrap / Record / Sink）
 docs/design/               架构设计与迁移文档（Accepted；memory 调研稿另计）
-examples/                  01–04 渐进示例 + internal/demoapp 装配层桥
+examples/                  01–05 渐进示例 + internal/demoapp 装配层桥
 ```
 
 ## 许可证

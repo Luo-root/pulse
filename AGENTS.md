@@ -29,7 +29,7 @@ skills/                     # v2 Skills 装载器（agentskills.io）；Skill �
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1
                            # memory-layer-*-design.md 若出现仅为草案，勿当 Accepted
-examples/                   # 01–04 渐进示例
+examples/                   # 01–05 渐进示例
   internal/demoapp/         # 示例私有装配层（库包本身无 internal/；此处不违反「库无 internal」）
   skills/                   # 示例 Skill 材料（历史私有 frontmatter 键会被装载器忽略）
 ```
