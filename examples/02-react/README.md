@@ -59,8 +59,10 @@ history = append(history, res.Messages...) // 本轮 assistant/tool 全部产出
 
 ## 工具与边界
 
-- `lookup`：只读查询（放行侧代表）
-- `delete_file`：模拟的危险操作——handler 只返回字符串 `"deleted"`，**不碰真实文件系统**；审批发生在执行之前，无论文件是否存在
+装配走 `toolset.Plugin` + `Registry.Register`，再 `AsToolSet()` 交给 `loop.Agent`（HITL 仍挂 `before_tool_call`，语义不变）。
+
+- `lookup`：只读查询（`RiskReadonly`，放行侧代表）
+- `delete_file`：模拟的危险操作（`RiskDangerous`）——handler 只返回字符串 `"deleted"`，**不碰真实文件系统**；审批发生在执行之前，无论文件是否存在
 
 已知边界如实记录：`ToolSet.Execute` 返回 string，工具结果暂不支持多模态回传。
 

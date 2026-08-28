@@ -3,6 +3,7 @@ package toolset_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -67,6 +68,13 @@ func TestRegisterRejectsInvalid(t *testing.T) {
 				Def: llm.ToolDef{Name: "a"}, Fn: echoFn("x"), Source: "local", Risk: toolset.RiskUnspecified,
 			},
 			sub: "risk is required",
+		},
+		{
+			name: "unknown risk",
+			reg: toolset.Registration{
+				Def: llm.ToolDef{Name: "a"}, Fn: echoFn("x"), Source: "local", Risk: toolset.Risk(99),
+			},
+			sub: "unknown risk",
 		},
 	}
 	for _, tc := range cases {
@@ -226,5 +234,101 @@ func TestDisposeDoesNotClobberReregister(t *testing.T) {
 	out, err := r.AsToolSet().Execute(context.Background(), llm.ToolCall{Name: "echo"})
 	if err != nil || out != "v2" {
 		t.Fatalf("got %q %v", out, err)
+	}
+}
+
+func TestExecuteRespectsContextCancel(t *testing.T) {
+	host := kernel.New()
+	defer host.Dispose()
+	r := toolset.NewRegistry()
+
+	_, err := r.Register(host, toolset.Registration{
+		Def:    llm.ToolDef{Name: "wait"},
+		Source: "local",
+		Risk:   toolset.RiskReadonly,
+		Fn: func(ctx context.Context, _ json.RawMessage) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = r.AsToolSet().Execute(ctx, llm.ToolCall{Name: "wait", Arguments: json.RawMessage(`{}`)})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v want context.Canceled", err)
+	}
+}
+
+func TestDisposeSourceThenReregister(t *testing.T) {
+	host := kernel.New()
+	defer host.Dispose()
+	r := toolset.NewRegistry()
+
+	mustReg(t, r, host, "a1", "mcp.fs", toolset.RiskReadonly, "a1-old")
+	mustReg(t, r, host, "a2", "mcp.fs", toolset.RiskReadWrite, "a2")
+	mustReg(t, r, host, "b1", "local", toolset.RiskReadonly, "b1")
+
+	r.DisposeSource("mcp.fs")
+	mustReg(t, r, host, "a1", "mcp.fs", toolset.RiskReadonly, "a1-new")
+
+	out, err := r.AsToolSet().Execute(context.Background(), llm.ToolCall{Name: "a1"})
+	if err != nil || out != "a1-new" {
+		t.Fatalf("a1 after reconnect: %q %v", out, err)
+	}
+	src, risk, ok := r.LookupMeta("a1")
+	if !ok || src != "mcp.fs" || risk != toolset.RiskReadonly {
+		t.Fatalf("LookupMeta a1: %q %v %v", src, risk, ok)
+	}
+	if _, _, ok := r.LookupMeta("a2"); ok {
+		t.Fatal("a2 should stay gone after DisposeSource")
+	}
+	out, err = r.AsToolSet().Execute(context.Background(), llm.ToolCall{Name: "b1"})
+	if err != nil || out != "b1" {
+		t.Fatalf("local b1 must remain: %q %v", out, err)
+	}
+}
+
+func TestAsToolSetConsumedByAgent(t *testing.T) {
+	host := kernel.New()
+	defer host.Dispose()
+	r := toolset.NewRegistry()
+	mustReg(t, r, host, "lookup", "local.lookup", toolset.RiskReadonly, `{"ok":true}`)
+
+	model := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "lookup", Arguments: json.RawMessage(`{"topic":"pulse"}`)}),
+		llm.Resp("done"),
+	)
+	agent, err := loop.NewAgent(model,
+		loop.WithToolSet(r.AsToolSet()),
+		loop.WithEventScope(host),
+		loop.WithSystemPrompt("test"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := agent.Run(context.Background(), nil, llm.UserText("call lookup"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Final == nil || res.Final.Text() != "done" {
+		t.Fatalf("Final=%v", res.Final)
+	}
+	foundToolResult := false
+	for _, m := range res.Messages {
+		if m == nil {
+			continue
+		}
+		for _, p := range m.Parts {
+			if p.Kind == llm.PartToolResult && p.ToolResultValue != nil && !p.ToolResultValue.IsError {
+				foundToolResult = true
+			}
+		}
+	}
+	if !foundToolResult {
+		t.Fatalf("expected successful tool result in Messages: %+v", res.Messages)
 	}
 }
