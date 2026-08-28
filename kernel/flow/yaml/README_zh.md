@@ -16,6 +16,9 @@ _ = g.Run()
 
 - Timeout 在外、Retry 在内（与设计文一致）
 - Key 用 `{name, type}` 对账；`type` = `reflect.Type.String()`（与 `RegisterKey` 一致）
+- duration 写 `30s` / `100ms`（`time.ParseDuration`）
+- `observer:` 字段 Load 忽略；用 `LoadOptions.Graph` 挂 `WithObserver`
+- `version` 缺省或 `1`
 - 本包可依赖 `gopkg.in/yaml.v3`；`kernel/flow` 核心不依赖 yaml
 
 规格：`docs/design/flow-v2-design.md` E2；实现 Issue #32。

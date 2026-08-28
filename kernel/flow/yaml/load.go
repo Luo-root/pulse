@@ -12,10 +12,12 @@ import (
 
 // Document 是声明式流程图的解码形态。
 type Document struct {
-	Version  int        `yaml:"version"`
-	Seeds    []SeedSpec `yaml:"seeds"`
-	Nodes    []NodeSpec `yaml:"nodes"`
-	Observer string     `yaml:"observer"`
+	// Version 缺省或 1 接受；其它值拒绝。
+	Version int `yaml:"version"`
+	Seeds   []SeedSpec `yaml:"seeds"`
+	Nodes   []NodeSpec `yaml:"nodes"`
+	// Observer 仅文档提示位：Load 忽略。观察者走 LoadOptions.Graph / WithObserver。
+	Observer string `yaml:"observer"`
 }
 
 // KeySpec 是 YAML 中的 {name, type}。
@@ -118,9 +120,13 @@ func Load(data []byte, reg *flow.Registry, opts LoadOptions) (*flow.Graph, *Seed
 	if err := goyaml.Unmarshal(data, &doc); err != nil {
 		return nil, nil, fmt.Errorf("flow/yaml: decode: %w", err)
 	}
+	if doc.Version != 0 && doc.Version != 1 {
+		return nil, nil, fmt.Errorf("flow/yaml: unsupported version %d (want 0 or 1)", doc.Version)
+	}
 	if len(doc.Nodes) == 0 {
 		return nil, nil, fmt.Errorf("flow/yaml: document has no nodes")
 	}
+	_ = doc.Observer // 明确忽略；宿主用 LoadOptions.Graph 挂 Observer
 
 	ctx := opts.Context
 	if ctx == nil {

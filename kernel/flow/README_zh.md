@@ -314,6 +314,14 @@ g := flow.New(ctx, flow.WithObserver(obs))
 - observer panic **不得**变成节点失败。
 - 桥侧常见落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；节点身份放 `FiberName`（不扩官方信封）。见 `examples/03-flow-agent`。
 
+## 声明式装图（E2）
+
+JSON/YAML 装图在子包 [`yaml`](yaml/README_zh.md)：`Load` / `SeedPlan`。拓扑归属 A——YAML 必填 `id` / `uses` / `requires` / `provides`；`uses` 对应 `Registry` 上的 Run 工厂。
+
+- duration 字段用 Go `ParseDuration` 形态：`30s`、`100ms`（不要写裸数字当秒的歧义形式）。
+- `observer:` 文档提示位，`Load` **忽略**；观察者走 `LoadOptions.Graph`（如 `WithObserver`）。
+- `version` 缺省或 `1`；其它值拒绝。
+
 ## 声明期校验
 
 `Graph.Add` 在启动前尽早拒绝以下无效声明：

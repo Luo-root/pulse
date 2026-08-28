@@ -17,8 +17,7 @@ type NodeFactory = RunFunc
 type Registry struct {
 	mu        sync.Mutex
 	factories map[string]NodeFactory
-	keys      map[string]keyRef // name → keyRef
-	typeTags  map[string]string // name → reflect.Type.String()，与 YAML type 对账
+	keys      map[string]keyRef // name → keyRef；type 记号 = typ.String()
 }
 
 // NewRegistry 创建空注册表。
@@ -26,7 +25,6 @@ func NewRegistry() *Registry {
 	return &Registry{
 		factories: make(map[string]NodeFactory),
 		keys:      make(map[string]keyRef),
-		typeTags:  make(map[string]string),
 	}
 }
 
@@ -78,7 +76,6 @@ func RegisterKey[T any](r *Registry, k Key[T]) error {
 		return fmt.Errorf("flow: empty key name")
 	}
 	ref := k.asRef()
-	tag := ref.typ.String()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if old, ok := r.keys[k.name]; ok {
@@ -88,7 +85,6 @@ func RegisterKey[T any](r *Registry, k Key[T]) error {
 		return nil
 	}
 	r.keys[k.name] = ref
-	r.typeTags[k.name] = tag
 	return nil
 }
 
@@ -114,7 +110,10 @@ func (r *Registry) ResolveKey(name, typeTag string) (keyRef, error) {
 	if !ok {
 		return zero, fmt.Errorf("flow: key %q not registered", name)
 	}
-	want := r.typeTags[name]
+	want := ""
+	if ref.typ != nil {
+		want = ref.typ.String()
+	}
 	if typeTag == "" {
 		return zero, fmt.Errorf("flow: key %q missing type tag (want %s)", name, want)
 	}
@@ -131,8 +130,11 @@ func (r *Registry) TypeTagOf(name string) (string, bool) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	tag, ok := r.typeTags[name]
-	return tag, ok
+	ref, ok := r.keys[name]
+	if !ok || ref.typ == nil {
+		return "", false
+	}
+	return ref.typ.String(), true
 }
 
 // NameType 是 YAML / 装图用的 name+type 对。
@@ -167,18 +169,7 @@ func SeedByName(g *Graph, r *Registry, name, typeTag string, v any) error {
 	if !vt.AssignableTo(ref.typ) {
 		return fmt.Errorf("flow: seed %q: value type %s not assignable to %s", name, vt, ref.typ)
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.started {
-		return ErrGraphStarted
-	}
-	if err := g.keys.register(ref); err != nil {
-		return err
-	}
-	if err := g.claimSource(ref.name, "seed"); err != nil {
-		return err
-	}
-	return g.slotOfLocked(ref).resolveValue(v)
+	return g.seedRef(ref, v, false)
 }
 
 // SkipSeedByName 按登记表解析 Key 后标记跳过。
@@ -187,16 +178,5 @@ func SkipSeedByName(g *Graph, r *Registry, name, typeTag string) error {
 	if err != nil {
 		return err
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.started {
-		return ErrGraphStarted
-	}
-	if err := g.keys.register(ref); err != nil {
-		return err
-	}
-	if err := g.claimSource(ref.name, "seed"); err != nil {
-		return err
-	}
-	return g.slotOfLocked(ref).resolveSkip()
+	return g.seedRef(ref, nil, true)
 }

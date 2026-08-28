@@ -1,7 +1,7 @@
 # flow v2：数据就绪驱动的节点编排
 
 > 状态：Accepted（设计拍板 2026-08-26）
-> 实现状态：**核心契约已落地**（`kernel/flow/` + 包 README + 测试 + examples/03）；**E1 已落地**（Issue [#25](https://github.com/Luo-root/pulse/issues/25) / PR #28）；**E2 未开工**
+> 实现状态：**核心契约已落地**（`kernel/flow/` + 包 README + 测试 + examples/03）；**E1 已落地**（Issue [#25](https://github.com/Luo-root/pulse/issues/25) / PR #28）；**E2 已落地**（Issue [#32](https://github.com/Luo-root/pulse/issues/32) / PR #33：`Registry` + `kernel/flow/yaml`）
 > 包位置：`kernel/flow/`
 > 公开 API 权威摘要：[`kernel/flow/README_zh.md`](../../kernel/flow/README_zh.md)（本篇保留理念、钉死契约与演进；API 段为与实现同形的摘要，避免双维护完整导出表）
 > 前置：v1 `components/flowchart` 已按 breaking 决策删除；本篇从源码提炼理念并给出 v2 契约。
@@ -252,8 +252,8 @@ Timeout 现返回 `fmt.Errorf("flow: node … timeout…")`，不是 `context.Ca
 
 ### E2 结构化编排：JSON/YAML 流程定义（更先进形态）
 
-> 跟踪：规格 [#29](https://github.com/Luo-root/pulse/issues/29)；实现 [#32](https://github.com/Luo-root/pulse/issues/32)
-> 实现状态：进行中（`Registry` + `kernel/flow/yaml`）；规格补钉（2026-08-28）下列条款钉死。
+> 跟踪：规格 [#29](https://github.com/Luo-root/pulse/issues/29)；实现 [#32](https://github.com/Luo-root/pulse/issues/32) / PR #33
+> 实现状态：**已落地**（`Registry` + `kernel/flow/yaml.Load` / `SeedPlan`）；规格补钉（2026-08-28）下列条款钉死。
 
 **目标（降调）**：用 JSON/YAML 声明流程图——节点列表、Requires/Provides、Seed 引用、可选内建 Timeout/Retry——由运行时装成 Graph。诚实目标是**配置与代码分离、可审查、可被工具生成**。节点实现仍是 Go 工厂时，YAML **不能**跨语言执行；「跨语言工具消费」不是本阶段目标。
 
@@ -261,8 +261,8 @@ Timeout 现返回 `fmt.Errorf("flow: node … timeout…")`，不是 `context.Ca
 
 | # | 前置 | 状态 |
 |---|---|---|
-| 1 | 节点注册语义稳定（具名工厂，不进 Loader） | 规格见下；**未实现** |
-| 2 | Seed 外部输入引用 Schema | 规格见下；**未实现** |
+| 1 | 节点注册语义稳定（具名工厂，不进 Loader） | **已落地**（`NewRegistry` / `Register` / `RegisterKey`） |
+| 2 | Seed 外部输入引用 Schema | **已落地**（`SeedPlan` + `literal|env|file|context`；IO 在宿主） |
 | 3 | E1 落地且桥能消费 wait/run | **已满足**（#25 / #28） |
 
 #### 边界立场（钉死）
@@ -348,8 +348,10 @@ nodes:
       - { name: demo.context_docs, type: "[]Document" }
     provides: [{ name: demo.final_text, type: string }]
     timeout: 30s                           # 仅内建 Timeout
-observer: host                             # 可选：由宿主挂 WithObserver；YAML 不内嵌桥
+observer: host                             # 文档提示位：Load **忽略**；观察者走 LoadOptions.Graph / WithObserver
 ```
+
+`version`：缺省或 `1` 接受；其它值拒绝。`observer` 字段**不是开关**——解码保留以免未知键报错，装图不解释。
 
 装图伪代码：
 

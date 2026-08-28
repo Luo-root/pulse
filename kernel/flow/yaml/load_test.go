@@ -2,9 +2,9 @@ package yaml_test
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Luo-root/pulse/kernel/flow"
 	flowyaml "github.com/Luo-root/pulse/kernel/flow/yaml"
@@ -155,5 +155,136 @@ nodes:
 	if err := g.Run(); err != nil {
 		t.Fatal(err)
 	}
-	_ = time.Second
+}
+
+func TestApplyResolveAndSkip(t *testing.T) {
+	reg := flow.NewRegistry()
+	a := flow.NewKey[string]("demo.a")
+	b := flow.NewKey[string]("demo.b")
+	flow.MustRegisterKey(reg, a)
+	flow.MustRegisterKey(reg, b)
+	reg.MustRegister("pass", func(rc *flow.RunCtx) error {
+		if _, err := flow.Get(rc, a); err != nil {
+			return err
+		}
+		// b 被 SkipSeed：下游不应依赖它；本节点只读 a
+		return nil
+	})
+	doc := []byte(`
+seeds:
+  - key: { name: demo.a, type: string }
+    from: { kind: env, env: PULSE_YAML_TEST_A }
+  - key: { name: demo.b, type: string }
+    skip: true
+nodes:
+  - id: n
+    uses: pass
+    requires: [{ name: demo.a, type: string }]
+    provides: []
+`)
+	g, plan, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Apply(g, func(from flowyaml.SeedFrom) (any, error) {
+		if from.Kind != "env" || from.Env != "PULSE_YAML_TEST_A" {
+			t.Fatalf("unexpected from: %+v", from)
+		}
+		return "from-env", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadFileAndBadVersion(t *testing.T) {
+	reg := flow.NewRegistry()
+	out := flow.NewKey[string]("demo.out")
+	flow.MustRegisterKey(reg, out)
+	reg.MustRegister("ok", func(rc *flow.RunCtx) error {
+		return flow.Set(rc, out, "x")
+	})
+	dir := t.TempDir()
+	path := dir + "/g.yaml"
+	body := []byte(`
+version: 1
+nodes:
+  - id: n
+    uses: ok
+    requires: []
+    provides: [{ name: demo.out, type: string }]
+`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g, plan, err := flowyaml.LoadFile(path, reg, flowyaml.LoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = plan
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = flowyaml.Load([]byte("version: 99\nnodes: [{id: n, uses: ok, requires: [], provides: []}]"), reg, flowyaml.LoadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "version") {
+		t.Fatalf("want version error, got %v", err)
+	}
+}
+
+func TestLoadYAMLTimeoutFires(t *testing.T) {
+	reg := flow.NewRegistry()
+	in := flow.NewKey[string]("demo.wait")
+	out := flow.NewKey[string]("demo.out")
+	flow.MustRegisterKey(reg, in)
+	flow.MustRegisterKey(reg, out)
+	reg.MustRegister("blocked", func(rc *flow.RunCtx) error {
+		t.Fatal("should not run")
+		return nil
+	})
+	doc := []byte(`
+nodes:
+  - id: n
+    uses: blocked
+    requires: [{ name: demo.wait, type: string }]
+    provides: [{ name: demo.out, type: string }]
+    timeout: 30ms
+`)
+	g, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 不 Seed demo.wait → WaitAll 阻塞直到 Timeout
+	err = g.Run()
+	if err == nil {
+		t.Fatal("want timeout error")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("want timeout in error, got %v", err)
+	}
+}
+
+func TestLoadAddRejectsDuplicateProvide(t *testing.T) {
+	reg := flow.NewRegistry()
+	k := flow.NewKey[string]("demo.dup")
+	flow.MustRegisterKey(reg, k)
+	reg.MustRegister("a", func(*flow.RunCtx) error { return nil })
+	reg.MustRegister("b", func(*flow.RunCtx) error { return nil })
+	doc := []byte(`
+nodes:
+  - id: n1
+    uses: a
+    requires: []
+    provides: [{ name: demo.dup, type: string }]
+  - id: n2
+    uses: b
+    requires: []
+    provides: [{ name: demo.dup, type: string }]
+`)
+	_, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{})
+	if err == nil {
+		t.Fatal("want Add duplicate source error")
+	}
 }
