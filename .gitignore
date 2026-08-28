@@ -40,8 +40,5 @@ go.work.sum
 # Database files
 *.db
 
-# Skills directory (if managed separately)
-skills/
-
 # Local scratch (docs preview, temp artifacts)
 tmp/

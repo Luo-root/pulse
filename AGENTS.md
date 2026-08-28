@@ -2,14 +2,14 @@
 
 ## What this is
 
-Go library (`github.com/Luo-root/pulse`) — an AI Agent framework under v2 reconstruction. The v2 core is `kernel/` (plugin kernel + `kernel/flow` dataflow), `llm/` (provider-neutral model vocabulary + adapters), `loop/` (stateless ReAct turn executor) and `toolset/` (reversible tool registry adapting to `loop.ToolSet`). The entire v1 `components/` tree has been removed. `pulse.go` at root is a stub (`package pulse`); it is not an entrypoint.
+Go library (`github.com/Luo-root/pulse`) — an AI Agent framework under v2 reconstruction. The v2 core is `kernel/` (plugin kernel + `kernel/flow` dataflow), `llm/` (provider-neutral model vocabulary + adapters), `loop/` (stateless ReAct turn executor), `toolset/` (reversible tool registry adapting to `loop.ToolSet`) and `skills/` (Agent Skills loader per agentskills.io). The entire v1 `components/` tree has been removed. `pulse.go` at root is a stub (`package pulse`); it is not an entrypoint.
 
 ## Build & test
 
 ```bash
 go build ./...          # verify compilation
 go test ./...           # run all tests
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/ ./observability/ ./examples/04-flow-dag/   # v2 core + flow example
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/ ./skills/ ./observability/ ./examples/04-flow-dag/   # v2 core + flow example
 ```
 
 - Requires **Go 1.25.0+** (toolchain auto-downloads if missing).
@@ -25,13 +25,13 @@ kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin
 llm/                        # v2 model layer: content-block vocabulary, ChatModel, Registry, openai/ + anthropic/ adapters
 loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL decision events
 toolset/                    # v2 可逆工具注册（pulse.tools）+ AsToolSet；mcp/ 为 Source 抽象（mock Client）
-                            # Skills ≠ Source，边界见 docs/design/toolset-v1-design.md
+skills/                     # v2 Skills 装载器（agentskills.io）；Skill ≠ Tool/Source
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1
                            # memory-layer-*-design.md 若出现仅为草案，勿当 Accepted
 examples/                   # 01–04 渐进示例
   internal/demoapp/         # 示例私有装配层（库包本身无 internal/；此处不违反「库无 internal」）
-skills/                     # Example skill definitions (*.md with YAML frontmatter, gitignored)
+  skills/                   # 示例 Skill 材料（历史私有 frontmatter 键会被装载器忽略）
 ```
 
 ## Key conventions
