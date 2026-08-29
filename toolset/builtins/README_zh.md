@@ -2,7 +2,7 @@
 
 通用基础工具（P0），经 `toolset.Registry` 挂入 `pulse.tools`。
 
-中性命名：`read` / `ls` / `glob` / `grep` / `exec` / `edit` / `write`。
+中性命名：`read` / `ls` / `glob` / `grep` / `exec` / `edit` / `write` / `web_fetch` / `web_search` / `question`。
 
 ## 上手
 
@@ -29,13 +29,16 @@ defer dispose()
 | `ls`/`glob`/`grep` | **先收集并稳定排序再切页**；超限 trailer 带 `after` 游标 |
 | `edit`/`write`(覆盖) | **同进程须先 `read`**；mtime 更新则 stale 拒绝；`edit` 默认唯一匹配 |
 | `exec` | **Windows = PowerShell**；Unix = `sh -c`；timeout + 输出头尾截断；RiskDangerous |
+| `web_fetch` | http(s) GET；拦 file/ftp/data 与云 metadata；私网默认允许（`BlockPrivate` 才拒） |
+| `web_search` | 默认可注入 `Searcher`；nil 则 DuckDuckGo Lite（HTML 解析，可能被反爬） |
+| `question` | 向人提问；需 `Asker`。**不是** HITL 批准 |
 | `glob`/`grep` | P0 **不**应用 `.gitignore`（显式）；非法正则返回 error |
 | Source | `builtins.<name>`；`Register` 返回的 `dispose()` 可逆 |
 
 ## 刻意不做（本包 P0）
 
 - **写前 diff 进 HITL**：`edit`/`write`/`exec` 登记 `PreviewFn`（只读盘）；卡片给 `before_tool_call` 监听器，不进 tool result。见 Issue [#56](https://github.com/Luo-root/pulse/issues/56)
-- `apply_patch` / web / LSP / job_output（另票）
+- `apply_patch` / LSP / `job_output`（另票）
 - OS 级 sandbox（bwrap / Seatbelt）
 - 改 examples（示例统一另规划）
 - Skill 自动变 Tool
