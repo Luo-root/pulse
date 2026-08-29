@@ -3,6 +3,7 @@ package builtins_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -71,8 +72,19 @@ func callErr(t *testing.T, reg *toolset.Registry, name string, args any) string 
 }
 
 func TestRegisterDefinitionsAndDispose(t *testing.T) {
-	host, reg, cleanup := setup(t, builtins.Options{})
-	defer cleanup()
+	host := kernel.New()
+	defer host.Dispose()
+	if _, err := kernel.Use(host, toolset.Plugin()); err != nil {
+		t.Fatal(err)
+	}
+	reg, ok := kernel.Get(host, toolset.ServiceKey)
+	if !ok {
+		t.Fatal("no registry")
+	}
+	dispose, err := builtins.Register(host, reg, builtins.Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
 	names := map[string]bool{}
 	for _, d := range reg.AsToolSet().Definitions() {
 		names[d.Name] = true
@@ -82,10 +94,12 @@ func TestRegisterDefinitionsAndDispose(t *testing.T) {
 			t.Fatalf("missing %s", want)
 		}
 	}
-	host.Dispose()
-	if len(reg.AsToolSet().Definitions()) != 0 {
-		// Dispose via host Effect should clear registrations
-		// (Plugin Close clears all; scope dispose also removes builtins)
+	dispose()
+	for _, d := range reg.AsToolSet().Definitions() {
+		switch d.Name {
+		case "read", "ls", "glob", "grep", "exec", "edit", "write":
+			t.Fatalf("dispose() left %s registered", d.Name)
+		}
 	}
 }
 
@@ -257,5 +271,87 @@ func TestEnabledSubset(t *testing.T) {
 	}
 	if !names["read"] || !names["ls"] || names["exec"] {
 		t.Fatalf("%v", names)
+	}
+}
+
+func TestExecTimeout(t *testing.T) {
+	root := t.TempDir()
+	_, reg, cleanup := setup(t, builtins.Options{Root: root, ExecTimeout: 15 * time.Second})
+	defer cleanup()
+	var cmd string
+	if runtime.GOOS == "windows" {
+		cmd = "Start-Sleep -Seconds 8"
+	} else {
+		cmd = "sleep 8"
+	}
+	msg := callErr(t, reg, "exec", map[string]any{"command": cmd, "timeout_seconds": 1})
+	if !strings.Contains(msg, "timeout") {
+		t.Fatalf("want timeout, got %s", msg)
+	}
+}
+
+func TestListPaginationAndForbidRead(t *testing.T) {
+	root := t.TempDir()
+	secret := filepath.Join(root, "secret")
+	if err := os.MkdirAll(secret, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secret, "s.txt"), []byte("nope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files := filepath.Join(root, "files")
+	if err := os.MkdirAll(files, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		name := fmt.Sprintf("f%02d.txt", i)
+		if err := os.WriteFile(filepath.Join(files, name), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, reg, cleanup := setup(t, builtins.Options{Root: root, GlobLimit: 2, LSLimit: 2, GrepLimit: 2, ForbidRead: []string{secret}})
+	defer cleanup()
+
+	g1 := call(t, reg, "glob", map[string]any{"pattern": "files/*.txt", "limit": 2})
+	if !strings.Contains(g1, "pass after=") {
+		t.Fatalf("glob page1=%q", g1)
+	}
+	if strings.Contains(g1, "secret") {
+		t.Fatalf("glob leaked forbid-read: %q", g1)
+	}
+	// 从 trailer 抽 after 太脆，直接传已知第二项
+	g2 := call(t, reg, "glob", map[string]any{"pattern": "files/*.txt", "limit": 2, "after": "files/f01.txt"})
+	if !strings.Contains(g2, "files/f02.txt") {
+		t.Fatalf("glob page2=%q", g2)
+	}
+
+	ls1 := call(t, reg, "ls", map[string]any{"path": "files", "limit": 2})
+	if !strings.Contains(ls1, "pass after=") {
+		t.Fatalf("ls page1=%q", ls1)
+	}
+
+	msg := callErr(t, reg, "read", map[string]any{"path": "secret/s.txt"})
+	if !strings.Contains(msg, "forbid-read") {
+		t.Fatalf("forbid-read: %s", msg)
+	}
+}
+
+func TestWriteSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink not permitted: %v", err)
+	}
+	_, reg, cleanup := setup(t, builtins.Options{Root: root})
+	defer cleanup()
+	msg := callErr(t, reg, "write", map[string]any{
+		"path": "link/escaped.txt", "content": "nope",
+	})
+	if !strings.Contains(msg, "WriteRoots") && !strings.Contains(msg, "outside") && !strings.Contains(msg, "escapes") {
+		t.Fatalf("symlink write: %s", msg)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "escaped.txt")); err == nil {
+		t.Fatal("wrote through symlink to outside root")
 	}
 }

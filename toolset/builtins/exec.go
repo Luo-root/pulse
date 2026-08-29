@@ -79,10 +79,11 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 
 	exitCode := 0
 	if err != nil {
+		if runCtx.Err() != nil {
+			return "", fmt.Errorf("builtins/exec: timeout after %s: %w", timeout, runCtx.Err())
+		}
 		if ee, ok := err.(*exec.ExitError); ok {
 			exitCode = ee.ExitCode()
-		} else if runCtx.Err() != nil {
-			return "", fmt.Errorf("builtins/exec: timeout after %s: %w", timeout, runCtx.Err())
 		} else {
 			return "", fmt.Errorf("builtins/exec: %w", err)
 		}

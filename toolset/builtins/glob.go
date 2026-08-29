@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/Luo-root/pulse/llm"
@@ -24,7 +23,8 @@ func (e *env) regGlob() toolset.Registration {
   "properties":{
     "pattern":{"type":"string","description":"Glob pattern (e.g. **/*.go)"},
     "path":{"type":"string","description":"Search root (default workspace Root)"},
-    "limit":{"type":"integer","description":"Max paths to return","minimum":1}
+    "limit":{"type":"integer","description":"Max paths to return","minimum":1},
+    "after":{"type":"string","description":"Exclusive start cursor (last path from previous page)"}
   },
   "required":["pattern"]
 }`),
@@ -42,6 +42,7 @@ func (e *env) glob(ctx context.Context, args json.RawMessage) (string, error) {
 		Pattern string `json:"pattern"`
 		Path    string `json:"path"`
 		Limit   int    `json:"limit"`
+		After   string `json:"after"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("builtins/glob: invalid args: %w", err)
@@ -113,32 +114,20 @@ func (e *env) glob(ctx context.Context, args json.RawMessage) (string, error) {
 			return nil
 		}
 		matches = append(matches, relSlash)
-		if len(matches) > limit { // 多收集 1 个以知 truncated
-			return fs.SkipAll
-		}
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-	sort.Strings(matches)
-	truncated := false
-	if len(matches) > limit {
-		matches = matches[:limit]
-		truncated = true
-	}
-	if len(matches) == 0 {
+	page, next, trunc := pageStrings(matches, p.After, limit)
+	if len(page) == 0 {
 		return "(no matches)", nil
 	}
-	var b strings.Builder
-	for _, m := range matches {
-		b.WriteString(m)
-		b.WriteByte('\n')
+	out := formatLines(page)
+	if trunc {
+		out += truncatedTrailer("glob", "after", next, limit)
 	}
-	if truncated {
-		fmt.Fprintf(&b, "\n[truncated: limit %d; narrow pattern or path]\n", limit)
-	}
-	return b.String(), nil
+	return out, nil
 }
 
 // matchGlob 支持简单的 ** 通配（非完整 gitignore 语义）。

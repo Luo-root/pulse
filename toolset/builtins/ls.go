@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/toolset"
@@ -17,13 +15,14 @@ func (e *env) regLS() toolset.Registration {
 	return toolset.Registration{
 		Def: llm.ToolDef{
 			Name:        "ls",
-			Description: "List directory entries under the workspace Root (sorted). Directories end with /.",
+			Description: "List directory entries under the workspace Root (sorted). Directories end with /. Use after to page.",
 			Parameters: json.RawMessage(`{
   "type":"object",
   "properties":{
     "path":{"type":"string","description":"Directory path (default Root)"},
     "depth":{"type":"integer","description":"Max recursion depth (default 1)","minimum":1},
-    "limit":{"type":"integer","description":"Max entries to return","minimum":1}
+    "limit":{"type":"integer","description":"Max entries to return","minimum":1},
+    "after":{"type":"string","description":"Exclusive start cursor (last entry from previous page)"}
   }
 }`),
 		},
@@ -40,6 +39,7 @@ func (e *env) ls(ctx context.Context, args json.RawMessage) (string, error) {
 		Path  string `json:"path"`
 		Depth int    `json:"depth"`
 		Limit int    `json:"limit"`
+		After string `json:"after"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		if err := json.Unmarshal(args, &p); err != nil {
@@ -71,8 +71,7 @@ func (e *env) ls(ctx context.Context, args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("builtins/ls: not a directory: %s", abs)
 	}
 
-	var out []string
-	truncated := false
+	var collected []string
 	var walk func(dir string, depth int) error
 	walk = func(dir string, depth int) error {
 		if err := ctx.Err(); err != nil {
@@ -82,16 +81,8 @@ func (e *env) ls(ctx context.Context, args json.RawMessage) (string, error) {
 		if err != nil {
 			return err
 		}
-		names := make([]string, 0, len(entries))
 		for _, ent := range entries {
-			names = append(names, ent.Name())
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			if truncated {
-				return nil
-			}
-			full := filepath.Join(dir, name)
+			full := filepath.Join(dir, ent.Name())
 			if err := confineRead(e.opt.Root, e.opt.ForbidRead, full); err != nil {
 				continue
 			}
@@ -100,27 +91,15 @@ func (e *env) ls(ctx context.Context, args json.RawMessage) (string, error) {
 				rel = full
 			}
 			rel = filepath.ToSlash(rel)
-			info, err := os.Stat(full)
-			if err != nil {
-				continue
-			}
-			if info.IsDir() {
-				out = append(out, rel+"/")
-				if len(out) >= limit {
-					truncated = true
-					return nil
-				}
+			if ent.IsDir() {
+				collected = append(collected, rel+"/")
 				if depth < p.Depth {
 					if err := walk(full, depth+1); err != nil {
 						return err
 					}
 				}
 			} else {
-				out = append(out, rel)
-				if len(out) >= limit {
-					truncated = true
-					return nil
-				}
+				collected = append(collected, rel)
 			}
 		}
 		return nil
@@ -128,16 +107,13 @@ func (e *env) ls(ctx context.Context, args json.RawMessage) (string, error) {
 	if err := walk(abs, 1); err != nil {
 		return "", err
 	}
-	if len(out) == 0 {
+	page, next, trunc := pageStrings(collected, p.After, limit)
+	if len(page) == 0 {
 		return "(empty directory)", nil
 	}
-	var b strings.Builder
-	for _, line := range out {
-		b.WriteString(line)
-		b.WriteByte('\n')
+	out := formatLines(page)
+	if trunc {
+		out += truncatedTrailer("ls", "after", next, limit)
 	}
-	if truncated {
-		fmt.Fprintf(&b, "\n[truncated: entry limit %d reached]\n", limit)
-	}
-	return b.String(), nil
+	return out, nil
 }

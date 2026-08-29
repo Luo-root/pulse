@@ -27,14 +27,26 @@ func resolveUnderRoot(root, p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// 尽量解析 symlink，防止借链逃出根
+	return resolveSymlinks(abs)
+}
+
+// resolveSymlinks 把 path 解析到 symlink 最终落点。
+// 目标尚不存在时：对最深已存在祖先 EvalSymlinks，再拼回缺失后缀，
+// 避免「Root 内的 link/new.txt」实际写出 Root 外。
+func resolveSymlinks(abs string) (string, error) {
 	if eval, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = eval
-	} else if !os.IsNotExist(err) {
-		// 目标尚不存在时 EvalSymlinks 可能失败：退回已 Clean 的 abs，
-		// 写工具会再查父目录。
+		return eval, nil
 	}
-	return abs, nil
+	exist := deepestExisting(abs)
+	evalExist, err := filepath.EvalSymlinks(exist)
+	if err != nil {
+		return abs, nil
+	}
+	rel, err := filepath.Rel(exist, abs)
+	if err != nil {
+		return abs, nil
+	}
+	return filepath.Join(evalExist, rel), nil
 }
 
 func withinRoot(root, abs string) bool {

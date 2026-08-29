@@ -19,7 +19,7 @@ func (e *env) regGrep() toolset.Registration {
 	return toolset.Registration{
 		Def: llm.ToolDef{
 			Name:        "grep",
-			Description: "Search file contents with a Go regexp under the workspace Root. Invalid patterns return an error (not empty matches). P0 does not apply .gitignore.",
+			Description: "Search file contents with a Go regexp under the workspace Root. Invalid patterns return an error (not empty matches). P0 does not apply .gitignore. Use after to page.",
 			Parameters: json.RawMessage(`{
   "type":"object",
   "properties":{
@@ -27,6 +27,7 @@ func (e *env) regGrep() toolset.Registration {
     "path":{"type":"string","description":"File or directory to search (default Root)"},
     "glob":{"type":"string","description":"Optional filename filter (e.g. *.go)"},
     "limit":{"type":"integer","description":"Max matches","minimum":1},
+    "after":{"type":"string","description":"Exclusive start cursor (last file:line from previous page)"},
     "case_insensitive":{"type":"boolean"}
   },
   "required":["pattern"]
@@ -46,6 +47,7 @@ func (e *env) grep(ctx context.Context, args json.RawMessage) (string, error) {
 		Path            string `json:"path"`
 		Glob            string `json:"glob"`
 		Limit           int    `json:"limit"`
+		After           string `json:"after"`
 		CaseInsensitive bool   `json:"case_insensitive"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
@@ -82,14 +84,7 @@ func (e *env) grep(ctx context.Context, args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("builtins/grep: %w", err)
 	}
 
-	type hit struct {
-		file string
-		line int
-		text string
-	}
-	var hits []hit
-	truncated := false
-
+	var keys []string
 	searchFile := func(path string) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -115,21 +110,18 @@ func (e *env) grep(ctx context.Context, args json.RawMessage) (string, error) {
 		sc := bufio.NewScanner(f)
 		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		lineNo := 0
+		rel, err := filepath.Rel(e.opt.Root, path)
+		if err != nil {
+			rel = path
+		}
+		relSlash := filepath.ToSlash(rel)
 		for sc.Scan() {
 			lineNo++
 			text := sc.Text()
 			if !re.MatchString(text) {
 				continue
 			}
-			rel, err := filepath.Rel(e.opt.Root, path)
-			if err != nil {
-				rel = path
-			}
-			hits = append(hits, hit{file: filepath.ToSlash(rel), line: lineNo, text: text})
-			if len(hits) >= limit {
-				truncated = true
-				return fs.SkipAll
-			}
+			keys = append(keys, fmt.Sprintf("%s:%d:%s", relSlash, lineNo, text))
 		}
 		return nil
 	}
@@ -152,15 +144,13 @@ func (e *env) grep(ctx context.Context, args json.RawMessage) (string, error) {
 		})
 	}
 
-	if len(hits) == 0 {
+	page, next, trunc := pageStrings(keys, p.After, limit)
+	if len(page) == 0 {
 		return "(no matches)", nil
 	}
-	var b strings.Builder
-	for _, h := range hits {
-		fmt.Fprintf(&b, "%s:%d:%s\n", h.file, h.line, h.text)
+	out := formatLines(page)
+	if trunc {
+		out += truncatedTrailer("grep", "after", next, limit)
 	}
-	if truncated {
-		fmt.Fprintf(&b, "\n[truncated: match limit %d]\n", limit)
-	}
-	return b.String(), nil
+	return out, nil
 }
