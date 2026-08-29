@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -174,5 +175,41 @@ func TestHITLInteractivePrintsPreview(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, "preview kind=opaque") || !strings.Contains(got, "will delete") {
 		t.Fatalf("missing preview card: %q", got)
+	}
+}
+
+func TestHITLInteractivePreviewErrorStillAsks(t *testing.T) {
+	host := kernel.New()
+	defer host.Dispose()
+	reg := toolset.NewRegistry()
+	_, err := reg.Register(host, toolset.Registration{
+		Def:    llm.ToolDef{Name: "delete_file"},
+		Fn:     func(context.Context, json.RawMessage) (string, error) { return "x", nil },
+		Source: "local.delete_file",
+		Risk:   toolset.RiskDangerous,
+		PreviewFn: func(context.Context, json.RawMessage) (toolset.Preview, error) {
+			return toolset.Preview{}, errors.New("boom")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := newSessionTrust()
+	in := strings.NewReader("n\n")
+	var out bytes.Buffer
+	approver := newConsoleApprover("hint", NewLineSource(in), &out, trust, reg)
+	if _, err := kernel.OnWaterfall(host, loop.EventBeforeToolCall, approver.approve); err != nil {
+		t.Fatal(err)
+	}
+	rejected, _ := decide(t, host, "delete_file")
+	if !rejected {
+		t.Fatal("n should reject; preview error must not auto-approve")
+	}
+	got := out.String()
+	if !strings.Contains(got, "预览失败") || !strings.Contains(got, "boom") {
+		t.Fatalf("want preview error line, got %q", got)
+	}
+	if !strings.Contains(got, "args=") {
+		t.Fatalf("should fall back to args JSON: %q", got)
 	}
 }

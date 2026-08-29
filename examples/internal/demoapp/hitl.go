@@ -176,17 +176,22 @@ func (a *consoleApprover) approve(btc *loop.BeforeToolCall, next func(*loop.Befo
 		return next(btc)
 	}
 	card := ""
+	previewNote := ""
 	if a.previews != nil {
-		if p, ok, err := a.previews.Preview(context.Background(), btc.Call.Name, btc.Call.Arguments); err == nil && ok {
+		p, ok, err := a.previews.Preview(context.Background(), btc.Call.Name, btc.Call.Arguments)
+		switch {
+		case err != nil:
+			previewNote = fmt.Sprintf("  预览失败: %v\n", err)
+		case ok:
 			card = p.Render()
 		}
 	}
 	if card != "" {
-		fmt.Fprintf(a.out, "\n⚠ 审批请求 tool=%s\n%s  说明: %s\n  批准? %s > ",
-			btc.Call.Name, card, a.hint, approveUsage)
+		fmt.Fprintf(a.out, "\n⚠ 审批请求 tool=%s\n%s%s  说明: %s\n  批准? %s > ",
+			btc.Call.Name, card, previewNote, a.hint, approveUsage)
 	} else {
-		fmt.Fprintf(a.out, "\n⚠ 审批请求 tool=%s args=%s\n  说明: %s\n  批准? %s > ",
-			btc.Call.Name, string(btc.Call.Arguments), a.hint, approveUsage)
+		fmt.Fprintf(a.out, "\n⚠ 审批请求 tool=%s args=%s\n%s  说明: %s\n  批准? %s > ",
+			btc.Call.Name, string(btc.Call.Arguments), previewNote, a.hint, approveUsage)
 	}
 	line, err := a.lines.ReadLine()
 	ans := strings.ToLower(strings.TrimSpace(line))
