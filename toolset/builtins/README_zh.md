@@ -42,7 +42,7 @@ defer dispose()
 
 - **写前 diff 进 HITL**：`edit`/`write`/`exec` 登记 `PreviewFn`（只读盘）；卡片给 `before_tool_call` 监听器，不进 tool result。见 Issue [#56](https://github.com/Luo-root/pulse/issues/56)
 - `apply_patch` 不做 `*** Move to:`（rename）、fuzzy 上下文匹配、二进制 patch、写盘失败自动回滚（verify 已挡内容级失败；IO 错误中止并列出已写入文件）
-- LSP（另票）
+- LSP → [`toolset/lsp`](../lsp/README_zh.md)（独立可选包）
 - job 无列表工具（模型记 id）；stdout/stderr 分流；输出落盘持久化；跨进程 / 跨重启 job
 - 真浏览器渲染（chromedp）；`web_fetch` 只抽 HTTP 正文
 - OS 级 sandbox（bwrap / Seatbelt）

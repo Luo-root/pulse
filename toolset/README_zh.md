@@ -57,7 +57,11 @@ agent, err := loop.NewAgent(model,
 
 ## 基础工具
 
-子包 [`builtins`](builtins/README_zh.md)：`read`/`ls`/`glob`/`grep`/`exec`/`edit`/`write`/`web_fetch`/`web_search`/`question`，`builtins.Register(scope, reg, Options{Root:...})`。
+子包 [`builtins`](builtins/README_zh.md)：`read`/`ls`/`glob`/`grep`/`exec`/`edit`/`write`/`apply_patch`/`web_fetch`/`web_search`/`question`/`job_output`/`job_kill`，`builtins.Register(scope, reg, Options{Root:...})`。
+
+## LSP 工具
+
+子包 [`lsp`](lsp/README_zh.md)：可选包（Issue [#64](https://github.com/Luo-root/pulse/issues/64)）。把外部语言服务器挂成只读 `lsp` 工具（`diagnostics` / `definition` / `references` / `hover`）；`Servers` 显式映射扩展名 → 启动命令，进程 lazy 启动、dispose / scope Dispose 树杀兜底。手写 JSON-RPC stdio 分帧，零新依赖。
 
 ## 测试
 
