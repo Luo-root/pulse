@@ -50,9 +50,23 @@ func TestSyncRegistersAndDetach(t *testing.T) {
 		t.Fatalf("meta=%q %v %v", srcMeta, risk, ok)
 	}
 
+	prev, ok, err := reg.Preview(context.Background(), "read", json.RawMessage(`{"path":"a"}`))
+	if err != nil || !ok {
+		t.Fatalf("mcp default preview ok=%v err=%v", ok, err)
+	}
+	if prev.Kind != toolset.KindOpaque || prev.Subject != "mcp.fs/read" || prev.Opaque == nil {
+		t.Fatalf("preview=%+v", prev)
+	}
+	if !strings.Contains(prev.Opaque.ArgsExcerpt, "path") {
+		t.Fatalf("excerpt=%q", prev.Opaque.ArgsExcerpt)
+	}
+
 	src.Detach()
 	if len(reg.AsToolSet().Definitions()) != 0 {
 		t.Fatal("detach should clear mcp.fs tools")
+	}
+	if _, ok := reg.LookupPreview("read"); ok {
+		t.Fatal("detach must drop PreviewFn")
 	}
 }
 

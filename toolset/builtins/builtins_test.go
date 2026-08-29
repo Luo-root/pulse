@@ -355,3 +355,45 @@ func TestWriteSymlinkEscape(t *testing.T) {
 		t.Fatal("wrote through symlink to outside root")
 	}
 }
+
+func TestPreviewWriteEditExecDoesNotWrite(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(path, []byte("hello world\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, reg, cleanup := setup(t, builtins.Options{Root: root})
+	defer cleanup()
+
+	p, ok, err := reg.Preview(context.Background(), "write", json.RawMessage(`{"path":"b.txt","content":"new\n"}`))
+	if err != nil || !ok || p.File == nil || p.File.Op != "create" {
+		t.Fatalf("write create preview %+v ok=%v err=%v", p, ok, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "b.txt")); err == nil {
+		t.Fatal("preview must not create file")
+	}
+
+	p, ok, err = reg.Preview(context.Background(), "edit", json.RawMessage(`{"path":"a.txt","old_string":"hello","new_string":"hi"}`))
+	if err != nil || !ok || p.File == nil || p.File.Op != "modify" {
+		t.Fatalf("edit preview %+v ok=%v err=%v", p, ok, err)
+	}
+	if p.File.Added < 1 && !strings.Contains(p.File.Diff, "+hi") && !strings.Contains(p.File.Diff, "-hello") {
+		// 中间整段替换：-hello world / +hi world
+		if !strings.Contains(p.File.Diff, "+") {
+			t.Fatalf("diff=%q", p.File.Diff)
+		}
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != "hello world\n" {
+		t.Fatalf("preview mutated file: %q", raw)
+	}
+
+	p, ok, err = reg.Preview(context.Background(), "exec", json.RawMessage(`{"command":"echo x"}`))
+	if err != nil || !ok || p.Kind != "command" || p.Command == nil || p.Command.Command != "echo x" {
+		t.Fatalf("exec preview %+v ok=%v err=%v", p, ok, err)
+	}
+
+	if _, ok := reg.LookupPreview("read"); ok {
+		t.Fatal("read must not register PreviewFn")
+	}
+}

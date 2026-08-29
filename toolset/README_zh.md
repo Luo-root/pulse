@@ -48,6 +48,7 @@ agent, err := loop.NewAgent(model,
 - **`DisposeSource(source)`** 按来源批量撤销；禁止用 Name 前缀猜来源。
 - **`AsToolSet()`** 是 live 视图；同一回合的 Definitions 快照由 loop 在 Run 开始时取一次。
 - **`LookupMeta`** 供 HITL/策略查 Source/Risk；查不到应 fail-closed。
+- **`PreviewFn` / `LookupPreview` / `Preview`**：可选执行前只读卡片（W2）。loop 不改；HITL 自己 Lookup。没有 PreviewFn = 空预览，仍按 Risk 问人。
 - **依赖**：`toolset` → `loop`；`loop` 不 import `toolset`。`MemToolSet` 仍可用于无 kernel 单测。
 
 ## MCP 来源

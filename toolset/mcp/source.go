@@ -21,6 +21,8 @@ type Config struct {
 	NamePrefix string
 	// DefaultRisk 必填；Register 时写入每条工具。Unspecified 拒绝。
 	DefaultRisk toolset.Risk
+	// PreviewFn 覆盖本源全部工具的预览。nil 则用 DefaultPreview（opaque）。
+	PreviewFn toolset.PreviewFn
 }
 
 // Source 持有一次 MCP 来源的装载状态：Sync 登记，Detach 整源撤销。
@@ -124,13 +126,18 @@ func (s *Source) Sync(scope *kernel.Context, ctx context.Context) error {
 		final := modelName(s.cfg.NamePrefix, t.Name)
 		upstream := t.Name
 		client := s.cfg.Client
+		preview := s.cfg.PreviewFn
+		if preview == nil {
+			preview = DefaultPreview(srcKey, upstream, s.cfg.DefaultRisk)
+		}
 		_, err := s.reg.Register(scope, toolset.Registration{
-			Def:    DefFromTool(final, t),
-			Source: srcKey,
-			Risk:   s.cfg.DefaultRisk,
+			Def:       DefFromTool(final, t),
+			Source:    srcKey,
+			Risk: s.cfg.DefaultRisk,
 			Fn: func(callCtx context.Context, args json.RawMessage) (string, error) {
 				return client.CallTool(callCtx, upstream, args)
 			},
+			PreviewFn: preview,
 		})
 		if err != nil {
 			s.reg.DisposeSource(srcKey)

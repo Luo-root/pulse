@@ -29,9 +29,48 @@ func (e *env) regExec() toolset.Registration {
   "required":["command"]
 }`),
 		},
-		Fn:   e.execCmd,
-		Risk: toolset.RiskDangerous,
+		Fn:        e.execCmd,
+		Risk:      toolset.RiskDangerous,
+		PreviewFn: e.previewExec,
 	}
+}
+
+func (e *env) previewExec(ctx context.Context, args json.RawMessage) (toolset.Preview, error) {
+	if err := ctx.Err(); err != nil {
+		return toolset.Preview{}, err
+	}
+	var p struct {
+		Command        string `json:"command"`
+		Cwd            string `json:"cwd"`
+		TimeoutSeconds int    `json:"timeout_seconds"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return toolset.Preview{}, fmt.Errorf("builtins/exec: invalid args: %w", err)
+	}
+	if strings.TrimSpace(p.Command) == "" {
+		return toolset.Preview{}, fmt.Errorf("builtins/exec: command is required")
+	}
+	cwd := e.opt.Root
+	if p.Cwd != "" {
+		abs, err := resolveUnderRoot(e.opt.Root, p.Cwd)
+		if err != nil {
+			return toolset.Preview{}, err
+		}
+		if err := confineRead(e.opt.Root, nil, abs); err != nil {
+			return toolset.Preview{}, fmt.Errorf("builtins/exec: cwd %w", err)
+		}
+		cwd = abs
+	}
+	timeout := e.opt.ExecTimeout
+	if p.TimeoutSeconds > 0 {
+		timeout = time.Duration(p.TimeoutSeconds) * time.Second
+	}
+	return toolset.Preview{
+		Kind:    toolset.KindCommand,
+		Action:  toolset.ActionExecute,
+		Subject: p.Command,
+		Command: &toolset.CommandChange{Command: p.Command, Cwd: cwd, Timeout: timeout.String()},
+	}, nil
 }
 
 func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error) {

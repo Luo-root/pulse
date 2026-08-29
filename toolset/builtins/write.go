@@ -26,33 +26,68 @@ func (e *env) regWrite() toolset.Registration {
   "required":["path","content"]
 }`),
 		},
-		Fn:   e.write,
-		Risk: toolset.RiskReadWrite,
+		Fn:        e.write,
+		Risk:      toolset.RiskReadWrite,
+		PreviewFn: e.previewWrite,
 	}
+}
+
+func (e *env) previewWrite(ctx context.Context, args json.RawMessage) (toolset.Preview, error) {
+	if err := ctx.Err(); err != nil {
+		return toolset.Preview{}, err
+	}
+	p, abs, err := e.parseWrite(args)
+	if err != nil {
+		return toolset.Preview{}, err
+	}
+	oldText := ""
+	op := "create"
+	raw, err := os.ReadFile(abs)
+	if err == nil {
+		oldText = string(raw)
+		op = "modify"
+	} else if !os.IsNotExist(err) {
+		return toolset.Preview{}, err
+	}
+	return toolset.Preview{
+		Kind:    toolset.KindFile,
+		Action:  toolset.ActionWrite,
+		Subject: abs,
+		File:    buildFileChange(op, abs, oldText, p.Content),
+	}, nil
+}
+
+type writeArgs struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+func (e *env) parseWrite(args json.RawMessage) (writeArgs, string, error) {
+	var p writeArgs
+	if err := json.Unmarshal(args, &p); err != nil {
+		return writeArgs{}, "", fmt.Errorf("builtins/write: invalid args: %w", err)
+	}
+	if p.Path == "" {
+		return writeArgs{}, "", fmt.Errorf("builtins/write: path is required")
+	}
+	abs, err := resolveUnderRoot(e.opt.Root, p.Path)
+	if err != nil {
+		return writeArgs{}, "", err
+	}
+	if err := confineWrite(e.opt.WriteRoots, abs); err != nil {
+		return writeArgs{}, "", err
+	}
+	return p, abs, nil
 }
 
 func (e *env) write(ctx context.Context, args json.RawMessage) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	var p struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return "", fmt.Errorf("builtins/write: invalid args: %w", err)
-	}
-	if p.Path == "" {
-		return "", fmt.Errorf("builtins/write: path is required")
-	}
-	abs, err := resolveUnderRoot(e.opt.Root, p.Path)
+	p, abs, err := e.parseWrite(args)
 	if err != nil {
 		return "", err
 	}
-	if err := confineWrite(e.opt.WriteRoots, abs); err != nil {
-		return "", err
-	}
-
 	_, err = os.Stat(abs)
 	exists := err == nil
 	if err != nil && !os.IsNotExist(err) {

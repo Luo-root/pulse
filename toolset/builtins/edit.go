@@ -28,55 +28,73 @@ func (e *env) regEdit() toolset.Registration {
   "required":["path","old_string","new_string"]
 }`),
 		},
-		Fn:   e.edit,
-		Risk: toolset.RiskReadWrite,
+		Fn:        e.edit,
+		Risk:      toolset.RiskReadWrite,
+		PreviewFn: e.previewEdit,
 	}
 }
 
-func (e *env) edit(ctx context.Context, args json.RawMessage) (string, error) {
+func (e *env) previewEdit(ctx context.Context, args json.RawMessage) (toolset.Preview, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return toolset.Preview{}, err
 	}
-	var p struct {
-		Path       string `json:"path"`
-		OldString  string `json:"old_string"`
-		NewString  string `json:"new_string"`
-		ReplaceAll bool   `json:"replace_all"`
+	p, abs, err := e.parseEdit(args)
+	if err != nil {
+		return toolset.Preview{}, err
 	}
+	raw, err := os.ReadFile(abs)
+	if err != nil {
+		return toolset.Preview{}, err
+	}
+	next, err := applyEdit(string(raw), p.OldString, p.NewString, p.ReplaceAll)
+	if err != nil {
+		return toolset.Preview{}, err
+	}
+	return toolset.Preview{
+		Kind:    toolset.KindFile,
+		Action:  toolset.ActionWrite,
+		Subject: abs,
+		File:    buildFileChange("modify", abs, string(raw), next),
+	}, nil
+}
+
+type editArgs struct {
+	Path       string `json:"path"`
+	OldString  string `json:"old_string"`
+	NewString  string `json:"new_string"`
+	ReplaceAll bool   `json:"replace_all"`
+}
+
+func (e *env) parseEdit(args json.RawMessage) (editArgs, string, error) {
+	var p editArgs
 	if err := json.Unmarshal(args, &p); err != nil {
-		return "", fmt.Errorf("builtins/edit: invalid args: %w", err)
+		return editArgs{}, "", fmt.Errorf("builtins/edit: invalid args: %w", err)
 	}
 	if p.Path == "" {
-		return "", fmt.Errorf("builtins/edit: path is required")
+		return editArgs{}, "", fmt.Errorf("builtins/edit: path is required")
 	}
 	if p.OldString == p.NewString {
-		return "", fmt.Errorf("builtins/edit: old_string and new_string are identical")
+		return editArgs{}, "", fmt.Errorf("builtins/edit: old_string and new_string are identical")
 	}
 	abs, err := resolveUnderRoot(e.opt.Root, p.Path)
 	if err != nil {
-		return "", err
+		return editArgs{}, "", err
 	}
 	if err := confineWrite(e.opt.WriteRoots, abs); err != nil {
-		return "", err
+		return editArgs{}, "", err
 	}
-	if err := e.requireFreshRead(abs); err != nil {
-		return "", err
-	}
+	return p, abs, nil
+}
 
-	raw, err := os.ReadFile(abs)
-	if err != nil {
-		return "", fmt.Errorf("builtins/edit: %w", err)
-	}
-	content, isCRLF := toUnix(string(raw))
-	old := p.OldString
-	neu := p.NewString
+func applyEdit(raw, oldString, newString string, replaceAll bool) (string, error) {
+	content, isCRLF := toUnix(raw)
+	old, neu := oldString, newString
 	if isCRLF {
 		old = strings.ReplaceAll(old, "\r\n", "\n")
 		neu = strings.ReplaceAll(neu, "\r\n", "\n")
 	}
-
 	var next string
-	if p.ReplaceAll {
+	if replaceAll {
 		if !strings.Contains(content, old) {
 			return "", fmt.Errorf("builtins/edit: old_string not found")
 		}
@@ -94,9 +112,30 @@ func (e *env) edit(ctx context.Context, args json.RawMessage) (string, error) {
 	if next == content {
 		return "", fmt.Errorf("builtins/edit: no changes")
 	}
-	out := next
 	if isCRLF {
-		out = strings.ReplaceAll(next, "\n", "\r\n")
+		return strings.ReplaceAll(next, "\n", "\r\n"), nil
+	}
+	return next, nil
+}
+
+func (e *env) edit(ctx context.Context, args json.RawMessage) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	p, abs, err := e.parseEdit(args)
+	if err != nil {
+		return "", err
+	}
+	if err := e.requireFreshRead(abs); err != nil {
+		return "", err
+	}
+	raw, err := os.ReadFile(abs)
+	if err != nil {
+		return "", fmt.Errorf("builtins/edit: %w", err)
+	}
+	out, err := applyEdit(string(raw), p.OldString, p.NewString, p.ReplaceAll)
+	if err != nil {
+		return "", err
 	}
 	if err := os.WriteFile(abs, []byte(out), 0o644); err != nil {
 		return "", fmt.Errorf("builtins/edit: write: %w", err)

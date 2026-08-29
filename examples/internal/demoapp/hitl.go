@@ -1,6 +1,7 @@
 package demoapp
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/loop"
+	"github.com/Luo-root/pulse/toolset"
 )
 
 // HITLMode 决定 before_tool_call 的裁决策略。
@@ -55,11 +57,12 @@ func ParseHITLMode(v string) (HITLMode, error) {
 // 与 REPL 共享同一个 LineSource（单一行缓冲，顺序消费），不会互相抢行；
 // 多 Agent 并发审批需要服务化通道，不属于本 demo。
 func InstallHITL(scope *kernel.Context, mode HITLMode, denyTool, allowTool, hint string, in io.Reader, out io.Writer) (*SessionTrust, error) {
-	return InstallHITLWithTrust(scope, mode, denyTool, allowTool, hint, in, out, nil)
+	return InstallHITLWithTrust(scope, mode, denyTool, allowTool, hint, in, out, nil, nil)
 }
 
 // InstallHITLWithTrust 同 InstallHITL，但允许传入已有 SessionTrust（跨轮 always）。
-func InstallHITLWithTrust(scope *kernel.Context, mode HITLMode, denyTool, allowTool, hint string, in io.Reader, out io.Writer, trust *SessionTrust) (*SessionTrust, error) {
+// previews 可空：非空时 interactive 审批会 LookupPreview 并打印卡片。
+func InstallHITLWithTrust(scope *kernel.Context, mode HITLMode, denyTool, allowTool, hint string, in io.Reader, out io.Writer, trust *SessionTrust, previews *toolset.Registry) (*SessionTrust, error) {
 	switch mode {
 	case HITLOff:
 		return trust, nil
@@ -94,7 +97,7 @@ func InstallHITLWithTrust(scope *kernel.Context, mode HITLMode, denyTool, allowT
 		if trust == nil {
 			trust = newSessionTrust()
 		}
-		listener := newConsoleApprover(hint, NewLineSource(in), out, trust)
+		listener := newConsoleApprover(hint, NewLineSource(in), out, trust, previews)
 		_, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall, listener.approve)
 		return trust, err
 	default:
@@ -152,14 +155,15 @@ const approveUsage = "[y]es / [n]o / [a]lways"
 // consoleApprover 是阻塞式终端审批器。它和 REPL 必须共享同一个 LineSource，
 // 保证两个组件对 stdin 的读取串行且共用一份行缓冲。
 type consoleApprover struct {
-	hint  string
-	lines *LineSource
-	out   io.Writer
-	trust *SessionTrust
+	hint     string
+	lines    *LineSource
+	out      io.Writer
+	trust    *SessionTrust
+	previews *toolset.Registry
 }
 
-func newConsoleApprover(hint string, lines *LineSource, out io.Writer, trust *SessionTrust) *consoleApprover {
-	return &consoleApprover{hint: hint, lines: lines, out: out, trust: trust}
+func newConsoleApprover(hint string, lines *LineSource, out io.Writer, trust *SessionTrust, previews *toolset.Registry) *consoleApprover {
+	return &consoleApprover{hint: hint, lines: lines, out: out, trust: trust, previews: previews}
 }
 
 // approve 实现 before_tool_call 的 around 契约：
@@ -171,8 +175,24 @@ func (a *consoleApprover) approve(btc *loop.BeforeToolCall, next func(*loop.Befo
 		fmt.Fprintf(a.out, "✔ %s 已获得本会话授权，自动放行\n", btc.Call.Name)
 		return next(btc)
 	}
-	fmt.Fprintf(a.out, "\n⚠ 审批请求 tool=%s args=%s\n  说明: %s\n  批准? %s > ",
-		btc.Call.Name, string(btc.Call.Arguments), a.hint, approveUsage)
+	card := ""
+	previewNote := ""
+	if a.previews != nil {
+		p, ok, err := a.previews.Preview(context.Background(), btc.Call.Name, btc.Call.Arguments)
+		switch {
+		case err != nil:
+			previewNote = fmt.Sprintf("  预览失败: %v\n", err)
+		case ok:
+			card = p.Render()
+		}
+	}
+	if card != "" {
+		fmt.Fprintf(a.out, "\n⚠ 审批请求 tool=%s\n%s%s  说明: %s\n  批准? %s > ",
+			btc.Call.Name, card, previewNote, a.hint, approveUsage)
+	} else {
+		fmt.Fprintf(a.out, "\n⚠ 审批请求 tool=%s args=%s\n%s  说明: %s\n  批准? %s > ",
+			btc.Call.Name, string(btc.Call.Arguments), previewNote, a.hint, approveUsage)
+	}
 	line, err := a.lines.ReadLine()
 	ans := strings.ToLower(strings.TrimSpace(line))
 	if err != nil && ans == "" {

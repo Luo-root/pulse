@@ -137,7 +137,11 @@ func (r *Registry) DisposeSource(source string)
 
 func (r *Registry) AsToolSet() loop.ToolSet // live 视图；回合快照在 loop
 func (r *Registry) LookupMeta(name string) (source string, risk Risk, ok bool)
+func (r *Registry) LookupPreview(name string) (PreviewFn, bool)
+func (r *Registry) Preview(ctx context.Context, name string, args json.RawMessage) (Preview, bool, error)
 ```
+
+W2（Issue #56）：`Registration.PreviewFn` 可选。HITL 在 `before_tool_call` 里用当前 `Call` 调 `Preview`；**不**改 `BeforeToolCall` 载荷。MCP Source 默认 `DefaultPreview`（opaque）；特例覆盖 `Config.PreviewFn`。Preview 只读盘、失败当空卡片、仍按 Risk 问人。
 
 契约要点：
 
