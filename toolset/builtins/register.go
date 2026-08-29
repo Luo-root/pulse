@@ -81,6 +81,14 @@ func Register(scope *kernel.Context, reg *toolset.Registry, opt Options) (dispos
 		}
 		disposers = append(disposers, d)
 	}
+	// job 清理走独立 Effect：scope.Dispose（宿主忘记显式 dispose）时也能杀活 job。
+	// 幂等；显式 dispose 闭包里同样杀，两条路都覆盖。
+	if _, err := scope.Effect(func() (func(), error) {
+		return e.jobs.killAll, nil
+	}); err != nil {
+		rollback()
+		return nil, fmt.Errorf("builtins: register job cleanup: %w", err)
+	}
 	return func() {
 		e.jobs.killAll()
 		for i := len(disposers) - 1; i >= 0; i-- {

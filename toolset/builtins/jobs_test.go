@@ -50,3 +50,36 @@ func TestJobTableMaxRunning(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestJobTableReapsOldestDone(t *testing.T) {
+	tb := newJobTable(1, 100)
+	mk := func(id string, done bool) *job {
+		j := &job{id: id, waitCh: make(chan struct{}), done: done}
+		tb.jobs[id] = j
+		tb.order = append(tb.order, id)
+		return j
+	}
+	// 上限 max=1 → done 上限 2。已有 3 个 done：reap 应删最旧的 j1。
+	mk("j1", true)
+	mk("j2", true)
+	mk("j3", true)
+	tb.mu.Lock()
+	tb.reapDoneLocked()
+	tb.mu.Unlock()
+	if _, ok := tb.jobs["j1"]; ok {
+		t.Fatal("oldest done job j1 should be reaped")
+	}
+	if _, ok := tb.jobs["j2"]; !ok {
+		t.Fatal("j2 should survive")
+	}
+	if _, ok := tb.jobs["j3"]; !ok {
+		t.Fatal("j3 should survive")
+	}
+	// running job 不参与淘汰：再塞 1 个 done（j4）→ done=2 已达上限；j2 保留。
+	tb.mu.Lock()
+	tb.reapDoneLocked()
+	tb.mu.Unlock()
+	if _, ok := tb.jobs["j2"]; !ok {
+		t.Fatal("j2 should survive at limit")
+	}
+}

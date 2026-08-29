@@ -36,38 +36,60 @@ func (e *env) regExec() toolset.Registration {
 	}
 }
 
-func (e *env) previewExec(ctx context.Context, args json.RawMessage) (toolset.Preview, error) {
-	if err := ctx.Err(); err != nil {
-		return toolset.Preview{}, err
-	}
-	var p struct {
-		Command        string `json:"command"`
-		Cwd            string `json:"cwd"`
-		TimeoutSeconds int    `json:"timeout_seconds"`
-		Background     bool   `json:"background"`
-	}
+// execArgs 是 exec 的统一参数（preview 与 execute 共用一份解析）。
+type execArgs struct {
+	Command        string `json:"command"`
+	Cwd            string `json:"cwd"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+	Background     bool   `json:"background"`
+}
+
+func parseExecArgs(args json.RawMessage) (execArgs, error) {
+	var p execArgs
 	if err := json.Unmarshal(args, &p); err != nil {
-		return toolset.Preview{}, fmt.Errorf("builtins/exec: invalid args: %w", err)
+		return execArgs{}, fmt.Errorf("builtins/exec: invalid args: %w", err)
 	}
 	if strings.TrimSpace(p.Command) == "" {
-		return toolset.Preview{}, fmt.Errorf("builtins/exec: command is required")
+		return execArgs{}, fmt.Errorf("builtins/exec: command is required")
 	}
+	return p, nil
+}
+
+func (e *env) resolveExecCwd(p execArgs) (string, error) {
 	cwd := e.opt.Root
 	if p.Cwd != "" {
 		abs, err := resolveUnderRoot(e.opt.Root, p.Cwd)
 		if err != nil {
-			return toolset.Preview{}, err
+			return "", err
 		}
 		if err := confineRead(e.opt.Root, nil, abs); err != nil {
-			return toolset.Preview{}, fmt.Errorf("builtins/exec: cwd %w", err)
+			return "", fmt.Errorf("builtins/exec: cwd %w", err)
 		}
 		cwd = abs
 	}
-	timeout := e.opt.ExecTimeout
+	return cwd, nil
+}
+
+func (p execArgs) timeout(defaultTimeout time.Duration) time.Duration {
 	if p.TimeoutSeconds > 0 {
-		timeout = time.Duration(p.TimeoutSeconds) * time.Second
+		return time.Duration(p.TimeoutSeconds) * time.Second
 	}
-	timeoutText := timeout.String()
+	return defaultTimeout
+}
+
+func (e *env) previewExec(ctx context.Context, args json.RawMessage) (toolset.Preview, error) {
+	if err := ctx.Err(); err != nil {
+		return toolset.Preview{}, err
+	}
+	p, err := parseExecArgs(args)
+	if err != nil {
+		return toolset.Preview{}, err
+	}
+	cwd, err := e.resolveExecCwd(p)
+	if err != nil {
+		return toolset.Preview{}, err
+	}
+	timeoutText := p.timeout(e.opt.ExecTimeout).String()
 	if p.Background {
 		timeoutText = "background (no timeout)"
 	}
@@ -83,28 +105,13 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	var p struct {
-		Command        string `json:"command"`
-		Cwd            string `json:"cwd"`
-		TimeoutSeconds int    `json:"timeout_seconds"`
-		Background     bool   `json:"background"`
+	p, err := parseExecArgs(args)
+	if err != nil {
+		return "", err
 	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return "", fmt.Errorf("builtins/exec: invalid args: %w", err)
-	}
-	if strings.TrimSpace(p.Command) == "" {
-		return "", fmt.Errorf("builtins/exec: command is required")
-	}
-	cwd := e.opt.Root
-	if p.Cwd != "" {
-		abs, err := resolveUnderRoot(e.opt.Root, p.Cwd)
-		if err != nil {
-			return "", err
-		}
-		if err := confineRead(e.opt.Root, nil, abs); err != nil {
-			return "", fmt.Errorf("builtins/exec: cwd %w", err)
-		}
-		cwd = abs
+	cwd, err := e.resolveExecCwd(p)
+	if err != nil {
+		return "", err
 	}
 	if p.Background {
 		j, err := e.jobs.launch(ctx, p.Command, cwd)
@@ -114,10 +121,7 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 		return fmt.Sprintf("job_id=%s started (background; read output with job_output, stop with job_kill)\ncommand: %s\ncwd: %s\n",
 			j.id, p.Command, cwd), nil
 	}
-	timeout := e.opt.ExecTimeout
-	if p.TimeoutSeconds > 0 {
-		timeout = time.Duration(p.TimeoutSeconds) * time.Second
-	}
+	timeout := p.timeout(e.opt.ExecTimeout)
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -128,7 +132,7 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 	cmd.Stderr = &stderr
 
 	start := time.Now()
-	err := cmd.Run()
+	err = cmd.Run()
 	dur := time.Since(start)
 
 	exitCode := 0

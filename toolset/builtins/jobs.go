@@ -96,13 +96,14 @@ func (w jobWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// jobTable 是 env 内的后台 job 注册表。
+// jobTable 是 env 内的后台 job 注册表。done job 超过 2*max 时按创建序淘汰最旧。
 type jobTable struct {
 	mu     sync.Mutex
 	seq    int
 	max    int
 	bufMax int
 	jobs   map[string]*job
+	order  []string // 创建序（含已 remove 的残留，reap 时跳过）
 }
 
 func newJobTable(max, bufMax int) *jobTable {
@@ -126,6 +127,44 @@ func (t *jobTable) remove(id string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.jobs, id)
+	for i, x := range t.order {
+		if x == id {
+			t.order = append(t.order[:i], t.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// reapDoneLocked 在 t.mu 内调用（锁序 t.mu → j.mu）：done job 超过
+// 2*max 时按创建序淘汰最旧，防止长命宿主下 job 表无界增长。
+func (t *jobTable) reapDoneLocked() {
+	limit := 2 * t.max
+	for {
+		doneCount := 0
+		oldest := ""
+		for _, id := range t.order {
+			j, ok := t.jobs[id]
+			if !ok {
+				continue
+			}
+			if !j.running() {
+				doneCount++
+				if oldest == "" {
+					oldest = id
+				}
+			}
+		}
+		if doneCount <= limit {
+			return
+		}
+		delete(t.jobs, oldest)
+		for i, id := range t.order {
+			if id == oldest {
+				t.order = append(t.order[:i], t.order[i+1:]...)
+				break
+			}
+		}
+	}
 }
 
 // launch 启动后台命令：生命周期不绑请求 ctx（WithoutCancel），绑 kernel dispose。
@@ -153,6 +192,8 @@ func (t *jobTable) launch(ctx context.Context, command, cwd string) (*job, error
 	t.seq++
 	j := &job{id: "j" + strconv.Itoa(t.seq), command: command, cmd: cmd, cancel: cancel, waitCh: make(chan struct{})}
 	t.jobs[j.id] = j
+	t.order = append(t.order, j.id)
+	t.reapDoneLocked()
 	t.mu.Unlock()
 
 	w := jobWriter{j: j, bufMax: t.bufMax}

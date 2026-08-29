@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/toolset"
 	"github.com/Luo-root/pulse/toolset/builtins"
 )
@@ -182,5 +183,33 @@ func TestDisposeKillsJobs(t *testing.T) {
 	time.Sleep(2 * time.Second)
 	if _, err := os.Stat(filepath.Join(root, "done.txt")); !os.IsNotExist(err) {
 		t.Fatalf("dispose must kill the job so done.txt is never written, err=%v", err)
+	}
+}
+
+func TestScopeDisposeKillsJobs(t *testing.T) {
+	root := t.TempDir()
+	host := kernel.New()
+	if _, err := kernel.Use(host, toolset.Plugin()); err != nil {
+		t.Fatal(err)
+	}
+	reg, ok := kernel.Get(host, toolset.ServiceKey)
+	if !ok {
+		t.Fatal("no registry")
+	}
+	dispose, err := builtins.Register(host, reg, builtins.Options{Root: root})
+	if err != nil {
+		host.Dispose()
+		t.Fatal(err)
+	}
+	// 故意不调 dispose：模拟宿主只走 kernel Effect 栈（host.Dispose()）。
+	_ = dispose
+
+	out := call(t, reg, "exec", map[string]any{"command": bgSleepWrite(), "background": true})
+	_ = extractJobID(t, out)
+	host.Dispose()
+
+	time.Sleep(2 * time.Second)
+	if _, err := os.Stat(filepath.Join(root, "done.txt")); !os.IsNotExist(err) {
+		t.Fatalf("scope dispose must kill the job so done.txt is never written, err=%v", err)
 	}
 }
