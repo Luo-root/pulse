@@ -213,19 +213,28 @@ func (e *env) regLSP() toolset.Registration {
 }
 
 func (e *env) previewLSP(_ context.Context, args json.RawMessage) (toolset.Preview, error) {
-	var p struct {
-		Op   string `json:"op"`
-		Path string `json:"path"`
-	}
+	var p lspArgs
 	if err := json.Unmarshal(args, &p); err != nil {
 		return toolset.Preview{}, fmt.Errorf("lsp: invalid args: %w", err)
+	}
+	if err := validateLSPArgs(&p); err != nil {
+		return toolset.Preview{}, err
+	}
+	// 只做参数与路径校验；不 serverFor（spawn 是副作用，PreviewFn 只读）。
+	abs, err := resolveUnderRoot(e.m.opt.Root, p.Path)
+	if err != nil {
+		return toolset.Preview{}, err
+	}
+	ext := strings.ToLower(filepath.Ext(abs))
+	if _, ok := e.m.opt.Servers[ext]; !ok {
+		return toolset.Preview{}, fmt.Errorf("lsp: no server configured for %q files", ext)
 	}
 	return toolset.Preview{
 		Kind:    toolset.KindOpaque,
 		Action:  toolset.ActionRead,
-		Subject: fmt.Sprintf("lsp %s %s", p.Op, p.Path),
+		Subject: fmt.Sprintf("lsp %s %s", p.Op, abs),
 		Opaque: &toolset.OpaqueChange{
-			Summary: fmt.Sprintf("query language server: %s %s", p.Op, p.Path),
+			Summary: fmt.Sprintf("query language server (%s): %s %s", ext, p.Op, abs),
 		},
 	}, nil
 }
@@ -238,14 +247,8 @@ type lspArgs struct {
 	IncludeDeclaration bool   `json:"include_declaration"`
 }
 
-func (e *env) lspTool(ctx context.Context, args json.RawMessage) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	var p lspArgs
-	if err := json.Unmarshal(args, &p); err != nil {
-		return "", fmt.Errorf("lsp: invalid args: %w", err)
-	}
+// validateLSPArgs 校验 op 枚举与 path 非空（preview 与 execute 共用）。
+func validateLSPArgs(p *lspArgs) error {
 	valid := false
 	for _, op := range lspOps {
 		if p.Op == op {
@@ -254,10 +257,24 @@ func (e *env) lspTool(ctx context.Context, args json.RawMessage) (string, error)
 		}
 	}
 	if !valid {
-		return "", fmt.Errorf("lsp: unknown op %q (want one of: %s)", p.Op, strings.Join(lspOps, ", "))
+		return fmt.Errorf("lsp: unknown op %q (want one of: %s)", p.Op, strings.Join(lspOps, ", "))
 	}
 	if strings.TrimSpace(p.Path) == "" {
-		return "", fmt.Errorf("lsp: path is required")
+		return fmt.Errorf("lsp: path is required")
+	}
+	return nil
+}
+
+func (e *env) lspTool(ctx context.Context, args json.RawMessage) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var p lspArgs
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("lsp: invalid args: %w", err)
+	}
+	if err := validateLSPArgs(&p); err != nil {
+		return "", err
 	}
 	abs, err := resolveUnderRoot(e.m.opt.Root, p.Path)
 	if err != nil {

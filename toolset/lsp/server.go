@@ -214,12 +214,19 @@ type server struct {
 	command string
 	sp      *serverProcess
 
-	mu      sync.Mutex
-	nextID  int64
-	pending map[int64]chan rpcResponse
-	diags   map[string]*diagState
-	opened  map[string]*openFile
-	closed  bool
+	mu       sync.Mutex
+	nextID   int64
+	pending  map[int64]chan rpcResponse
+	diags    map[string]*diagState
+	opened   map[string]*openFile
+	uriLocks sync.Map // file URI → *sync.Mutex，串行化同文件的内容同步
+	closed   bool
+}
+
+// uriLock 返回该文件的同步锁（get-or-create；随 server 生命周期存续）。
+func (s *server) uriLock(uri string) *sync.Mutex {
+	l, _ := s.uriLocks.LoadOrStore(uri, &sync.Mutex{})
+	return l.(*sync.Mutex)
 }
 
 func newServer(lang, command string, sp *serverProcess) *server {
@@ -234,6 +241,9 @@ func newServer(lang, command string, sp *serverProcess) *server {
 	go s.readLoop()
 	return s
 }
+
+// noSuchFrameSize 是单帧 LSP 消息的防御上限（失控 server 不许吃爆内存）。
+const maxFrameBytes = 16 << 20
 
 func (s *server) readLoop() {
 	for {
@@ -349,9 +359,14 @@ func (s *server) initialize(ctx context.Context, root string) error {
 
 // ensureOpen 首次访问发 didOpen；之后每次调用比对磁盘内容 hash，
 // 变了就 didChange 全量同步（version++）——「改完再调 diagnostics」
-// 的闭环依赖这一步。
+// 的闭环依赖这一步。同文件并发调用被 uriLock 串行化：内容未变时
+// 只有一次同步帧，不存在重复作废诊断的窗口。
 func (s *server) ensureOpen(ctx context.Context, abs, ext string) error {
 	uri := fileURI(abs)
+	l := s.uriLock(uri)
+	l.Lock()
+	defer l.Unlock()
+
 	content, err := os.ReadFile(abs)
 	if err != nil {
 		return fmt.Errorf("lsp: %w", err)
@@ -371,8 +386,11 @@ func (s *server) ensureOpen(ctx context.Context, abs, ext string) error {
 	// 帧序保证 readLoop 之后收到的新 publish 不会被误删，
 	// diagnostics 的「等第一次 publish」也才真的等新一轮。
 	delete(s.diags, uri)
+	var oldVersion int
 	if st != nil {
-		st.version++ // 预占下一版；同步失败回退
+		oldVersion = st.version
+		st.version++  // 预占下一版
+		st.hash = hash // 先提交意图：并发调用者在锁内看到已同步即跳过
 	}
 	s.mu.Unlock()
 
@@ -397,14 +415,13 @@ func (s *server) ensureOpen(ctx context.Context, abs, ext string) error {
 		TextDocument:   versionedTextDocID{URI: uri, Version: st.version},
 		ContentChanges: []contentChange{{Text: string(content)}},
 	}); err != nil {
+		// 同步失败：回退版本并把指纹清空，下次调用重新同步。
 		s.mu.Lock()
-		st.version--
+		st.version = oldVersion
+		st.hash = ""
 		s.mu.Unlock()
 		return fmt.Errorf("lsp: didChange: %w", err)
 	}
-	s.mu.Lock()
-	st.hash = hash
-	s.mu.Unlock()
 	return nil
 }
 

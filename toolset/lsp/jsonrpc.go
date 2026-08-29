@@ -65,6 +65,9 @@ func (c *stdioConn) Recv() ([]byte, error) {
 	if clen < 0 {
 		return nil, fmt.Errorf("lsp: missing content-length header")
 	}
+	if clen > maxFrameBytes {
+		return nil, fmt.Errorf("lsp: frame too large (%d bytes > %d)", clen, maxFrameBytes)
+	}
 	body := make([]byte, clen)
 	if _, err := io.ReadFull(c.r, body); err != nil {
 		return nil, err

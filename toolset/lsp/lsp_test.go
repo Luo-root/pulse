@@ -549,6 +549,106 @@ func TestLSPScopeDisposeKills(t *testing.T) {
 	}
 }
 
+func TestLSPConcurrentEnsureOpenSendsOnce(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "hello.go")
+	if err := os.WriteFile(file, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := newFakeServer()
+	fs.handle = func(f rpcFrame) {
+		if f.Method == "initialize" {
+			fs.reply(f, map[string]any{})
+		}
+	}
+	injectFake(t, fs, nil)
+
+	// 直接打 server 层：8 个 goroutine 并发同步同一文件。
+	// uriLock 串行化 + hash 意图提交 ⇒ 恰好一次 didOpen、零 didChange。
+	abs, err := resolveUnderRoot(root, "hello.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp, err := spawnServer(context.Background(), "fake", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newServer(".go", "fake", sp)
+	if err := srv.initialize(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := srv.ensureOpen(context.Background(), abs, ".go"); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("ensureOpen: %v", err)
+	}
+
+	waitForFrames(fs, 3) // initialize / initialized / didOpen
+	counts := map[string]int{}
+	for _, f := range fs.methodSequence() {
+		counts[f]++
+	}
+	if counts["textDocument/didOpen"] != 1 {
+		t.Fatalf("didOpen=%d, want 1", counts["textDocument/didOpen"])
+	}
+	if counts["textDocument/didChange"] != 0 {
+		t.Fatalf("didChange=%d, want 0 (content unchanged)", counts["textDocument/didChange"])
+	}
+}
+
+func TestLSPInitializeFailureCarriesStderr(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := newFakeServer()
+	fs.handle = func(f rpcFrame) {
+		if f.Method == "initialize" {
+			fs.replyErr(f, "boom")
+		}
+	}
+	// 注入带 stderr 快照的 spawn：initialize 失败时 error 应带 stderr 尾巴。
+	orig := spawnServer
+	spawnServer = func(ctx context.Context, command, dir string) (*serverProcess, error) {
+		return &serverProcess{
+			conn:   fs.conn,
+			kill:   func() { fs.killed.Add(1) },
+			stderr: func() string { return "gopls: bad flag: -x\n" },
+		}, nil
+	}
+	t.Cleanup(func() { spawnServer = orig })
+
+	reg, cleanup := lspSetup(t, lspOptions(root, nil))
+	defer cleanup()
+
+	msg := lspCallErr(t, reg, map[string]any{"op": "diagnostics", "path": "a.go"})
+	if !strings.Contains(msg, "initialize") || !strings.Contains(msg, "server stderr: gopls: bad flag: -x") {
+		t.Fatalf("stderr hint missing: %s", msg)
+	}
+}
+
+func TestStdioConnFrameTooLarge(t *testing.T) {
+	c := newStdioConn(nil, strings.NewReader("Content-Length: 999999999\r\n\r\n"))
+	_, err := c.Recv()
+	if err == nil || !strings.Contains(err.Error(), "frame too large") {
+		t.Fatalf("want frame limit refuse, got %v", err)
+	}
+}
+
 func TestLSPRegisterValidation(t *testing.T) {
 	host := kernel.New()
 	defer host.Dispose()
