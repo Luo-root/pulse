@@ -9,7 +9,7 @@ Go library (`github.com/Luo-root/pulse`) — an AI Agent framework under v2 reco
 ```bash
 go build ./...          # verify compilation
 go test ./...           # run all tests
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/ ./skills/ ./observability/ ./examples/04-flow-dag/ ./examples/05-tools-sources/   # v2 core + flow/tools examples
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./observability/ ./examples/04-flow-dag/ ./examples/05-tools-sources/   # v2 core + flow/tools examples
 ```
 
 - Requires **Go 1.25.0+** (toolchain auto-downloads if missing).
@@ -24,7 +24,7 @@ kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin
   flow/                     # node graph + Observer；yaml/ 为 E2 装图子包
 llm/                        # v2 model layer: content-block vocabulary, ChatModel, Registry, openai/ + anthropic/ adapters
 loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL decision events
-toolset/                    # v2 可逆工具注册（pulse.tools）+ AsToolSet；mcp/ 为 Source 抽象（mock Client）
+toolset/                    # v2 可逆工具注册（pulse.tools）+ AsToolSet；mcp/ Source；builtins/ P0 基础工具
 skills/                     # v2 Skills 装载器（agentskills.io）；Skill ≠ Tool/Source
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1
