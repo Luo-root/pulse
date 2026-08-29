@@ -126,9 +126,24 @@ func (m *manager) serverFor(ctx context.Context, ext string) (*server, error) {
 		delete(m.servers, ext)
 		m.mu.Unlock()
 		s.shutdownAndKill()
-		return nil, fmt.Errorf("lsp: initialize %s: %w", command, err)
+		return nil, fmt.Errorf("lsp: initialize %s: %w%s", command, err, s.stderrHint())
 	}
 	return s, nil
+}
+
+// stderrHint 取语言服务器 stderr 的保尾快照（排障用），最多 512 字节。
+func (s *server) stderrHint() string {
+	if s.sp.stderr == nil {
+		return ""
+	}
+	tail := strings.TrimSpace(s.sp.stderr())
+	if tail == "" {
+		return ""
+	}
+	if len(tail) > 512 {
+		tail = tail[len(tail)-512:]
+	}
+	return "; server stderr: " + tail
 }
 
 type env struct {
@@ -268,7 +283,7 @@ func (e *env) lspTool(ctx context.Context, args json.RawMessage) (string, error)
 
 	switch p.Op {
 	case "diagnostics":
-		return srv.diagnostics(abs, e.m.opt.DiagWindow)
+		return srv.diagnostics(ctx2, abs, e.m.opt.DiagWindow)
 	case "definition":
 		return srv.definition(ctx2, abs, p.Line, p.Column)
 	case "references":

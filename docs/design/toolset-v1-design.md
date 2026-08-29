@@ -149,7 +149,7 @@ builtins P1（Issue [#60](https://github.com/Luo-root/pulse/issues/60)）：`app
 
 builtins P1（Issue [#62](https://github.com/Luo-root/pulse/issues/62)）：长命令生命周期。`exec` 加 `background:true`（返回 `job_id`，不受 timeout、不随请求取消——job 生命周期绑 kernel dispose）；`job_output` 按全局字节偏移读增量合流输出（环形缓冲超限丢头并回报 `dropped`）；`job_kill` 整树杀（Windows `taskkill /T /F`，Unix `Setpgid` + 进程组 SIGKILL）并等真正退出。dispose 杀全部活 job；`MaxJobs` 限并发。
 
-builtins P1 收尾（Issue [#64](https://github.com/Luo-root/pulse/issues/64)）：`toolset/lsp` 独立可选包（不进 builtins：依赖外部进程、按语言配置）。单只读工具 `lsp`，op 分发 `diagnostics` / `definition` / `references` / `hover`；`Servers` 显式映射扩展名 → server 命令；lazy 启动 + dispose / scope Dispose 树杀双路；手写 JSON-RPC stdio 分帧，零新依赖；conn 缝注入 fake 钉协议序。
+builtins P1 收尾（Issue [#64](https://github.com/Luo-root/pulse/issues/64)）：`toolset/lsp` 独立可选包（不进 builtins：依赖外部进程、按语言配置）。单只读工具 `lsp`，op 分发 `diagnostics` / `definition` / `references` / `hover`；`Servers` 显式映射扩展名 → server 命令；lazy 启动 + dispose / scope Dispose 树杀双路；磁盘内容变化自动 `didChange` 全量同步（hash 检测、version++，改错闭环依赖）；手写 JSON-RPC stdio 分帧，零新依赖；conn 缝注入 fake 钉协议序。
 
 契约要点：
 

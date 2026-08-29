@@ -2,6 +2,8 @@ package lsp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,10 +17,19 @@ import (
 )
 
 // serverProcess 是一次 spawn 的产物：协议连接 + 树杀闭包。
+// 环形与等待上限（产品参数，不是行业标准）。
+const (
+	stderrRingBytes  = 8 * 1024
+	diagPollInterval = 50 * time.Millisecond
+	shutdownGrace    = 500 * time.Millisecond
+)
+
 // spawnServer 是缝：真实现拉子进程 stdio；测试注入内存 frameConn。
 type serverProcess struct {
 	conn frameConn
 	kill func()
+	// stderr 返回语言服务器 stderr 的保尾快照（排障用）；可为 nil。
+	stderr func() string
 }
 
 var spawnServer = func(ctx context.Context, command, dir string) (*serverProcess, error) {
@@ -39,7 +50,7 @@ var spawnServer = func(ctx context.Context, command, dir string) (*serverProcess
 		cancel()
 		return nil, err
 	}
-	errBuf := &cappedBuffer{max: 8 * 1024}
+	errBuf := &cappedBuffer{max: stderrRingBytes}
 	cmd.Stderr = errBuf
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -53,6 +64,7 @@ var spawnServer = func(ctx context.Context, command, dir string) (*serverProcess
 				cancel()
 			}
 		},
+		stderr: errBuf.String,
 	}, nil
 }
 
@@ -133,6 +145,20 @@ type didOpenParams struct {
 	TextDocument textDocumentItem `json:"textDocument"`
 }
 
+type versionedTextDocID struct {
+	URI     string `json:"uri"`
+	Version int    `json:"version"`
+}
+
+type contentChange struct {
+	Text string `json:"text"`
+}
+
+type didChangeParams struct {
+	TextDocument   versionedTextDocID `json:"textDocument"`
+	ContentChanges []contentChange    `json:"contentChanges"`
+}
+
 type definitionParams struct {
 	TextDocument textDocumentIdentifier `json:"textDocument"`
 	Position     lsPosition             `json:"position"`
@@ -176,6 +202,12 @@ type diagState struct {
 	items    []rawDiag
 }
 
+// openFile 是已同步给 server 的文件状态：hash 用于检测磁盘变化后 didChange。
+type openFile struct {
+	version int
+	hash    string
+}
+
 // server 是一个语言服务器连接：请求/通知、诊断缓存、生命周期。
 type server struct {
 	lang    string // 扩展名（如 ".go"）
@@ -186,7 +218,7 @@ type server struct {
 	nextID  int64
 	pending map[int64]chan rpcResponse
 	diags   map[string]*diagState
-	opened  map[string]bool
+	opened  map[string]*openFile
 	closed  bool
 }
 
@@ -197,7 +229,7 @@ func newServer(lang, command string, sp *serverProcess) *server {
 		sp:      sp,
 		pending: make(map[int64]chan rpcResponse),
 		diags:   make(map[string]*diagState),
-		opened:  make(map[string]bool),
+		opened:  make(map[string]*openFile),
 	}
 	go s.readLoop()
 	return s
@@ -315,15 +347,11 @@ func (s *server) initialize(ctx context.Context, root string) error {
 	return s.notify("initialized", struct{}{})
 }
 
-// ensureOpen 首次访问时读文件发 didOpen（不做 didChange——改文件走写工具）。
+// ensureOpen 首次访问发 didOpen；之后每次调用比对磁盘内容 hash，
+// 变了就 didChange 全量同步（version++）——「改完再调 diagnostics」
+// 的闭环依赖这一步。
 func (s *server) ensureOpen(ctx context.Context, abs, ext string) error {
 	uri := fileURI(abs)
-	s.mu.Lock()
-	_, opened := s.opened[uri]
-	s.mu.Unlock()
-	if opened {
-		return nil
-	}
 	content, err := os.ReadFile(abs)
 	if err != nil {
 		return fmt.Errorf("lsp: %w", err)
@@ -331,25 +359,57 @@ func (s *server) ensureOpen(ctx context.Context, abs, ext string) error {
 	if strings.IndexByte(string(content), 0) >= 0 {
 		return fmt.Errorf("lsp: binary file (NUL detected): %s", abs)
 	}
-	err = s.notify("textDocument/didOpen", didOpenParams{
-		TextDocument: textDocumentItem{
-			URI:        uri,
-			LanguageID: langID(ext),
-			Version:    1,
-			Text:       string(content),
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("lsp: didOpen: %w", err)
+	hash := contentHash(content)
+
+	s.mu.Lock()
+	st := s.opened[uri]
+	if st != nil && st.hash == hash {
+		s.mu.Unlock()
+		return nil
+	}
+	// 内容变化（或首次同步）：先作废旧诊断缓存再发同步——
+	// 帧序保证 readLoop 之后收到的新 publish 不会被误删，
+	// diagnostics 的「等第一次 publish」也才真的等新一轮。
+	delete(s.diags, uri)
+	if st != nil {
+		st.version++ // 预占下一版；同步失败回退
+	}
+	s.mu.Unlock()
+
+	if st == nil {
+		if err := s.notify("textDocument/didOpen", didOpenParams{
+			TextDocument: textDocumentItem{
+				URI:        uri,
+				LanguageID: langID(ext),
+				Version:    1,
+				Text:       string(content),
+			},
+		}); err != nil {
+			return fmt.Errorf("lsp: didOpen: %w", err)
+		}
+		s.mu.Lock()
+		s.opened[uri] = &openFile{version: 1, hash: hash}
+		s.mu.Unlock()
+		return nil
+	}
+
+	if err := s.notify("textDocument/didChange", didChangeParams{
+		TextDocument:   versionedTextDocID{URI: uri, Version: st.version},
+		ContentChanges: []contentChange{{Text: string(content)}},
+	}); err != nil {
+		s.mu.Lock()
+		st.version--
+		s.mu.Unlock()
+		return fmt.Errorf("lsp: didChange: %w", err)
 	}
 	s.mu.Lock()
-	s.opened[uri] = true
+	st.hash = hash
 	s.mu.Unlock()
 	return nil
 }
 
 // diagnostics 在窗口内等第一次 publish（空数组也是有效结果），返回该文件诊断。
-func (s *server) diagnostics(abs string, window time.Duration) (string, error) {
+func (s *server) diagnostics(ctx context.Context, abs string, window time.Duration) (string, error) {
 	uri := fileURI(abs)
 	deadline := time.Now().Add(window)
 	for {
@@ -364,7 +424,11 @@ func (s *server) diagnostics(abs string, window time.Duration) (string, error) {
 		if time.Now().After(deadline) {
 			return fmt.Sprintf("%s: no diagnostics reported within %s (server may still be indexing)", abs, window), nil
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(diagPollInterval):
+		}
 	}
 }
 
@@ -507,7 +571,7 @@ func parseLocations(res json.RawMessage) ([]location, error) {
 
 // shutdownAndKill 优雅收尾：shutdown → exit → 树杀兜底。幂等。
 func (s *server) shutdownAndKill() {
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	_, _ = s.call(ctx, "shutdown", nil) // 已 closed 则忽略
 	_ = s.notify("exit", nil)
@@ -568,4 +632,10 @@ func langID(ext string) string {
 	default:
 		return "plaintext"
 	}
+}
+
+// contentHash 是文件内容指纹（sha256 前 8 字节 hex），检测磁盘变化。
+func contentHash(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
 }

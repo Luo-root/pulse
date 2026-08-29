@@ -438,6 +438,117 @@ func TestLSPDiagWindowTimeout(t *testing.T) {
 	}
 }
 
+func TestLSPDidChangeAfterEdit(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "hello.go")
+	first := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(file, []byte(first), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var changeTexts []string
+
+	fs := newFakeServer()
+	fs.handle = func(f rpcFrame) {
+		switch f.Method {
+		case "initialize":
+			fs.reply(f, map[string]any{})
+		case "textDocument/didOpen":
+			var p didOpenParams
+			if json.Unmarshal(f.Params, &p) != nil {
+				return
+			}
+			mu.Lock()
+			changeTexts = append(changeTexts, "open:"+p.TextDocument.Text)
+			mu.Unlock()
+			fs.notify("textDocument/publishDiagnostics", publishDiagParams{
+				URI:         p.TextDocument.URI,
+				Diagnostics: []rawDiag{{Range: lsRange{Start: lsPosition{Line: 2}}, Severity: 1, Message: "old error"}},
+			})
+		case "textDocument/didChange":
+			var p didChangeParams
+			if json.Unmarshal(f.Params, &p) != nil {
+				return
+			}
+			if len(p.ContentChanges) == 0 {
+				return
+			}
+			mu.Lock()
+			changeTexts = append(changeTexts, fmt.Sprintf("change:v%d:%s", p.TextDocument.Version, p.ContentChanges[0].Text))
+			mu.Unlock()
+			fs.notify("textDocument/publishDiagnostics", publishDiagParams{
+				URI:         p.TextDocument.URI,
+				Diagnostics: []rawDiag{{Range: lsRange{Start: lsPosition{Line: 2}}, Severity: 1, Message: "new error"}},
+			})
+		}
+	}
+	injectFake(t, fs, nil)
+
+	reg, cleanup := lspSetup(t, lspOptions(root, nil))
+	defer cleanup()
+
+	out := lspCall(t, reg, map[string]any{"op": "diagnostics", "path": "hello.go"})
+	if !strings.Contains(out, "old error") {
+		t.Fatalf("first=%q", out)
+	}
+
+	// 模拟 edit/apply_patch 改盘后再调 diagnostics：必须看到 didChange 全量同步 + 新诊断。
+	second := "package main\n\nfunc main() { undefined() }\n"
+	if err := os.WriteFile(file, []byte(second), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = lspCall(t, reg, map[string]any{"op": "diagnostics", "path": "hello.go"})
+	if !strings.Contains(out, "new error") || strings.Contains(out, "old error") {
+		t.Fatalf("after edit=%q", out)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(changeTexts, "|")
+	want := "open:" + first + "|change:v2:" + second
+	if joined != want {
+		t.Fatalf("sync sequence = %q, want %q", joined, want)
+	}
+}
+
+func TestLSPScopeDisposeKills(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := newFakeServer()
+	fs.handle = func(f rpcFrame) {
+		if f.Method == "initialize" {
+			fs.reply(f, map[string]any{})
+		}
+	}
+	kills := injectFake(t, fs, nil)
+
+	// 手工装配：只走 host.Dispose()，不显式 dispose。
+	host := kernel.New()
+	if _, err := kernel.Use(host, toolset.Plugin()); err != nil {
+		t.Fatal(err)
+	}
+	reg, ok := kernel.Get(host, toolset.ServiceKey)
+	if !ok {
+		t.Fatal("no registry")
+	}
+	dispose, err := Register(host, reg, lspOptions(root, nil))
+	if err != nil {
+		host.Dispose()
+		t.Fatal(err)
+	}
+	_ = dispose
+
+	lspCall(t, reg, map[string]any{"op": "diagnostics", "path": "a.go"})
+	host.Dispose()
+	if n := kills.Load(); n != 1 {
+		t.Fatalf("scope dispose must kill server, kills=%d", n)
+	}
+}
+
 func TestLSPRegisterValidation(t *testing.T) {
 	host := kernel.New()
 	defer host.Dispose()

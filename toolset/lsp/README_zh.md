@@ -30,7 +30,7 @@ defer dispose()
 - **lazy 生命周期**：首次调用按扩展名 spawn（`strings.Fields` 分词，不支持引号路径）→ `initialize`/`initialized` → `didOpen`；进程常驻到 dispose。启动/握手失败只对该语言报错，下次调用重试，不炸 Register
 - **清理双路**：显式 `dispose()` 与 scope Dispose（独立 Effect）都 `shutdown → exit →` 树杀（Windows `taskkill /T /F`；Unix 进程组 SIGKILL）
 - **position 口径**：`line`/`column` 0 基；`column` 是 LSP 原生 **UTF-16 code units**（ASCII 场景与字符数一致）
-- **只读**：不做 formatting / rename / didChange 写同步——改文件走 builtins 的写工具，改完再 `diagnostics` 验证
+- **op 面只读，内容同步双向**：不做 formatting / rename / codeAction 等写类 op；但每次调用会把磁盘最新内容同步给 server（首次 `didOpen`，之后按内容 hash 变化 `didChange` 全量、version++）——`edit`/`apply_patch` 改完再调 `diagnostics` 即得最新诊断
 - **零新依赖**：手写 JSON-RPC stdio 分帧（Content-Length header）；不引 `golang.org/x/tools`
 - **conn 缝**：`spawnServer` 包内变量，测试注入内存 fake 钉协议序（initialize → initialized → didOpen → request）
 - Source：`lsp.lsp`；未配置扩展名 / server 未启动失败的错误都明确（不静默空结果）
