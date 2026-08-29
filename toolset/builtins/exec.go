@@ -18,13 +18,14 @@ func (e *env) regExec() toolset.Registration {
 	return toolset.Registration{
 		Def: llm.ToolDef{
 			Name:        "exec",
-			Description: "Run a shell command in the workspace. Windows uses PowerShell; Unix uses sh -c. Returns exit_code, duration, and truncated combined output. Dangerous — prefer dedicated tools for file edits.",
+			Description: "Run a shell command in the workspace. Windows uses PowerShell; Unix uses sh -c. Returns exit_code, duration, and truncated combined output. With background=true the command starts a long-running job: returns job_id for job_output / job_kill and is not subject to timeout. Dangerous — prefer dedicated tools for file edits.",
 			Parameters: json.RawMessage(`{
   "type":"object",
   "properties":{
     "command":{"type":"string","description":"Command string"},
     "cwd":{"type":"string","description":"Working directory (default Root; must stay under Root)"},
-    "timeout_seconds":{"type":"integer","description":"Timeout seconds (default from Options)","minimum":1}
+    "timeout_seconds":{"type":"integer","description":"Timeout seconds (default from Options)","minimum":1},
+    "background":{"type":"boolean","description":"Run as background job (no timeout); returns job_id"}
   },
   "required":["command"]
 }`),
@@ -35,59 +36,26 @@ func (e *env) regExec() toolset.Registration {
 	}
 }
 
-func (e *env) previewExec(ctx context.Context, args json.RawMessage) (toolset.Preview, error) {
-	if err := ctx.Err(); err != nil {
-		return toolset.Preview{}, err
-	}
-	var p struct {
-		Command        string `json:"command"`
-		Cwd            string `json:"cwd"`
-		TimeoutSeconds int    `json:"timeout_seconds"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return toolset.Preview{}, fmt.Errorf("builtins/exec: invalid args: %w", err)
-	}
-	if strings.TrimSpace(p.Command) == "" {
-		return toolset.Preview{}, fmt.Errorf("builtins/exec: command is required")
-	}
-	cwd := e.opt.Root
-	if p.Cwd != "" {
-		abs, err := resolveUnderRoot(e.opt.Root, p.Cwd)
-		if err != nil {
-			return toolset.Preview{}, err
-		}
-		if err := confineRead(e.opt.Root, nil, abs); err != nil {
-			return toolset.Preview{}, fmt.Errorf("builtins/exec: cwd %w", err)
-		}
-		cwd = abs
-	}
-	timeout := e.opt.ExecTimeout
-	if p.TimeoutSeconds > 0 {
-		timeout = time.Duration(p.TimeoutSeconds) * time.Second
-	}
-	return toolset.Preview{
-		Kind:    toolset.KindCommand,
-		Action:  toolset.ActionExecute,
-		Subject: p.Command,
-		Command: &toolset.CommandChange{Command: p.Command, Cwd: cwd, Timeout: timeout.String()},
-	}, nil
+// execArgs 是 exec 的统一参数（preview 与 execute 共用一份解析）。
+type execArgs struct {
+	Command        string `json:"command"`
+	Cwd            string `json:"cwd"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+	Background     bool   `json:"background"`
 }
 
-func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	var p struct {
-		Command        string `json:"command"`
-		Cwd            string `json:"cwd"`
-		TimeoutSeconds int    `json:"timeout_seconds"`
-	}
+func parseExecArgs(args json.RawMessage) (execArgs, error) {
+	var p execArgs
 	if err := json.Unmarshal(args, &p); err != nil {
-		return "", fmt.Errorf("builtins/exec: invalid args: %w", err)
+		return execArgs{}, fmt.Errorf("builtins/exec: invalid args: %w", err)
 	}
 	if strings.TrimSpace(p.Command) == "" {
-		return "", fmt.Errorf("builtins/exec: command is required")
+		return execArgs{}, fmt.Errorf("builtins/exec: command is required")
 	}
+	return p, nil
+}
+
+func (e *env) resolveExecCwd(p execArgs) (string, error) {
 	cwd := e.opt.Root
 	if p.Cwd != "" {
 		abs, err := resolveUnderRoot(e.opt.Root, p.Cwd)
@@ -99,10 +67,61 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 		}
 		cwd = abs
 	}
-	timeout := e.opt.ExecTimeout
+	return cwd, nil
+}
+
+func (p execArgs) timeout(defaultTimeout time.Duration) time.Duration {
 	if p.TimeoutSeconds > 0 {
-		timeout = time.Duration(p.TimeoutSeconds) * time.Second
+		return time.Duration(p.TimeoutSeconds) * time.Second
 	}
+	return defaultTimeout
+}
+
+func (e *env) previewExec(ctx context.Context, args json.RawMessage) (toolset.Preview, error) {
+	if err := ctx.Err(); err != nil {
+		return toolset.Preview{}, err
+	}
+	p, err := parseExecArgs(args)
+	if err != nil {
+		return toolset.Preview{}, err
+	}
+	cwd, err := e.resolveExecCwd(p)
+	if err != nil {
+		return toolset.Preview{}, err
+	}
+	timeoutText := p.timeout(e.opt.ExecTimeout).String()
+	if p.Background {
+		timeoutText = "background (no timeout)"
+	}
+	return toolset.Preview{
+		Kind:    toolset.KindCommand,
+		Action:  toolset.ActionExecute,
+		Subject: p.Command,
+		Command: &toolset.CommandChange{Command: p.Command, Cwd: cwd, Timeout: timeoutText},
+	}, nil
+}
+
+func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	p, err := parseExecArgs(args)
+	if err != nil {
+		return "", err
+	}
+	cwd, err := e.resolveExecCwd(p)
+	if err != nil {
+		return "", err
+	}
+	if p.Background {
+		j, err := e.jobs.launch(ctx, p.Command, cwd)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("job_id=%s started (background; read output with job_output, stop with job_kill)\ncommand: %s\ncwd: %s\n",
+			j.id, p.Command, cwd), nil
+	}
+	timeout := p.timeout(e.opt.ExecTimeout)
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -113,7 +132,7 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 	cmd.Stderr = &stderr
 
 	start := time.Now()
-	err := cmd.Run()
+	err = cmd.Run()
 	dur := time.Since(start)
 
 	exitCode := 0

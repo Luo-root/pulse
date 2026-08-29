@@ -147,6 +147,8 @@ builtins P1（Issue #58）：`web_fetch` / `web_search` / `question`。`web_fetc
 
 builtins P1（Issue [#60](https://github.com/Luo-root/pulse/issues/60)）：`apply_patch` 多文件 Add/Update/Delete（V4A 文本协议）。**先 verify 再写**：hunk 顺序锚点匹配、read-before-write（Update/Delete）、WriteRoots 监禁全部通过才落盘，一败全不写；不做 `Move to:` rename / fuzzy 匹配 / 二进制 patch；多文件效果用 opaque 清单卡呈现，不扩 `toolset.Preview` 结构。
 
+builtins P1（Issue [#62](https://github.com/Luo-root/pulse/issues/62)）：长命令生命周期。`exec` 加 `background:true`（返回 `job_id`，不受 timeout、不随请求取消——job 生命周期绑 kernel dispose）；`job_output` 按全局字节偏移读增量合流输出（环形缓冲超限丢头并回报 `dropped`）；`job_kill` 整树杀（Windows `taskkill /T /F`，Unix `Setpgid` + 进程组 SIGKILL）并等真正退出。dispose 杀全部活 job；`MaxJobs` 限并发。
+
 契约要点：
 
 1. **同名冲突**：后注册失败（与现 `MemToolSet` 一致），不静默覆盖、不自动改名；MCP 重连应先 `DisposeSource`（或 dispose 旧注册）再 Register。
