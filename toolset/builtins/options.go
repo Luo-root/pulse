@@ -2,6 +2,7 @@ package builtins
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -18,6 +19,10 @@ const (
 	DefaultExecTimeout   = 60 * time.Second
 	DefaultMaxExecBytes  = 30_000
 	DefaultSourcePrefix  = "builtins"
+	DefaultMaxFetchBytes = 256 * 1024
+	DefaultHTTPTimeout   = 20 * time.Second
+	DefaultSearchLimit   = 8
+	DefaultSearchMax     = 20
 )
 
 // Options 控制 builtins 装配与路径/输出边界。
@@ -28,11 +33,23 @@ type Options struct {
 	WriteRoots []string
 	// ForbidRead 拒绝 read/ls/glob/grep 进入的路径前缀（绝对路径）。
 	ForbidRead []string
-	// Enabled 非空时只注册列出的工具名；空=全部 P0。
+	// Enabled 非空时只注册列出的工具名；空=全部已实现 builtins（含 web/question）。
 	Enabled []string
+	// Searcher 覆盖 web_search 后端；nil 则用 DuckDuckGo Lite。
+	Searcher Searcher
+	// HTTPClient 给 web_fetch / 默认 Searcher 用。
+	HTTPClient *http.Client
+	// Asker 给 question；nil 则 Execute 报错。
+	Asker Asker
+	// BlockPrivate 为 true 时 web_fetch 拒绝 RFC1918/loopback。默认 false。
+	BlockPrivate bool
+	// MaxFetchBytes 默认 DefaultMaxFetchBytes。
+	MaxFetchBytes int
+	// SearchEndpoint 仅测试用：覆盖 DDG Lite URL。
+	SearchEndpoint string
 	// SourcePrefix 写入 Registration.Source，默认 "builtins"。
 	SourcePrefix string
-	// ReadLimit / MaxReadBytes / MaxLineRunes 控制 read。
+	// ReadLimit / MaxReadBytes / MaxLineRunes 控制 read；MaxLineRunes 同样截 web_fetch 抽出的行。
 	ReadLimit    int
 	MaxReadBytes int
 	MaxLineRunes int
@@ -112,6 +129,9 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.MaxExecBytes <= 0 {
 		o.MaxExecBytes = DefaultMaxExecBytes
+	}
+	if o.MaxFetchBytes <= 0 {
+		o.MaxFetchBytes = DefaultMaxFetchBytes
 	}
 	return o, nil
 }

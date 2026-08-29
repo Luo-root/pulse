@@ -25,6 +25,10 @@ func Register(scope *kernel.Context, reg *toolset.Registry, opt Options) (dispos
 	if err != nil {
 		return nil, err
 	}
+	opt.HTTPClient = guardedClient(opt.HTTPClient, opt.BlockPrivate)
+	if opt.Searcher == nil {
+		opt.Searcher = newDDGSearcher(opt.HTTPClient, opt.SearchEndpoint)
+	}
 	e := &env{opt: opt, tracker: newReadTracker()}
 
 	want := map[string]bool{}
@@ -55,6 +59,9 @@ func Register(scope *kernel.Context, reg *toolset.Registry, opt Options) (dispos
 	add("exec", e.regExec())
 	add("edit", e.regEdit())
 	add("write", e.regWrite())
+	add("web_fetch", e.regWebFetch())
+	add("web_search", e.regWebSearch())
+	add("question", e.regQuestion())
 
 	disposers := make([]func(), 0, len(items))
 	rollback := func() {

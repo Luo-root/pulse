@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // pageStrings 对已收集集合：稳定排序 → after 游标之后 → 切 limit。
@@ -41,4 +42,33 @@ func formatLines(lines []string) string {
 		return ""
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// pageByOffset 对已切好的行：从 offset 起最多 limit 条。more 表示还有后续行。
+func pageByOffset(lines []string, offset, limit int) (page []string, more bool) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || offset >= len(lines) {
+		return nil, false
+	}
+	end := offset + limit
+	if end < len(lines) {
+		return lines[offset:end], true
+	}
+	return lines[offset:], false
+}
+
+// clipLine 超 MaxLineRunes 时截断并加省略号，与 read 同口径。
+func clipLine(s string, maxRunes int) string {
+	if maxRunes <= 0 || utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	return string([]rune(s)[:maxRunes]) + "…"
+}
+
+func clipLines(lines []string, maxRunes int) {
+	for i, s := range lines {
+		lines[i] = clipLine(s, maxRunes)
+	}
 }

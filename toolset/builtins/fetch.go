@@ -1,0 +1,145 @@
+package builtins
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/Luo-root/pulse/llm"
+	"github.com/Luo-root/pulse/toolset"
+)
+
+func (e *env) regWebFetch() toolset.Registration {
+	return toolset.Registration{
+		Def: llm.ToolDef{
+			Name:        "web_fetch",
+			Description: "Fetch an http(s) URL and return readable text (HTML stripped). Use offset/limit to page large extracted text (each call re-GETs). This is the HTTP response body after JS-less extraction, not a rendered browser DOM. file/ftp/data and cloud-metadata addresses are rejected.",
+			Parameters: json.RawMessage(`{
+  "type":"object",
+  "properties":{
+    "url":{"type":"string","description":"Absolute http(s) URL"},
+    "offset":{"type":"integer","description":"0-based line offset into extracted text","minimum":0},
+    "limit":{"type":"integer","description":"Max lines to return","minimum":1}
+  },
+  "required":["url"]
+}`),
+		},
+		Fn:        e.webFetch,
+		Risk:      toolset.RiskReadonly,
+		PreviewFn: e.previewWebFetch,
+	}
+}
+
+func (e *env) previewWebFetch(_ context.Context, args json.RawMessage) (toolset.Preview, error) {
+	var p struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return toolset.Preview{}, err
+	}
+	u, err := parseHTTPURL(p.URL)
+	if err != nil {
+		return toolset.Preview{}, err
+	}
+	return toolset.Preview{
+		Kind:    toolset.KindNetwork,
+		Action:  toolset.ActionNetwork,
+		Subject: u.String(),
+		Network: &toolset.NetworkChange{Method: http.MethodGet, URL: u.String(), HostClass: "http"},
+	}, nil
+}
+
+func (e *env) webFetch(ctx context.Context, args json.RawMessage) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var p struct {
+		URL    string `json:"url"`
+		Offset int    `json:"offset"`
+		Limit  int    `json:"limit"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("builtins/web_fetch: invalid args: %w", err)
+	}
+	u, err := parseHTTPURL(p.URL)
+	if err != nil {
+		return "", err
+	}
+	if err := checkHost(ctx, u.Host, e.opt.BlockPrivate); err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "pulse-web-fetch/1.0")
+	req.Header.Set("Accept", "text/html,text/plain,application/json,*/*;q=0.5")
+	resp, err := e.opt.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("builtins/web_fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	max := e.opt.MaxFetchBytes
+	if max <= 0 {
+		max = DefaultMaxFetchBytes
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(max)+1))
+	if err != nil {
+		return "", fmt.Errorf("builtins/web_fetch: read: %w", err)
+	}
+	trunc := len(raw) > max
+	if trunc {
+		raw = raw[:max]
+		for len(raw) > 0 && !utf8.Valid(raw) {
+			raw = raw[:len(raw)-1]
+		}
+	}
+	if bytes.IndexByte(raw, 0) >= 0 {
+		return "", fmt.Errorf("builtins/web_fetch: binary body (NUL detected)")
+	}
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	body := string(raw)
+	if strings.Contains(ct, "html") || looksLikeHTML(body) {
+		body = htmlToText(body)
+	}
+	body = strings.TrimSpace(body)
+	lines := splitLines(body)
+	clipLines(lines, e.opt.MaxLineRunes)
+	limit := p.Limit
+	if limit <= 0 {
+		limit = e.opt.ReadLimit
+	}
+	if p.Offset < 0 {
+		p.Offset = 0
+	}
+	page, more := pageByOffset(lines, p.Offset, limit)
+	var b strings.Builder
+	fmt.Fprintf(&b, "status=%d url=%s raw_bytes=%d lines=%d offset=%d\n---\n",
+		resp.StatusCode, u.String(), len(raw), len(lines), p.Offset)
+	if len(page) == 0 {
+		if p.Offset > 0 {
+			fmt.Fprintf(&b, "(offset %d past end — extracted text has %d lines)\n", p.Offset, len(lines))
+		} else {
+			b.WriteString("(empty body)\n")
+		}
+	} else {
+		for _, line := range page {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	if more {
+		fmt.Fprintf(&b, "\n[truncated: more text below; pass offset=%d limit=%d to continue]\n",
+			p.Offset+len(page), limit)
+	}
+	if trunc {
+		fmt.Fprintf(&b, "\n[raw body truncated at max_bytes=%d; extracted text may be incomplete]\n", max)
+	}
+	return b.String(), nil
+}

@@ -6,6 +6,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.66.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/openai/openai-go/v3 v3.52.0
+	golang.org/x/net v0.58.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
