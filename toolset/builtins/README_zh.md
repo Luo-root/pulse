@@ -28,7 +28,7 @@ defer dispose()
 | `read` | 行号前缀；`offset`/`limit`；超限返回 truncated 续读提示 |
 | `ls`/`glob`/`grep` | **先收集并稳定排序再切页**；超限 trailer 带 `after` 游标 |
 | `edit`/`write`(覆盖) | **同进程须先 `read`**；mtime 更新则 stale 拒绝；`edit` 默认唯一匹配 |
-| `apply_patch` | 多文件 Add/Update/Delete（V4A 文本协议）；**先 verify 再写**：全部 hunk 过（上下文锚点、read-before-write、WriteRoots）才落盘，一败全不写。Update/Delete 同样须先 `read`；CRLF 归一还原；NUL 拒绝。不做 `*** Move to:` rename、fuzzy 匹配、二进制 patch |
+| `apply_patch` | 多文件 Add/Update/Delete（V4A 文本协议）；**先 verify 再写**：全部 hunk 过（上下文锚点、read-before-write、WriteRoots）才落盘，一败全不写。Update/Delete 同样须先 `read`；CRLF 归一还原；NUL 拒绝；`*** End Patch` 后残留内容报错；Add 无法表达空文件（至少一行）。不做 `*** Move to:` rename、fuzzy 匹配、二进制 patch |
 | `exec` | **Windows = PowerShell**；Unix = `sh -c`；timeout + 输出头尾截断；RiskDangerous |
 | `web_fetch` | http(s) GET → 抽文本 → 按行 `offset`/`limit`（默认 limit=`ReadLimit`）；超 `MaxLineRunes` 的行截断加 `…`（与 `read` 同口径）。超限 trailer `pass offset=N`；每次续读再 GET。拦 file/ftp/data、NUL 二进制、云 metadata；**Dial 时**对实际解析 IP 再检一次（防 redirect / DNS rebinding），连已检 IP 而非主机名。私网默认允许（`BlockPrivate` 才拒）。不是渲染后的浏览器 DOM |
 | `web_search` | 默认可注入 `Searcher`；nil 则 DuckDuckGo Lite（HTML 解析，可能被反爬） |

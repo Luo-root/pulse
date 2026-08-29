@@ -203,6 +203,37 @@ func TestApplyPatchCRLFPreserved(t *testing.T) {
 	}
 }
 
+func TestApplyPatchDuplicateTargetAndDeleteNeedsRead(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "dup.txt"), "x\ny\n")
+	mustWrite(t, filepath.Join(root, "unread.txt"), "z\n")
+
+	_, reg, cleanup := setup(t, builtins.Options{Root: root})
+	defer cleanup()
+
+	call(t, reg, "read", map[string]any{"path": "dup.txt"})
+	msg := callErr(t, reg, "apply_patch", patchArgs(`*** Begin Patch
+*** Update File: dup.txt
+@@
+-x
++X
+*** Update File: dup.txt
+@@
+-y
++Y
+*** End Patch`))
+	if !strings.Contains(msg, "duplicate target") {
+		t.Fatalf("duplicate: %s", msg)
+	}
+
+	msg = callErr(t, reg, "apply_patch", patchArgs(`*** Begin Patch
+*** Delete File: unread.txt
+*** End Patch`))
+	if !strings.Contains(msg, "must be read") {
+		t.Fatalf("delete unread: %s", msg)
+	}
+}
+
 func TestApplyPatchPreviewListsFiles(t *testing.T) {
 	root := t.TempDir()
 	_, reg, cleanup := setup(t, builtins.Options{Root: root})

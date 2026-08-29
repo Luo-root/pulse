@@ -56,7 +56,7 @@ func (e *env) previewApplyPatch(ctx context.Context, args json.RawMessage) (tool
 		Subject: fmt.Sprintf("%d file(s)", len(plans)),
 		Opaque: &toolset.OpaqueChange{
 			Summary:     b.String(),
-			ArgsExcerpt: excerpt(patch, 512),
+			ArgsExcerpt: excerpt(patch, previewExcerptRunes),
 		},
 	}, nil
 }
@@ -125,6 +125,11 @@ func parseV4A(patch string) ([]patchOp, error) {
 	}
 	if end < 0 {
 		return nil, fmt.Errorf("builtins/apply_patch: missing '*** End Patch'")
+	}
+	for j := end + 1; j < len(lines); j++ {
+		if strings.TrimSpace(lines[j]) != "" {
+			return nil, fmt.Errorf("builtins/apply_patch: unexpected content after '*** End Patch' (line %d)", j+1)
+		}
 	}
 
 	var ops []patchOp
@@ -255,7 +260,6 @@ func parseUpdateBody(lines []string, i, end int, path string) (blocks [][]patchL
 type patchPlan struct {
 	abs     string
 	op      string // create|modify|delete
-	old     string
 	next    string
 	added   int
 	removed int
@@ -327,7 +331,7 @@ func (e *env) planPatch(patch string, checkStale bool) ([]patchPlan, error) {
 			if isCRLF {
 				out = strings.ReplaceAll(out, "\n", "\r\n")
 			}
-			plans = append(plans, patchPlan{abs: abs, op: "modify", old: text, next: out, added: added, removed: removed})
+			plans = append(plans, patchPlan{abs: abs, op: "modify", next: out, added: added, removed: removed})
 		case "delete":
 			if checkStale {
 				if err := e.requireFreshRead(abs); err != nil {
@@ -338,7 +342,7 @@ func (e *env) planPatch(patch string, checkStale bool) ([]patchPlan, error) {
 			if err != nil {
 				return nil, fmt.Errorf("builtins/apply_patch: %w", err)
 			}
-			plans = append(plans, patchPlan{abs: abs, op: "delete", old: string(raw), removed: len(splitLines(string(raw)))})
+			plans = append(plans, patchPlan{abs: abs, op: "delete", removed: len(splitLines(string(raw)))})
 		}
 	}
 	return plans, nil
@@ -426,6 +430,9 @@ func (e *env) commitPatch(plans []patchPlan) (string, error) {
 	}
 	return fmt.Sprintf("applied patch: %d file(s)\n%s", len(plans), b.String()), nil
 }
+
+// previewExcerptRunes 是 opaque 卡 ArgsExcerpt 的最大 rune 数。
+const previewExcerptRunes = 512
 
 func excerpt(s string, max int) string {
 	r := []rune(s)

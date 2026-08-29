@@ -65,6 +65,7 @@ func TestParseV4AErrors(t *testing.T) {
 		{"block without anchor", "*** Begin Patch\n*** Update File: a\n+only add\n*** End Patch", "no context anchor"},
 		{"no sections", "*** Begin Patch\n*** End Patch", "no file sections"},
 		{"directive without path", "*** Begin Patch\n*** Add File:\n*** End Patch", "needs a path"},
+		{"content after end", "*** Begin Patch\n*** End Patch\n*** Add File: a\n+x", "after '*** End Patch'"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
