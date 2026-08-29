@@ -145,6 +145,8 @@ W2（Issue #56）：`Registration.PreviewFn` 可选。HITL 在 `before_tool_call
 
 builtins P1（Issue #58）：`web_fetch` / `web_search` / `question`。`web_fetch` GET 后抽文本再按行 `offset`/`limit` 续读（每次续读再 GET，不是浏览器 DOM）；超 `MaxLineRunes` 截行；NUL 二进制拒绝（与 `read` 同口径）；metadata/link-local 在 **Dial 时**对实际解析 IP 再检并 pin 该 IP（防 redirect / DNS rebinding）；搜索默认可注入 `Searcher`（默认 DuckDuckGo Lite）；`question` 需 `Asker`，与 HITL 批准分家。
 
+builtins P1（Issue [#60](https://github.com/Luo-root/pulse/issues/60)）：`apply_patch` 多文件 Add/Update/Delete（V4A 文本协议）。**先 verify 再写**：hunk 顺序锚点匹配、read-before-write（Update/Delete）、WriteRoots 监禁全部通过才落盘，一败全不写；不做 `Move to:` rename / fuzzy 匹配 / 二进制 patch；多文件效果用 opaque 清单卡呈现，不扩 `toolset.Preview` 结构。
+
 契约要点：
 
 1. **同名冲突**：后注册失败（与现 `MemToolSet` 一致），不静默覆盖、不自动改名；MCP 重连应先 `DisposeSource`（或 dispose 旧注册）再 Register。

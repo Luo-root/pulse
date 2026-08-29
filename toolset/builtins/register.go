@@ -59,6 +59,7 @@ func Register(scope *kernel.Context, reg *toolset.Registry, opt Options) (dispos
 	add("exec", e.regExec())
 	add("edit", e.regEdit())
 	add("write", e.regWrite())
+	add("apply_patch", e.regApplyPatch())
 	add("web_fetch", e.regWebFetch())
 	add("web_search", e.regWebSearch())
 	add("question", e.regQuestion())

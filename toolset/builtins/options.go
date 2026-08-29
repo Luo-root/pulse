@@ -33,7 +33,7 @@ type Options struct {
 	WriteRoots []string
 	// ForbidRead 拒绝 read/ls/glob/grep 进入的路径前缀（绝对路径）。
 	ForbidRead []string
-	// Enabled 非空时只注册列出的工具名；空=全部已实现 builtins（含 web/question）。
+	// Enabled 非空时只注册列出的工具名；空=全部已实现 builtins（含 apply_patch/web/question）。
 	Enabled []string
 	// Searcher 覆盖 web_search 后端；nil 则用 DuckDuckGo Lite。
 	Searcher Searcher
