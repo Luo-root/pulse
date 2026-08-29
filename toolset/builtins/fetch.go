@@ -20,11 +20,13 @@ func (e *env) regWebFetch() toolset.Registration {
 	return toolset.Registration{
 		Def: llm.ToolDef{
 			Name:        "web_fetch",
-			Description: "Fetch an http(s) URL and return readable text. HTML is stripped to text. file/ftp/data schemes and cloud-metadata addresses are rejected.",
+			Description: "Fetch an http(s) URL and return readable text (HTML stripped). Use offset/limit to page large extracted text (each call re-GETs). This is the HTTP response body after JS-less extraction, not a rendered browser DOM. file/ftp/data and cloud-metadata addresses are rejected.",
 			Parameters: json.RawMessage(`{
   "type":"object",
   "properties":{
-    "url":{"type":"string","description":"Absolute http(s) URL"}
+    "url":{"type":"string","description":"Absolute http(s) URL"},
+    "offset":{"type":"integer","description":"0-based line offset into extracted text","minimum":0},
+    "limit":{"type":"integer","description":"Max lines to return","minimum":1}
   },
   "required":["url"]
 }`),
@@ -59,7 +61,9 @@ func (e *env) webFetch(ctx context.Context, args json.RawMessage) (string, error
 		return "", err
 	}
 	var p struct {
-		URL string `json:"url"`
+		URL    string `json:"url"`
+		Offset int    `json:"offset"`
+		Limit  int    `json:"limit"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("builtins/web_fetch: invalid args: %w", err)
@@ -107,12 +111,37 @@ func (e *env) webFetch(ctx context.Context, args json.RawMessage) (string, error
 	if strings.Contains(ct, "html") || looksLikeHTML(body) {
 		body = htmlToText(body)
 	}
+	body = strings.TrimSpace(body)
+	lines := splitLines(body)
+	limit := p.Limit
+	if limit <= 0 {
+		limit = e.opt.ReadLimit
+	}
+	if p.Offset < 0 {
+		p.Offset = 0
+	}
+	page, more := pageByOffset(lines, p.Offset, limit)
 	var b strings.Builder
-	fmt.Fprintf(&b, "status=%d url=%s bytes=%d\n---\n", resp.StatusCode, u.String(), len(raw))
-	b.WriteString(strings.TrimSpace(body))
-	b.WriteByte('\n')
+	fmt.Fprintf(&b, "status=%d url=%s raw_bytes=%d lines=%d offset=%d\n---\n",
+		resp.StatusCode, u.String(), len(raw), len(lines), p.Offset)
+	if len(page) == 0 {
+		if p.Offset > 0 {
+			fmt.Fprintf(&b, "(offset %d past end — extracted text has %d lines)\n", p.Offset, len(lines))
+		} else {
+			b.WriteString("(empty body)\n")
+		}
+	} else {
+		for _, line := range page {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	if more {
+		fmt.Fprintf(&b, "\n[truncated: more text below; pass offset=%d limit=%d to continue]\n",
+			p.Offset+len(page), limit)
+	}
 	if trunc {
-		fmt.Fprintf(&b, "\n[truncated: max_bytes=%d]\n", max)
+		fmt.Fprintf(&b, "\n[raw body truncated at max_bytes=%d; extracted text may be incomplete]\n", max)
 	}
 	return b.String(), nil
 }

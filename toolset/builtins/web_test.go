@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Luo-root/pulse/toolset/builtins"
@@ -47,6 +48,85 @@ func TestWebFetchHTTPAndRejectSchemes(t *testing.T) {
 	msg = callErr(t, reg, "web_fetch", map[string]any{"url": "http://169.254.169.254/latest/meta-data"})
 	if !strings.Contains(msg, "metadata") && !strings.Contains(msg, "link-local") {
 		t.Fatalf("%s", msg)
+	}
+}
+
+func TestWebFetchOffsetLimit(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("L0\nL1\nL2\nL3\nL4\n"))
+	}))
+	defer srv.Close()
+
+	_, reg, cleanup := setup(t, builtins.Options{
+		Root:       t.TempDir(),
+		HTTPClient: srv.Client(),
+		ReadLimit:  2,
+	})
+	defer cleanup()
+
+	page0 := call(t, reg, "web_fetch", map[string]any{"url": srv.URL})
+	if !strings.Contains(page0, "lines=5") || !strings.Contains(page0, "offset=0") {
+		t.Fatalf("header=%q", page0)
+	}
+	if !strings.Contains(page0, "L0") || !strings.Contains(page0, "L1") || strings.Contains(page0, "L2") {
+		t.Fatalf("page0=%q", page0)
+	}
+	if !strings.Contains(page0, "pass offset=2 limit=2") {
+		t.Fatalf("want continuation trailer, got %q", page0)
+	}
+
+	page1 := call(t, reg, "web_fetch", map[string]any{"url": srv.URL, "offset": 2, "limit": 2})
+	if !strings.Contains(page1, "L2") || !strings.Contains(page1, "L3") || strings.Contains(page1, "L0") || strings.Contains(page1, "L4") {
+		t.Fatalf("page1=%q", page1)
+	}
+	if !strings.Contains(page1, "pass offset=4 limit=2") {
+		t.Fatalf("want next trailer, got %q", page1)
+	}
+
+	page2 := call(t, reg, "web_fetch", map[string]any{"url": srv.URL, "offset": 4, "limit": 2})
+	if !strings.Contains(page2, "L4") || strings.Contains(page2, "L3") || strings.Contains(page2, "pass offset=") {
+		t.Fatalf("page2=%q", page2)
+	}
+
+	past := call(t, reg, "web_fetch", map[string]any{"url": srv.URL, "offset": 10})
+	if !strings.Contains(past, "past end") || !strings.Contains(past, "has 5 lines") {
+		t.Fatalf("past=%q", past)
+	}
+	if n := hits.Load(); n != 4 {
+		t.Fatalf("each continue should re-GET, hits=%d", n)
+	}
+}
+
+func TestWebFetchEmptyAndRawTrunc(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/empty", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+	})
+	mux.HandleFunc("/big", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(strings.Repeat("x", 64)))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	_, reg, cleanup := setup(t, builtins.Options{
+		Root:          t.TempDir(),
+		HTTPClient:    srv.Client(),
+		MaxFetchBytes: 16,
+	})
+	defer cleanup()
+
+	empty := call(t, reg, "web_fetch", map[string]any{"url": srv.URL + "/empty"})
+	if !strings.Contains(empty, "(empty body)") {
+		t.Fatalf("empty=%q", empty)
+	}
+
+	big := call(t, reg, "web_fetch", map[string]any{"url": srv.URL + "/big"})
+	if !strings.Contains(big, "raw body truncated at max_bytes=16") {
+		t.Fatalf("big=%q", big)
 	}
 }
 

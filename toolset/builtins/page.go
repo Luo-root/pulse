@@ -42,3 +42,18 @@ func formatLines(lines []string) string {
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
+
+// pageByOffset 对已切好的行：从 offset 起最多 limit 条。more 表示还有后续行。
+func pageByOffset(lines []string, offset, limit int) (page []string, more bool) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || offset >= len(lines) {
+		return nil, false
+	}
+	end := offset + limit
+	if end < len(lines) {
+		return lines[offset:end], true
+	}
+	return lines[offset:], false
+}

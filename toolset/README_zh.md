@@ -57,7 +57,7 @@ agent, err := loop.NewAgent(model,
 
 ## 基础工具
 
-子包 [`builtins`](builtins/README_zh.md)：P0 `read`/`ls`/`glob`/`grep`/`exec`/`edit`/`write`，`builtins.Register(scope, reg, Options{Root:...})`。
+子包 [`builtins`](builtins/README_zh.md)：`read`/`ls`/`glob`/`grep`/`exec`/`edit`/`write`/`web_fetch`/`web_search`/`question`，`builtins.Register(scope, reg, Options{Root:...})`。
 
 ## 测试
 
