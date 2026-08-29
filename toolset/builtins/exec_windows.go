@@ -5,6 +5,7 @@ package builtins
 import (
 	"context"
 	"os/exec"
+	"strconv"
 )
 
 // buildShellCommand 在 Windows 上用 PowerShell 执行命令字符串。
@@ -16,4 +17,12 @@ func buildShellCommand(ctx context.Context, command string) *exec.Cmd {
 		"-Command",
 		command,
 	)
+}
+
+// setupBackgroundProcess：Windows 不设进程组；整树杀走 taskkill /T。
+func setupBackgroundProcess(cmd *exec.Cmd) {}
+
+// killTree 杀整个进程树（含包装 shell 起的子进程）。
+func killTree(pid int) error {
+	return exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid)).Run()
 }

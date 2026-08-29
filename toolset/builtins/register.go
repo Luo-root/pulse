@@ -11,6 +11,7 @@ import (
 type env struct {
 	opt     Options
 	tracker *readTracker
+	jobs    *jobTable
 }
 
 // Register 将 P0 基础工具登记到 reg；返回统一 dispose（撤销本批登记）。
@@ -29,7 +30,7 @@ func Register(scope *kernel.Context, reg *toolset.Registry, opt Options) (dispos
 	if opt.Searcher == nil {
 		opt.Searcher = newDDGSearcher(opt.HTTPClient, opt.SearchEndpoint)
 	}
-	e := &env{opt: opt, tracker: newReadTracker()}
+	e := &env{opt: opt, tracker: newReadTracker(), jobs: newJobTable(opt.MaxJobs, opt.MaxExecBytes)}
 
 	want := map[string]bool{}
 	for _, n := range opt.Enabled {
@@ -57,6 +58,8 @@ func Register(scope *kernel.Context, reg *toolset.Registry, opt Options) (dispos
 	add("glob", e.regGlob())
 	add("grep", e.regGrep())
 	add("exec", e.regExec())
+	add("job_output", e.regJobOutput())
+	add("job_kill", e.regJobKill())
 	add("edit", e.regEdit())
 	add("write", e.regWrite())
 	add("apply_patch", e.regApplyPatch())
@@ -79,6 +82,7 @@ func Register(scope *kernel.Context, reg *toolset.Registry, opt Options) (dispos
 		disposers = append(disposers, d)
 	}
 	return func() {
+		e.jobs.killAll()
 		for i := len(disposers) - 1; i >= 0; i-- {
 			disposers[i]()
 		}

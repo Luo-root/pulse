@@ -18,13 +18,14 @@ func (e *env) regExec() toolset.Registration {
 	return toolset.Registration{
 		Def: llm.ToolDef{
 			Name:        "exec",
-			Description: "Run a shell command in the workspace. Windows uses PowerShell; Unix uses sh -c. Returns exit_code, duration, and truncated combined output. Dangerous — prefer dedicated tools for file edits.",
+			Description: "Run a shell command in the workspace. Windows uses PowerShell; Unix uses sh -c. Returns exit_code, duration, and truncated combined output. With background=true the command starts a long-running job: returns job_id for job_output / job_kill and is not subject to timeout. Dangerous — prefer dedicated tools for file edits.",
 			Parameters: json.RawMessage(`{
   "type":"object",
   "properties":{
     "command":{"type":"string","description":"Command string"},
     "cwd":{"type":"string","description":"Working directory (default Root; must stay under Root)"},
-    "timeout_seconds":{"type":"integer","description":"Timeout seconds (default from Options)","minimum":1}
+    "timeout_seconds":{"type":"integer","description":"Timeout seconds (default from Options)","minimum":1},
+    "background":{"type":"boolean","description":"Run as background job (no timeout); returns job_id"}
   },
   "required":["command"]
 }`),
@@ -43,6 +44,7 @@ func (e *env) previewExec(ctx context.Context, args json.RawMessage) (toolset.Pr
 		Command        string `json:"command"`
 		Cwd            string `json:"cwd"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
+		Background     bool   `json:"background"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return toolset.Preview{}, fmt.Errorf("builtins/exec: invalid args: %w", err)
@@ -65,11 +67,15 @@ func (e *env) previewExec(ctx context.Context, args json.RawMessage) (toolset.Pr
 	if p.TimeoutSeconds > 0 {
 		timeout = time.Duration(p.TimeoutSeconds) * time.Second
 	}
+	timeoutText := timeout.String()
+	if p.Background {
+		timeoutText = "background (no timeout)"
+	}
 	return toolset.Preview{
 		Kind:    toolset.KindCommand,
 		Action:  toolset.ActionExecute,
 		Subject: p.Command,
-		Command: &toolset.CommandChange{Command: p.Command, Cwd: cwd, Timeout: timeout.String()},
+		Command: &toolset.CommandChange{Command: p.Command, Cwd: cwd, Timeout: timeoutText},
 	}, nil
 }
 
@@ -81,6 +87,7 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 		Command        string `json:"command"`
 		Cwd            string `json:"cwd"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
+		Background     bool   `json:"background"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("builtins/exec: invalid args: %w", err)
@@ -98,6 +105,14 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 			return "", fmt.Errorf("builtins/exec: cwd %w", err)
 		}
 		cwd = abs
+	}
+	if p.Background {
+		j, err := e.jobs.launch(ctx, p.Command, cwd)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("job_id=%s started (background; read output with job_output, stop with job_kill)\ncommand: %s\ncwd: %s\n",
+			j.id, p.Command, cwd), nil
 	}
 	timeout := e.opt.ExecTimeout
 	if p.TimeoutSeconds > 0 {

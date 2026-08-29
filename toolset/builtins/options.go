@@ -23,6 +23,7 @@ const (
 	DefaultHTTPTimeout   = 20 * time.Second
 	DefaultSearchLimit   = 8
 	DefaultSearchMax     = 20
+	DefaultMaxJobs       = 16
 )
 
 // Options 控制 builtins 装配与路径/输出边界。
@@ -57,9 +58,11 @@ type Options struct {
 	GlobLimit int
 	GrepLimit int
 	LSLimit   int
-	// ExecTimeout / MaxExecBytes 控制 exec。
+	// ExecTimeout / MaxExecBytes 控制 exec；MaxExecBytes 同时是后台 job 环形缓冲上限。
 	ExecTimeout  time.Duration
 	MaxExecBytes int
+	// MaxJobs 限制同时运行的后台 job 数（exec background）。默认 16。
+	MaxJobs int
 }
 
 func (o Options) withDefaults() (Options, error) {
@@ -129,6 +132,9 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.MaxExecBytes <= 0 {
 		o.MaxExecBytes = DefaultMaxExecBytes
+	}
+	if o.MaxJobs <= 0 {
+		o.MaxJobs = DefaultMaxJobs
 	}
 	if o.MaxFetchBytes <= 0 {
 		o.MaxFetchBytes = DefaultMaxFetchBytes
