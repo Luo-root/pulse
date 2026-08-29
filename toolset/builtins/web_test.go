@@ -85,6 +85,22 @@ func TestWebFetchBlockPrivate(t *testing.T) {
 	}
 }
 
+func TestWebFetchRejectsBinaryNUL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte("pdf\x00junk"))
+	}))
+	defer srv.Close()
+
+	_, reg, cleanup := setup(t, builtins.Options{Root: t.TempDir(), HTTPClient: srv.Client()})
+	defer cleanup()
+
+	msg := callErr(t, reg, "web_fetch", map[string]any{"url": srv.URL})
+	if !strings.Contains(msg, "binary") || !strings.Contains(msg, "NUL") {
+		t.Fatalf("want NUL refuse, got %s", msg)
+	}
+}
+
 func TestWebFetchClipLongLine(t *testing.T) {
 	long := strings.Repeat("x", 80)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

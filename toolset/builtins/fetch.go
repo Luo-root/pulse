@@ -1,6 +1,7 @@
 package builtins
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -73,17 +74,13 @@ func (e *env) webFetch(ctx context.Context, args json.RawMessage) (string, error
 		return "", err
 	}
 
-	client := e.opt.HTTPClient
-	if client == nil {
-		client = guardedClient(nil, e.opt.BlockPrivate)
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "pulse-web-fetch/1.0")
 	req.Header.Set("Accept", "text/html,text/plain,application/json,*/*;q=0.5")
-	resp, err := client.Do(req)
+	resp, err := e.opt.HTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("builtins/web_fetch: %w", err)
 	}
@@ -102,6 +99,9 @@ func (e *env) webFetch(ctx context.Context, args json.RawMessage) (string, error
 		for len(raw) > 0 && !utf8.Valid(raw) {
 			raw = raw[:len(raw)-1]
 		}
+	}
+	if bytes.IndexByte(raw, 0) >= 0 {
+		return "", fmt.Errorf("builtins/web_fetch: binary body (NUL detected)")
 	}
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	body := string(raw)

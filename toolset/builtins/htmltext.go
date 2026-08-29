@@ -3,6 +3,7 @@ package builtins
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/net/html"
 )
@@ -22,6 +23,7 @@ func htmlToText(s string) string {
 		return s
 	}
 	var b strings.Builder
+	var last rune
 	skip := 0
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
@@ -36,21 +38,21 @@ func htmlToText(s string) string {
 				return
 			}
 			if skip == 0 && (name == "p" || name == "div" || name == "br" || name == "li" || name == "tr" || strings.HasPrefix(name, "h")) {
-				if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+				if b.Len() > 0 && last != '\n' {
 					b.WriteByte('\n')
+					last = '\n'
 				}
 			}
 		}
 		if skip == 0 && n.Type == html.TextNode {
 			t := strings.TrimSpace(n.Data)
 			if t != "" {
-				if b.Len() > 0 {
-					last := rune(b.String()[b.Len()-1])
-					if !unicode.IsSpace(last) {
-						b.WriteByte(' ')
-					}
+				if b.Len() > 0 && last != '\n' && !unicode.IsSpace(last) {
+					b.WriteByte(' ')
+					last = ' '
 				}
 				b.WriteString(t)
+				last, _ = utf8.DecodeLastRuneInString(t)
 			}
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {

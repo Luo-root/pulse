@@ -10,6 +10,11 @@ import (
 	"time"
 )
 
+// lookupIPAddr 默认走系统解析；测试可替换以覆盖 DNS 路径（rebinding / mapped IPv6）。
+var lookupIPAddr = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return net.DefaultResolver.LookupIPAddr(ctx, host)
+}
+
 func parseHTTPURL(raw string) (*url.URL, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -54,7 +59,7 @@ func checkHost(ctx context.Context, host string, blockPrivate bool) error {
 	if ip := net.ParseIP(h); ip != nil {
 		return checkIP(ip, blockPrivate)
 	}
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, h)
+	ips, err := lookupIPAddr(ctx, h)
 	if err != nil {
 		return fmt.Errorf("builtins: resolve %s: %w", h, err)
 	}
@@ -159,7 +164,7 @@ func guardedDial(parent func(context.Context, string, string) (net.Conn, error),
 			}
 			return parent(ctx, network, addr)
 		}
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		ips, err := lookupIPAddr(ctx, host)
 		if err != nil {
 			return nil, fmt.Errorf("builtins: resolve %s: %w", host, err)
 		}

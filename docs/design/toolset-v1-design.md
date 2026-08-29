@@ -143,7 +143,7 @@ func (r *Registry) Preview(ctx context.Context, name string, args json.RawMessag
 
 W2（Issue #56）：`Registration.PreviewFn` 可选。HITL 在 `before_tool_call` 里用当前 `Call` 调 `Preview`；**不**改 `BeforeToolCall` 载荷。MCP Source 默认 `DefaultPreview`（opaque）；特例覆盖 `Config.PreviewFn`。Preview 只读盘、失败当空卡片、仍按 Risk 问人。
 
-builtins P1（Issue #58）：`web_fetch` / `web_search` / `question`。`web_fetch` GET 后抽文本再按行 `offset`/`limit` 续读（每次续读再 GET，不是浏览器 DOM）；超 `MaxLineRunes` 截行；metadata/link-local 在 **Dial 时**对实际解析 IP 再检（防 redirect / DNS rebinding）；搜索默认可注入 `Searcher`（默认 DuckDuckGo Lite）；`question` 需 `Asker`，与 HITL 批准分家。
+builtins P1（Issue #58）：`web_fetch` / `web_search` / `question`。`web_fetch` GET 后抽文本再按行 `offset`/`limit` 续读（每次续读再 GET，不是浏览器 DOM）；超 `MaxLineRunes` 截行；NUL 二进制拒绝（与 `read` 同口径）；metadata/link-local 在 **Dial 时**对实际解析 IP 再检并 pin 该 IP（防 redirect / DNS rebinding）；搜索默认可注入 `Searcher`（默认 DuckDuckGo Lite）；`question` 需 `Asker`，与 HITL 批准分家。
 
 契约要点：
 
