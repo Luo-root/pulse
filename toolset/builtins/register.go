@@ -25,6 +25,7 @@ func Register(scope *kernel.Context, reg *toolset.Registry, opt Options) (dispos
 	if err != nil {
 		return nil, err
 	}
+	opt.HTTPClient = guardedClient(opt.HTTPClient, opt.BlockPrivate)
 	if opt.Searcher == nil {
 		opt.Searcher = newDDGSearcher(opt.HTTPClient, opt.SearchEndpoint)
 	}

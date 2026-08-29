@@ -51,6 +51,67 @@ func TestWebFetchHTTPAndRejectSchemes(t *testing.T) {
 	}
 }
 
+func TestWebFetchRedirectToMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	_, reg, cleanup := setup(t, builtins.Options{Root: t.TempDir(), HTTPClient: srv.Client()})
+	defer cleanup()
+
+	msg := callErr(t, reg, "web_fetch", map[string]any{"url": srv.URL})
+	if !strings.Contains(msg, "metadata") && !strings.Contains(msg, "link-local") {
+		t.Fatalf("redirect to metadata should be refused, got %s", msg)
+	}
+}
+
+func TestWebFetchBlockPrivate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("should-not-see"))
+	}))
+	defer srv.Close()
+
+	_, reg, cleanup := setup(t, builtins.Options{
+		Root:         t.TempDir(),
+		HTTPClient:   srv.Client(),
+		BlockPrivate: true,
+	})
+	defer cleanup()
+
+	msg := callErr(t, reg, "web_fetch", map[string]any{"url": srv.URL})
+	if !strings.Contains(msg, "private") && !strings.Contains(msg, "loopback") {
+		t.Fatalf("BlockPrivate should refuse httptest loopback, got %s", msg)
+	}
+}
+
+func TestWebFetchClipLongLine(t *testing.T) {
+	long := strings.Repeat("x", 80)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(long))
+	}))
+	defer srv.Close()
+
+	_, reg, cleanup := setup(t, builtins.Options{
+		Root:         t.TempDir(),
+		HTTPClient:   srv.Client(),
+		MaxLineRunes: 20,
+	})
+	defer cleanup()
+
+	out := call(t, reg, "web_fetch", map[string]any{"url": srv.URL})
+	if strings.Contains(out, strings.Repeat("x", 21)) {
+		t.Fatalf("long line should be clipped, got %q", out)
+	}
+	if !strings.Contains(out, "xxxxxxxxxxxxxxxxxxxx…") {
+		t.Fatalf("want clipped line with ellipsis, got %q", out)
+	}
+	if !strings.Contains(out, "lines=1") {
+		t.Fatalf("header=%q", out)
+	}
+}
+
 func TestWebFetchOffsetLimit(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -7,14 +7,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/toolset"
 )
-
-const defaultMaxFetchBytes = 256 * 1024
 
 func (e *env) regWebFetch() toolset.Registration {
 	return toolset.Registration{
@@ -72,13 +69,13 @@ func (e *env) webFetch(ctx context.Context, args json.RawMessage) (string, error
 	if err != nil {
 		return "", err
 	}
-	if err := checkHost(u.Host, e.opt.BlockPrivate); err != nil {
+	if err := checkHost(ctx, u.Host, e.opt.BlockPrivate); err != nil {
 		return "", err
 	}
 
 	client := e.opt.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
+		client = guardedClient(nil, e.opt.BlockPrivate)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
@@ -93,7 +90,7 @@ func (e *env) webFetch(ctx context.Context, args json.RawMessage) (string, error
 	defer resp.Body.Close()
 	max := e.opt.MaxFetchBytes
 	if max <= 0 {
-		max = defaultMaxFetchBytes
+		max = DefaultMaxFetchBytes
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(max)+1))
 	if err != nil {
@@ -113,6 +110,7 @@ func (e *env) webFetch(ctx context.Context, args json.RawMessage) (string, error
 	}
 	body = strings.TrimSpace(body)
 	lines := splitLines(body)
+	clipLines(lines, e.opt.MaxLineRunes)
 	limit := p.Limit
 	if limit <= 0 {
 		limit = e.opt.ReadLimit

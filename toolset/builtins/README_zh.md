@@ -29,7 +29,7 @@ defer dispose()
 | `ls`/`glob`/`grep` | **先收集并稳定排序再切页**；超限 trailer 带 `after` 游标 |
 | `edit`/`write`(覆盖) | **同进程须先 `read`**；mtime 更新则 stale 拒绝；`edit` 默认唯一匹配 |
 | `exec` | **Windows = PowerShell**；Unix = `sh -c`；timeout + 输出头尾截断；RiskDangerous |
-| `web_fetch` | http(s) GET → 抽文本 → 按行 `offset`/`limit`（默认 limit=`ReadLimit`）；超限 trailer `pass offset=N`；每次续读再 GET。拦 file/ftp/data 与云 metadata；私网默认允许（`BlockPrivate` 才拒）。不是渲染后的浏览器 DOM |
+| `web_fetch` | http(s) GET → 抽文本 → 按行 `offset`/`limit`（默认 limit=`ReadLimit`）；超 `MaxLineRunes` 的行截断加 `…`（与 `read` 同口径）。超限 trailer `pass offset=N`；每次续读再 GET。拦 file/ftp/data 与云 metadata；**Dial 时**对实际解析 IP 再检一次（防 redirect / DNS rebinding）。私网默认允许（`BlockPrivate` 才拒）。不是渲染后的浏览器 DOM |
 | `web_search` | 默认可注入 `Searcher`；nil 则 DuckDuckGo Lite（HTML 解析，可能被反爬） |
 | `question` | 向人提问；需 `Asker`。**不是** HITL 批准 |
 | `glob`/`grep` | P0 **不**应用 `.gitignore`（显式）；非法正则返回 error |

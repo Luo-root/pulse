@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"golang.org/x/net/html"
 )
@@ -31,7 +30,7 @@ type ddgSearcher struct {
 
 func newDDGSearcher(client *http.Client, endpoint string) *ddgSearcher {
 	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
+		client = &http.Client{Timeout: DefaultHTTPTimeout}
 	}
 	if endpoint == "" {
 		endpoint = "https://lite.duckduckgo.com/lite/"
@@ -44,10 +43,10 @@ func (s *ddgSearcher) Search(ctx context.Context, query string, limit int) ([]Se
 		return nil, fmt.Errorf("builtins/web_search: query is required")
 	}
 	if limit <= 0 {
-		limit = 8
+		limit = DefaultSearchLimit
 	}
-	if limit > 20 {
-		limit = 20
+	if limit > DefaultSearchMax {
+		limit = DefaultSearchMax
 	}
 	u := s.endpoint
 	if !strings.Contains(u, "?") {

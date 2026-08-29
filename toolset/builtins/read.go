@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/toolset"
@@ -96,11 +95,7 @@ func (e *env) read(ctx context.Context, args json.RawMessage) (string, error) {
 		if lineNo <= p.Offset {
 			continue
 		}
-		text := sc.Text()
-		if utf8.RuneCountInString(text) > e.opt.MaxLineRunes {
-			runes := []rune(text)
-			text = string(runes[:e.opt.MaxLineRunes]) + "…"
-		}
+		text := clipLine(sc.Text(), e.opt.MaxLineRunes)
 		proj := byteSize + len(text) + 1
 		if len(lines) >= limit || proj > e.opt.MaxReadBytes {
 			hasMore = true
