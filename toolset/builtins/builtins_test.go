@@ -89,7 +89,7 @@ func TestRegisterDefinitionsAndDispose(t *testing.T) {
 	for _, d := range reg.AsToolSet().Definitions() {
 		names[d.Name] = true
 	}
-	for _, want := range []string{"read", "ls", "glob", "grep", "exec", "edit", "write", "web_fetch", "web_search", "question"} {
+	for _, want := range []string{"read", "ls", "glob", "grep", "exec", "edit", "write", "apply_patch", "web_fetch", "web_search", "question"} {
 		if !names[want] {
 			t.Fatalf("missing %s", want)
 		}
@@ -97,7 +97,7 @@ func TestRegisterDefinitionsAndDispose(t *testing.T) {
 	dispose()
 	for _, d := range reg.AsToolSet().Definitions() {
 		switch d.Name {
-		case "read", "ls", "glob", "grep", "exec", "edit", "write", "web_fetch", "web_search", "question":
+		case "read", "ls", "glob", "grep", "exec", "edit", "write", "apply_patch", "web_fetch", "web_search", "question":
 			t.Fatalf("dispose() left %s registered", d.Name)
 		}
 	}
