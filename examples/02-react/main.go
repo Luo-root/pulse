@@ -104,7 +104,7 @@ func run() error {
 		if err != nil {
 			return nil, err
 		}
-		trust, err = demoapp.InstallHITLWithTrust(reqScope, mode, flags.DenyTool, flags.AllowTool, toolHint, stdin, os.Stdout, trust)
+		trust, err = demoapp.InstallHITLWithTrust(reqScope, mode, flags.DenyTool, flags.AllowTool, toolHint, stdin, os.Stdout, trust, reg)
 		if err != nil {
 			return nil, err
 		}

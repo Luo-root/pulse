@@ -2,7 +2,7 @@
 
 MCP **工具来源**适配层（Accepted：`docs/design/toolset-v1-design.md` T3）。
 
-把「某个 MCP server 的工具目录」挂进 `pulse.tools`：上线 `Register`，掉线 `DisposeSource`。loop 仍然只看见 `AsToolSet()`。
+把「某个 MCP server 的工具目录」挂进 `pulse.tools`：上线 `Register`，掉线 `DisposeSource`。loop 仍然只看见 `AsToolSet()`。Sync 默认给每条工具挂 `DefaultPreview`（opaque 卡片）；`Config.PreviewFn` 可整源覆盖。
 
 ## 抽象（对标 llm Factory）
 

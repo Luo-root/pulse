@@ -42,18 +42,20 @@ func (r Risk) String() string {
 
 // Registration 是一次工具登记的完整宿主侧描述。
 type Registration struct {
-	Def    llm.ToolDef
-	Fn     loop.ToolFunc
-	Source string // 来源稳定名，如 "local.lookup" / "mcp.filesystem"；元数据，非 Name 主键
-	Risk   Risk   // 必填；不得为 RiskUnspecified
+	Def       llm.ToolDef
+	Fn        loop.ToolFunc
+	Source    string    // 来源稳定名，如 "local.lookup" / "mcp.filesystem"；元数据，非 Name 主键
+	Risk      Risk      // 必填；不得为 RiskUnspecified
+	PreviewFn PreviewFn // 可选；执行前只读卡片。nil = 该条目无预览
 }
 
 type entry struct {
-	def    llm.ToolDef
-	fn     loop.ToolFunc
-	source string
-	risk   Risk
-	token  uint64 // 区分同名先后登记，避免旧 dispose 误删新条目
+	def     llm.ToolDef
+	fn      loop.ToolFunc
+	source  string
+	risk    Risk
+	preview PreviewFn
+	token   uint64 // 区分同名先后登记，避免旧 dispose 误删新条目
 }
 
 // Registry 是并发安全的工具注册中心：主键 = Def.Name（全局扁平唯一）。
@@ -161,11 +163,12 @@ func (r *Registry) install(reg Registration) (uint64, error) {
 	r.nextTok++
 	tok := r.nextTok
 	r.tools[reg.Def.Name] = &entry{
-		def:    reg.Def,
-		fn:     reg.Fn,
-		source: reg.Source,
-		risk:   reg.Risk,
-		token:  tok,
+		def:     reg.Def,
+		fn:      reg.Fn,
+		source:  reg.Source,
+		risk:    reg.Risk,
+		preview: reg.PreviewFn,
+		token:   tok,
 	}
 	set := r.bySrc[reg.Source]
 	if set == nil {

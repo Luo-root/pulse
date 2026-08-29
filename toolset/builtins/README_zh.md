@@ -34,7 +34,7 @@ defer dispose()
 
 ## 刻意不做（本包 P0）
 
-- **写前 diff 摘要**：审批在 `before_tool_call`，Execute 内 diff 给人看不见；形态见 Issue [#56](https://github.com/Luo-root/pulse/issues/56)
+- **写前 diff 进 HITL**：`edit`/`write`/`exec` 登记 `PreviewFn`（只读盘）；卡片给 `before_tool_call` 监听器，不进 tool result。见 Issue [#56](https://github.com/Luo-root/pulse/issues/56)
 - `apply_patch` / web / LSP / job_output（另票）
 - OS 级 sandbox（bwrap / Seatbelt）
 - 改 examples（示例统一另规划）

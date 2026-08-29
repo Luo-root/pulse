@@ -2,6 +2,7 @@ package demoapp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/loop"
+	"github.com/Luo-root/pulse/toolset"
 )
 
 // waterfallOnce 手动派发一次 before_tool_call，返回最终裁决。
@@ -87,7 +89,7 @@ func TestHITLInteractiveApprovals(t *testing.T) {
 		trust := newSessionTrust()
 		in := strings.NewReader(c.input)
 		var out bytes.Buffer
-		approver := newConsoleApprover("删除文件（模拟）", NewLineSource(in), &out, trust)
+		approver := newConsoleApprover("删除文件（模拟）", NewLineSource(in), &out, trust, nil)
 		if _, err := kernel.OnWaterfall(host, loop.EventBeforeToolCall, approver.approve); err != nil {
 			t.Fatal(err)
 		}
@@ -108,7 +110,7 @@ func TestHITLInteractiveAlwaysRemembers(t *testing.T) {
 	trust := newSessionTrust()
 	in := strings.NewReader("a\n")
 	var out bytes.Buffer
-	approver := newConsoleApprover("删除文件（模拟）", NewLineSource(in), &out, trust)
+	approver := newConsoleApprover("删除文件（模拟）", NewLineSource(in), &out, trust, nil)
 	if _, err := kernel.OnWaterfall(host, loop.EventBeforeToolCall, approver.approve); err != nil {
 		t.Fatal(err)
 	}
@@ -130,10 +132,47 @@ func TestHITLInteractiveFailClosedOnEOF(t *testing.T) {
 	trust := newSessionTrust()
 	in := strings.NewReader("") // EOF
 	var out bytes.Buffer
-	approver := newConsoleApprover("x", NewLineSource(in), &out, trust)
+	approver := newConsoleApprover("x", NewLineSource(in), &out, trust, nil)
 	kernel.OnWaterfall(host, loop.EventBeforeToolCall, approver.approve)
 	rejected, reason := decide(t, host, "delete_file")
 	if !rejected || !strings.Contains(reason, "fail-closed") {
 		t.Fatalf("EOF must fail closed, got %v %q", rejected, reason)
+	}
+}
+
+func TestHITLInteractivePrintsPreview(t *testing.T) {
+	host := kernel.New()
+	defer host.Dispose()
+	reg := toolset.NewRegistry()
+	_, err := reg.Register(host, toolset.Registration{
+		Def:    llm.ToolDef{Name: "delete_file"},
+		Fn:     func(context.Context, json.RawMessage) (string, error) { return "x", nil },
+		Source: "local.delete_file",
+		Risk:   toolset.RiskDangerous,
+		PreviewFn: func(_ context.Context, args json.RawMessage) (toolset.Preview, error) {
+			return toolset.Preview{
+				Kind:    toolset.KindOpaque,
+				Subject: "delete",
+				Opaque:  &toolset.OpaqueChange{Summary: "will delete", ArgsExcerpt: string(args)},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := newSessionTrust()
+	in := strings.NewReader("y\n")
+	var out bytes.Buffer
+	approver := newConsoleApprover("hint", NewLineSource(in), &out, trust, reg)
+	if _, err := kernel.OnWaterfall(host, loop.EventBeforeToolCall, approver.approve); err != nil {
+		t.Fatal(err)
+	}
+	rejected, _ := decide(t, host, "delete_file")
+	if rejected {
+		t.Fatal("y should approve")
+	}
+	got := out.String()
+	if !strings.Contains(got, "preview kind=opaque") || !strings.Contains(got, "will delete") {
+		t.Fatalf("missing preview card: %q", got)
 	}
 }
