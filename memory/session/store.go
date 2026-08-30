@@ -92,9 +92,7 @@ func (s *memStore) Open(ctx context.Context, id string) (Session, error) {
 }
 
 // List 实现 SessionStore：CreatedAt 降序 + SessionID tiebreak 稳定排序 +
-// 游标分页，不静默截断。After 是上一页末尾的 SessionID；游标指向的会话
-// 已不存在（列表已变化）→ ErrCursorStale，调用方应重置分页——静默从头
-// 会重复返回，不做。
+// 游标分页，不静默截断。
 func (s *memStore) List(ctx context.Context, filter SessionFilter) ([]SessionHeader, string, error) {
 	s.mu.Lock()
 	headers := make([]SessionHeader, 0, len(s.sessions))
@@ -102,14 +100,20 @@ func (s *memStore) List(ctx context.Context, filter SessionFilter) ([]SessionHea
 		headers = append(headers, sess.Header())
 	}
 	s.mu.Unlock()
+	return sortAndPageHeaders(headers, filter, s.pageSize)
+}
 
+// sortAndPageHeaders 按 CreatedAt 降序 + SessionID tiebreak 稳定排序并按
+// 游标分页（内存版与 JSONL 版共用）。After 是上一页末尾的 SessionID；
+// pageSize <= 0 表示不分页全量返回。After 指向的会话不存在 →
+// ErrCursorStale：静默从头会重复返回，不做。
+func sortAndPageHeaders(headers []SessionHeader, filter SessionFilter, pageSize int) ([]SessionHeader, string, error) {
 	sort.Slice(headers, func(i, j int) bool {
 		if !headers[i].CreatedAt.Equal(headers[j].CreatedAt) {
 			return headers[i].CreatedAt.After(headers[j].CreatedAt)
 		}
 		return headers[i].SessionID < headers[j].SessionID
 	})
-
 	start := 0
 	if filter.After != "" {
 		found := false
@@ -127,10 +131,10 @@ func (s *memStore) List(ctx context.Context, filter SessionFilter) ([]SessionHea
 	if start >= len(headers) {
 		return nil, "", nil
 	}
-	if s.pageSize <= 0 || len(headers)-start <= s.pageSize {
+	if pageSize <= 0 || len(headers)-start <= pageSize {
 		return headers[start:], "", nil
 	}
-	page := headers[start : start+s.pageSize]
+	page := headers[start : start+pageSize]
 	return page, page[len(page)-1].SessionID, nil
 }
 
@@ -169,26 +173,8 @@ func (s *memSession) reopen() (*memSession, error) {
 	if len(st.pendingCalls) == 0 && !st.openStep && !st.openTurn {
 		return s, nil
 	}
-	// 补齐顺序：先配对（result 回填在 assistant 消息之后），再 step、
-	// 再 turn——与嵌套闭合顺序一致。
-	for _, id := range st.pendingCalls {
-		s.appendLocked(EventDraft{
-			Type:    EventToolResult,
-			Data:    mustJSON(ToolResultPayload{ToolCallID: id, Text: interruptedResultText, IsError: true}),
-			Surface: &SurfaceIntent{Op: SurfaceAppend},
-		}, false)
-	}
-	if st.openStep {
-		s.appendLocked(EventDraft{
-			Type: EventStepEnded,
-			Data: mustJSON(LifecyclePayload{ID: st.stepID, Reason: ReasonInterrupted}),
-		}, false)
-	}
-	if st.openTurn {
-		s.appendLocked(EventDraft{
-			Type: EventTurnEnded,
-			Data: mustJSON(LifecyclePayload{ID: st.turnID, Reason: ReasonInterrupted}),
-		}, false)
+	for _, draft := range synthDrafts(st) {
+		s.appendLocked(draft, false)
 	}
 	return s, nil
 }
