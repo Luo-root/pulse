@@ -12,8 +12,8 @@ P2「记忆与会话」层（设计事实源：[docs/design/memory-layer-researc
 |---|---|---|
 | `session` | **已落地**（P2-A1 in-memory + P2-A2 JSONL + P2-B Replace fold，Issue #68/#70/#73） | 会话事件日志契约、事件分级 codec registry、surface fold（§6.3 映射表 + checkpoint Replace）、in-memory store、JSONL 持久层（blobs 溢出 + 文件锁 + 撕裂恢复）、Open 即冷恢复、`FoldTrace` 溯源 |
 | `compaction` | **已落地**（P2-B，Issue #73） | token meter（CharMeter 估算 + Pressure）、CompactionEngine seam（LLM / deterministic backend）、§9.1 八步压缩事务编排、§9.2 tool result deterministic pruning |
-| `store` | **已落地**（P2-C1 内存版，Issue #76） | MemoryItem canonical store：Namespace 前缀隔离（scope helper 展开）、Supersede/Revoke 状态机（禁物理 DELETE）、revision CAS、SourceRefs 强制回链、Search 过滤（FTS 与 SQLite 在 C2） |
-| `assemble` | 未建（P2-C） | Context Assembler：渐进披露装配（摘要常驻小预算 + 正文按需检索） |
+| `store` | **已落地**（P2-C 内存版 + SQLite/FTS5，Issue #76/#78） | MemoryItem canonical store：Namespace 前缀隔离（scope helper 展开）、Supersede/Revoke 状态机（禁物理 DELETE）、revision CAS、SourceRefs 强制回链、Search 过滤、SQLite + FTS5（CGO-free，build tag 排除 plan9/js） |
+| `assemble` | **已落地**（P2-C3，Issue #80） | Context Assembler：按类预算（稳定记忆/检索/surface，诊断可解释）、稳定前缀缓存（§8.3 frozen snapshot）、确定性排序（taint/recency，不依赖 Confidence）、引用模板注入 |
 | `index` | 未建（P2-D） | FTS / 向量索引 provider（派生索引，可重建） |
 
 ## 依赖方向（评审定案，不可违反）
