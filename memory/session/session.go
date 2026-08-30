@@ -191,12 +191,3 @@ func (s *memSession) Flush(ctx context.Context) error {
 	}
 	return nil
 }
-
-// snapshot 供测试与装配层读取当前全量日志（拷贝）。
-func (s *memSession) snapshot() []EventEnvelope {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]EventEnvelope, len(s.events))
-	copy(out, s.events)
-	return out
-}

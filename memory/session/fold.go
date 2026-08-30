@@ -70,7 +70,6 @@ func Fold(events []EventEnvelope, reg *Registry) ([]*llm.Message, error) {
 // assistant 消息上的 PartToolCall；tool.called 不参与）。
 func pendingToolCalls(events []EventEnvelope, reg *Registry) ([]string, error) {
 	var pending []string
-	done := make(map[string]bool)
 	for _, ev := range events {
 		if _, known := reg.lookup(ev.Type); !known && !ev.Ignorable {
 			return nil, fmt.Errorf("%w: seq %d type %q", ErrUnknownRequired, ev.Seq, ev.Type)
@@ -94,7 +93,6 @@ func pendingToolCalls(events []EventEnvelope, reg *Registry) ([]string, error) {
 			for i, id := range pending {
 				if id == p.ToolCallID {
 					pending = append(pending[:i], pending[i+1:]...)
-					done[p.ToolCallID] = true
 					break
 				}
 			}
