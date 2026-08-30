@@ -1,28 +1,3 @@
-// Package session 是 P2 记忆层的第一块地基：event-sourced 的会话事件日志。
-//
-// 定位（docs/design/memory-layer-research-and-v2-design.md §6/§7，Accepted）：
-//
-//   - append-only 事件日志是唯一真相；surface 只是投影，每个模型可见节点
-//     都能定位到 canonical event；
-//   - model-visible means logged：凡是要给模型看的（含崩溃恢复合成的
-//     IsError 结果 / interrupted 结束事件），必须真实 Append 进日志；
-//   - Open 即冷恢复（没有独立 Recover 方法）：Open 非 live 会话时补齐
-//     未闭合 turn/step 与 unpaired ToolCall，合成事件写回日志后再 fold；
-//   - 依赖方向：只 import kernel + llm（禁止 import loop / observability）；
-//     kernel 与 loop 不反向 import 本包。session→loop 的接线由装配层桥做。
-//
-// P2-A1 交付的是内存实现（对标 loop.MemToolSet，先把语义测绿）；JSONL
-// store + blobs + 文件锁在 P2-A2（同票系列，见 §12）。
-//
-// 本包事件分级与裁决表（§6.3 评审定案）：
-//
-//	已知 Required   —— 永不跳过（忽略信封上的 Ignorable flag）
-//	已知 Ignorable  —— 可跳过；fold 不读它
-//	未知 + Ignorable=true  —— 跳过（Append 允许，fold 跳过）
-//	未知 + flag 默认 false —— 拒绝（Append 直接拒绝，Open 拒绝加载）
-//
-// Ignorable ≠ 可以不记：request.header 标 Ignorable 只表示「fold 不需要
-// 它」，写入方仍必须发（system + ToolDef + model 三样）。
 package session
 
 import (
