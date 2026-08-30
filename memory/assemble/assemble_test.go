@@ -275,3 +275,132 @@ func TestInjectedWithoutBudget(t *testing.T) {
 		t.Fatalf("injected = %+v", ac.Messages)
 	}
 }
+
+// ftsStore 是带 FTS 能力的假 store：SearchFTS 行为可注入（断言 FTS 优先
+// 与失败回退两路召回）。
+type ftsStore struct {
+	store.MemoryStore
+	hits []store.MemoryHit
+	err  error
+}
+
+func (f *ftsStore) SearchFTS(ctx context.Context, ns []string, match string, limit int) ([]store.MemoryHit, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.hits, nil
+}
+
+// hasDiag 断言诊断列表里存在 Region 匹配且 Reason 含子串的条目。
+func hasDiag(diags []Diagnostic, region, reasonSub string) bool {
+	for _, d := range diags {
+		if d.Region == region && strings.Contains(d.Reason, reasonSub) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRecallFTSPath：实现 SearchFTS 的 store 优先走 FTS token 召回
+// （viaFTS 诊断）；FTS 失败回退 Search 子串（fallback 诊断）。两路候选
+// 都过 rankHits 统一排序。
+func TestRecallFTSPath(t *testing.T) {
+	ctx := t.Context()
+	ns := []string{"tenant:a"}
+
+	// FTS 命中：f1 只来自 SearchFTS（内存 store 里没有），证明走了 FTS 路。
+	fs := &ftsStore{
+		MemoryStore: store.NewMemoryStore(),
+		hits:        []store.MemoryHit{{Item: item("f1", store.KindEpisode, "fts token prefix hit")}},
+	}
+	ac, err := NewDefaultAssembler(fs, nil, Budget{}).Assemble(ctx, AssembleInput{Namespace: ns, Query: "deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ac.Messages) != 1 || !strings.Contains(ac.Messages[0].Text(), "fts token prefix hit") {
+		t.Fatalf("messages = %+v, want FTS hit f1", ac.Messages)
+	}
+	if !hasDiag(ac.Diagnostics, "retrieved", "recall via fts token prefix") {
+		t.Fatalf("diagnostics = %+v, want viaFTS entry", ac.Diagnostics)
+	}
+
+	// FTS 失败：回退子串 Search（e1 只在内存 store 里），诊断注明 fallback。
+	inner := store.NewMemoryStore()
+	if _, err := inner.Put(ctx, item("e1", store.KindEpisode, "deployed via kubectl yesterday"), store.PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	fs2 := &ftsStore{MemoryStore: inner, err: errors.New("fts syntax error")}
+	ac2, err := NewDefaultAssembler(fs2, nil, Budget{}).Assemble(ctx, AssembleInput{Namespace: ns, Query: "deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ac2.Messages) != 1 || !strings.Contains(ac2.Messages[0].Text(), "deployed via kubectl") {
+		t.Fatalf("messages = %+v, want substring fallback hit e1", ac2.Messages)
+	}
+	if !hasDiag(ac2.Diagnostics, "retrieved", "fts failed, falling back to substring") {
+		t.Fatalf("diagnostics = %+v, want fallback entry", ac2.Diagnostics)
+	}
+}
+
+// brokenStore 包装内存 store：Search 可注入故障（snapshot 重建失败的
+// 退回路径断言）。
+type brokenStore struct {
+	store.MemoryStore
+	mu   sync.Mutex
+	fail bool
+}
+
+func (b *brokenStore) Search(ctx context.Context, q store.MemoryQuery) ([]store.MemoryHit, error) {
+	b.mu.Lock()
+	fail := b.fail
+	b.mu.Unlock()
+	if fail {
+		return nil, errors.New("store offline")
+	}
+	return b.MemoryStore.Search(ctx, q)
+}
+
+// TestSnapshotRefreshFailureFallsBack：RefreshStable 重建失败 → 有旧缓存
+// 退 stale 快照（不空、不中断）+ 诊断；store 恢复后重建成功。
+func TestSnapshotRefreshFailureFallsBack(t *testing.T) {
+	bs := &brokenStore{MemoryStore: store.NewMemoryStore()}
+	ctx := t.Context()
+	seedStable(t, ctx, bs)
+	a := NewDefaultAssembler(bs, nil, Budget{})
+	ns := []string{"tenant:a"}
+
+	ac1, err := a.Assemble(ctx, AssembleInput{Namespace: ns})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ac1.StablePrefixLen != 2 {
+		t.Fatalf("StablePrefixLen = %d, want 2（首次重建成功）", ac1.StablePrefixLen)
+	}
+
+	// store 故障 + RefreshStable：退回旧快照 + stale 诊断，组装不中断。
+	bs.mu.Lock()
+	bs.fail = true
+	bs.mu.Unlock()
+	ac2, err := a.Assemble(ctx, AssembleInput{Namespace: ns, RefreshStable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ac2.StablePrefixLen != 2 {
+		t.Fatalf("stale StablePrefixLen = %d, want 2（退回旧快照）", ac2.StablePrefixLen)
+	}
+	if !hasDiag(ac2.Diagnostics, "stable-snapshot", "serving stale snapshot") {
+		t.Fatalf("diagnostics = %+v, want stale entry", ac2.Diagnostics)
+	}
+
+	// store 恢复：重建成功。
+	bs.mu.Lock()
+	bs.fail = false
+	bs.mu.Unlock()
+	ac3, err := a.Assemble(ctx, AssembleInput{Namespace: ns, RefreshStable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ac3.StablePrefixLen != 2 || !hasDiag(ac3.Diagnostics, "stable-snapshot", "rebuilt") {
+		t.Fatalf("recovery prefix = %d diag = %+v, want rebuilt with 2", ac3.StablePrefixLen, ac3.Diagnostics)
+	}
+}

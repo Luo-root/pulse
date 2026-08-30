@@ -36,6 +36,15 @@ ac, err := a.Assemble(ctx, assemble.AssembleInput{
 - **stable snapshot（§8.3）**：同 namespace 二次组装命中缓存（不重查 store）；`RefreshStable` 显式重建；per-namespace 隔离；重建失败退回旧快照并记诊断。
 - **引用模板**：每条注入记忆形如 `[memory:<kind> <id> (source: session s9#12)] <content>`——SourceRefs 可读化，模型不当无条件事实。
 
+## 召回口径（C2↔C3 接缝）
+
+检索记忆按 store 能力分两路召回（路径对宿主可见，落 Diagnostics）：
+
+- **FTS 优先**：store 实现 `SearchFTS`（SQLite 版）时走 token 前缀召回（`deploy` → `"deploy"*`，词边界 + FTS rank），命中记诊断 `recall via fts token prefix`；
+- **回退子串**：不支持 FTS（内存版）或 FTS 失败时回退 `MemoryStore.Search` 子串召回（ASCII 折叠）；FTS 失败记诊断 `fts failed, falling back to substring`。
+
+两路口径有差异（词边界 vs 子串包含）：同一 query 在内存版与 SQLite 版下的召回结果可能不同——这是显式声明的接缝增强，不是 store 自身 `Search` 的可替换性回归（那是 C2 已钉死的不变式）。两路候选都过同一 `rankHits` 确定性排序；召回失败不中断组装（诊断记录，surface 照常）。
+
 ## 排序口径（P2-C）
 
 确定性排序：untrusted-external 降权 → UpdatedAt 降序 → ID 升序。**不读 Confidence**（w_conf 权重 0，排序不得依赖没人写的值）；semantic/embedding 归 P2-D。`TokenCounter` 由宿主注入（nil = 字符/4 估算）；不 import compaction（meter 复用走装配层接线票）。

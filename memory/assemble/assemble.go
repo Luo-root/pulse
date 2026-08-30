@@ -1,29 +1,3 @@
-// Package assemble 是 P2-C 的上下文装配层：把 stable memory、检索型
-// 记忆与 session surface 组装成带预算边界的模型请求序列。
-//
-// # 定位与不变式
-//
-//   - 预算按类配置（§8.1）：稳定记忆小固定预算（超限省略并记诊断——
-//     不静默丢）、检索记忆动态预算（超限降 top-k）、surface 尾部保留
-//     完整合法尾部（超限只诊断不裁切——裁切归 compaction/prune）；
-//   - 预算可解释：每次组装的省略/降级都落在 Diagnostics 里；
-//   - stable snapshot policy（§8.3）：frozen profile 默认缓存（同
-//     namespace 复用，保 cache），RefreshStable 显式重建；
-//   - 本轮立即应用的记忆走 Injected（明确 session injected context，
-//     紧贴当前消息），不修改已缓存稳定前缀；
-//   - 检索排序确定性（P2-C）：keyword 命中优先 + recency + taint 降权，
-//     不依赖 Confidence（w_conf 权重 0 是 P2-D 的事）；semantic 归 P2-D。
-//   - 每条注入记忆带 SourceRefs 可读引用模板——避免模型把低置信候选
-//     当成无条件事实（§8.2）。
-//
-// # 分层纪律
-//
-// import memory/session + memory/store + llm（§7.1 import 图 + 词汇表）；
-// kernel 仅借 ServiceKey。TokenCounter 由宿主注入（不 import compaction，
-// meter 复用走装配层接线票）。
-//
-// 设计全貌见 docs/design/memory-layer-research-and-v2-design.md §8；
-// 实现票 #80（C3）。
 package assemble
 
 import (
@@ -165,7 +139,6 @@ func (a *DefaultAssembler) Assemble(ctx context.Context, in AssembleInput) (Asse
 			Reason:  "surface exceeds MaxSurfaceTail; kept intact (compaction/prune owns trimming)",
 		})
 	}
-	_ = surfaceTail
 
 	// 3. 检索记忆：Query 非空才召回（预算内 top-k）。
 	retrievedMsgs, retrievedDiag := a.retrieved(ctx, in)
@@ -211,18 +184,16 @@ func (a *DefaultAssembler) stablePrefix(ctx context.Context, in AssembleInput) (
 }
 
 // retrieved 按 Query 召回检索型记忆（预算内 top-k，确定性排序）。
+//
+// 召回语义（C2↔C3 接缝，复审定案）：Store 实现 `SearchFTS`（SQLite 版）
+// 时优先走 FTS token 前缀召回（§8.2「lexical/FTS 覆盖精确词」的对位，
+// C2 的 FTS 不做摆设）；FTS 不可用或失败时回退 `MemoryStore.Search`
+// 子串召回。两路候选都过 rankHits 统一排序（确定性、taint 降权）。
 func (a *DefaultAssembler) retrieved(ctx context.Context, in AssembleInput) ([]*llm.Message, []Diagnostic) {
 	if strings.TrimSpace(in.Query) == "" {
 		return nil, nil
 	}
-	hits, err := a.Store.Search(ctx, store.MemoryQuery{
-		Namespace: in.Namespace,
-		Query:     in.Query,
-	})
-	if err != nil {
-		// 召回失败不静默也不中断组装：记诊断，surface 照常。
-		return nil, []Diagnostic{{Region: "retrieved", Reason: fmt.Sprintf("search failed: %v", err)}}
-	}
+	hits, viaFTS, diag := a.recall(ctx, in)
 	ranked := rankHits(hits)
 	budget := a.Budget.RetrievedTokens
 	msgs := make([]*llm.Message, 0, len(ranked))
@@ -232,17 +203,49 @@ func (a *DefaultAssembler) retrieved(ctx context.Context, in AssembleInput) ([]*
 		m := memoryMessage(it)
 		cost := a.tokens([]*llm.Message{m})
 		if budget > 0 && tokens+cost > budget {
-			return msgs, []Diagnostic{{
+			return msgs, append(diag, Diagnostic{
 				Region:  "retrieved",
 				Dropped: len(ranked) - kept,
 				Reason:  "retrieved budget exhausted; reduced top-k",
-			}}
+			})
 		}
 		msgs = append(msgs, m)
 		tokens += cost
 		kept++
 	}
-	return msgs, nil
+	if viaFTS {
+		diag = append(diag, Diagnostic{Region: "retrieved", Reason: "recall via fts token prefix"})
+	}
+	return msgs, diag
+}
+
+// ftsSearcher 是支持 FTS 的 store 的可选能力（SQLite 实现特有，类型断言
+// 使用——不进 §7.1 接口面）。
+type ftsSearcher interface {
+	SearchFTS(ctx context.Context, ns []string, match string, limit int) ([]store.MemoryHit, error)
+}
+
+// recall 召回候选：优先 FTS（token 前缀），不可用/失败回退 Search 子串。
+// 回退与 FTS 命中都记诊断（召回语义对宿主可见——两路口径不同已在
+// README 声明）。
+func (a *DefaultAssembler) recall(ctx context.Context, in AssembleInput) (hits []store.MemoryHit, viaFTS bool, diag []Diagnostic) {
+	if fs, ok := a.Store.(ftsSearcher); ok {
+		h, err := fs.SearchFTS(ctx, in.Namespace, in.Query, 0)
+		if err == nil {
+			return h, true, nil
+		}
+		// FTS 失败（语法/驱动）→ 回退子串，诊断注明。
+		diag = append(diag, Diagnostic{Region: "retrieved", Reason: fmt.Sprintf("fts failed, falling back to substring: %v", err)})
+	}
+	h, err := a.Store.Search(ctx, store.MemoryQuery{
+		Namespace: in.Namespace,
+		Query:     in.Query,
+	})
+	if err != nil {
+		// 召回失败不静默也不中断组装：记诊断，surface 照常。
+		return nil, false, append(diag, Diagnostic{Region: "retrieved", Reason: fmt.Sprintf("search failed: %v", err)})
+	}
+	return h, false, diag
 }
 
 // rankHits 确定性排序（P2-C 口径）：untrusted-external 降权 > recency
@@ -255,7 +258,7 @@ func rankHits(hits []store.MemoryHit) []store.MemoryItem {
 	sort.SliceStable(out, func(i, j int) bool {
 		si, sj := 0, 0
 		if out[i].Taint == store.TaintUntrustedExt {
-			si -= 4
+			si -= 4 // taint 降权：确定性排序的固定常量，P2-D hybrid scoring 会替换
 		}
 		if out[j].Taint == store.TaintUntrustedExt {
 			sj -= 4
