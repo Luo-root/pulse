@@ -25,7 +25,7 @@ kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin
 llm/                        # v2 model layer: content-block vocabulary, ChatModel, Registry, openai/ + anthropic/ adapters
 loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL decision events
 toolset/                    # v2 可逆工具注册（pulse.tools）+ AsToolSet；mcp/ Source；builtins/ 基础工具；lsp/ 可选 LSP 工具
-memory/                     # P2 记忆与会话（设计 Accepted：docs/design/memory-layer-research-and-v2-design.md）；包尚未建，P2-A1 起落地
+memory/                     # P2 记忆与会话（设计 Accepted：docs/design/memory-layer-research-and-v2-design.md）；session/ 已落地（P2-A1：事件日志+fold+冷恢复），compaction/store/assemble/index 未建
 skills/                     # v2 Skills 装载器（agentskills.io）；Skill ≠ Tool/Source
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1 / memory-layer-v1
