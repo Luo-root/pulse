@@ -315,7 +315,7 @@ func TestJSONLFormatVersion(t *testing.T) {
 	if err := json.Unmarshal(readAll(t, hdrPath), &hdr); err != nil {
 		t.Fatal(err)
 	}
-	hdr.FormatVersion = FormatVersion + 1
+	hdr.FormatVersion = CompactedVersion + 1
 	if err := os.WriteFile(hdrPath, mustJSON(hdr), 0o644); err != nil {
 		t.Fatal(err)
 	}

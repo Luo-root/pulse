@@ -28,9 +28,13 @@ func TestCreateNormalizesHeader(t *testing.T) {
 	if hdr.FormatVersion != FormatVersion {
 		t.Fatalf("FormatVersion = %d, want %d", hdr.FormatVersion, FormatVersion)
 	}
-	_, err = store.Create(t.Context(), SessionHeader{FormatVersion: FormatVersion + 1})
+	_, err = store.Create(t.Context(), SessionHeader{FormatVersion: CompactedVersion + 1})
 	if !errors.Is(err, ErrFormatVersion) {
 		t.Fatalf("err = %v, want ErrFormatVersion", err)
+	}
+	// 压缩版本（CompactedVersion）是合法的 header 版本：Open 接受。
+	if _, err := store.Create(t.Context(), SessionHeader{SessionID: "v2", FormatVersion: CompactedVersion}); err != nil {
+		t.Fatalf("create with CompactedVersion: %v", err)
 	}
 }
 

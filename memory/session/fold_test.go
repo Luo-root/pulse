@@ -197,3 +197,53 @@ func TestPendingToolCalls(t *testing.T) {
 		t.Fatalf("pending = %v, want [c1 c3]（tool.called 不参与配对）", pending)
 	}
 }
+
+// TestFoldCheckpointReplace：checkpoint 的 Replace fold 与错误路径
+// （越界、孤儿 result、孤儿 call）——P2-B Replace 语义的白盒验收。
+func TestFoldCheckpointReplace(t *testing.T) {
+	reg := NewRegistry()
+	base := []EventEnvelope{
+		{Seq: 1, Type: EventMessageUser, Data: mustJSONPayload(t, MessagePayload{Parts: []llm.Part{llm.Text("q")}})},
+		{Seq: 2, Type: EventMessageAssistant, Data: mustJSONPayload(t, MessagePayload{Parts: []llm.Part{llm.Call(llm.ToolCall{ID: "c1"})}})},
+		{Seq: 3, Type: EventToolResult, Data: mustJSONPayload(t, ToolResultPayload{ToolCallID: "c1", Text: "r"})},
+		{Seq: 4, Type: EventMessageAssistant, Data: mustJSONPayload(t, MessagePayload{Parts: []llm.Part{llm.Text("done")}})},
+	}
+	summary := CompactionCheckpointPayload{
+		Messages: []llm.Message{{Role: llm.RoleUser, Parts: []llm.Part{llm.Text("summary")}}},
+		Replaced: []uint64{1, 2, 3, 4},
+	}
+	cp := func(start, end int, data json.RawMessage) EventEnvelope {
+		return EventEnvelope{Seq: 5, Type: EventCompactionCheckpoint, Data: data,
+			Surface: &SurfaceIntent{Op: SurfaceReplace, Start: start, End: end, Sources: []uint64{1, 2, 3, 4}}}
+	}
+	// 全窗口替换 → 单条 RoleUser 稳定前缀消息。
+	msgs, sources, err := FoldTrace(append(append([]EventEnvelope{}, base...), cp(0, 3, mustJSONPayload(t, summary))), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Role != llm.RoleUser || msgs[0].Text() != "summary" {
+		t.Fatalf("surface = %+v", msgs)
+	}
+	if len(sources) != 1 || sources[0] != 5 {
+		t.Fatalf("sources = %v, want [5]（checkpoint Seq）", sources)
+	}
+	// 局部窗口 [0,1]（user + assistant(call)）：call 的 result 在窗口外被删 → 拒绝。
+	partial := CompactionCheckpointPayload{Messages: summary.Messages, Replaced: []uint64{1, 2}}
+	if _, _, err := FoldTrace(append(append([]EventEnvelope{}, base...), cp(0, 1, mustJSONPayload(t, partial))), reg); !errors.Is(err, ErrReplaceRange) {
+		t.Fatalf("err = %v, want ErrReplaceRange（孤儿 call）", err)
+	}
+	// 越界窗口。
+	if _, _, err := FoldTrace(append(append([]EventEnvelope{}, base...), cp(0, 9, mustJSONPayload(t, summary))), reg); !errors.Is(err, ErrReplaceRange) {
+		t.Fatalf("err = %v, want ErrReplaceRange（越界）", err)
+	}
+	// Reverse 窗口（Start > End）。
+	if _, _, err := FoldTrace(append(append([]EventEnvelope{}, base...), cp(2, 1, mustJSONPayload(t, summary))), reg); !errors.Is(err, ErrReplaceRange) {
+		t.Fatalf("err = %v, want ErrReplaceRange（Start > End）", err)
+	}
+	// checkpoint 带 Append Op → 拒绝。
+	bad := cp(0, 3, mustJSONPayload(t, summary))
+	bad.Surface.Op = SurfaceAppend
+	if _, _, err := FoldTrace(append(append([]EventEnvelope{}, base...), bad), reg); !errors.Is(err, ErrSurfaceNotAllowed) {
+		t.Fatalf("err = %v, want ErrSurfaceNotAllowed（checkpoint 必须 Replace）", err)
+	}
+}
