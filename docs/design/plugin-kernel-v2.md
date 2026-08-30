@@ -218,13 +218,15 @@ observed 包装的 ChatModel（消费方接口）
 - Skills 对齐 [agentskills.io](https://agentskills.io/specification)
   （规程包 + 渐进披露，Skill ≠ Tool）；装载器另开设计文，不在 P1 实现范围内。
 
-### P2 记忆与会话
+### P2 记忆与会话（已由 memory-layer-v1 承接）
 
-- `memory-window`（上下文窗口管理）与 `memory-store`（持久化）拆成
-  两个 seam；窗口摘要依赖 ChatModel（Inject `pulse.llm`）而非反向；
-- session log 引入 DSH 不变式的 Go 版：**进模型的内容必须可从日志重建**
-  （model-visible means logged），为多轮回放/fork 打地基；
-- gorm/sqlite 存储实现为存储 seam 的实现插件。
+- 设计已单独立文并 Accepted：`memory-layer-research-and-v2-design.md`
+  （Issue [#66](https://github.com/Luo-root/pulse/issues/66)）；本节旧措辞
+  （memory-window / gorm / sqlite）作废，以该文的 event-sourced session、
+  三投影与 MemoryStore/ContextAssembler seam 为准；
+- 不变式保留：**进模型的内容必须可从日志重建**（model-visible means logged），
+  为多轮回放/fork 打地基；
+- 存储后端（JSONL / SQLite）是 SessionStore/MemoryStore 的实现插件，见设计文 §11。
 
 ### P3 数据流编排（已由 flow v2 承接）
 

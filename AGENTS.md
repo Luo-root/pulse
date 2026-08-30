@@ -25,10 +25,11 @@ kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin
 llm/                        # v2 model layer: content-block vocabulary, ChatModel, Registry, openai/ + anthropic/ adapters
 loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL decision events
 toolset/                    # v2 可逆工具注册（pulse.tools）+ AsToolSet；mcp/ Source；builtins/ 基础工具；lsp/ 可选 LSP 工具
+memory/                     # P2 记忆与会话（设计 Accepted：docs/design/memory-layer-research-and-v2-design.md）；实现按 P2-A1→A2→B→C→D 分票推进
 skills/                     # v2 Skills 装载器（agentskills.io）；Skill ≠ Tool/Source
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
-docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1
-                           # memory-layer-*-design.md 若出现仅为草案，勿当 Accepted
+docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1 / memory-layer-v1
+                           # 未列出的 memory-layer 草稿不存在；P2 记忆层事实源是 memory-layer-research-and-v2-design.md（含 §17 补遗）
 examples/                   # 01–05 渐进示例
   internal/demoapp/         # 示例私有装配层（库包本身无 internal/；此处不违反「库无 internal」）
   skills/                   # 示例 Skill 材料（历史私有 frontmatter 键会被装载器忽略）
