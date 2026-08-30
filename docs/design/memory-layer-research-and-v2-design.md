@@ -364,7 +364,7 @@ const (
 
 （旧 `SurfaceOp` 结构体已并入 `SurfaceIntent`，不再单独存在。）
 
-替换范围按 **当前 surface 顺序** 定义，不能假设 `Start <= End` 的数值序，因为先前 replace 会把新 seq 插到旧位置。替换前后必须校验 tool pairing 边界。
+`Start`/`End` 是 fold 后的 0-based 消息下标，合法范围为 `Start ≤ End`（含端点）；`Start > End` 或越界由 fold 一律拒绝（fail closed），不做自动交换。替换前后必须校验 tool pairing 边界。
 
 ### 6.5 Long-term Memory Item
 
@@ -695,9 +695,9 @@ flowchart LR
 - fork seed 边界、`FormatVersion` 拒绝、`List` 游标分页、`Delete`；
 - JSONL 为明文：文档声明「文件即密钥面、路径宿主拥有」；P2-A 不做加密。
 
-P2-A1 验收：不完整事件序列的逻辑恢复（unpaired 补 IsError 并写回 log、chunk 丢弃、Fork 拒切 tool 组）、§6.3 fold 映射表全量、未知 required event 拒绝加载、格式 fail closed、同文件并发 ensureOpen——即「Open 即冷恢复」的全部逻辑语义。
+P2-A1 验收：不完整事件序列的逻辑恢复（unpaired 补 IsError 并写回 log、chunk 丢弃、Fork 拒切 tool 组）、§6.3 fold 映射表全量、未知 required event 拒绝加载、格式 fail closed、同 session 并发 Open 拒绝第二写者（内存单写者）——即「Open 即冷恢复」的全部逻辑语义。
 
-P2-A2 验收：任何已成功 append 的事件均能重放；恢复出的 `Surface() []*llm.Message` 与崩溃前最后持久 Flush 点一致且通过 tool-pairing 校验；撕裂 JSON 行只丢无法验证的碎片；带 `ImageData` 的 user 消息 roundtrip 后能再 fold 出同样 Part；`FormatVersion` 拒绝；`List` 游标分页。
+P2-A2 验收：任何已成功 append 的事件均能重放；恢复出的 `Surface() []*llm.Message` 与崩溃前最后持久 Flush 点一致且通过 tool-pairing 校验；撕裂 JSON 行只丢无法验证的碎片；带 `ImageData` 的 user 消息 roundtrip 后能再 fold 出同样 Part；`FormatVersion` 拒绝；`List` 游标分页；同文件并发 Open/Append 由文件锁互斥（§13.1 单写者的文件锁兜底在 A2 落地）。
 
 human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）。
 
