@@ -174,6 +174,8 @@ type CompactionCheckpointPayload struct {
 
 // RequestUsagePayload 是 request.usage 的载荷（Ignorable，log-only 审计）：
 // 具名字段对齐 llm.TokenUsage，禁整包 Metadata（map）与 API key。
+// 写入方是 session→loop 的装配层桥（接线票）——从 llm.Response.Usage
+// 折出；本包与 compaction 都不产生它（都不 import loop）。
 type RequestUsagePayload struct {
 	Model             string `json:"model"`
 	InputTokens       int    `json:"inputTokens,omitempty"`
