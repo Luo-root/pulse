@@ -40,10 +40,13 @@ func NewSQLiteStore(ctx context.Context, dsn string) (*SQLiteStore, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, fmt.Errorf("%w: empty dsn", ErrInvalidQuery)
 	}
-	db, err := sql.Open("sqlite", dsn+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite", dsn+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("store: open sqlite: %w", err)
 	}
+	// _txlock=immediate：BeginTx 即 BEGIN IMMEDIATE——事务在开始时拿
+	// RESERVED 锁，与票面「BEGIN IMMEDIATE」措辞一致，消除 deferred
+	// 升级窗口的 database is locked。
 	db.SetMaxOpenConns(1) // SQLite 写锁：单连接串行化，正确性优先
 	s := &SQLiteStore{db: db}
 	if err := s.init(ctx); err != nil {
@@ -210,8 +213,10 @@ func (s *SQLiteStore) Search(ctx context.Context, q MemoryQuery) ([]MemoryHit, e
 		args = append(args, string(StatusActive))
 	}
 	if needle := strings.TrimSpace(q.Query); needle != "" {
+		// 统一口径：ASCII 折叠（SQLite lower() 只折叠 ASCII，与内存版
+		// asciiFold 一致——复审实测的 parity break 修复）。
 		where = append(where, "instr(lower(content), ?) > 0")
-		args = append(args, strings.ToLower(needle))
+		args = append(args, asciiFold(needle))
 	}
 	sqlText := `SELECT id, ns_key, namespace, kind, content, structured, status, confidence,
 	       source_refs, taint, valid_from, valid_until, known_at, created_at, updated_at, revision
@@ -283,7 +288,7 @@ func (s *SQLiteStore) SearchFTS(ctx context.Context, ns []string, match string, 
 }
 
 // Supersede 实现 MemoryStore：旧 item Status→Superseded 与 next 入库在
-// 同一事务（BEGIN IMMEDIATE）——替代链不断。
+// 同一事务（BEGIN IMMEDIATE——经 DSN 的 _txlock=immediate）——替代链不断。
 func (s *SQLiteStore) Supersede(ctx context.Context, oldID string, next MemoryItem) (MemoryItem, error) {
 	if next.ID == oldID {
 		return MemoryItem{}, fmt.Errorf("%w: %s", ErrSupersedeSelf, oldID)
@@ -335,10 +340,22 @@ func (s *SQLiteStore) Supersede(ctx context.Context, oldID string, next MemoryIt
 	return next, nil
 }
 
-// Revoke 实现 MemoryStore：Status→Revoked + 审计落表；Revoked 幂等；
-// Superseded → ErrRevokeSuperseded。
+// Revoke 实现 MemoryStore：write + audit 在同一事务（BEGIN IMMEDIATE，
+// 经 _txlock=immediate）——中间崩溃不留「item 已 Revoked 但 audit 缺记录」
+// 的半态；tx 内重读 status 防 TOCTOU。Revoked 幂等；Superseded →
+// ErrRevokeSuperseded。
 func (s *SQLiteStore) Revoke(ctx context.Context, id string, reason string) error {
-	cur, err := s.Get(ctx, nil, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin: %w", err)
+	}
+	defer func() {
+		if tx != nil {
+			tx.Rollback()
+		}
+	}()
+	txq := txQueries{tx: tx}
+	cur, err := txq.get(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -353,14 +370,18 @@ func (s *SQLiteStore) Revoke(ctx context.Context, id string, reason string) erro
 	revoked.Status = StatusRevoked
 	revoked.UpdatedAt = now
 	revoked.Revision++
-	if err := s.writeItem(ctx, revoked, cur.Revision, now); err != nil {
+	if err := txq.write(ctx, revoked, cur.Revision, now); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO memory_audit (at, action, item_id, reason, next_id) VALUES (?,?,?,?,?)`,
 		now.Format(time.RFC3339Nano), "revoke", id, reason, ""); err != nil {
 		return fmt.Errorf("store: audit: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit revoke: %w", err)
+	}
+	tx = nil
 	return nil
 }
 
@@ -447,6 +468,7 @@ func (t txQueries) write(ctx context.Context, item MemoryItem, expected uint64, 
 			validFrom, validUntil,
 			item.KnownAt.Format(time.RFC3339Nano), item.CreatedAt.Format(time.RFC3339Nano),
 			item.UpdatedAt.Format(time.RFC3339Nano), item.Revision)
+		err = mapConstraintErr(err) // 并发新建撞 PK → ErrItemExists（裸 constraint failed 不可外泄）
 	} else {
 		res, err = t.tx.ExecContext(ctx, `UPDATE memory_items SET
 			ns_key=?, namespace=?, kind=?, content=?, structured=?, status=?, confidence=?,
@@ -523,4 +545,15 @@ func escapeLike(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `%`, `\%`)
 	return strings.ReplaceAll(s, `_`, `\_`)
+}
+
+// mapConstraintErr 把 INSERT 的 UNIQUE 约束冲突映射为 ErrItemExists——
+// 新建路径的 Get 预检与 INSERT 之间存在 TOCTOU 窗口（多 store 实例共享
+// 同一文件时），裸 constraint failed 不可外泄。按错误文本识别（modernc
+// 驱动的类型化错误跨版本有差异，文本约定稳定）。
+func mapConstraintErr(err error) error {
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		return fmt.Errorf("%w: %v", ErrItemExists, err)
+	}
+	return err
 }

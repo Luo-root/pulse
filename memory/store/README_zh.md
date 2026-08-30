@@ -71,6 +71,7 @@ go test -race -count=1 ./memory/store/...
 - **CGO-free**：`modernc.org/sqlite`（FTS5 默认启用）；`sqlite.go`/`sqlite_test.go` 带 `//go:build !plan9 && !js` 构建约束——plan9/js 下 SQLite backend 缺席但 **store 主包照常编译**（core 不被锁死，内存实现可用）。
 - **落盘**：`memory_items` 表（namespace 以 `\x1f` join 成 `ns_key`，前缀匹配按元素边界安全）+ **FTS5 外部内容表**（`content=`，触发器随增删改同步）+ `memory_audit` 表（reason 落点）。
 - **schema 版本**：`PRAGMA user_version`，不兼容拒绝加载（不猜测迁移）；`NewSQLiteStore` 自动建表。
-- **Search 与内存实现同语义**（子串 LIKE 转义、状态过滤、UpdatedAt 降序 + ID tiebreak、Limit 硬上限）；**FTS 走实现特有 `SearchFTS(ctx, ns, match, limit)`**（token 前缀 `"t"* AND "c"*` 形式，C3 Assembler 的召回入口，类型断言使用，不在 §7.1 接口面）。
-- **并发取舍**：`MaxOpenConns(1)` + `busy_timeout`——SQLite 写锁下最稳的正确性，单机吞吐不敏感；WAL 等调优由宿主 DSN 自定义。
+- **Search 与内存实现同语义**（子串 LIKE 转义、状态过滤、UpdatedAt 降序 + ID tiebreak、Limit 硬上限）；**大小写折叠统一仅 ASCII**（SQLite `lower()` 与 Go 侧 `asciiFold` 同口径——重音等非 ASCII 大写不折叠，两实现可替换不惊异）；**FTS 走实现特有 `SearchFTS(ctx, ns, match, limit)`**（token 前缀 `"t"* AND "c"*` 形式，C3 Assembler 的召回入口，类型断言使用，不在 §7.1 接口面）。
+- **并发取舍**：`MaxOpenConns(1)` + `busy_timeout` + `_txlock=immediate`（BeginTx 即 BEGIN IMMEDIATE，消除 deferred 升级窗口）——SQLite 写锁下最稳的正确性，单机吞吐不敏感；WAL 等调优由宿主 DSN 自定义。
+- **Supersede / Revoke 均为事务写**：item 写入与 audit 插入同事务，中间崩溃不留半态；新建路径的 INSERT PK 冲突映射为 `ErrItemExists`（并发新建 TOCTOU 的错误收口）。
 - **Supersede 两写在 `BEGIN IMMEDIATE` 事务内**——替代链不断。

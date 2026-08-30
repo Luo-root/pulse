@@ -5,6 +5,7 @@ package store
 import (
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -291,5 +292,58 @@ func TestSQLiteSchemaVersion(t *testing.T) {
 func TestSQLiteEmptyDSN(t *testing.T) {
 	if _, err := NewSQLiteStore(t.Context(), ""); err == nil {
 		t.Fatal("empty dsn must be rejected")
+	}
+}
+
+// TestSQLiteConcurrentCreate：并发 Put(ExpectedRevision=0) 同 ID——恰好
+// 一个成功，失败者 ErrItemExists（INSERT PK 冲突映射，不外泄裸错误）。
+func TestSQLiteConcurrentCreate(t *testing.T) {
+	s := newSQLiteStore(t)
+	const n = 8
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = s.Put(t.Context(), sqliteItem("race", "concurrent"), PutMemoryOptions{})
+		}(i)
+	}
+	wg.Wait()
+	ok := 0
+	for _, err := range errs {
+		if err == nil {
+			ok++
+		} else if !errors.Is(err, ErrItemExists) {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("exactly one creator must win; got %d", ok)
+	}
+}
+
+// TestSQLiteASCIIFoldParity：大小写折叠口径统一为仅 ASCII——ASCII 大写
+// 命中；非 ASCII 重音（É）不折叠不命中。与内存版同断言（对照在
+// store_test.go TestSearchASCIIFoldParity）。
+func TestSQLiteASCIIFoldParity(t *testing.T) {
+	s := newSQLiteStore(t)
+	ctx := t.Context()
+	it := sqliteItem("d1", "Meet at CAFÉ du Nord")
+	if _, err := s.Put(ctx, it, PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	// ASCII 折叠：query 大写 → 命中。
+	hits, err := s.Search(ctx, MemoryQuery{Namespace: it.Namespace, Query: "NORD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("ascii fold hits = %d, want 1", len(hits))
+	}
+	// 非 ASCII 重音不折叠：query 小写 é 不命中 CAFÉ 的 É。
+	hits, _ = s.Search(ctx, MemoryQuery{Namespace: it.Namespace, Query: "café"})
+	if len(hits) != 0 {
+		t.Fatalf("non-ASCII fold must not happen: %d hits, want 0（口径：折叠仅 ASCII）", len(hits))
 	}
 }

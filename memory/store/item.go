@@ -231,9 +231,10 @@ type MemoryQuery struct {
 	Namespace []string
 	// Kinds 非空时只返回这些类别。
 	Kinds []MemoryKind
-	// Query 关键词：内存版对 Content 做大小写不敏感子串匹配；空 = 不过滤。
-	// **仅匹配 Content**——Structured（领域字段）不参与 C1 关键词匹配
-	// （匹配域是否扩展到 Structured 由 C2 的 FTS 定）。
+	// Query 关键词：对 Content 做子串匹配，**大小写折叠仅 ASCII**（统一
+	// 口径——内存版与 SQLite 版一致，非 ASCII 大写如 É 不折叠）；空 =
+	// 不过滤。**仅匹配 Content**——Structured（领域字段）不参与 C1/C2
+	// 关键词匹配（匹配域是否扩展由 C2 FTS / C3 定）。
 	Query string
 	// IncludeInactive 打开后 Superseded/Revoked/Pending 也返回（默认只
 	// Active——同一事实永远只有一条生效版本）。
