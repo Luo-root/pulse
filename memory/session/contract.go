@@ -226,4 +226,10 @@ var (
 	// ErrCorruptLog：持久日志损坏（中部坏行、seq 断链、checksum 不符），
 	// 拒绝加载（fail closed），不做「猜测修复」。
 	ErrCorruptLog = errors.New("session: event log corrupt")
+	// ErrSessionClosed：文件实现 Close 之后的写入/Flush——显式哨兵，
+	// 不依赖 os.File 的 nil-safe 巧合。
+	ErrSessionClosed = errors.New("session: session closed")
+	// ErrInvalidSessionID：会话 ID 非法（须匹配 [A-Za-z0-9_-]{1,128}）——
+	// 参数错误，不是「会话不存在」。
+	ErrInvalidSessionID = errors.New("session: invalid session id")
 )

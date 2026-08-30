@@ -120,7 +120,7 @@ func (s *JSONLStore) Create(ctx context.Context, header SessionHeader) (Session,
 // header 与 seed（Fork 的继承事件）行，返回持锁会话。
 func (s *JSONLStore) createSession(header SessionHeader, seed []EventEnvelope) (*jsonlSession, error) {
 	if !validSessionID(header.SessionID) {
-		return nil, fmt.Errorf("%w: sessionID %q must match [A-Za-z0-9_-]{1,128}", ErrPayloadInvalid, header.SessionID)
+		return nil, fmt.Errorf("%w: id %q must match [A-Za-z0-9_-]{1,128}", ErrInvalidSessionID, header.SessionID)
 	}
 	dir := filepath.Join(s.root, header.SessionID)
 	if err := os.Mkdir(dir, 0o755); err != nil {
@@ -192,7 +192,7 @@ func (s *JSONLStore) createSession(header SessionHeader, seed []EventEnvelope) (
 // Open → ErrWriterBusy（持有者进程崩溃后按 stale 阈值可抢占）。
 func (s *JSONLStore) Open(ctx context.Context, id string) (Session, error) {
 	if !validSessionID(id) {
-		return nil, fmt.Errorf("%w: id %s", ErrSessionNotFound, id)
+		return nil, fmt.Errorf("%w: id %q", ErrInvalidSessionID, id)
 	}
 	s.mu.Lock()
 	if sess := s.open[id]; sess != nil {
@@ -290,7 +290,8 @@ func (s *JSONLStore) loadOpened(dir string, release func()) (*jsonlSession, erro
 
 // List 实现 SessionStore：扫描各会话的 header.json，CreatedAt 降序 +
 // SessionID tiebreak + 游标分页。无法解析的目录（并发创建中/无关目录）
-// 跳过；游标失效 → ErrCursorStale。
+// 跳过——注意：header.json 损坏的会话会从列表消失，宿主在该会话上 Open
+// 时才会收到 ErrCorruptLog；游标失效 → ErrCursorStale。
 func (s *JSONLStore) List(ctx context.Context, filter SessionFilter) ([]SessionHeader, string, error) {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
@@ -315,11 +316,13 @@ func (s *JSONLStore) List(ctx context.Context, filter SessionFilter) ([]SessionH
 }
 
 // Delete 实现 SessionStore：删整个会话目录。已打开实例先置 deleted（锁内）
-// 并释放文件句柄与锁，阻止继续写入；另一进程持有的实例在下次 Append 时
-// 收到文件级错误（fail closed，不静默写进已丢弃的目录）。
+// 并释放文件句柄与锁，阻止继续写入。跨进程：单纯句柄写入在 Unix/Windows
+// 都会静默成功，因此 writeLineLocked 每次 append 前校验会话目录仍在——
+// 删除后对方进程的 Append 收到 ErrDeleted（真 fail closed），不存在
+// 「报成功但数据进 void」。
 func (s *JSONLStore) Delete(ctx context.Context, id string) error {
 	if !validSessionID(id) {
-		return fmt.Errorf("%w: id %s", ErrSessionNotFound, id)
+		return fmt.Errorf("%w: id %q", ErrInvalidSessionID, id)
 	}
 	s.mu.Lock()
 	sess := s.open[id]
@@ -361,7 +364,9 @@ func (s *jsonlSession) Append(ctx context.Context, draft EventDraft) (EventEnvel
 }
 
 // Flush 实现 Session：把已写入事件刷到磁盘（f.Sync）。崩溃只保证 Flush
-// 点之前；内存版的「成功空操作」语义在这里兑现为真耐久。
+// 点之前；内存版的「成功空操作」语义在这里兑现为真耐久。Flush 兼作文件
+// 锁心跳（touch 锁文件 mtime）——长命会话只要定期 Flush 就不会被 stale
+// 抢占；从不 Flush 的会话持锁超过阈值可能被另一进程接管，宿主须知。
 func (s *jsonlSession) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -369,8 +374,12 @@ func (s *jsonlSession) Flush(ctx context.Context) error {
 		return ErrDeleted
 	}
 	if s.f == nil {
-		return nil
+		return ErrSessionClosed
 	}
+	now := time.Now()
+	// best-effort：touch 失败（如锁文件已被抢占者删除）不阻塞本次 Sync；
+	// 后续 append 会在 writeLineLocked 的目录校验处 fail closed。
+	_ = os.Chtimes(filepath.Join(s.dir, "lock"), now, now)
 	return s.f.Sync()
 }
 
@@ -467,7 +476,21 @@ func (s *jsonlSession) buildEnvelopeLocked(typ EventType, data json.RawMessage, 
 
 // writeLineLocked 把信封追加为一行 JSON（行尾换行；完整的行 = 成功
 // append 的判定标准：无换行的尾行视为撕裂，恢复时丢弃）。
+//
+// 跨进程 Delete 防护：Unix 写已 unlink 的句柄、Windows 借
+// FILE_SHARE_DELETE 删除打开中的文件，都会让句柄写入**静默成功**
+// （数据进 void）——因此每次 append 前校验会话目录仍在，删除后 fail
+// closed 返回 ErrDeleted，不允许「报成功但丢数据」。
 func (s *jsonlSession) writeLineLocked(env EventEnvelope) error {
+	if _, err := os.Stat(s.dir); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%w: session dir removed by another process", ErrDeleted)
+		}
+		return fmt.Errorf("session: stat session dir: %w", err)
+	}
+	if s.f == nil {
+		return ErrSessionClosed
+	}
 	line, err := json.Marshal(env)
 	if err != nil {
 		return fmt.Errorf("%w: marshal envelope: %v", ErrCorruptLog, err)

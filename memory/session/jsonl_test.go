@@ -486,7 +486,92 @@ func TestJSONLFork(t *testing.T) {
 	closeJSONL(t, parent)
 }
 
-// TestJSONLList：跨目录扫描 + 排序 + 游标 + ErrCursorStale。
+// TestJSONLCrossProcessDelete：跨进程删除后，持有句柄一方的 Append 必须
+// ErrDeleted——Unix/Windows 的句柄写入在目录被删后都会静默成功，stat 防护
+// 堵死「报成功但数据进 void」。
+func TestJSONLCrossProcessDelete(t *testing.T) {
+	store := newJSONLStore(t)
+	ctx := t.Context()
+	sess, err := store.Create(ctx, SessionHeader{SessionID: "cross"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.Append(ctx, userDraft(t, "x")); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟「会话目录已消失」：Windows 上 Go 文件句柄不带 FILE_SHARE_DELETE，
+	// 进程内删不掉/改不了名打开中文件所在目录（真实跨进程删除在 Windows
+	// 会直接失败由宿主协调；Unix unlink 立即生效）。白盒把 dir 指向不存
+	// 在路径，直接验证防护分支：路径不在 → 拒绝写入，两平台语义一致。
+	js := sess.(*jsonlSession)
+	js.dir = filepath.Join(store.root, "vanished")
+	if _, err := sess.Append(ctx, userDraft(t, "y")); !errors.Is(err, ErrDeleted) {
+		t.Fatalf("append after cross-process delete: %v, want ErrDeleted", err)
+	}
+	closeJSONL(t, sess)
+}
+
+// TestJSONLLockHeartbeat：Flush 兼作锁心跳——持锁超过 stale 阈值但有心跳
+// 的会话不被误抢占（对照：无心跳的同龄锁被另一 store 实例抢占）。
+func TestJSONLLockHeartbeat(t *testing.T) {
+	store := newJSONLStore(t, JSONLStale(50*time.Millisecond))
+	// 第二个 store 实例模拟另一进程：独立 open 缓存，Open 会真正走到文件锁。
+	peer, err := NewJSONLStore(store.root, JSONLStale(50*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	sess, err := store.Create(ctx, SessionHeader{SessionID: "beat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(store.root, "beat", "lock")
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(lockPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	// 心跳：Flush touch 锁文件 mtime。
+	if err := sess.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.Open(ctx, "beat"); !errors.Is(err, ErrWriterBusy) {
+		t.Fatalf("open after heartbeat: %v, want ErrWriterBusy（心跳后的长命会话不被误抢占）", err)
+	}
+	// 对照：无心跳的同龄锁被抢占（peer 侧接管成功）。
+	noheart, err := store.Create(ctx, SessionHeader{SessionID: "noheart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(store.root, "noheart", "lock"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	taken, err := peer.Open(ctx, "noheart")
+	if err != nil {
+		t.Fatalf("stale lock without heartbeat must be preempted: %v", err)
+	}
+	closeJSONL(t, taken)
+	closeJSONL(t, noheart)
+	closeJSONL(t, sess)
+}
+
+// TestJSONLSessionClosed：Close 后的 Append/Flush 收到显式 ErrSessionClosed
+// （不依赖 os.File 的 nil-safe 巧合）。
+func TestJSONLSessionClosed(t *testing.T) {
+	store := newJSONLStore(t)
+	ctx := t.Context()
+	sess, err := store.Create(ctx, SessionHeader{SessionID: "gone"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeJSONL(t, sess)
+	if _, err := sess.Append(ctx, userDraft(t, "x")); !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("append after close: %v, want ErrSessionClosed", err)
+	}
+	if err := sess.Flush(ctx); !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("flush after close: %v, want ErrSessionClosed", err)
+	}
+}
+
 func TestJSONLList(t *testing.T) {
 	store := newJSONLStore(t, JSONLPageSize(1))
 	base := time.Now()
@@ -569,8 +654,8 @@ func TestJSONLInvalidSessionID(t *testing.T) {
 		t.Fatal("empty SessionID must be generated")
 	}
 	closeJSONL(t, sess)
-	if _, err := store.Open(t.Context(), "../evil"); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("open invalid id: %v", err)
+	if _, err := store.Open(t.Context(), "../evil"); !errors.Is(err, ErrInvalidSessionID) {
+		t.Fatalf("open invalid id: %v, want ErrInvalidSessionID", err)
 	}
 }
 
