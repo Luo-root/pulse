@@ -303,4 +303,7 @@ var (
 	// 翻转状态（否则 active→pending 绕过 P2-D 的 taint gate，active→
 	// superseded 绕过替代链）。
 	ErrStatusTransition = errors.New("store: status transition via put is not allowed")
+	// ErrCorruptSchema：持久存储损坏（schema 版本不符、JSON 列解析失败），
+	// 拒绝加载（fail closed），不做「猜测修复」。
+	ErrCorruptSchema = errors.New("store: schema corrupt")
 )
