@@ -145,9 +145,18 @@ func TestOpenColdRecoverOpenTurnStep(t *testing.T) {
 	if events[2].Type != EventStepEnded || events[3].Type != EventTurnEnded {
 		t.Fatalf("synthetic order = %s, %s; want step.ended then turn.ended", events[2].Type, events[3].Type)
 	}
-	var lp LifecyclePayload
-	if err := json.Unmarshal(events[3].Data, &lp); err != nil || lp.Reason != ReasonInterrupted {
-		t.Fatalf("turn.ended reason = %+v (err=%v), want interrupted", lp, err)
+	var stepEnded, turnEnded LifecyclePayload
+	if err := json.Unmarshal(events[2].Data, &stepEnded); err != nil || stepEnded.Reason != ReasonInterrupted {
+		t.Fatalf("step.ended = %+v (err=%v), want interrupted", stepEnded, err)
+	}
+	if stepEnded.ID != "s1" {
+		t.Fatalf("step.ended.ID = %q, want %q（合成 ended 必须回带 started 的 ID）", stepEnded.ID, "s1")
+	}
+	if err := json.Unmarshal(events[3].Data, &turnEnded); err != nil || turnEnded.Reason != ReasonInterrupted {
+		t.Fatalf("turn.ended = %+v (err=%v), want interrupted", turnEnded, err)
+	}
+	if turnEnded.ID != "t1" {
+		t.Fatalf("turn.ended.ID = %q, want %q", turnEnded.ID, "t1")
 	}
 }
 
@@ -290,10 +299,10 @@ func TestListCursorPagination(t *testing.T) {
 			t.Fatalf("listed %v, want %v（CreatedAt 降序 + SessionID tiebreak）", got, want)
 		}
 	}
-	// 游标失效 → 从头。
+	// 游标失效 → ErrCursorStale（静默从头会重复返回，不做）。
 	headers, _, err := store.List(t.Context(), SessionFilter{After: "gone"})
-	if err != nil || len(headers) != 2 {
-		t.Fatalf("stale cursor: %v, %d", err, len(headers))
+	if !errors.Is(err, ErrCursorStale) || headers != nil {
+		t.Fatalf("stale cursor: err=%v, headers=%d; want ErrCursorStale", err, len(headers))
 	}
 }
 
@@ -306,5 +315,136 @@ func TestHeaderSnapshotIsolation(t *testing.T) {
 	h2 := sess.Header()
 	if h1.CreatedAt != h2.CreatedAt || h1.SessionID != h2.SessionID {
 		t.Fatal("header mutated")
+	}
+}
+
+// TestChunkOnlyCrashKeepsLastLegal：只有 assistant.chunk、无 message.assistant
+// 的崩溃现场（§9.3 表第二行）——chunk 永不进 surface，Surface 停在上一
+// 合法消息；冷恢复不为 chunk 合成任何事件（chunk 无需闭合）。
+func TestChunkOnlyCrashKeepsLastLegal(t *testing.T) {
+	store := NewMemoryStore()
+	sess, _ := store.Create(t.Context(), SessionHeader{})
+	ctx := t.Context()
+	if _, err := sess.Append(ctx, userDraft(t, "q1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.Append(ctx, assistantDraft(t, llm.Text("a1"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.Append(ctx, EventDraft{Type: EventAssistantChunk, Data: mustJSONPayload(t, ChunkPayload{Text: "half answer"})}); err != nil {
+		t.Fatal(err)
+	}
+	// live：Surface 停在上一合法消息，不出现半截 assistant。
+	surface, err := sess.Surface(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(surface) != 2 || surface[1].Text() != "a1" {
+		t.Fatalf("live surface = %v, want [user, assistant(a1)]", surface)
+	}
+	// 冷恢复：chunk 不触发合成事件，日志不变。
+	reopened, err := store.Open(ctx, sess.Header().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, _ := reopened.Events(ctx, 0)
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3（chunk 无需闭合，不合成）", len(events))
+	}
+	surface2, err := reopened.Surface(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(surface2) != 2 || surface2[1].Text() != "a1" {
+		t.Fatalf("recovered surface = %v, want [user, assistant(a1)]", surface2)
+	}
+}
+
+// TestOpenAndAppendMutuallyExclusive：Open 冷恢复与 Append 同锁互斥——
+// 并发下 Seq 严格连续，合成 turn.ended 恰好一份（不因并发重复补写）。
+func TestOpenAndAppendMutuallyExclusive(t *testing.T) {
+	store := NewMemoryStore()
+	sess, _ := store.Create(t.Context(), SessionHeader{})
+	ctx := t.Context()
+	if _, err := sess.Append(ctx, lifecycleDraft(t, EventTurnStarted, "t1", "")); err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Header().SessionID
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = store.Open(ctx, id) // 冷恢复写路径
+		}()
+	}
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = sess.Append(ctx, userDraft(t, "x")) // 并发 Append
+		}()
+	}
+	wg.Wait()
+
+	events, _ := sess.Events(ctx, 0)
+	endedCount := 0
+	for i, ev := range events {
+		if ev.Seq != uint64(i+1) {
+			t.Fatalf("seq gap at %d: seq=%d（Open 与 Append 必须同锁串行）", i, ev.Seq)
+		}
+		if ev.Type == EventTurnEnded {
+			endedCount++
+		}
+	}
+	if endedCount != 1 {
+		t.Fatalf("synthetic turn.ended = %d, want exactly 1", endedCount)
+	}
+}
+
+// TestDeleteVsAppendRace：Delete 的 deleted 置位与 Append 的检查同锁——
+// 并发下每个成功 Append 恰好落一条事件，被拒者零写入；「报错又写入」
+// 的组合不存在。
+func TestDeleteVsAppendRace(t *testing.T) {
+	store := NewMemoryStore()
+	sess, _ := store.Create(t.Context(), SessionHeader{})
+	ctx := t.Context()
+	id := sess.Header().SessionID
+
+	var mu sync.Mutex
+	appended := 0
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = store.Delete(ctx, id)
+		}()
+	}
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := sess.Append(ctx, userDraft(t, "x")); err == nil {
+				mu.Lock()
+				appended++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	events, _ := sess.Events(ctx, 0)
+	if len(events) != appended {
+		t.Fatalf("events = %d, successful appends = %d（不允许报错又写入）", len(events), appended)
+	}
+	// Delete 完成后（wg 已收口）再 Append 必然失败。
+	if _, err := sess.Append(ctx, userDraft(t, "late")); !errors.Is(err, ErrDeleted) {
+		t.Fatalf("append after delete: %v, want ErrDeleted", err)
+	}
+	events, _ = sess.Events(ctx, 0)
+	if len(events) != appended {
+		t.Fatalf("post-delete append leaked: events = %d, want %d", len(events), appended)
 	}
 }

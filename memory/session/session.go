@@ -13,12 +13,12 @@ import (
 // memSession 是 Session 的内存实现。写路径（Append / 冷恢复补写）互斥；
 // 信封一旦写入不可变。deleted 标记让已 Delete 的实例继续写入时 fail closed。
 type memSession struct {
-	mu      sync.Mutex
-	hdr     SessionHeader
-	reg     *Registry
-	store   *memStore // Fork 时注册子会话用；独立测试可为 nil
-	events  []EventEnvelope
-	seq     uint64
+	mu     sync.Mutex
+	hdr    SessionHeader
+	reg    *Registry
+	store  *memStore // Fork 时注册子会话用；独立测试可为 nil
+	events []EventEnvelope
+	seq    uint64
 	// recovering 是 Open 冷恢复临界区的 try-lock（单写者：第二写者拒绝）。
 	recovering atomic.Bool
 	deleted    atomic.Bool
@@ -46,6 +46,10 @@ func (s *memSession) Header() SessionHeader {
 //     （compaction.checkpoint 在 P2-B 引入）；Start > End 拒绝。
 //  4. payload 过 codec 校验后才入库。
 func (s *memSession) Append(ctx context.Context, draft EventDraft) (EventEnvelope, error) {
+	// deleted 与写路径同锁（Delete 置位也持 s.mu）：锁外检查存在
+	// 「已丢弃会话仍接受写入」的竞态窗口。
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.deleted.Load() {
 		return EventEnvelope{}, ErrDeleted
 	}
@@ -81,9 +85,6 @@ func (s *memSession) Append(ctx context.Context, draft EventDraft) (EventEnvelop
 			return EventEnvelope{}, err
 		}
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.appendLocked(draft, ignorable), nil
 }
 
@@ -181,7 +182,10 @@ func (s *memSession) Fork(ctx context.Context, atSeq uint64) (Session, error) {
 
 // Flush 实现 Session：内存实现是成功空操作（语义占位，设计 §7.1）；
 // 「Flush 才 fsync、崩溃只保证 Flush 点之前」的语义在 P2-A2 落地。
+// deleted 检查与写路径同锁（同 Append）。
 func (s *memSession) Flush(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.deleted.Load() {
 		return ErrDeleted
 	}

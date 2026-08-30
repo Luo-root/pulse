@@ -107,6 +107,10 @@ func pendingToolCalls(events []EventEnvelope, reg *Registry) ([]string, error) {
 type incompleteState struct {
 	openTurn bool // 最后一个 turn.started 未闭合
 	openStep bool // 最后一个 step.started 未闭合
+	// turnID/stepID 是对应 started 事件的 ID：合成 ended 时必须回带，
+	// 保证 started/ended 配对可追溯。
+	turnID string
+	stepID string
 	// pendingCalls 是缺 result 的 ToolCallID，保序；并行部分回来时缺的
 	// 全补（§9.3）。
 	pendingCalls []string
@@ -128,13 +132,21 @@ func scanIncomplete(events []EventEnvelope, reg *Registry) (incompleteState, err
 		}
 		switch ev.Type {
 		case EventTurnStarted:
+			var p LifecyclePayload
+			_ = json.Unmarshal(ev.Data, &p) // Append 已过 codec；白盒构造容忍缺 payload
 			st.openTurn = true
+			st.turnID = p.ID
 		case EventTurnEnded:
 			st.openTurn = false
+			st.turnID = ""
 		case EventStepStarted:
+			var p LifecyclePayload
+			_ = json.Unmarshal(ev.Data, &p)
 			st.openStep = true
+			st.stepID = p.ID
 		case EventStepEnded:
 			st.openStep = false
+			st.stepID = ""
 		}
 	}
 	return st, nil

@@ -92,8 +92,9 @@ func (s *memStore) Open(ctx context.Context, id string) (Session, error) {
 }
 
 // List 实现 SessionStore：CreatedAt 降序 + SessionID tiebreak 稳定排序 +
-// 游标分页，不静默截断。After 是上一页末尾的 SessionID；游标失效（会话
-// 已删）时从头开始，这是安全行为而非错误。
+// 游标分页，不静默截断。After 是上一页末尾的 SessionID；游标指向的会话
+// 已不存在（列表已变化）→ ErrCursorStale，调用方应重置分页——静默从头
+// 会重复返回，不做。
 func (s *memStore) List(ctx context.Context, filter SessionFilter) ([]SessionHeader, string, error) {
 	s.mu.Lock()
 	headers := make([]SessionHeader, 0, len(s.sessions))
@@ -111,11 +112,16 @@ func (s *memStore) List(ctx context.Context, filter SessionFilter) ([]SessionHea
 
 	start := 0
 	if filter.After != "" {
+		found := false
 		for i, h := range headers {
 			if h.SessionID == filter.After {
 				start = i + 1
+				found = true
 				break
 			}
+		}
+		if !found {
+			return nil, "", fmt.Errorf("%w: session %s not found; reset pagination", ErrCursorStale, filter.After)
 		}
 	}
 	if start >= len(headers) {
@@ -129,8 +135,9 @@ func (s *memStore) List(ctx context.Context, filter SessionFilter) ([]SessionHea
 }
 
 // Delete 实现 SessionStore。会话从 store 移除并标记：Open → NotFound，
-// 已持有的实例继续 Append → ErrDeleted（fail closed，不静默写进已丢弃
-// 的日志）。
+// 已持有的实例继续 Append/Flush → ErrDeleted（fail closed，不静默写进已
+// 丢弃的日志）。deleted 置位持 session 写锁，与 Append/Flush 的锁内检查
+// 构成 happens-before：不存在「已删会话仍写入成功」的时序。
 func (s *memStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	sess := s.sessions[id]
@@ -139,7 +146,9 @@ func (s *memStore) Delete(ctx context.Context, id string) error {
 	if sess == nil {
 		return fmt.Errorf("%w: id %s", ErrSessionNotFound, id)
 	}
+	sess.mu.Lock()
 	sess.deleted.Store(true)
+	sess.mu.Unlock()
 	return nil
 }
 
@@ -172,13 +181,13 @@ func (s *memSession) reopen() (*memSession, error) {
 	if st.openStep {
 		s.appendLocked(EventDraft{
 			Type: EventStepEnded,
-			Data: mustJSON(LifecyclePayload{Reason: ReasonInterrupted}),
+			Data: mustJSON(LifecyclePayload{ID: st.stepID, Reason: ReasonInterrupted}),
 		}, false)
 	}
 	if st.openTurn {
 		s.appendLocked(EventDraft{
 			Type: EventTurnEnded,
-			Data: mustJSON(LifecyclePayload{Reason: ReasonInterrupted}),
+			Data: mustJSON(LifecyclePayload{ID: st.turnID, Reason: ReasonInterrupted}),
 		}, false)
 	}
 	return s, nil

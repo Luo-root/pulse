@@ -86,7 +86,7 @@ const (
 // 不复用 event Seq——两者是不同数轴，数值序不可互相推断。P2-A 阶段没有
 // 注册任何 Replace 事件类型，携带 Replace 意图的 Append 会被拒绝。
 type SurfaceIntent struct {
-	Op  SurfaceOpKind // Append / Replace
+	Op SurfaceOpKind // Append / Replace
 	// Start/End 仅 Replace 使用：当前 surface 的 0-based 消息下标（含端点）；
 	// Append 忽略。合法范围 Start ≤ End，越界或反向由 fold/Append 拒绝。
 	Start int
@@ -98,7 +98,7 @@ type SurfaceIntent struct {
 // EventEnvelope 是日志中的一条事件。Seq / Time 由 Store 分配，调用方不填；
 // 信封一旦写入视为不可变。
 type EventEnvelope struct {
-	Seq       uint64          // session 内严格连续，从 1 起
+	Seq       uint64 // session 内严格连续，从 1 起
 	Time      time.Time
 	Type      EventType
 	Data      json.RawMessage // codec 校验后的 payload；允许 nil（无载荷）
@@ -220,4 +220,7 @@ var (
 	ErrFormatVersion = errors.New("session: format version incompatible")
 	// ErrEventRegistered：重复注册已存在的事件类型。
 	ErrEventRegistered = errors.New("session: event type already registered")
+	// ErrCursorStale：List 游标指向的会话已不存在（列表已变化）。调用方
+	// 应重置分页（After 清空从第一页开始）；不静默从头——那会重复返回。
+	ErrCursorStale = errors.New("session: list cursor stale")
 )
