@@ -19,8 +19,10 @@
 //
 // # 分层纪律
 //
-// 独立包：不 import llm / session / kernel（§7.1 import 图）；service
-// key（MemoryStoreKey）归本包，kernel 不 import memory。
+// 不 import llm / session（§7.1 import 图：memory/store 独立，连 llm 都
+// 不依赖）；kernel 仅借 ServiceKey 机制（§7.2 / toolset 先例——kernel 不
+// import memory，反向引用只到 kernel.NewServiceKey）。service key
+// （MemoryStoreKey）归本包。
 //
 // 设计全貌见 docs/design/memory-layer-research-and-v2-design.md §6.5/
 // §10/§13.1；实现票 #76（C1）、C2（SQLite+FTS）、C3（Assembler）。
@@ -257,8 +259,9 @@ type MemoryQuery struct {
 	Namespace []string
 	// Kinds 非空时只返回这些类别。
 	Kinds []MemoryKind
-	// Query 关键词：内存版对 Content 做大小写不敏感子串匹配；空 = 不过滤
-	// （FTS 全文检索在 C2）。
+	// Query 关键词：内存版对 Content 做大小写不敏感子串匹配；空 = 不过滤。
+	// **仅匹配 Content**——Structured（领域字段）不参与 C1 关键词匹配
+	// （匹配域是否扩展到 Structured 由 C2 的 FTS 定）。
 	Query string
 	// IncludeInactive 打开后 Superseded/Revoked/Pending 也返回（默认只
 	// Active——同一事实永远只有一条生效版本）。
@@ -320,4 +323,12 @@ var (
 	ErrSupersedeRevoked = errors.New("store: cannot supersede a revoked item")
 	// ErrSupersedeSelf：Supersede 的 next.ID 与 oldID 相同。
 	ErrSupersedeSelf = errors.New("store: supersede target id equals source id")
+	// ErrRevokeSuperseded：对 Superseded item 做 Revoke——操作对象错了
+	// （应撤销生效版本），不是 item 形状非法。
+	ErrRevokeSuperseded = errors.New("store: cannot revoke a superseded item")
+	// ErrStatusTransition：Put 更新路径试图改变 Status——状态迁移只有
+	// Supersede/Revoke 两条路（各有 next 指针与审计），普通 Put 不允许
+	// 翻转状态（否则 active→pending 绕过 P2-D 的 taint gate，active→
+	// superseded 绕过替代链）。
+	ErrStatusTransition = errors.New("store: status transition via put is not allowed")
 )

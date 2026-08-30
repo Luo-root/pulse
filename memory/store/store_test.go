@@ -156,6 +156,21 @@ func TestPutCAS(t *testing.T) {
 	if _, err := s.Put(ctx, itemOf("ghost", ns, "x"), PutMemoryOptions{ExpectedRevision: 1}); !errors.Is(err, ErrItemNotFound) {
 		t.Fatalf("err = %v, want ErrItemNotFound", err)
 	}
+	// 更新路径禁止状态迁移（Supersede/Revoke 之外的翻转一律拒）。
+	demotion := itemOf("d1", ns, "v2")
+	demotion.Status = StatusPending
+	if _, err := s.Put(ctx, demotion, PutMemoryOptions{ExpectedRevision: 2}); !errors.Is(err, ErrStatusTransition) {
+		t.Fatalf("err = %v, want ErrStatusTransition（active→pending 绕过 taint gate）", err)
+	}
+	supersededPut := itemOf("d1", ns, "v2")
+	supersededPut.Status = StatusSuperseded
+	if _, err := s.Put(ctx, supersededPut, PutMemoryOptions{ExpectedRevision: 2}); !errors.Is(err, ErrStatusTransition) {
+		t.Fatalf("err = %v, want ErrStatusTransition（active→superseded 绕过替代链）", err)
+	}
+	// 状态不变的同 Status 更新正常。
+	if _, err := s.Put(ctx, itemOf("d1", ns, "v3"), PutMemoryOptions{ExpectedRevision: 2}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestSupersedeRevokeStateMachine：状态机与审计——Supersede 后旧 item 可
@@ -191,9 +206,9 @@ func TestSupersedeRevokeStateMachine(t *testing.T) {
 	if got.Status != StatusSuperseded {
 		t.Fatalf("old status = %s, want superseded", got.Status)
 	}
-	// 对 Superseded item Revoke → 拒绝（宿主应操作生效版本）。
-	if err := s.Revoke(ctx, "old", "cleanup"); err == nil {
-		t.Fatal("revoking a superseded item must be rejected")
+	// 对 Superseded item Revoke → 拒绝（专属哨兵：操作对象错了）。
+	if err := s.Revoke(ctx, "old", "cleanup"); !errors.Is(err, ErrRevokeSuperseded) {
+		t.Fatalf("err = %v, want ErrRevokeSuperseded", err)
 	}
 	// Revoke 生效版本：状态 + 审计。
 	if err := s.Revoke(ctx, "new", "policy changed"); err != nil {

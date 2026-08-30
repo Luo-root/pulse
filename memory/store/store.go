@@ -74,6 +74,13 @@ func (s *memStore) Put(ctx context.Context, item MemoryItem, opts PutMemoryOptio
 		return MemoryItem{}, fmt.Errorf("%w: id %s expected rev %d, current %d",
 			ErrRevisionConflict, item.ID, opts.ExpectedRevision, cur.item.Revision)
 	}
+	// 状态迁移只走 Supersede/Revoke（各有审计与替代链）：Put 更新禁止
+	// 改变 Status——否则 active→pending 绕过 P2-D 的 taint gate、active→
+	// superseded 绕过替代链（§10.2 追溯性）。
+	if cur.item.Status != item.Status {
+		return MemoryItem{}, fmt.Errorf("%w: id %s %s → %s（用 Supersede/Revoke）",
+			ErrStatusTransition, item.ID, cur.item.Status, item.Status)
+	}
 	// CAS 更新：保留不可变字段（CreatedAt/KnownAt），Revision 前进。
 	prev := cur.item
 	item.Revision = prev.Revision + 1
@@ -204,7 +211,7 @@ func (s *memStore) Revoke(ctx context.Context, id string, reason string) error {
 	case StatusRevoked:
 		return nil // 幂等
 	case StatusSuperseded:
-		return fmt.Errorf("%w: id %s is superseded; revoke the active version instead", ErrInvalidItem, id)
+		return fmt.Errorf("%w: id %s（应撤销生效版本）", ErrRevokeSuperseded, id)
 	}
 	now := s.now()
 	revoked := cur.item
