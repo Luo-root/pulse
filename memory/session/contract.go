@@ -14,6 +14,11 @@ import (
 // 不做「猜测迁移」。
 const FormatVersion uint32 = 1
 
+// CompactedVersion 是写入了 `compaction.checkpoint`（surface replace）后
+// 的格式版本：旧 reader（只认 FormatVersion）拒开压缩过的会话，不降级
+// 成「假装没压缩」（§6.3 评审定案）。本包 reader 同时接受两者。
+const CompactedVersion uint32 = 2
+
 // EventType 标识一类事件。类型不散落为裸字符串：每个进入日志的类型都在
 // Registry 注册 codec 与分级；插件私有扩展用 "plugin/<name>/<event>" 命名
 // 并自行注册为 Ignorable。
@@ -32,6 +37,12 @@ const (
 	EventAssistantChunk   EventType = "assistant.chunk"
 	EventRequestHeader    EventType = "request.header"
 	EventRequestRoute     EventType = "request.route"
+	EventRequestUsage     EventType = "request.usage"
+
+	EventCompactionStarted    EventType = "compaction.started"
+	EventCompactionSummarized EventType = "compaction.summarized"
+	EventCompactionEnded      EventType = "compaction.ended"
+	EventCompactionCheckpoint EventType = "compaction.checkpoint"
 )
 
 // Classification 是事件分级（§6.3 评审定案表）。分级由 Registry 注册时
@@ -147,6 +158,10 @@ type Session interface {
 	// 切点落在 tool 组中间（assistant 的 ToolCall 无对应 result）→ 拒绝，
 	// 不拷出非法 surface。
 	Fork(ctx context.Context, atSeq uint64) (Session, error)
+	// Registry 返回会话的事件注册表（codec 与分级环境）。压缩编排等
+	// 调用方重放日志（FoldTrace）时必须使用同一 registry，否则宿主扩展
+	// 事件会被误判 unknown required。
+	Registry() *Registry
 	// Flush 把已写入事件固化到持久层。内存实现是成功空操作（语义占位）；
 	// JSONL/SQLite 实现里 Flush 才 fsync，崩溃只保证 Flush 点之前。
 	Flush(ctx context.Context) error

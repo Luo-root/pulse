@@ -93,7 +93,11 @@ func (s *memSession) prepareAppend(draft EventDraft) (bool, error) {
 		case SurfaceAppend:
 			// ok
 		case SurfaceReplace:
-			return false, fmt.Errorf("%w: %q", ErrReplaceNotSupported, draft.Type)
+			// Replace 仅 compaction.checkpoint 可用（P2-B）：压缩是唯一
+			// 合法的 surface 重写来源；其余类型维持 ErrReplaceNotSupported。
+			if draft.Type != EventCompactionCheckpoint {
+				return false, fmt.Errorf("%w: %q", ErrReplaceNotSupported, draft.Type)
+			}
 		default:
 			return false, fmt.Errorf("%w: op %q", ErrPayloadInvalid, draft.Surface.Op)
 		}
@@ -125,10 +129,15 @@ func (s *memSession) appendLocked(draft EventDraft, ignorable bool) EventEnvelop
 }
 
 // appendEnvelopeLocked 在已持锁状态下追加一个完整信封（Seq 由调用方定：
-// JSONL 版先落盘再入内存，两者必须同 Seq）。返回入参信封。
+// JSONL 版先落盘再入内存，两者必须同 Seq）。返回入参信封。写入
+// compaction.checkpoint 时把 header 版本抬到 CompactedVersion——旧
+// reader（只认 FormatVersion）拒开压缩过的会话（§6.3 评审定案）。
 func (s *memSession) appendEnvelopeLocked(env EventEnvelope) EventEnvelope {
 	s.seq = env.Seq
 	s.events = append(s.events, env)
+	if env.Type == EventCompactionCheckpoint && s.hdr.FormatVersion < CompactedVersion {
+		s.hdr.FormatVersion = CompactedVersion
+	}
 	return env
 }
 
@@ -205,6 +214,12 @@ func (s *memSession) Fork(ctx context.Context, atSeq uint64) (Session, error) {
 		s.store.mu.Unlock()
 	}
 	return child, nil
+}
+
+// Registry 返回会话的事件注册表（Session 接口实现）。jsonlSession 经
+// 嵌入提升复用同一实现。
+func (s *memSession) Registry() *Registry {
+	return s.reg
 }
 
 // Flush 实现 Session：内存实现是成功空操作（语义占位，设计 §7.1）；

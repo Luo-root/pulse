@@ -55,8 +55,9 @@ func (s *memStore) Create(ctx context.Context, header SessionHeader) (Session, e
 	if header.FormatVersion == 0 {
 		header.FormatVersion = FormatVersion
 	}
-	if header.FormatVersion != FormatVersion {
-		return nil, fmt.Errorf("%w: store speaks v%d, header says v%d", ErrFormatVersion, FormatVersion, header.FormatVersion)
+	if header.FormatVersion != FormatVersion && header.FormatVersion != CompactedVersion {
+		return nil, fmt.Errorf("%w: store speaks v%d/v%d, header says v%d",
+			ErrFormatVersion, FormatVersion, CompactedVersion, header.FormatVersion)
 	}
 	if header.SessionID == "" {
 		header.SessionID = newID()

@@ -10,10 +10,10 @@ P2「记忆与会话」层（设计事实源：[docs/design/memory-layer-researc
 
 | 包 | 状态 | 职责 |
 |---|---|---|
-| `session` | **已落地**（P2-A1 in-memory + P2-A2 JSONL，Issue #68/#70） | 会话事件日志契约、事件分级 codec registry、surface fold（§6.3 映射表）、in-memory store、JSONL 持久层（blobs 溢出 + 文件锁 + 撕裂恢复）、Open 即冷恢复 |
+| `session` | **已落地**（P2-A1 in-memory + P2-A2 JSONL + P2-B Replace fold，Issue #68/#70/#73） | 会话事件日志契约、事件分级 codec registry、surface fold（§6.3 映射表 + checkpoint Replace）、in-memory store、JSONL 持久层（blobs 溢出 + 文件锁 + 撕裂恢复）、Open 即冷恢复、`FoldTrace` 溯源 |
+| `compaction` | **已落地**（P2-B，Issue #73） | token meter（CharMeter 估算 + Pressure）、CompactionEngine seam（LLM / deterministic backend）、§9.1 八步压缩事务编排、§9.2 tool result deterministic pruning |
 | `store` | 未建（P2-C） | 长期记忆 item canonical store（Namespace/SourceRefs/Status/Taint，Supersede/Revoke，禁物理 DELETE） |
 | `assemble` | 未建（P2-C） | Context Assembler：渐进披露装配（摘要常驻小预算 + 正文按需检索） |
-| `compaction` | 未建（P2-B） | Token meter + compaction（append + surface replace 事务） |
 | `index` | 未建（P2-D） | FTS / 向量索引 provider（派生索引，可重建） |
 
 ## 依赖方向（评审定案，不可违反）

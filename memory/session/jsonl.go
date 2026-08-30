@@ -234,8 +234,9 @@ func (s *JSONLStore) loadOpened(dir string, release func()) (*jsonlSession, erro
 	if err := json.Unmarshal(hdrData, &header); err != nil {
 		return fail(fmt.Errorf("%w: header.json: %v", ErrCorruptLog, err))
 	}
-	if header.FormatVersion != FormatVersion {
-		return fail(fmt.Errorf("%w: file v%d, store v%d（不猜测迁移）", ErrFormatVersion, header.FormatVersion, FormatVersion))
+	if header.FormatVersion != FormatVersion && header.FormatVersion != CompactedVersion {
+		return fail(fmt.Errorf("%w: file v%d, store speaks v%d/v%d（不猜测迁移）",
+			ErrFormatVersion, header.FormatVersion, FormatVersion, CompactedVersion))
 	}
 	eventsPath := filepath.Join(dir, "events.jsonl")
 	envs, truncOffset, err := loadEvents(eventsPath)
@@ -360,7 +361,28 @@ func (s *jsonlSession) Append(ctx context.Context, draft EventDraft) (EventEnvel
 	if err := s.writeLineLocked(env); err != nil {
 		return EventEnvelope{}, err
 	}
-	return s.appendEnvelopeLocked(env), nil
+	appendEnvelope := s.appendEnvelopeLocked(env)
+	// checkpoint 写入抬 header 版本：同步重写持久 header（旧 reader 拒开
+	// 压缩过的会话，重写让「拒绝」跨进程成立）。
+	if env.Type == EventCompactionCheckpoint {
+		if err := s.rewriteHeaderLocked(); err != nil {
+			return EventEnvelope{}, err
+		}
+	}
+	return appendEnvelope, nil
+}
+
+// rewriteHeaderLocked 把当前 header（含抬升后的 FormatVersion）覆盖写入
+// header.json。调用方持有 s.mu。
+func (s *jsonlSession) rewriteHeaderLocked() error {
+	data, err := json.Marshal(s.hdr)
+	if err != nil {
+		return fmt.Errorf("session: marshal header: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(s.dir, "header.json"), data, 0o644); err != nil {
+		return fmt.Errorf("session: rewrite header.json: %w", err)
+	}
+	return nil
 }
 
 // Flush 实现 Session：把已写入事件刷到磁盘（f.Sync）。崩溃只保证 Flush

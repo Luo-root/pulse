@@ -47,6 +47,15 @@ func NewRegistry() *Registry {
 	r.mustRegister(EventAssistantChunk, ClassIgnorable, false, validateChunk)
 	r.mustRegister(EventRequestHeader, ClassIgnorable, false, validateRequestHeader)
 	r.mustRegister(EventRequestRoute, ClassIgnorable, false, validateRequestRoute)
+	r.mustRegister(EventRequestUsage, ClassIgnorable, false, validateRequestUsage)
+	// P2-B 压缩族：started/summarized/ended 是 log-only 审计锁（Required——
+	// 崩溃恢复要靠 started 识别「未闭合 compaction 视作失败尝试」）；
+	// checkpoint 是唯一的 surface Replace 事件（fold 成稳定前缀消息，
+	// Role 由 codec 钉死 RoleUser，不得伪装 message.user）。
+	r.mustRegister(EventCompactionStarted, ClassRequired, false, validateCompactionStatus)
+	r.mustRegister(EventCompactionSummarized, ClassRequired, false, validateCompactionStatus)
+	r.mustRegister(EventCompactionEnded, ClassRequired, false, validateCompactionStatus)
+	r.mustRegister(EventCompactionCheckpoint, ClassRequired, true, validateCompactionCheckpoint)
 	return r
 }
 
@@ -140,6 +149,40 @@ type LifecyclePayload struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// CompactionStatusPayload 是 compaction.started / summarized / ended 的
+// 载荷（log-only 审计）：started 带 ID 锁；summarized 记录摘要模型与
+// usage、来源 refs；ended 收口。恢复路径不补 ended——未闭合 compaction
+// 在日志里保持可见（视作失败尝试，不假装完成，§9.1）。
+type CompactionStatusPayload struct {
+	ID           string   `json:"id"`
+	Reason       string   `json:"reason,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	InputTokens  int      `json:"inputTokens,omitempty"`
+	OutputTokens int      `json:"outputTokens,omitempty"`
+	SourceRefs   []uint64 `json:"sourceRefs,omitempty"`
+}
+
+// CompactionCheckpointPayload 是 compaction.checkpoint 的载荷：Replace
+// 窗口替换后的新 surface 节点集（每条 Role 必须是 user/assistant/tool，
+// 压缩摘要场景为单条 RoleUser 稳定前缀消息——不得伪装 message.user 事件
+// 类型，也不得携带 RoleSystem，system 归宿主/Assembler）+ 被替代窗口的
+// canonical event seq 全集（审计锚点，重放可追溯）。
+type CompactionCheckpointPayload struct {
+	Messages []llm.Message `json:"messages"`
+	Replaced []uint64      `json:"replaced"`
+}
+
+// RequestUsagePayload 是 request.usage 的载荷（Ignorable，log-only 审计）：
+// 具名字段对齐 llm.TokenUsage，禁整包 Metadata（map）与 API key。
+// 写入方是 session→loop 的装配层桥（接线票）——从 llm.Response.Usage
+// 折出；本包与 compaction 都不产生它（都不 import loop）。
+type RequestUsagePayload struct {
+	Model             string `json:"model"`
+	InputTokens       int    `json:"inputTokens,omitempty"`
+	OutputTokens      int    `json:"outputTokens,omitempty"`
+	CachedInputTokens int    `json:"cachedInputTokens,omitempty"`
+}
+
 // ---- 校验器 ----
 
 func decode(data json.RawMessage, out any) error {
@@ -217,6 +260,52 @@ func validateLifecycle(data json.RawMessage) error {
 	var p LifecyclePayload
 	if err := json.Unmarshal(data, &p); err != nil {
 		return fmt.Errorf("%w: %v", ErrPayloadInvalid, err)
+	}
+	return nil
+}
+
+func validateCompactionStatus(data json.RawMessage) error {
+	var p CompactionStatusPayload
+	if err := decode(data, &p); err != nil {
+		return err
+	}
+	if p.ID == "" {
+		return fmt.Errorf("%w: compaction status requires id", ErrPayloadInvalid)
+	}
+	return nil
+}
+
+// validateCompactionCheckpoint：至少一条新节点；Role 限 user/assistant/
+// tool（压缩摘要是 RoleUser 稳定前缀消息，见 fold 映射表）；Replaced
+// 非空——没有替代任何节点的 Replace 没有意义。
+func validateCompactionCheckpoint(data json.RawMessage) error {
+	var p CompactionCheckpointPayload
+	if err := decode(data, &p); err != nil {
+		return err
+	}
+	if len(p.Messages) == 0 {
+		return fmt.Errorf("%w: checkpoint requires at least one message", ErrPayloadInvalid)
+	}
+	for i := range p.Messages {
+		switch p.Messages[i].Role {
+		case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+		default:
+			return fmt.Errorf("%w: checkpoint message[%d] role %q not allowed", ErrPayloadInvalid, i, p.Messages[i].Role)
+		}
+	}
+	if len(p.Replaced) == 0 {
+		return fmt.Errorf("%w: checkpoint requires non-empty Replaced", ErrPayloadInvalid)
+	}
+	return nil
+}
+
+func validateRequestUsage(data json.RawMessage) error {
+	var p RequestUsagePayload
+	if err := decode(data, &p); err != nil {
+		return err
+	}
+	if p.Model == "" {
+		return fmt.Errorf("%w: request.usage requires model", ErrPayloadInvalid)
 	}
 	return nil
 }
