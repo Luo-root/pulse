@@ -12,7 +12,7 @@ P2「记忆与会话」层（设计事实源：[docs/design/memory-layer-researc
 |---|---|---|
 | `session` | **已落地**（P2-A1 in-memory + P2-A2 JSONL + P2-B Replace fold，Issue #68/#70/#73） | 会话事件日志契约、事件分级 codec registry、surface fold（§6.3 映射表 + checkpoint Replace）、in-memory store、JSONL 持久层（blobs 溢出 + 文件锁 + 撕裂恢复）、Open 即冷恢复、`FoldTrace` 溯源 |
 | `compaction` | **已落地**（P2-B，Issue #73） | token meter（CharMeter 估算 + Pressure）、CompactionEngine seam（LLM / deterministic backend）、§9.1 八步压缩事务编排、§9.2 tool result deterministic pruning |
-| `store` | 未建（P2-C） | 长期记忆 item canonical store（Namespace/SourceRefs/Status/Taint，Supersede/Revoke，禁物理 DELETE） |
+| `store` | **已落地**（P2-C1 内存版，Issue #76） | MemoryItem canonical store：Namespace 前缀隔离（scope helper 展开）、Supersede/Revoke 状态机（禁物理 DELETE）、revision CAS、SourceRefs 强制回链、Search 过滤（FTS 与 SQLite 在 C2） |
 | `assemble` | 未建（P2-C） | Context Assembler：渐进披露装配（摘要常驻小预算 + 正文按需检索） |
 | `index` | 未建（P2-D） | FTS / 向量索引 provider（派生索引，可重建） |
 
