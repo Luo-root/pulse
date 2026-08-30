@@ -21,7 +21,7 @@ Agent Memory 不是一个「向量数据库 + 对话历史」组件，而是五�
 - 上下文压缩只改 surface，不删除原始日志；压缩摘要携带被替代源事件引用、压缩模型和 token 计量，保证可追溯。
 - 长期记忆默认是**结构化文档/条目 + 来源链**；向量检索是可插拔召回索引，不是唯一存储层。
 - 先落“可靠会话 + 压缩 + 基础可控长期记忆”，再上自动抽取、embedding、知识图谱/反思。不能先做“全自动记忆”。
-- 与 v2 插件内核衔接时，Memory 必须作为 capability seam / plugin 接入 `kernel.Context`；Agent loop 只依赖抽象接口，不依赖 SQLite、GORM、HNSW 或某个 embedding provider。
+- 与 v2 插件内核衔接时，Memory 作为 capability seam / plugin 接入 `kernel.Context`（service key 归 `memory/*` 各包，kernel 不 import memory）；**loop 不 import memory**——装配层把 `session.Surface()` 交给 `loop.Run`；SQLite / embedding 等只是可换后端。
 
 ---
 
@@ -51,7 +51,7 @@ Pulse 是 Agent 框架，不是单一聊天 UI。记忆层必须同时覆盖：
 
 ### 1.3 v1 现状与迁移立场
 
-当前 `components/memory` 是 v1 组件，混合了：短期窗口、摘要、GORM/SQLite 长期存储、embedding/HNSW 检索和 controller。它对“消息列表”建模，无法表达 tool call/result 配对、运行边界、请求配置、审批、任务或压缩替换关系。
+v1 已删除的 `components/memory` 曾混合：短期窗口、摘要、GORM/SQLite 长期存储、embedding/HNSW 检索和 controller。它对“消息列表”建模，无法表达 tool call/result 配对、运行边界、请求配置、审批、任务或压缩替换关系。
 
 因此 v2 **不做 v1 API 兼容层**。P2 重新建立 public packages，v1 仅作为局部经验和迁移资料；任何旧组件接新核心时按 v2 契约重写。
 
@@ -292,8 +292,10 @@ type EventEnvelope struct {
 }
 
 type SurfaceIntent struct {
-    Op        SurfaceOp       // Append / Replace
-    Sources   []uint64        // 生成或替代的源事件
+    Op        SurfaceOpKind   // Append / Replace
+    Start     int             // Replace：当前 surface 的 0-based 消息下标（含端点）；Append 忽略
+    End       int             // Replace：同上（含）；下标按 fold 后消息序计，不假设与 Seq 数值序一致
+    Sources   []uint64        // 生成或替代的源事件 Seq
 }
 ```
 
@@ -307,12 +309,25 @@ type SurfaceIntent struct {
 |---|---|---:|---|
 | 生命周期 | `turn.started/ended`、`step.started/ended` | 否 | 完整运行边界、崩溃修复 |
 | 消息 | `message.user`、`message.assistant` | 是 | 模型与用户交互 |
-| 工具 | `tool.called`、`tool.result` | result 是 | 完整工具配对与模型回填 |
+| 工具 | `tool.called`（**log-only**）、`tool.result`（surface） | result 是 | called 供 HITL/时序/崩溃检测；result 回填模型 |
 | 流 | `assistant.chunk` | 否 | UI 重放与诊断，完整消息为权威 |
 | 请求 | `request.header`、`request.route` | 否 | 恢复时重建调用环境 |
 | 压缩 | `compaction.started/summarized/ended` | 否 | 压缩事务与来源计量 |
+| 压缩 | `compaction.checkpoint`（P2-B） | **是** | 压缩摘要 surface 节点；首次写出抬 FormatVersion；fold 成稳定前缀消息（Role 在 P2-B 验收钉） |
 | 状态 | `goal.changed`、`todo.written`、`approval.*` | 否 | 运行状态、审计 |
 | 扩展 | `plugin/<name>/<event>` | 否，除非注册为消息生产者 | 插件私有语义 |
+
+**fold 映射表（评审定案，P2-A1 的 fold 就是这张表）**：
+
+| 事件 | SurfaceIntent | fold 成 |
+|---|---|---|
+| `message.user` | Append | `llm.RoleUser` |
+| `message.assistant` | Append | `llm.RoleAssistant`（**Parts 原样，含 `PartToolCall`**） |
+| `tool.called` | 无（log-only） | 不进 surface；只供 HITL/时序/崩溃检测当「调用已发生」 |
+| `tool.result` | Append | `llm.RoleTool`（`IsError` + 文本） |
+| `compaction.checkpoint`（P2-B） | Replace | 稳定前缀消息（Role 在 P2-B 验收定，事件类型不得伪装 `message.user`） |
+
+**配对主键 = assistant 消息上的 `PartToolCall`**（对齐 DSH：call 在 assistant 消息里，result 是独立 surface 节点）；`tool.called` 不是 surface 节点，只作审计。pairing 检测看「assistant 的 ToolCall 是否有后续 RoleTool 消息」——§9.3/§16-11 同口径。
 
 **事件分级（评审定案，P2-A 写进 codec registry）**：
 
@@ -322,9 +337,22 @@ type SurfaceIntent struct {
 | `assistant.chunk`、`request.header`、`request.route` | **Ignorable** | 流碎片与调用环境；丢了不影响 surface 正确性 |
 | P2-B compaction checkpoint（专用类型，不上 `message.user`） | 首次写出时**抬 `SessionHeader.FormatVersion`** | 旧 reader 拒开压缩过的会话，不降级成「假装没压缩」 |
 
+**分级与信封 flag 的裁决表（评审定案）**：
+
+| 情况 | 行为 |
+|---|---|
+| 已知 Required | **永不跳过**（忽略信封上的 `Ignorable` flag） |
+| 已知 Ignorable | 可跳过；fold 不读它 |
+| 未知扩展 + `Ignorable=true` | 跳过 |
+| 未知扩展 + flag 默认 false | **拒绝 Open** |
+
+**Ignorable ≠ 可以不记**：`request.header` 标 Ignorable 只表示「fold 不需要它」；写入方仍必须发（system + ToolDef + model，见下）。缺 header 的会话可以 fold 出消息，但重放/续跑是降级（没工具集、没 system）。
+
 `tool.result` 的 Data 只存模型可见形态：`IsError bool` + 文本（对齐 loop 回传模型的契约）；**不存 Go `error` 接口**（无法无损 JSON）。
 
 ### 6.4 Surface Replace
+
+Replace 的坐标（评审定案）：`SurfaceIntent.Start/End` 是**当前 fold 后 surface 的 0-based 消息下标（含端点）**，不复用 event Seq——先前 replace 会把新 seq 插到旧位置，两者不可混用；范围合法性（含 tool pairing 边界）由 fold 校验，越界拒绝。
 
 ```go
 type SurfaceOpKind string
@@ -332,13 +360,9 @@ const (
     SurfaceAppend  SurfaceOpKind = "append"
     SurfaceReplace SurfaceOpKind = "replace"
 )
-
-type SurfaceOp struct {
-    Kind  SurfaceOpKind
-    Start uint64 // surface 位置上的开始 event seq
-    End   uint64 // surface 位置上的结束 event seq
-}
 ```
+
+（旧 `SurfaceOp` 结构体已并入 `SurfaceIntent`，不再单独存在。）
 
 替换范围按 **当前 surface 顺序** 定义，不能假设 `Start <= End` 的数值序，因为先前 replace 会把新 seq 插到旧位置。替换前后必须校验 tool pairing 边界。
 
@@ -403,7 +427,7 @@ memory/index    → memory/store
 type SessionStore interface {
     Create(ctx context.Context, header SessionHeader) (Session, error)
     Open(ctx context.Context, id string) (Session, error)
-    // List 会话列表会超页：稳定排序（按 SessionID）+ 游标分页，不静默截断
+    // List 会话列表会超页：CreatedAt 降序 + SessionID tiebreak 稳定排序 + 游标分页，不静默截断
     List(ctx context.Context, filter SessionFilter) (page []SessionHeader, next string, err error)
     // Delete 丢弃整个会话（JSONL 文件 + blobs）——会话不是 MemoryItem，
     // 不适用 Supersede/Revoke；数据不可恢复由宿主负责。
@@ -418,13 +442,28 @@ type Session interface {
     Fork(ctx context.Context, atSeq uint64) (Session, error) // atSeq 落在 tool 组中间 → 拒绝
     Flush(ctx context.Context) error                          // Flush 才 fsync；崩溃只保证 Flush 点之前
 }
+
+// EventDraft 是 Append 的写入入口；Seq / Time 由 Store 分配，调用方不填。
+type EventDraft struct {
+    Type      EventType
+    Data      json.RawMessage // codec 编码后的 payload
+    Surface   *SurfaceIntent  // 仅 surface 类型允许非 nil
+    Ignorable bool            // 仅未知扩展类型有意义（§6.3 裁决表）
+}
+
+// SessionFilter 最小形态：零值 = 全部；配合 List 游标分页。
+type SessionFilter struct {
+    After string // 游标：上一页末尾的 SessionID
+}
 ```
 
 - `Session` / `SessionStore` 的 `Surface()` 直接产出 `[]*llm.Message`——不再发明第二套 model-visible 消息类型，接线不经过翻译层。
 - Store 接口吃 `context.Context` 做取消，**不把 `*kernel.Context` 焊进 Store**——它是存储，不是插件树；Provide 它的 Plugin 才碰 kernel。
-- `memory/session` 只提供 Append / Flush / Surface / Fork / Recover API，**不订阅 kernel/loop 事件**。loop → session 的映射（把 `turn_start`/`after_tool_call` 等 EmitLocal 事件折成 EventDraft）是**装配层桥**（同 `examples/internal/demoapp/bridge.go` 形态），走接线票，不进 P2-A。
+- `memory/session` 只提供 **Header / Append / Events / Surface / Fork / Flush / Open（即冷恢复）**——**没有独立 Recover 方法**：`Open` 非 live 打开时补闭合事件（写回 log，见 §9.3）再 fold；**不订阅 kernel/loop 事件**。loop → session 的映射（把 `turn_start`/`after_tool_call` 等 EmitLocal 事件折成 EventDraft）是**装配层桥**（同 `examples/internal/demoapp/bridge.go` 形态），走接线票，不进 P2-A。
+- **恢复写回 log**：合成的 `IsError` result、`turn.ended(interrupted)` 必须真实 `Append` 进日志（「model-visible means logged」+「每个 surface 节点可定位 canonical event」），不能只在 `Surface()` 里凭空捏消息。
 - **单写者**：P2-A 同一 Session 同一时刻一个 writer（进程内锁 + 文件锁兜底）；CAS/revision 是 P2-C MemoryItem 的事，session 不做。
 - `Append` 非幂等：宿主 Flush 失败后**不要原样重放同一批事件**（重新 Append 会产生双份）。
+- A1 的 in-memory `Flush` 是成功空操作（语义占位）；持久化语义在 A2。
 
 ```go
 type MemoryStore interface {
@@ -447,10 +486,8 @@ type ContextAssembler interface {
 - `memory/session`：`SessionStoreKey`——会话创建、加载、追加、flush。
 - `memory/store`：`MemoryStoreKey`——长期记忆 CRUD / search。
 - `memory/assemble`：`ContextAssemblerKey`——把各种信息编排成 request input。
-- `memory/compaction`：`CompactionEngineKey`——可选 capability；没有 provider 时策略降级。
+- `memory/compaction`：`CompactionEngineKey`——可选 capability；没有 provider 时**由装配层**做策略降级（loop 不知道有没有 compaction）。
 - `memory/index`（P2-D）：`MemoryExtractorKey` 等可选异步/显式提炼 capability。
-- `CompactionEngineKey`：可选 capability；没有 provider 时 agent loop 仍可运行，只做策略降级。
-- `MemoryExtractorKey`：可选异步/显式提炼 capability。
 
 插件边界：
 
@@ -517,7 +554,7 @@ score = w_semantic * semantic_similarity
       + w_keyword  * lexical_score
       + w_scope    * scope_match
       + w_recency  * recency_decay
-      + w_conf     * confidence
+      + w_conf     * confidence          // 仅 P2-D 启用；P2-C 权重 0（默认 1.0，排序不得依赖没人写的值）
       + w_recall   * reuse_signal
       - w_stale    * stale_penalty
       - w_taint    * taint_penalty
@@ -567,12 +604,13 @@ score = w_semantic * semantic_similarity
 
 | 现场 | 若原样 fold | 合法续跑 |
 |---|---|---|
-| `tool.called` 无 `tool.result`（含 HITL 未决） | 下一轮 `Run` 直接坏请求 | 补一条 `IsError=true` 的 tool result（固定文案，如 `interrupted`） |
+| assistant 消息上的 `PartToolCall` 无对应 `tool.result`（含 HITL 未决） | 下一轮 `Run` 直接坏请求 | 补一条 `IsError=true` 的 tool result（固定文案，如 `interrupted`） |
 | 只有 `assistant.chunk`、无 `message.assistant` | 半截 assistant | **丢弃 chunk**，surface 停在上一合法消息（`assistant.chunk` 永不进 surface） |
-| 并行多个 `tool.called` 只回来一部分 | 半对 | 缺的全部补 `IsError`；Replace/Fork 的切边必须**整组**（assistant + 其全部 results），禁止切在组内 |
+| assistant 带多个 ToolCall 只回来一部分 | 半对 | 缺的全部补 `IsError`；Replace/Fork 的切边必须**整组**（assistant + 其全部 results），禁止切在组内 |
 
-- HITL pending 与崩溃是同一类洞：`tool.called` 已记、result 未记。unpaired 补齐是 P2-A 验收项。
+- HITL pending 与崩溃是同一类洞：assistant 的 ToolCall 已记、result 未记。unpaired 补齐是 P2-A 验收项。
 - Fork 边界：`Fork(seq)` 落在 tool 组中间 → **拒绝**，不拷出非法 surface。
+- 冷补**写回 log**：`Open` 非 live 打开时把合成事件真实 Append（interrupted / IsError result），再 fold；live session 不做这套冷补（见下）。
 
 加载与恢复不变式：
 
@@ -642,11 +680,11 @@ flowchart LR
 
 **P2-A1：in-memory session core**（对标 `loop.MemToolSet`，先把语义测绿）
 
-- `memory/session`：Header、EventEnvelope、codec registry（Required/Ignorable 分级，未知 required 拒绝恢复）、surface fold；
-- 事件最小族：turn/step 生命周期、message.user/assistant、tool.called/tool.result、assistant.chunk（Ignorable）、request.header/route（Ignorable）；
-- in-memory store：Create/Open/Append/Events/Surface/Fork/单写者；
-- surface 语义：`Surface() []*llm.Message`；**不含 system**（归宿主/Assembler）；`message.assistant` 的 Parts 原样保留（含 PartReasoning）；**`assistant.chunk` 永不进 surface**（只有 chunk 崩溃时丢 chunk、停上一合法消息）；
-- unpaired 补齐：`tool.called` 无 result → 补 `IsError` result；并行部分回来 → 缺的全补；Fork 拒切 tool 组；
+- `memory/session`：Header、EventEnvelope、codec registry（Required/Ignorable 分级 + 裁决表，未知 required 拒绝恢复）、surface fold（§6.3 映射表）；
+- 事件最小族：turn/step 生命周期、message.user/assistant、tool.called（log-only）/tool.result、assistant.chunk（Ignorable）、request.header/route（Ignorable）；
+- in-memory store：**完整 §7.1 接口**（Create/Open/Append/Events/Surface/Fork/List/Delete + Flush no-op）+ 单写者；
+- surface 语义：`Surface() []*llm.Message`；**不含 system**（归宿主/Assembler）；`message.assistant` 的 Parts 原样保留（含 PartReasoning 与 **PartToolCall**——ToolCall 是 pairing 主键）；**`assistant.chunk` 永不进 surface**（只有 chunk 崩溃时丢 chunk、停上一合法消息）；
+- unpaired 补齐：assistant 的 ToolCall 无 result → 补 `IsError` result **并写回 log**（Open 即冷恢复）；并行部分回来 → 缺的全补；Fork 拒切 tool 组；
 - `request.header` Data 无损记三样（即使 log-only）：system 文本（或显式无）、`[]llm.ToolDef` 快照（本回合 Definitions）、model/route 标识；**禁止整包 `GenerateRequest.Metadata`（map）进 log**，审计字段具名；
 - `request.header` 禁止出现 API key。
 
@@ -657,7 +695,9 @@ flowchart LR
 - fork seed 边界、`FormatVersion` 拒绝、`List` 游标分页、`Delete`；
 - JSONL 为明文：文档声明「文件即密钥面、路径宿主拥有」；P2-A 不做加密。
 
-验收：任何已成功 append 的事件均能重放；恢复出的 `Surface() []*llm.Message` 与崩溃前最后持久 checkpoint 一致且通过 tool-pairing 校验；无法解释的格式 fail closed；带 `ImageData` 的 user 消息 roundtrip 后能再 fold 出同样 Part；Fork 落 tool 组中间被拒绝；未知 required event 拒绝加载。
+P2-A1 验收：不完整事件序列的逻辑恢复（unpaired 补 IsError 并写回 log、chunk 丢弃、Fork 拒切 tool 组）、§6.3 fold 映射表全量、未知 required event 拒绝加载、格式 fail closed、同文件并发 ensureOpen——即「Open 即冷恢复」的全部逻辑语义。
+
+P2-A2 验收：任何已成功 append 的事件均能重放；恢复出的 `Surface() []*llm.Message` 与崩溃前最后持久 Flush 点一致且通过 tool-pairing 校验；撕裂 JSON 行只丢无法验证的碎片；带 `ImageData` 的 user 消息 roundtrip 后能再 fold 出同样 Part；`FormatVersion` 拒绝；`List` 游标分页。
 
 human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）。
 
@@ -665,7 +705,7 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 
 交付：
 
-- request header/route/token usage event；
+- token usage event（`request.header`/`route` 已在 A1 最小族）；
 - token meter 抽象；
 - `CompactionEngine` seam 和 basic summary backend；
 - replace-based surface compaction；
@@ -673,7 +713,7 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 - 手动 compact、压力 compact、overflow retry；
 - 压缩前可选 memory flush hook。
 
-验收：压缩不改变 raw log；替换的 source refs 完整；不会打断 tool call/result；压缩失败和中断留下可解释审计记录。
+验收：压缩不改变 raw log；替换的 source refs 完整；不会打断 tool call/result；压缩失败和中断留下可解释审计记录；`compaction.checkpoint` fold 成的 `llm.Role` 在本票定稿（建议稳定前缀 `RoleUser` 或 `RoleAssistant`，事件类型不得伪装 `message.user`）。
 
 ### P2-C：可控跨会话记忆
 
@@ -713,7 +753,7 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 - crash tests：任意 append 点中断，恢复后不丢合法前缀；
 - fork tests：子 session 来源边界、父后续事件不可污染子 seed；
 - scope tests：跨 user/project/agent 检索绝不泄漏；
-- concurrent writer tests：同 ID 写入策略清晰（单写者锁或 CAS revision），不能默默覆盖。
+- concurrent writer tests：session 单写者锁（§7.1，P2-A 验收）；MemoryItem CAS/revision（P2-C 验收）；均不能默默覆盖。
 
 ### 13.2 质量指标
 
@@ -787,7 +827,7 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 8. **先做可靠、可验证、可恢复的 P2-A/P2-B，再做智能化 P2-C/P2-D。**
 9. **（评审定案）依赖方向**：service key 归 `memory/*` 各包；kernel 不 import memory，**loop 不 import memory**；session→loop 接线是装配层桥；`memory/session` 不订阅 kernel/loop 事件。
 10. **（评审定案）Surface = `[]*llm.Message`**：不含 system；Parts 原样保留；chunk 永不进 surface；human transcript 另票。
-11. **（评审定案）崩溃恢复吐合法 surface**：unpaired `tool.called` 补 IsError result；并行缺的全补；Replace/Fork 切边整组；Fork 拒切 tool 组。
+11. **（评审定案）崩溃恢复吐合法 surface**：assistant 上的 unpaired ToolCall 补 IsError result（写回 log）；并行缺的全补；Replace/Fork 切边整组；Fork 拒切 tool 组。
 12. **（评审定案）Namespace 是 canonical 键**，MemoryScope 降级为 helper；Kind/Taint open string；Confidence 默认 1.0 由写入方提供。
 13. **（评审定案）附件 blobs**：≤32KiB 内联，超限 `{session}/blobs/{sha256}` 引用；禁止静默丢字节。
 14. **（评审定案）事件分级**：生命周期/message/tool Required；chunk/request.* Ignorable；P2-B checkpoint 专用类型 + 抬 FormatVersion。
@@ -852,7 +892,7 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 1. **P2-C 禁止物理 DELETE**：MemoryItem 只能 Supersede / Revoke（状态翻转 + 时间戳），与 Mem0 v3「ADD-only」、Zep「失效而非删除」、Manus「掩码而非删除」三方收敛一致。
 2. **MemoryItem 增加 `KnownAt time.Time`（摄取时间）**：bi-temporal 的最小占位；时序查询（「当时系统知道什么」）在 P2-C 为可选查询维度。
 3. **Context Assembler 的 stable memory 注入采用渐进披露**：条目摘要（小固定预算、frozen snapshot）常驻，正文经检索按需；全量注入明确禁止。
-4. （ reaffirm ）self-edit 记忆工具 = P2-C 的显式注册工具组，走现有 Preview/审批（前置：Issue #56 Accepted）；异步巩固 = P2-D 默认关；图谱类后端不做进核心。
+4. **（再确认）self-edit 记忆工具** = P2-C 的显式注册工具组，走现有 Preview/审批（前置：Issue #56 Accepted）；异步巩固 = P2-D 默认关；图谱类后端不做进核心。
 
 ### 17.8 补遗参考来源
 
