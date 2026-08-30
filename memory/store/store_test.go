@@ -318,6 +318,29 @@ func TestScopeHelper(t *testing.T) {
 	}
 }
 
+// TestSearchASCIIFoldParity：大小写折叠口径统一为仅 ASCII（与 SQLite 版
+// 同断言——复审实测的 parity break 回归锁）：ASCII 大写命中；非 ASCII
+// 重音不折叠不命中。
+func TestSearchASCIIFoldParity(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := t.Context()
+	it := itemOf("d1", []string{"tenant:a"}, "Meet at CAFÉ du Nord")
+	if _, err := s.Put(ctx, it, PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := s.Search(ctx, MemoryQuery{Namespace: it.Namespace, Query: "NORD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("ascii fold hits = %d, want 1", len(hits))
+	}
+	hits, _ = s.Search(ctx, MemoryQuery{Namespace: it.Namespace, Query: "café"})
+	if len(hits) != 0 {
+		t.Fatalf("non-ASCII fold must not happen: %d hits, want 0（口径：折叠仅 ASCII）", len(hits))
+	}
+}
+
 // TestConcurrentCAS：并发 Put 同一 item，CAS 保证 revision 严格递增、
 // 无丢失更新（-race）。
 func TestConcurrentCAS(t *testing.T) {

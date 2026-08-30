@@ -231,9 +231,10 @@ type MemoryQuery struct {
 	Namespace []string
 	// Kinds 非空时只返回这些类别。
 	Kinds []MemoryKind
-	// Query 关键词：内存版对 Content 做大小写不敏感子串匹配；空 = 不过滤。
-	// **仅匹配 Content**——Structured（领域字段）不参与 C1 关键词匹配
-	// （匹配域是否扩展到 Structured 由 C2 的 FTS 定）。
+	// Query 关键词：对 Content 做子串匹配，**大小写折叠仅 ASCII**（统一
+	// 口径——内存版与 SQLite 版一致，非 ASCII 大写如 É 不折叠）；空 =
+	// 不过滤。**仅匹配 Content**——Structured（领域字段）不参与 C1/C2
+	// 关键词匹配（匹配域是否扩展由 C2 FTS / C3 定）。
 	Query string
 	// IncludeInactive 打开后 Superseded/Revoked/Pending 也返回（默认只
 	// Active——同一事实永远只有一条生效版本）。
@@ -303,4 +304,7 @@ var (
 	// 翻转状态（否则 active→pending 绕过 P2-D 的 taint gate，active→
 	// superseded 绕过替代链）。
 	ErrStatusTransition = errors.New("store: status transition via put is not allowed")
+	// ErrCorruptSchema：持久存储损坏（schema 版本不符、JSON 列解析失败），
+	// 拒绝加载（fail closed），不做「猜测修复」。
+	ErrCorruptSchema = errors.New("store: schema corrupt")
 )

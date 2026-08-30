@@ -115,7 +115,7 @@ func (s *memStore) Search(ctx context.Context, q MemoryQuery) ([]MemoryHit, erro
 	if q.Limit < 0 {
 		return nil, fmt.Errorf("%w: negative limit", ErrInvalidQuery)
 	}
-	needle := strings.ToLower(strings.TrimSpace(q.Query))
+	needle := asciiFold(strings.TrimSpace(q.Query))
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if err := s.ctxErr(ctx); err != nil {
@@ -133,7 +133,7 @@ func (s *memStore) Search(ctx context.Context, q MemoryQuery) ([]MemoryHit, erro
 		if len(q.Kinds) > 0 && !containsKind(q.Kinds, it.Kind) {
 			continue
 		}
-		if needle != "" && !strings.Contains(strings.ToLower(it.Content), needle) {
+		if needle != "" && !strings.Contains(asciiFold(it.Content), needle) {
 			continue
 		}
 		hits = append(hits, MemoryHit{Item: it})
@@ -289,4 +289,18 @@ func containsKind(kinds []MemoryKind, k MemoryKind) bool {
 		}
 	}
 	return false
+}
+
+// asciiFold 把 ASCII 大写折叠为小写，非 ASCII 字符原样保留——这是
+// Search 关键词匹配的**统一口径**（内存版与 SQLite 版都必须如此：
+// SQLite 内置 lower() 只折叠 ASCII，内存版若用 Unicode-aware ToLower
+// 会与 SQL 下推分叉——复审实测）。「大小写折叠仅 ASCII」是契约的一部分，
+// 重音/西里尔等非 ASCII 大写不做折叠。
+func asciiFold(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, s)
 }
