@@ -149,3 +149,30 @@ func scanIncomplete(events []EventEnvelope, reg *Registry) (incompleteState, err
 	}
 	return st, nil
 }
+
+// synthDrafts 把未闭合现场转成待补写的合成事件序列（A1 内存恢复与 A2
+// JSONL 恢复共用）。顺序：先配对（result 回填在 assistant 消息之后），
+// 再 step、再 turn——与嵌套闭合顺序一致。合成 ended 回带 started 的 ID。
+func synthDrafts(st incompleteState) []EventDraft {
+	drafts := make([]EventDraft, 0, len(st.pendingCalls)+2)
+	for _, id := range st.pendingCalls {
+		drafts = append(drafts, EventDraft{
+			Type:    EventToolResult,
+			Data:    mustJSON(ToolResultPayload{ToolCallID: id, Text: interruptedResultText, IsError: true}),
+			Surface: &SurfaceIntent{Op: SurfaceAppend},
+		})
+	}
+	if st.openStep {
+		drafts = append(drafts, EventDraft{
+			Type: EventStepEnded,
+			Data: mustJSON(LifecyclePayload{ID: st.stepID, Reason: ReasonInterrupted}),
+		})
+	}
+	if st.openTurn {
+		drafts = append(drafts, EventDraft{
+			Type: EventTurnEnded,
+			Data: mustJSON(LifecyclePayload{ID: st.turnID, Reason: ReasonInterrupted}),
+		})
+	}
+	return drafts
+}

@@ -86,24 +86,24 @@ const (
 // 不复用 event Seq——两者是不同数轴，数值序不可互相推断。P2-A 阶段没有
 // 注册任何 Replace 事件类型，携带 Replace 意图的 Append 会被拒绝。
 type SurfaceIntent struct {
-	Op SurfaceOpKind // Append / Replace
+	Op SurfaceOpKind `json:"op"` // Append / Replace
 	// Start/End 仅 Replace 使用：当前 surface 的 0-based 消息下标（含端点）；
 	// Append 忽略。合法范围 Start ≤ End，越界或反向由 fold/Append 拒绝。
-	Start int
-	End   int
+	Start int `json:"start,omitempty"`
+	End   int `json:"end,omitempty"`
 	// Sources 是生成或替代的源事件 Seq（审计锚点）。
-	Sources []uint64
+	Sources []uint64 `json:"sources,omitempty"`
 }
 
 // EventEnvelope 是日志中的一条事件。Seq / Time 由 Store 分配，调用方不填；
 // 信封一旦写入视为不可变。
 type EventEnvelope struct {
-	Seq       uint64 // session 内严格连续，从 1 起
-	Time      time.Time
-	Type      EventType
-	Data      json.RawMessage // codec 校验后的 payload；允许 nil（无载荷）
-	Ignorable bool            // 未知类型被跳过的唯一凭据；已知类型以注册表分级为准
-	Surface   *SurfaceIntent  // 仅注册为 surface 的类型允许非 nil
+	Seq       uint64          `json:"seq"` // session 内严格连续，从 1 起
+	Time      time.Time       `json:"time"`
+	Type      EventType       `json:"type"`
+	Data      json.RawMessage `json:"data,omitempty"`      // codec 校验后的 payload；允许 nil（无载荷）
+	Ignorable bool            `json:"ignorable,omitempty"` // 未知类型被跳过的唯一凭据；已知类型以注册表分级为准
+	Surface   *SurfaceIntent  `json:"surface,omitempty"`   // 仅注册为 surface 的类型允许非 nil
 }
 
 // EventDraft 是 Append 的写入入口；Seq / Time 由 Store 分配，调用方不填。
@@ -119,15 +119,15 @@ type EventDraft struct {
 
 // SessionHeader 是日志外的存储元数据，不混进模型 history。
 type SessionHeader struct {
-	FormatVersion   uint32
-	SessionID       string
-	CreatedAt       time.Time
-	Workspace       string
-	ParentSessionID string // fork 时存在
-	SeedLength      uint64 // fork 继承的事件边界（父会话 Seq）
-	AgentID         string
-	AgentPreset     string
-	DelegationDepth uint32
+	FormatVersion   uint32    `json:"formatVersion"`
+	SessionID       string    `json:"sessionID"`
+	CreatedAt       time.Time `json:"createdAt"`
+	Workspace       string    `json:"workspace,omitempty"`
+	ParentSessionID string    `json:"parentSessionID,omitempty"` // fork 时存在
+	SeedLength      uint64    `json:"seedLength,omitempty"`      // fork 继承的事件边界（父会话 Seq）
+	AgentID         string    `json:"agentID,omitempty"`
+	AgentPreset     string    `json:"agentPreset,omitempty"`
+	DelegationDepth uint32    `json:"delegationDepth,omitempty"`
 }
 
 // SessionFilter 是 List 的最小过滤：零值 = 全部；After 是上一页末尾的
@@ -223,4 +223,13 @@ var (
 	// ErrCursorStale：List 游标指向的会话已不存在（列表已变化）。调用方
 	// 应重置分页（After 清空从第一页开始）；不静默从头——那会重复返回。
 	ErrCursorStale = errors.New("session: list cursor stale")
+	// ErrCorruptLog：持久日志损坏（中部坏行、seq 断链、checksum 不符），
+	// 拒绝加载（fail closed），不做「猜测修复」。
+	ErrCorruptLog = errors.New("session: event log corrupt")
+	// ErrSessionClosed：文件实现 Close 之后的写入/Flush——显式哨兵，
+	// 不依赖 os.File 的 nil-safe 巧合。
+	ErrSessionClosed = errors.New("session: session closed")
+	// ErrInvalidSessionID：会话 ID 非法（须匹配 [A-Za-z0-9_-]{1,128}）——
+	// 参数错误，不是「会话不存在」。
+	ErrInvalidSessionID = errors.New("session: invalid session id")
 )

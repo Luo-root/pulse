@@ -46,18 +46,39 @@ func (s *memSession) Header() SessionHeader {
 //     （compaction.checkpoint 在 P2-B 引入）；Start > End 拒绝。
 //  4. payload 过 codec 校验后才入库。
 func (s *memSession) Append(ctx context.Context, draft EventDraft) (EventEnvelope, error) {
-	// deleted 与写路径同锁（Delete 置位也持 s.mu）：锁外检查存在
-	// 「已丢弃会话仍接受写入」的竞态窗口。
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	ignorable, err := s.prepareAppend(draft)
+	if err != nil {
+		return EventEnvelope{}, err
+	}
+	return s.appendLocked(draft, ignorable), nil
+}
+
+// prepareAppend 执行 Append 的校验链（锁内调用，fail closed）：
+//
+//  1. deleted 检查——与写路径同锁（Delete 置位也持 s.mu）：锁外检查存在
+//     「已丢弃会话仍接受写入」的竞态窗口；
+//  2. 未注册类型：Ignorable=true 才放行（写入日志，fold 跳过）；否则拒绝
+//     ——把裁决表的「未知 + 默认 false 拒绝 Open」提前到写入端，避免日志
+//     造出永远打不开的会话；
+//  3. 已注册类型：信封 Ignorable 以注册表分级为准，忽略 draft 上的 flag
+//     （已知 Required 永不降级为 Ignorable）；
+//  4. SurfaceIntent 仅允许注册为 surface 的类型；Replace 在本阶段直接拒绝
+//     （compaction.checkpoint 在 P2-B 引入）；Start > End 拒绝。
+//  5. payload 过 codec 校验后才入库。
+//
+// 返回按裁决表归一的信封 Ignorable。JSONL 版复用：校验通过后先落盘、
+// 再 appendLocked。
+func (s *memSession) prepareAppend(draft EventDraft) (bool, error) {
 	if s.deleted.Load() {
-		return EventEnvelope{}, ErrDeleted
+		return false, ErrDeleted
 	}
 	entry, known := s.reg.lookup(draft.Type)
 	ignorable := false
 	if !known {
 		if !draft.Ignorable {
-			return EventEnvelope{}, fmt.Errorf("%w: %q", ErrUnknownEvent, draft.Type)
+			return false, fmt.Errorf("%w: %q", ErrUnknownEvent, draft.Type)
 		}
 		ignorable = true
 		entry = codecEntry{}
@@ -66,41 +87,47 @@ func (s *memSession) Append(ctx context.Context, draft EventDraft) (EventEnvelop
 	}
 	if draft.Surface != nil {
 		if !entry.hasSurface {
-			return EventEnvelope{}, fmt.Errorf("%w: %q", ErrSurfaceNotAllowed, draft.Type)
+			return false, fmt.Errorf("%w: %q", ErrSurfaceNotAllowed, draft.Type)
 		}
 		switch draft.Surface.Op {
 		case SurfaceAppend:
 			// ok
 		case SurfaceReplace:
-			return EventEnvelope{}, fmt.Errorf("%w: %q", ErrReplaceNotSupported, draft.Type)
+			return false, fmt.Errorf("%w: %q", ErrReplaceNotSupported, draft.Type)
 		default:
-			return EventEnvelope{}, fmt.Errorf("%w: op %q", ErrPayloadInvalid, draft.Surface.Op)
+			return false, fmt.Errorf("%w: op %q", ErrPayloadInvalid, draft.Surface.Op)
 		}
 		if draft.Surface.Start < 0 || draft.Surface.End < draft.Surface.Start {
-			return EventEnvelope{}, fmt.Errorf("%w: Start=%d End=%d", ErrReplaceRange, draft.Surface.Start, draft.Surface.End)
+			return false, fmt.Errorf("%w: Start=%d End=%d", ErrReplaceRange, draft.Surface.Start, draft.Surface.End)
 		}
 	}
 	if entry.codec != nil {
 		if err := entry.codec(draft.Data); err != nil {
-			return EventEnvelope{}, err
+			return false, err
 		}
 	}
-	return s.appendLocked(draft, ignorable), nil
+	return ignorable, nil
 }
 
 // appendLocked 在已持锁状态下追加事件。ignorable 已按裁决表归一：未知
 // 扩展保留 draft.Ignorable；已知类型取注册表分级。合成路径（冷恢复）
 // 传入的值均为 false。
 func (s *memSession) appendLocked(draft EventDraft, ignorable bool) EventEnvelope {
-	s.seq++
 	env := EventEnvelope{
-		Seq:       s.seq,
+		Seq:       s.seq + 1,
 		Time:      time.Now(),
 		Type:      draft.Type,
 		Data:      draft.Data,
 		Ignorable: ignorable,
 		Surface:   draft.Surface,
 	}
+	return s.appendEnvelopeLocked(env)
+}
+
+// appendEnvelopeLocked 在已持锁状态下追加一个完整信封（Seq 由调用方定：
+// JSONL 版先落盘再入内存，两者必须同 Seq）。返回入参信封。
+func (s *memSession) appendEnvelopeLocked(env EventEnvelope) EventEnvelope {
+	s.seq = env.Seq
 	s.events = append(s.events, env)
 	return env
 }
