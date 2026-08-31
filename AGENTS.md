@@ -25,9 +25,10 @@ kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin
 llm/                        # v2 model layer: content-block vocabulary, ChatModel, Registry, openai/ + anthropic/ adapters
 loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL decision events
 toolset/                    # v2 可逆工具注册（pulse.tools）+ AsToolSet；mcp/ Source；builtins/ 基础工具；lsp/ 可选 LSP 工具
-memory/                     # P2 记忆与会话（设计 Accepted：docs/design/memory-layer-research-and-v2-design.md）；session/ 已落地（P2-A in-memory+JSONL/blobs/文件锁、P2-B Replace fold），compaction/ 已落地（P2-B meter+事务编排+pruning），store/ 已落地（P2-C 内存 item store + SQLite/FTS5 backend：namespace 隔离+Supersede/Revoke+CAS；SQLite 带 build tag，plan9/js 主包不锁死），assemble/ 已落地（P2-C3 Context Assembler：按类预算+stable snapshot+引用模板），selfedit/ 已落地（P2-C4 self-edit 记忆工具组：put/supersede/revoke opt-in 注册、模型参数最小化、scope env 钉死）；index/ 已落地（P2-D1 派生向量索引内存版：EmbeddingProvider seam+先过滤再召回+异步队列）
+memory/                     # P2 记忆与会话（设计 Accepted：docs/design/memory-layer-research-and-v2-design.md）；session/ 已落地（P2-A in-memory+JSONL/blobs/文件锁、P2-B Replace fold），compaction/ 已落地（P2-B meter+事务编排+pruning），store/ 已落地（P2-C 内存 item store + SQLite/FTS5 backend：namespace 隔离+Supersede/Revoke+CAS；SQLite 带 build tag，plan9/js 主包不锁死），assemble/ 已落地（P2-C3 Context Assembler：按类预算+stable snapshot+引用模板），selfedit/ 已落地（P2-C4 self-edit 记忆工具组：put/supersede/revoke opt-in 注册、模型参数最小化、scope env 钉死）；index/ 已落地（P2-D1 派生向量索引内存版：EmbeddingProvider seam+先过滤再召回+异步队列，openai/ 适配器 P2-D1.5 OpenAI 兼容 embeddings=SDK 薄包装）
 skills/                     # v2 Skills 装载器（agentskills.io）；Skill ≠ Tool/Source
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
+textsplit/                  # 独立文本分块：尺寸预算+分隔符优先级（段落>句读>空白>硬切）+字节 offset；index/openai 与未来长文本模块共用
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1 / memory-layer-v1
                            # 未列出的 memory-layer 草稿不存在；P2 记忆层事实源是 memory-layer-research-and-v2-design.md（含 §17 补遗）
 examples/                   # 01–05 渐进示例
