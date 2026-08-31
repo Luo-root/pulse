@@ -45,6 +45,10 @@ embed 是 IO/LLM 成本中心：`AsyncIndexer` 把 Upsert/Remove 放进队列、
 - worker 用独立 `context.Background()`：调用方请求结束/取消不丢已入队更新（可重建 ≠ 随意丢）。
 - `Close` 关队列并等 drain；之后写入 → `ErrIndexClosed`。`Rebuild`/`Search` 直接透传底层（不进队列）。
 
+## 默认 provider（openai 子包）
+
+[`openai/`](openai/README_zh.md)（P2-D1.5，Issue #86）：OpenAI 兼容 embeddings 适配器——openai-go SDK 薄包装（与 `llm/openai` 同源），`BaseURL` 可指向 vLLM/Ollama/网关；批量分批、超长 textsplit 截断（`OnTruncate` 可观测）、形状校验包 `ErrProviderShape`；`Retries` 默认 0（对齐 llm/openai 先例）。import 需别名（与 `llm/openai` 同名不同路径）。
+
 ## 平台与依赖
 
 纯 Go、零新依赖（余弦相似度手算）；plan9/js 编译不锁死。向量持久化与 HNSW/近似索引**不做**——索引可丢可重建，持久化是优化不是语义；hybrid retrieval 接 assemble 在 D2。
