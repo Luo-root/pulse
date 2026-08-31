@@ -16,7 +16,7 @@ Agent 记忆不是一个「向量数据库 + 对话历史」组件，而是五�
 | 稳定记忆（Semantic/Profile） | `store`（canonical）+ `index`（派生向量）+ `candidate`/`selfedit`（两条写入通道） |
 | 程序记忆（Procedural） | 不在本层——`skills/`（Skill ≠ 记忆条目，不混入 facts 表） |
 
-对应要解决的五类问题（§1）：多轮 tool-calling 的精确恢复与调试；跨进程/会话/Agent 的上下文复用；长会话 token 预算控制；用户/项目/Agent 三类作用域隔离；自动记忆的投毒防护（ASI06）。
+设计文 §1.1 列了六项必须覆盖的问题：多轮 tool-calling 运行的精确恢复与调试；跨进程、跨会话、跨 Agent 的上下文复用；长会话 token 预算控制；用户、项目、Agent 三类作用域隔离；模型、工具、审批、任务状态等运行事实的审计；插件按需扩展事件、存储、检索与提炼策略。在此之上，自动记忆的投毒防护（ASI06，§10.2/§17.7）是贯穿两条写入通道与审批面的安全主线。
 
 ### 四条铁律（先于一切子包语义）
 
@@ -47,7 +47,7 @@ compaction.Pressure ─▶ Compact（§9.1 八步事务）       ← surface 治
 【提炼期——会话末/每 N 轮，宿主触发】
 reflection.Reflect（预算截断）─▶ candidate.Extract ─▶ Pending 入库（双归一去重；检索不可见）
                                           │
-宿主审批面 ◀── candidate.Pending ─────────┘
+宿主审批面 ◀── candidate.Pending   ─────────┘
    ├─ Approve ─▶ store.Supersede ─▶ Active（Confidence=1.0 + 审批标记）
    └─ Reject ──▶ store.Revoke（reason 落审计）
 
@@ -74,11 +74,13 @@ store 写入后 ─▶ index.Upsert（异步队列；Supersede/Revoke 后 Remove
 | [`candidate`](candidate/README_zh.md) | #90/#91（D3） | 候选管线：extractor → 双归一去重 → Pending → 审批晋升/否决；`Metrics()` | `Extractor`、`OriginFn` | **默认关**（无后台循环） |
 | [`reflection`](reflection/README_zh.md) | #92/#93（D4） | 可配置 background reflection：输入预算截断 → 候选提炼 → 计数 | 无新增（复用 candidate 的） | **默认关**（无后台循环/计时器） |
 
+上表共 8 行对应 9 个包目录（`index/openai` 折叠在 index 行内）。
+
 设计取向：**每一层都可独立缺席**——不配 index 就 keyword-only，不配 candidate/reflection 就无自动记忆，不配 selfedit 就模型不可写记忆；只有 session+store 是不可省的地基。
 
 ## 完整依赖关系
 
-实际 import 关系（已核实，2026-08-31；`go list` 可复核）：
+实际 import 关系（**直接 import 口径**——`toolset → loop`、`session → kernel` 等传递依赖不展开；已逐包核实，2026-08-31）：
 
 ```text
 memory/session        → kernel, llm

@@ -40,6 +40,15 @@ err = p.Reject(ctx, pending[0].ID, "noisy")    // 否决（reason 落审计）
 
 D4 六项指标的另两处：`reflection.Metrics`（token 成本运行计数）+ `index.Counted`（召回命中）。
 
+## 错误速查
+
+| 哨兵 | 语义 |
+|---|---|
+| `ErrNotPending` | 目标 item 非 Pending（Active/Superseded/Revoked 不可再审批——fail closed） |
+| `ErrOutsideScope` | item namespace 与 Pipeline 作用域不完全相等（父 scope 不得下钻操作子 scope 候选——selfedit 写权限同口径） |
+
+store 侧哨兵（`ErrItemNotFound` / `ErrItemExists` / `ErrRevisionConflict` / `ErrStatusTransition` 等）原样透传。
+
 ## 测试
 
 ```bash
