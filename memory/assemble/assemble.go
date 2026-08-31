@@ -74,8 +74,8 @@ type ContextAssembler interface {
 	Assemble(ctx context.Context, in AssembleInput) (AssembledContext, error)
 }
 
-// DefaultAssembler 是 ContextAssembler 的默认实现：store.Search 召回 +
-// 确定性排序 + 预算边界 + stable snapshot 缓存。
+// DefaultAssembler 是 ContextAssembler 的默认实现：keyword ∪ semantic
+//（可选 seam）混合召回 + §8.2 融合排序 + 预算边界 + stable snapshot 缓存。
 type DefaultAssembler struct {
 	// Store 是记忆来源（必填）。
 	Store store.MemoryStore
@@ -83,6 +83,14 @@ type DefaultAssembler struct {
 	Meter TokenCounter
 	// Budget 是按类预算（零值字段 = 该类不设限）。
 	Budget Budget
+	// Semantic 是可选的向量召回函数 seam（§8.2 hybrid 的 semantic 路，
+	// D2）：返回 items 与 scores 平行数组（等长，score 为余弦相似度）。
+	// nil = keyword-only。装配层把 memory/index 的 VectorIndex 包成该
+	// 函数接线——四接口解耦（§17 决议 4），生产路径不 import index
+	//（E2E 测试缝合除外）。
+	Semantic func(ctx context.Context, ns []string, query string, k int) ([]store.MemoryItem, []float64, error)
+	// Ranking 是 §8.2 融合权重（nil = DefaultRankingWeights）。
+	Ranking *RankingWeights
 
 	// stable snapshot 缓存（§8.3）：per-namespace，RefreshStable 重建。
 	snapMu    sync.RWMutex
@@ -183,18 +191,47 @@ func (a *DefaultAssembler) stablePrefix(ctx context.Context, in AssembleInput) (
 	return kept, diag
 }
 
+// RankingWeights 是 §8.2 hybrid 融合权重（D2 可实现子集，票 #88）：
+//
+//	score = Semantic*sim + Keyword*lexical + Confidence*conf − Taint*taint_pen
+//
+// sim = max(0, 余弦) ∈ [0,1]；lexical ∈ {0,1}（keyword 路命中）；conf =
+// item.Confidence；taint_pen ∈ {0,1}（untrusted-external = 1）。刻意不
+// 实现：w_scope（namespace 前缀可见已是硬过滤）、w_recall（无 reuse 信
+// 号源）、w_stale（ValidUntil 过期处理未建）；w_recency 不进 score（时
+// 钟注入引入不确定性）——UpdatedAt 降序保留为第一 tiebreaker。零值字
+// 段 = 该信号权重 0（显式关闭）。
+type RankingWeights struct {
+	Semantic   float64
+	Keyword    float64
+	Confidence float64
+	Taint      float64
+}
+
+// DefaultRankingWeights 是默认权重（票 #88 裁决 4；宿主经 Ranking 整体覆盖）。
+var DefaultRankingWeights = RankingWeights{Semantic: 0.5, Keyword: 0.3, Confidence: 0.2, Taint: 0.3}
+
+// semanticRecallK 是 semantic 路召回条数（向量 top-k 预算；融合后仍受
+// RetrievedTokens 预算约束——keyword 路无此上限）。
+const semanticRecallK = 16
+
 // retrieved 按 Query 召回检索型记忆（预算内 top-k，确定性排序）。
 //
-// 召回语义（C2↔C3 接缝，复审定案）：Store 实现 `SearchFTS`（SQLite 版）
-// 时优先走 FTS token 前缀召回（§8.2「lexical/FTS 覆盖精确词」的对位，
-// C2 的 FTS 不做摆设）；FTS 不可用或失败时回退 `MemoryStore.Search`
-// 子串召回。两路候选都过 rankHits 统一排序（确定性、taint 降权）。
+// 召回语义：keyword 路 = Store 实现 `SearchFTS`（SQLite 版）时优先
+// token 前缀召回（§8.2「lexical/FTS 覆盖精确词」的对位），不可用或失
+// 败回退 `MemoryStore.Search` 子串召回；semantic 路 = 可选 `Semantic`
+// 函数 seam（D2）。双路按 item ID 去重融合后过 §8.2 子集公式排序；
+// 语义路失败/形状不符记诊断不中断（fail safe，与 FTS 失败同口径）。
 func (a *DefaultAssembler) retrieved(ctx context.Context, in AssembleInput) ([]*llm.Message, []Diagnostic) {
 	if strings.TrimSpace(in.Query) == "" {
 		return nil, nil
 	}
-	hits, viaFTS, diag := a.recall(ctx, in)
-	ranked := rankHits(hits)
+	kwHits, viaFTS, diag := a.recall(ctx, in)
+	w := DefaultRankingWeights
+	if a.Ranking != nil {
+		w = *a.Ranking
+	}
+	ranked := a.fuseAndRank(ctx, in, kwHits, w, &diag)
 	budget := a.Budget.RetrievedTokens
 	msgs := make([]*llm.Message, 0, len(ranked))
 	kept := 0
@@ -248,30 +285,102 @@ func (a *DefaultAssembler) recall(ctx context.Context, in AssembleInput) (hits [
 	return h, false, diag
 }
 
-// rankHits 确定性排序（P2-C 口径）：untrusted-external 降权 > recency
-// 降序 > ID 升序。不读 Confidence（排序不得依赖没人写的值）。
-func rankHits(hits []store.MemoryHit) []store.MemoryItem {
-	out := make([]store.MemoryItem, 0, len(hits))
-	for _, h := range hits {
-		out = append(out, h.Item)
+// fuseAndRank 合并 keyword 命中与可选 semantic 命中（item ID 去重，
+// 双路命中得分叠加），按 §8.2 D2 子集公式评分排序：score 降序 →
+// UpdatedAt 降序 → ID 升序（确定性）。semantic 路失败/形状不符记诊断
+// 并丢弃该路（fail safe，组装不中断——与 FTS 失败同口径）。
+func (a *DefaultAssembler) fuseAndRank(ctx context.Context, in AssembleInput, kwHits []store.MemoryHit, w RankingWeights, diag *[]Diagnostic) []store.MemoryItem {
+	type fused struct {
+		item    store.MemoryItem
+		lexical bool
+		sim     float64
+		score   float64
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		si, sj := 0, 0
-		if out[i].Taint == store.TaintUntrustedExt {
-			si -= 4 // taint 降权：确定性排序的固定常量，P2-D hybrid scoring 会替换
+	m := make(map[string]*fused, len(kwHits))
+	for _, h := range kwHits {
+		if f, ok := m[h.Item.ID]; ok {
+			f.lexical = true
+			continue
 		}
-		if out[j].Taint == store.TaintUntrustedExt {
-			sj -= 4
+		m[h.Item.ID] = &fused{item: h.Item, lexical: true}
+	}
+	if a.Semantic != nil {
+		items, scores, err := a.Semantic(ctx, in.Namespace, in.Query, semanticRecallK)
+		switch {
+		case err != nil:
+			*diag = append(*diag, Diagnostic{Region: "retrieved", Reason: fmt.Sprintf("semantic search failed: %v", err)})
+		case len(items) != len(scores):
+			*diag = append(*diag, Diagnostic{Region: "retrieved", Reason: fmt.Sprintf("semantic seam shape mismatch: %d items, %d scores; dropping semantic path", len(items), len(scores))})
+		default:
+			*diag = append(*diag, Diagnostic{Region: "retrieved", Reason: fmt.Sprintf("recall via semantic seam (%d hits)", len(items))})
+			for i, it := range items {
+				// 非 Active 过滤：seam 是任意宿主函数，契约之外的实现
+				// 可能不复核状态——融合层兜底（与 index 复核同口径）。
+				if it.Status != store.StatusActive {
+					continue
+				}
+				f, ok := m[it.ID]
+				if !ok {
+					f = &fused{item: it}
+					m[it.ID] = f
+				}
+				if s := clamp01(scores[i]); s > f.sim {
+					f.sim = s
+				}
+			}
 		}
-		if si != sj {
-			return si > sj
+	}
+	list := make([]fused, 0, len(m))
+	for _, f := range m {
+		list = append(list, *f)
+	}
+	for i := range list {
+		list[i].score = w.Keyword*b2f(list[i].lexical) +
+			w.Semantic*list[i].sim +
+			w.Confidence*clamp01(float64(list[i].item.Confidence)) -
+			w.Taint*taintPen(list[i].item)
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		if list[i].score != list[j].score {
+			return list[i].score > list[j].score
 		}
-		if !out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
-			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		if !list[i].item.UpdatedAt.Equal(list[j].item.UpdatedAt) {
+			return list[i].item.UpdatedAt.After(list[j].item.UpdatedAt)
 		}
-		return out[i].ID < out[j].ID
+		return list[i].item.ID < list[j].item.ID
 	})
+	out := make([]store.MemoryItem, len(list))
+	for i, f := range list {
+		out[i] = f.item
+	}
 	return out
+}
+
+// b2f 把布尔信号转 0/1 分量。
+func b2f(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// clamp01 把相似度夹到 [0,1]（余弦可为负——负相似度按 0 处理）。
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+// taintPen 是 taint 惩罚分量（untrusted-external = 1，其余 0）。
+func taintPen(it store.MemoryItem) float64 {
+	if it.Taint == store.TaintUntrustedExt {
+		return 1
+	}
+	return 0
 }
 
 // memoryMessage 把一条记忆转成带可读引用的注入消息（RoleUser：记忆是

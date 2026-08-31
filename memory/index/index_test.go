@@ -110,6 +110,9 @@ func TestSearchFiltersByNamespaceFirst(t *testing.T) {
 	if len(hits) != 1 || hits[0].Item.ID != "a1" {
 		t.Fatalf("hits = %+v, want only a1（先过滤再召回，不泄漏存在性）", hits)
 	}
+	if hits[0].Score != 1 {
+		t.Fatalf("score = %v, want 1（同向单位向量）", hits[0].Score)
+	}
 	// 父前缀可见子项。
 	hits, err = idx.Search(ctx, []string{"tenant:a"}, "deploy", 10)
 	if err != nil {
@@ -207,6 +210,36 @@ func TestRebuildLosesNothing(t *testing.T) {
 		if h.Item.ID == "e1" {
 			t.Fatal("superseded item must not be indexed（索引只放 Active）")
 		}
+	}
+}
+
+// TestSearchScoresDescending：Score = 余弦相似度，降序返回；未登记词
+//（零向量）相似度 0。
+func TestSearchScoresDescending(t *testing.T) {
+	ctx := t.Context()
+	s := store.NewMemoryStore()
+	p := &fakeProvider{dims: 4, vecs: map[string][]float32{"deploy": {1, 0, 0, 0}}}
+	idx := newTestIndex(t, s, p)
+	for _, it := range []store.MemoryItem{
+		putItem(t, ctx, s, "e1", []string{"tenant:a"}, "deploy via kubectl"),
+		putItem(t, ctx, s, "e2", []string{"tenant:a"}, "unrelated topic"),
+	} {
+		if err := idx.Upsert(ctx, it); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hits, err := idx.Search(ctx, []string{"tenant:a"}, "deploy", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("hits = %d, want 2", len(hits))
+	}
+	if hits[0].Item.ID != "e1" || hits[0].Score != 1 {
+		t.Fatalf("hits[0] = %s/%v, want e1/1", hits[0].Item.ID, hits[0].Score)
+	}
+	if hits[1].Item.ID != "e2" || hits[1].Score != 0 {
+		t.Fatalf("hits[1] = %s/%v, want e2/0（零向量 cosine 0）", hits[1].Item.ID, hits[1].Score)
 	}
 }
 
