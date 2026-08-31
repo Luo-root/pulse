@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Luo-root/pulse/llm"
@@ -11,15 +12,19 @@ import (
 	"github.com/Luo-root/pulse/memory/store"
 )
 
-// fakeExtractor 是确定性假提炼 seam（记录收到的 surface——截断断言用）。
+// fakeExtractor 是确定性假提炼 seam（记录收到的 surface——截断断言用；
+// mu 保护 captured——并发用例下多 goroutine 同时 Extract）。
 type fakeExtractor struct {
+	mu       sync.Mutex
 	items    []store.MemoryItem
 	err      error
 	captured [][]*llm.Message
 }
 
 func (f *fakeExtractor) Extract(_ context.Context, surface []*llm.Message) ([]store.MemoryItem, error) {
+	f.mu.Lock()
 	f.captured = append(f.captured, surface)
+	f.mu.Unlock()
 	return f.items, f.err
 }
 
@@ -163,5 +168,33 @@ func TestNewValidation(t *testing.T) {
 	}
 	if _, err := New(Options{Pipeline: p}); err != nil {
 		t.Fatalf("zero max input chars must be legal（不限）: %v", err)
+	}
+}
+
+// TestReflectConcurrentMetrics：-race 下并发 Reflect 计数无丢失（票 #92
+// 验收明文）——N 轮成功 Reflect 的累计 == N 次动作完整累计（Runs 与
+// 字符计数与去重结果无关，断言竞态无关）。
+func TestReflectConcurrentMetrics(t *testing.T) {
+	r, _ := newReflector(t, func(c *candidate.Options, _ *Options) {
+		c.Extractor = &fakeExtractor{items: []store.MemoryItem{
+			{Kind: store.KindLesson, Content: "concurrent lesson"},
+		}}
+	})
+	const n = 16
+	surface := []*llm.Message{llm.UserText("chat")} // 4 rune
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := r.Reflect(t.Context(), surface); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	m := r.Metrics()
+	if m.Runs != n || m.TotalInputChars != n*4 || m.TruncatedChars != 0 {
+		t.Fatalf("metrics = %+v, want runs=%d input=%d truncated=0（并发计数无丢失）", m, n, n*4)
 	}
 }

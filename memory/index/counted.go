@@ -64,13 +64,13 @@ func (c *Counted) Remove(ctx context.Context, id string) error {
 	return c.inner.Remove(ctx, id)
 }
 
-// Search 实现 VectorIndex：调用数恒计；命中数只在成功返回时累计（错误
-// 不计命中——失败轮的命中数无从谈起）。结果与错误原样透传。
+// Search 实现 VectorIndex：调用数恒计；命中数只在成功返回时累计。结果
+// 与错误**原样透传**（错误路径也返回 inner 的 hits——不假设其为 nil）。
 func (c *Counted) Search(ctx context.Context, ns []string, query string, k int) ([]ScoredHit, error) {
 	c.searches.Add(1)
 	hits, err := c.inner.Search(ctx, ns, query, k)
 	if err != nil {
-		return nil, err
+		return hits, err
 	}
 	c.hits.Add(uint64(len(hits)))
 	return hits, nil

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Luo-root/pulse/llm"
@@ -515,5 +518,50 @@ func TestMetricsErrorRoundNotCounted(t *testing.T) {
 	}
 	if m := p.Metrics(); m.Extracted != 0 || m.Stored != 0 || m.Duplicates != 0 || m.Invalid != 0 {
 		t.Fatalf("metrics = %+v, want zero（错误轮不计数）", m)
+	}
+}
+
+// seqExtractor 每次 Extract 返回唯一内容候选——并发计数断言竞态无关
+//（候选内容互不重复，Stored 恰为动作数；固定内容会因并发窗口的扫描
+// 快照互不可见而入库多条，Stored 不确定）。
+type seqExtractor struct {
+	n atomic.Int64
+}
+
+func (s *seqExtractor) Extract(_ context.Context, _ []*llm.Message) ([]store.MemoryItem, error) {
+	i := s.n.Add(1)
+	return []store.MemoryItem{{Kind: store.KindLesson, Content: fmt.Sprintf("unique note %d", i)}}, nil
+}
+
+// TestMetricsConcurrent：-race 下并发 Extract/Approve 计数无丢失（票 #92
+// 验收明文——candidate 侧并发锚点）。
+func TestMetricsConcurrent(t *testing.T) {
+	p, _ := newPipeline(t, func(o *Options) {
+		o.Extractor = &seqExtractor{}
+	})
+	const n = 8
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stored, _, err := p.Extract(t.Context(), surface)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if len(stored) != 1 {
+				t.Errorf("stored = %d, want 1", len(stored))
+				return
+			}
+			if _, err := p.Approve(t.Context(), stored[0].ID); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	m := p.Metrics()
+	if m.Extracted != n || m.Stored != n || m.Approved != n || m.Rejected != 0 {
+		t.Fatalf("metrics = %+v, want extracted=stored=approved=%d（并发计数无丢失）", m, n)
 	}
 }
