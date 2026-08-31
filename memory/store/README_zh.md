@@ -36,6 +36,7 @@ Active/Pending ──Revoke──▶ Revoked（终态；reason 走 store 审计�
 - 接口无 Delete：Superseded/Revoked 的 item 永久可查（`IncludeInactive`）——审计与回滚的前提。
 - **状态迁移只走 Supersede/Revoke**：Put 更新禁止改变 Status（`ErrStatusTransition`）——否则 active→pending 绕过 P2-D 的 taint gate、active→superseded 绕过替代链。
 - Revoked 是终态：不可再 Supersede；Revoke 幂等；对 Superseded item Revoke → `ErrRevokeSuperseded`（操作对象错了，先找生效版本）。
+- `StatusPending` 的产生与晋升不在本包：本包只定义其存储语义——写入路径是 `candidate.Extract`（自动提炼），Pending 对默认 Search（只 Active）**不可见**，晋升走 Supersede 不走 Put（宿主盖章）；语义全貌见 [candidate README](../candidate/README_zh.md) 与[根 README](../README_zh.md)「状态机总览」。
 
 ## 写入校验（fail closed）
 

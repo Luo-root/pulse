@@ -25,6 +25,8 @@ rep, err := compaction.Compact(ctx, sess, compaction.Options{
 
 ## §9.1 事务八步
 
+「八步」是设计文 §9.1 的命名：其中压力检测（步 1，`Pressure`）、选区选择与预检（步 2，`Window` + `ValidateReplace`）与压缩后的 `Flush`（步 8，调用方职责）不产生事件；**落盘的事件/动作按下述 5 项执行**：
+
 `Compact` 的落盘顺序（任一步失败即返回，原始事件不删）：
 
 1. `compaction.started` —— 事务锁（ID + 选区 SourceRefs）
