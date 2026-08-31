@@ -1,6 +1,10 @@
 # 01-chat
 
-最薄的一层，但验证的是最底下的两块承重墙：kernel 生命周期 和 统一消息词汇表。后面两层全部踩在这里验证过的地基上。
+装配链与统一消息词汇表：在 [00-hello-kernel](../00-hello-kernel/) 的地基上引入 `llm.Registry`（命名模型实例、provider 适配器注册）与完整的多模态 Part 词汇表，并用 REPL 让「会话」首次出现。kernel 生命周期在 00 已验证，本课的 `demoapp.Open` 装配链是它的完整展开——后面各课全部踩在这里验证过的地基上。
+
+## 本课依赖
+
+[00-hello-kernel](../00-hello-kernel/)：kernel `New/Use/Dispose` 与 `llm.ChatModel` 接口。
 
 ## kernel 在这里做的事
 
@@ -47,6 +51,10 @@ go run ./examples/01-chat
 ```
 
 REPL 命令同全局说明；本层不保存 history——每轮独立 Generate，这是刻意收窄的边界（保持最小变量隔离）：01 只回答「消息能不能按统一模型发出去并拿回回复」，02 才负责「多轮」。多模态附件通过 `/image`、`/file` 在会话里现场附加，不再提供环境变量一次性入口。
+
+## 下一课
+
+[02-react](../02-react/)：ReAct 循环——给模型装上工具，引入 loop.Agent、toolset.Registry 与流式输出。
 
 | 变量 | 含义 |
 |---|---|
