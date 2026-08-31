@@ -1,115 +1,61 @@
-# Pulse v2 examples
+# Pulse 示例：从入门到精通（8 课）
 
-渐进装配示例，对应 [Issue #13](https://github.com/Luo-root/pulse/issues/13)（04 见 [#34](https://github.com/Luo-root/pulse/issues/34)，05 见 [#52](https://github.com/Luo-root/pulse/issues/52)）。五层示例逐级叠加，每一层都验证上一层暴露出的装配问题：
+8 课渐进式教程，每课**独立可跑**（`go run ./examples/<课>`）、配详解 README。课程按依赖递进：前 4 课是框架基础（kernel → 词汇表 → ReAct → 审批），5-6 课是记忆层（会话 → 长期记忆），第 7 课是声明式编排与生产集成。
 
-| 层 | 新增验证点 | 依赖 |
-|---|---|---|
-| [01-chat](01-chat/README.md) | `kernel.Context` 装配 `llm.Registry` 与 provider adapter；统一 content-block 输入模型 | kernel、llm、openai/anthropic、observability |
-| [02-react](02-react/README.md) | ReAct 回合、工具调用、**四种 HITL 模式（含终端交互审批）**、每请求 `reqScope`+Bridge、跨轮 history 归属 | 上一层 + loop |
-| [03-flow-agent](03-flow-agent/README.md) | 一次请求的图编排：AND 汇聚、外部 Seed、失败取消、节点级时间统计 | 上一层 + kernel/flow |
-| [04-flow-dag](04-flow-dag/README.md) | **并行双召回 + Skip 分支 + AND**；E1 Observer 峰值；E2 YAML 同构装图 | 上一层 + flow/yaml |
-| [05-tools-sources](05-tools-sources/README.md) | **toolset 本地 / MCP Source / Skills** 三路装配对照（Scripted，无真 API） | toolset、toolset/mcp、skills |
+> 学习路径建议按编号顺序；每课 README 开头列「本课依赖」，可跳读。
 
-## 共享层：examples/internal/
-
-```text
-internal/
-  demoapp/        启动装配与交互协议 + 请求级观测桥
-    host.go       dotenv、kernel.New、Bootstrap 最先 Use、ChatModel 打开
-    bridge.go     请求级 Bridge：挂 reqScope，吃 EmitLocal / WaterfallLocal
-    hitl.go       四种 HITL 模式（监听挂在与 Agent 相同的 reqScope）
-    input.go      多模态输入 -> []llm.Part 的唯一转换点
-    repl.go       命令解析 + 交互循环（可单测，不依赖真实 stdin）
-```
-
-正式观测包在仓库根 `observability/`（只依赖 kernel）。examples **没有** `internal/observability/` 原型，也不再提供 `Reporter` 服务。
-
-### demoapp.Host 做了什么
-
-`Open(flags)` 的装配顺序就是一次真实的内核使用流程：
-
-```text
-kernel.New()
-  -> Use(observability.Bootstrap(hostID, sink))  # 必须最先；订阅 fiber_state / loader_action
-  -> Use(llm.Plugin())                           # Registry 成为服务 pulse.llm
-  -> openai.Register / anthropic.Register        # 工厂登记为可逆 Effect
-  -> reg.Declare("main", cfg)                    # 命名实例声明
-  -> reg.Open("main")                            # 打开并缓存，经过 before_generate 包装
-```
-
-每轮请求（02/03；04 用独立 Bridge+Observer，不必挂 HITL）再：
-
-```text
-reqScope := host.Ctx.Derive()
-bridge   := host.NewBridge(reqScope)             # TraceID = Host.NewTraceID()
-HITL / Agent 都挂同一 reqScope（Local 派发下否则听不到）
-```
-
-`host.Close()` 之后，上述注册按 LIFO 全部回收：事件监听摘除、Registry 关闭、已开模型失效。这就是「对环境的修改都登记为 Effect」的直接验证。
-
-### 输入模型
-
-demo 层的用户输入一律先转成 Pulse 的稳定词汇表（`Input.Message()`），从不拼供应商线格式：
-
-```text
-Text       -> llm.Text
-ImageURL   -> llm.ImageURL
-ImageFile  -> 读字节 -> llm.ImageData
-MediaURL   -> llm.MediaURL
-MediaFile  -> 读字节 -> llm.Media（PDF/音频/视频）
-Attachments-> 按 MIME 分派到 image 或 custom 块
-```
-
-某个 provider 吃不下某类 MIME 时，报错来自 adapter（显式 `ErrBadRequest`），demo 层不拦截也不伪装。
-
-### REPL 协议
-
-| 输入 | 行为 |
-|---|---|
-| 普通文字 | 立即发送本轮 |
-| `/image <URL\|路径>` | 暂存图片附件 |
-| `/file <URL\|路径> [MIME]` | 暂存开放模态附件 |
-| `/send` | 发送当前草稿（可以只有媒体没有文字） |
-| `/clear` / `/history` / `/help` / `/exit` | 清空 / 查看消息数 / 帮助 / 退出 |
-
-`ParseCommand` 和 `Loop` 都是纯函数式的输入输出接口（`io.Reader`/`io.Writer`），所以多轮行为有单元测试覆盖，不需要人肉验证。stdin 由单一 `LineSource` 持有行缓冲：REPL 主循环与 interactive 审批器共享同一实例，顺序消费、互不抢行。
-
-## 常用环境变量
-
-```powershell
-$env:PULSE_DEMO_PROVIDER = "openai"        # openai | openai-responses | anthropic
-$env:PULSE_DEMO_HITL = "interactive"       # denylist | interactive | allowlist | off（02-react）
-$env:PULSE_DEMO_DENY_TOOL  = "delete_file" # denylist 名单；allowlist 模式忽略
-$env:PULSE_DEMO_ALLOW_TOOL = "lookup"      # allowlist 白名单；空则仅 lookup。与 DENY 语义相反，禁止复用
-```
-
-凭据走 `.env` 或官方变量（`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`）；两者皆缺省时自动降级 ScriptedModel。
-
-**Anthropic / MaxTokens**：`loop.Agent` 组请求不填 `MaxTokens`，而 Anthropic Messages **必填**。demoapp 在 `Registry.EventScope()`（01-chat：无 `WithEventScope` 的回退 Local）和每请求 `NewBridge` 的 reqScope（02/03）上挂 `before_generate`，仅当为空时注入默认 `4096`。EmitLocal 不向父冒泡，挂 host 根听不到 01-chat。这是装配层示范，不是给 Agent 加完整请求 Option 面。自己直连 Anthropic 时请显式设 `req.MaxTokens`。
+| 课 | 目录 | 主题 | 核心包 | 依赖课 |
+|---|---|---|---|---|
+| 00 | [`00-hello-kernel`](00-hello-kernel/) | 内核生命周期与第一次模型调用：`New/Use/Dispose`、可逆 Effect、观测横幅 | `kernel` `llm` `observability` | — |
+| 01 | [`01-chat`](01-chat/) | 完整装配链与消息词汇表：Registry、多模态 Part、REPL | `kernel` `llm` | 00 |
+| 02 | [`02-react`](02-react/) | ReAct 循环与工具调用：`toolset.Registry`、流式输出、`AsToolSet` | `loop` `toolset` | 01 |
+| 03 | [`03-hitl`](03-hitl/) | 人机协同审批：`before_tool_call`、deny/allow、session trust | `loop`（HITL 事件） | 02 |
+| 04 | [`04-flow`](04-flow/) | 声明式与命令式编排：flow 节点图、槽位三态、YAML 装图 | `kernel/flow` `flow/yaml` | 02 |
+| 05 | [`05-memory-session`](05-memory-session/) | 会话真相与压缩：事件日志、fold 投影、JSONL 持久化、compaction | `memory/session` `memory/compaction` | 01 |
+| 06 | [`06-memory-agent`](06-memory-agent/) | 长期记忆全链路：store → index 召回 → candidate 提炼 → 审批 → assemble 注入 | `memory/*` 8 包 | 05 |
+| 07 | [`07-production`](07-production/) | 生产形态集成：MCP/Skills 多来源、观测桥、反思与指标面 | 全部 | 03 04 06 |
 
 ## 运行
 
 启动时自动读取仓库根 `.env`（已被 gitignore）。
 
 ```powershell
+go run ./examples/00-hello-kernel
 go run ./examples/01-chat
-go run ./examples/02-react
-go run ./examples/03-flow-agent
-go run ./examples/04-flow-dag
-go run ./examples/05-tools-sources
-go test  ./examples/internal/... ./examples/03-flow-agent/ ./examples/04-flow-dag/ ./examples/05-tools-sources/
+# ... 以此类推
+
+# 全部示例测试（含离线单测，无真实 API）
+go test ./examples/...
+```
+
+每课缺 API Key 时自动走 `ScriptedModel`（脚本响应），课程演示不依赖真实凭据；配置真实 Key 后同一份代码即走真实模型。变量说明见各课 README。
+
+## 架构总览（示例如何拼出完整框架）
+
+```text
+00  kernel.New ──Use(observability)──Use(llm.Plugin)──Generate        ← 地基
+01      + Registry 命名实例 / 词汇表 Part / REPL                       ← 会说话
+02      + toolset.Registry + loop.Agent(ReAct) + RunStream             ← 会做事
+03      + before_tool_call 审批 / 信任模式                              ← 可控
+04      + flow 节点图 / YAML 装图（编排两种形态）                        ← 可编排
+05      + session 事件日志 / fold / JSONL / compaction                 ← 记得住
+06      + store + index + candidate + assemble（长期记忆闭环）          ← 会积累
+07      + MCP / Skills 多来源 + 观测桥 + reflection 指标                ← 可上线
 ```
 
 ## 观测日志
 
-- **装配期**（各层共用）：`observability.Bootstrap` → `MemorySink` / `SlogSink`，字段见 [`observability/README_zh.md`](../observability/README_zh.md)（`host_id`、`source=kernel`、`event`、Fiber 状态）。
-- **运行期**（02 / 03 / 04）：每请求 `demoapp.Bridge` 把 llm/loop/flow 事实折进同一 Sink（`source=bridge`，必填 `trace_id`）；token / turn summary 等装不进信封的指标走 slog 附加键。04 用 E1 `flow.node_wait_finished` / `flow.node_run_finished`（`FiberName`=nodeID）分段，不再用 Around 冒充 total。
-- **01-chat 刻意没有运行期 Bridge**：本层只验证装配 + 词汇表，直接 `Model.Generate`；llm Local 事件会落到 Registry ctx，但没有请求级桥去听——这是分层收窄，不是漏装。
-
-隐私边界：记录**元数据**（次数、字节长度、耗时、状态），不记录 prompt 内容、附件内容、密钥和思维链。
+- **装配期**（各课共用）：`observability.Bootstrap` → `MemorySink` / `SlogSink`，字段见 [`observability/README_zh.md`](../observability/README_zh.md)。
+- **运行期**：`demoapp.Bridge` 把 llm/loop/flow 事实折进同一 Sink（`source=bridge`，必填 `trace_id`）。
+- 隐私边界：记录**元数据**（次数、字节长度、耗时、状态），不记录 prompt 内容、附件内容、密钥和思维链。
 
 ## 当前不做
 
-- 记忆层、会话持久化（示例刻意不接 memory/——P2 记忆层已落地，见 [`memory/README_zh.md`](../memory/README_zh.md)；history 只活在进程内，退出即丢）
-- 真实向量库 / embedding（demo3 / demo4 用内存关键词检索）
-- flow wait/run 的 otel 导出等（E1 分段已在 04 用两条 Record 落地；正式 observability 包仍不 import flow）
+- 示例刻意不接 memory/ 的课程：05/06 之前不持久化（history 只活在进程内）——这是课程边界，见 [`memory/README_zh.md`](../memory/README_zh.md)。
+- 真实向量库 / embedding（06 用内存版 index 与关键词召回演示语义一致的结构）。
+
+## 设计说明
+
+- `examples/internal/demoapp` 是课程私有的装配层桥（kernel 装配、REPL、HITL、观测桥），**库包本身无 internal**——此处不违反「库无 internal」约定。
+- 每课的 `main.go` 刻意保持「能读一遍」的长度；复杂度都沉淀进 demoapp 或对应包。
+- 遇到 API 疑问：每个正式包的 `README_zh.md` 是事实源，`doc.go` 是 godoc 入口。

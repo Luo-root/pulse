@@ -1,3 +1,8 @@
+// 02-react：ReAct 循环与工具调用。
+//
+// 运行：go run ./examples/02-react
+// toolset.Registry 注册工具 → AsToolSet 交给 loop.Agent → RunStream 流式
+// 输出。本课只有只读工具、不装审批——审批（HITL）是 03 课的独立主题。
 package main
 
 import (
@@ -14,9 +19,6 @@ import (
 	"github.com/Luo-root/pulse/toolset"
 )
 
-// toolHint 展示在审批提示里的说明文字（与 Flags.Prompt 无关——那是旧的一次性入口残留）。
-const toolHint = "模拟危险操作，不触达真实文件系统"
-
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "02-react: %v\n", err)
@@ -26,17 +28,11 @@ func main() {
 
 func run() error {
 	flags := demoapp.LoadFlagsFromEnv()
-	mode, err := demoapp.ParseHITLMode(flags.HITL)
-	if err != nil {
-		return err
-	}
-	if flags.DenyTool == "" {
-		flags.DenyTool = "delete_file"
-	}
 	scripted := []*llm.Response{
+		// 第一轮：模型决定调用工具（ReAct 的 Act 步）。
 		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "lookup", Arguments: json.RawMessage(`{"topic":"pulse"}`)}),
-		llm.RespToolCalls(llm.ToolCall{ID: "c2", Name: "delete_file", Arguments: json.RawMessage(`{"path":"/tmp/x"}`)}),
-		llm.Resp("演示结束：lookup 与 delete_file 的审批路径都已在 before_tool_call 走完。"),
+		// 第二轮：拿到工具结果后给出最终回答（ReAct 的 Respond 步）。
+		llm.Resp("演示结束：lookup 经 ReAct 循环完成调用与结果回填。"),
 	}
 	host, err := demoapp.Open(flags, scripted...)
 	if err != nil {
@@ -44,7 +40,9 @@ func run() error {
 	}
 	defer host.Close()
 
-	// T2：用 toolset.Registry 注册工具，再 AsToolSet 交给 loop（行为与 MemToolSet 一致）。
+	// 工具不直接塞给 loop：先注册进 toolset.Registry（pulse.tools）——
+	// 注册表带来 Risk/Source 元数据与可逆注销（DisposeSource），这些
+	// 元数据在 03 课的审批里就是决策依据。
 	if _, err := kernel.Use(host.Ctx, toolset.Plugin()); err != nil {
 		return err
 	}
@@ -66,35 +64,16 @@ func run() error {
 	}); err != nil {
 		return err
 	}
-	if _, err := reg.Register(host.Ctx, toolset.Registration{
-		Def: llm.ToolDef{
-			Name:        "delete_file",
-			Description: "删除文件，需要审批（模拟工具）",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
-		},
-		Fn: func(_ context.Context, args json.RawMessage) (string, error) {
-			return "deleted", nil
-		},
-		Source: "local.delete_file",
-		Risk:   toolset.RiskDangerous,
-	}); err != nil {
-		return err
-	}
+	// AsToolSet 把 Registry 适配成 loop.ToolSet——模型看到的工具面。
 	tools := reg.AsToolSet()
 
-	// REPL 与审批器共享同一 LineSource：一个行缓冲、同 goroutine 顺序消费。
 	stdin := demoapp.NewLineSource(os.Stdin)
-	var trust *demoapp.SessionTrust // interactive 跨轮 always 复用
-
 	var history []*llm.Message
-	fmt.Printf("02-react provider=%s model=%s scripted=%v hitl=%s deny=%q allow=%q host=%s\n",
-		flags.Provider, flags.Model, flags.Scripted, mode, flags.DenyTool, flags.AllowTool, host.HostID())
-	if mode == demoapp.HITLInteractive {
-		fmt.Println("interactive 模式：危险调用会暂停等待你在终端批准（y/n/a）")
-	}
+	fmt.Printf("02-react provider=%s model=%s scripted=%v host=%s\n",
+		flags.Provider, flags.Model, flags.Scripted, host.HostID())
 	return demoapp.Loop(stdin, os.Stdout, func(msg *llm.Message) ([]*llm.Message, error) {
-		// 每轮独立 reqScope + Bridge + Agent + HITL：
-		// Local 派发下 HITL 必须挂在与 Agent 相同的 reqScope，否则听不到。
+		// 每轮独立 reqScope + Bridge + Agent：Local 派发要求监听与
+		// Agent 同 scope，请求结束随手销毁。
 		reqScope, err := host.Ctx.Derive()
 		if err != nil {
 			return nil, err
@@ -104,18 +83,15 @@ func run() error {
 		if err != nil {
 			return nil, err
 		}
-		trust, err = demoapp.InstallHITLWithTrust(reqScope, mode, flags.DenyTool, flags.AllowTool, toolHint, stdin, os.Stdout, trust, reg)
-		if err != nil {
-			return nil, err
-		}
 		agent, err := loop.NewAgent(host.Model,
 			loop.WithToolSet(tools),
-			loop.WithSystemPrompt("你是 Pulse 示例助手。需要事实时调用 lookup；删除类操作调用 delete_file。后续轮次必须结合对话历史回答。"),
+			loop.WithSystemPrompt("你是 Pulse 示例助手。需要事实时调用 lookup 工具。"),
 			loop.WithEventScope(reqScope),
 		)
 		if err != nil {
 			return nil, err
 		}
+		// RunStream：token 级流式回调 + 与 Run 相同的聚合结果。
 		res, err := agent.RunStream(context.Background(), func(delta string) {
 			fmt.Print(delta)
 		}, history, msg)
@@ -127,12 +103,8 @@ func run() error {
 		}
 		history = append(history, msg)
 		history = append(history, res.Messages...)
-		extra := ""
-		if trust != nil && len(trust.Names()) > 0 {
-			extra = fmt.Sprintf(" session_trust=%v", trust.Names())
-		}
-		fmt.Printf("stopped_by=%s steps=%d history=%d trace=%s%s\n",
-			res.StoppedBy, res.Steps, len(history), bridge.TraceID, extra)
+		fmt.Printf("stopped_by=%s steps=%d history=%d trace=%s\n",
+			res.StoppedBy, res.Steps, len(history), bridge.TraceID)
 		return res.Messages, nil
 	}, func() int { return len(history) })
 }
