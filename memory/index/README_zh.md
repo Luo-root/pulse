@@ -15,6 +15,10 @@ async, err := index.NewAsyncIndexer(idx, 64)         // 异步队列：写路径
 defer async.Close(ctx)
 async.Upsert(ctx, item)                              // 非阻塞入队；满丢弃计数
 n := async.Dropped()                                 // 丢弃数（Rebuild 兜底）
+
+counted, err := index.NewCounted(idx)                // 计数装饰器（D4 指标面）
+async, err = index.NewAsyncIndexer(counted, 64)      // 推荐内层叠放（见下）
+m := counted.Metrics()                               // Upserts/Removes/Searches/Hits/Rebuilds
 ```
 
 ## 不变式
@@ -36,6 +40,15 @@ type EmbeddingProvider interface {
 - 宿主注入：OpenAI embeddings / 本地模型 / 测试假实现。**不进 llm 词汇表**（embedding 非跨 provider 稳定生成语义），不进 kernel。
 - `texts` 与返回向量必须等长、非空——形状不符 → `ErrProviderShape`（fail closed）。
 - 批量分块/限流是 provider 的职责（`Rebuild` 一次性全量交付）。
+
+## 计数装饰器（D4 指标面）
+
+`Counted` 包装任意 `VectorIndex` 透传计数（`Metrics()` 快照，atomic）：
+
+- **调用即计**（Upserts/Removes/Searches/Rebuilds 含失败执行——「执行了但失败」也是真实系统行为）；内层叠放时与 `Dropped()` 互补：入队数 = Upserts + Dropped。
+- **Hits 只计成功轮**命中 item 数（次均命中 = Hits/Searches）。
+- **叠放顺序决定 Upserts 口径**：推荐内层 `AsyncIndexer(Counted(idx))`——计「实际执行」；外层 `Counted(AsyncIndexer(idx))` 计「入队调用」（含后续被队列丢弃的，与 Dropped 双计）。
+- `Searches/Hits` 是运行计数（次均命中观测），**不是 §13.2 的 Recall@K**——那是离线评测指标，两者不可混用。
 
 ## 异步队列取舍
 

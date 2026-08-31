@@ -28,9 +28,13 @@
 //   - 去重 v1 保守口径：归一（小写 + 空白收紧）后已有 item 的 Content
 //     包含候选 → 丢弃（子串冗余即重复，超集不拦——超集信息归 Supersede
 //     修订语义）；判定在**内存双归一**完成（存量/候选两侧同口径）——
-//     store 的 ASCII 折叠不收紧空白，粗筛查询会漏拦存量侧脏数据；
-//   - 可解释：Extract 返回 Report 计数（Extracted/Stored/Duplicates/
-//     Invalid）——禁止静默丢，D4 指标票的雏形。
+//     store 的 ASCII 折叠不收紧空白，粗筛查询会漏拦存量侧脏数据；判定
+//     集 = 存量归一快照 + 本轮已入库候选（随入库追加——批次内重复
+//     同样拦住）；
+//   - 指标面（D4，票 #92）：Report 单轮计数 + Metrics() 累计快照
+//     （atomic）——提炼率/批准率/撤销率/污染拒绝率的数据源；计数只在
+//     动作完整成功时累计，RejectedUntrusted 仅 TaintUntrustedExternal
+//     档计入；
 //
 // # 接入姿态
 //
