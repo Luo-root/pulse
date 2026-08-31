@@ -145,6 +145,40 @@ func TestExtractDedupContainment(t *testing.T) {
 	}
 }
 
+// TestExtractDedupDirtyExisting：存量侧脏数据（双空格）仍判重——store
+// 的 ASCII 折叠不收紧空白，粗筛查询会漏拦；内存双归一对存量/候选两侧
+// 同口径（复审修订的回归锚点）。
+func TestExtractDedupDirtyExisting(t *testing.T) {
+	_, opt := newPipeline(t, nil)
+	existing := store.MemoryItem{
+		ID: "dirty", Namespace: []string{"tenant:a"}, Kind: store.KindProfile,
+		Content: "User prefers TOML  config", Status: store.StatusActive,
+		Confidence: 1.0, Taint: store.TaintTrusted,
+		SourceRefs: []store.SourceRef{origin()},
+	}
+	if _, err := opt.Store.Put(t.Context(), existing, store.PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	p2, err := New(Options{
+		Store: opt.Store,
+		Extractor: &fakeExtractor{items: []store.MemoryItem{
+			prop("profile", "user prefers toml config"), // 候选干净、存量脏 → 仍判重
+		}},
+		Namespace: []string{"tenant:a"},
+		OriginFn:  origin,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rep, err := p2.Extract(t.Context(), surface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep != (Report{Extracted: 1, Duplicates: 1}) {
+		t.Fatalf("report = %+v, want {1,0,1,0}（存量侧双空格仍拦）", rep)
+	}
+}
+
 // TestExtractSkipsInvalid：空 Content / Structured 非法 JSON 计 Invalid，
 // 不中断批次。
 func TestExtractSkipsInvalid(t *testing.T) {
@@ -196,8 +230,9 @@ func TestDedupSearchFailureInterrupts(t *testing.T) {
 }
 
 // TestApprovePromotesViaSupersede：approve = Supersede——批准版新 ID
-// Active（Confidence=1.0、Content/Taint/SourceRefs 继承、taint 不变），
-// 旧候选 Superseded 留痕；批准后默认 Search 可见；Pending 清空。
+// Active（Confidence=1.0、Content/Taint 继承、SourceRefs 继承 + manual
+// 审批标记、taint 不变），旧候选 Superseded 留痕；批准后默认 Search
+// 可见；Pending 清空。
 func TestApprovePromotesViaSupersede(t *testing.T) {
 	p, opt := newPipeline(t, func(o *Options) {
 		o.Extractor = &fakeExtractor{items: []store.MemoryItem{prop("lesson", "always dry-run first")}}
@@ -220,8 +255,9 @@ func TestApprovePromotesViaSupersede(t *testing.T) {
 	if active.Content != candidate.Content || active.Taint != candidate.Taint {
 		t.Fatalf("active = %+v, want content/taint inherited", active)
 	}
-	if len(active.SourceRefs) != 1 || active.SourceRefs[0] != origin() {
-		t.Fatalf("sourceRefs = %+v, want inherited", active.SourceRefs)
+	if len(active.SourceRefs) != 2 || active.SourceRefs[0] != origin() ||
+		active.SourceRefs[1] != (store.SourceRef{Type: store.SourceManual, Ref: approvalRef}) {
+		t.Fatalf("sourceRefs = %+v, want origin + manual approval mark", active.SourceRefs)
 	}
 	old, err := opt.Store.Get(t.Context(), []string{"tenant:a"}, candidate.ID)
 	if err != nil {
@@ -267,6 +303,35 @@ func TestApproveRejectsNonPending(t *testing.T) {
 	// 未知 ID：store 哨兵透传。
 	if _, err := p.Approve(t.Context(), "missing"); !errors.Is(err, store.ErrItemNotFound) {
 		t.Fatalf("err = %v, want ErrItemNotFound", err)
+	}
+}
+
+// TestApproveRejectsCrossScope：审批作用域 = namespace 完全相等（selfedit
+// 写权限同口径）——父 scope Pipeline 不得下钻操作子 scope 候选：approve/
+// reject 一律 ErrOutsideScope；Pending 不列出子 scope 候选。
+func TestApproveRejectsCrossScope(t *testing.T) {
+	p, opt := newPipeline(t, nil)
+	child := store.MemoryItem{
+		ID: "child-candidate", Namespace: []string{"tenant:a", "agent:b"},
+		Kind: store.KindLesson, Content: "child scope note", Status: store.StatusPending,
+		Confidence: 0.5, Taint: store.TaintUntrustedExt,
+		SourceRefs: []store.SourceRef{origin()},
+	}
+	if _, err := opt.Store.Put(t.Context(), child, store.PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Approve(t.Context(), child.ID); !errors.Is(err, ErrOutsideScope) {
+		t.Fatalf("approve err = %v, want ErrOutsideScope", err)
+	}
+	if err := p.Reject(t.Context(), child.ID, "out of scope"); !errors.Is(err, ErrOutsideScope) {
+		t.Fatalf("reject err = %v, want ErrOutsideScope", err)
+	}
+	pending, err := p.Pending(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending = %+v, want empty（子 scope 候选不下钻）", pending)
 	}
 }
 

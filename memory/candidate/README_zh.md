@@ -24,11 +24,12 @@ err = p.Reject(ctx, pending[0].ID, "noisy")    // 否决（reason 落审计）
 
 ## 关键语义
 
-- **审批 = 既有状态机，store 契约零改动**：approve = `Supersede`（旧候选 Superseded 留痕、批准版新 ID Active、`Confidence=1.0` 即宿主背书）；reject = `Revoke`。非 Pending 一律 `ErrNotPending`（fail closed）。
+- **审批 = 既有状态机，store 契约零改动**：approve = `Supersede`（旧候选 Superseded 留痕、批准版新 ID Active、`Confidence=1.0` 即宿主背书、SourceRefs 继承 + manual 审批标记——审批动作在 provenance 显式可辨）；reject = `Revoke`。非 Pending 一律 `ErrNotPending`（fail closed）。
+- **审批作用域 = namespace 完全相等**（selfedit 写权限同口径）：`Pending` 不列出越界候选；`Approve`/`Reject` 对越界 item 一律 `ErrOutsideScope`（父 scope 不得下钻操作子 scope 候选）。
 - **不可见性免费拿**：Pending 候选对 `store.Search`（默认只 Active）不可见——未批准不进 assemble/selfedit 上下文；批准后自然出现。
 - **模型参数最小化**：extractor 返回的 item 只取 Kind/Content/Structured；namespace/status/taint/source/ID 由 Pipeline 钉死。
 - **门禁（ASI06）**：候选默认 `TaintUntrustedExt`（可覆盖）；SourceRefs 强制 OriginFn 会话回链；批准晋升**不改 taint**（审批是晋升闸，taint 是数据属性）。
-- **去重 v1 保守口径**：归一（小写 + 空白收紧）后已有 item 的 Content 包含候选 → 丢弃（子串冗余即重复，**超集不拦**——超集归 Supersede 修订语义）；向量相似度去重不做（阈值语义未定，后续票）。
+- **去重 v1 保守口径**：归一（小写 + 空白收紧）后已有 item 的 Content 包含候选 → 丢弃（子串冗余即重复，**超集不拦**——超集归 Supersede 修订语义）；判定在**内存双归一**完成（存量/候选两侧同口径）——store 的 ASCII 折叠不收紧空白，粗筛查询会漏拦存量侧脏数据；向量相似度去重不做（阈值语义未定，后续票）。
 - **可解释**：`Report{Extracted, Stored, Duplicates, Invalid}` 计数——禁止静默丢；去重查询失败中断批次（store 故障宁可失败让宿主重试）。
 
 ## 测试
