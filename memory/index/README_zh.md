@@ -64,7 +64,7 @@ embed 是 IO/LLM 成本中心：`AsyncIndexer` 把 Upsert/Remove 放进队列、
 
 ## 平台与依赖
 
-纯 Go、零新依赖（余弦相似度手算）；plan9/js 编译不锁死。向量持久化与 HNSW/近似索引**不做**——索引可丢可重建，持久化是优化不是语义；hybrid retrieval 接 assemble 在 D2。
+纯 Go、零新依赖（余弦相似度手算）；plan9/js 编译不锁死。向量持久化与 HNSW/近似索引**不做**——索引可丢可重建，持久化是优化不是语义；hybrid retrieval 已接 assemble（D2 落地，`Semantic` 函数 seam——见 [assemble README](../assemble/README_zh.md)「接入向量路」）。
 
 ## 测试
 
