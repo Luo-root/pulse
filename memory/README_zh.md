@@ -14,6 +14,7 @@ P2「记忆与会话」层（设计事实源：[docs/design/memory-layer-researc
 | `compaction` | **已落地**（P2-B，Issue #73） | token meter（CharMeter 估算 + Pressure）、CompactionEngine seam（LLM / deterministic backend）、§9.1 八步压缩事务编排、§9.2 tool result deterministic pruning |
 | `store` | **已落地**（P2-C 内存版 + SQLite/FTS5，Issue #76/#78） | MemoryItem canonical store：Namespace 前缀隔离（scope helper 展开）、Supersede/Revoke 状态机（禁物理 DELETE）、revision CAS、SourceRefs 强制回链、Search 过滤、SQLite + FTS5（CGO-free，build tag 排除 plan9/js） |
 | `assemble` | **已落地**（P2-C3，Issue #80） | Context Assembler：按类预算（稳定记忆/检索/surface，诊断可解释）、稳定前缀缓存（§8.3 frozen snapshot）、确定性排序（taint/recency，不依赖 Confidence）、引用模板注入 |
+| `selfedit` | **已落地**（P2-C4，Issue #82） | self-edit 记忆工具组：`memory_put`/`memory_supersede`/`memory_revoke`（模型参数最小化、scope env 钉死、OriginFn 回链强制、Preview opaque 卡片），显式 opt-in 注册 |
 | `index` | 未建（P2-D） | FTS / 向量索引 provider（派生索引，可重建） |
 
 ## 依赖方向（评审定案，不可违反）
@@ -23,6 +24,7 @@ memory/session   → kernel + llm          （禁止 import loop / observability
 memory/compaction → memory/session
 memory/store     → （独立；llm 不依赖）
 memory/assemble  → memory/session + memory/store
+memory/selfedit  → memory/store + toolset + llm（opt-in 写工具组；不直接 import loop）
 memory/index     → memory/store
 ```
 

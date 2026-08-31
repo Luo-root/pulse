@@ -25,7 +25,7 @@ kernel/                     # v2 plugin kernel: Context/ServiceKey/events/Plugin
 llm/                        # v2 model layer: content-block vocabulary, ChatModel, Registry, openai/ + anthropic/ adapters
 loop/                       # v2 stateless ReAct turn executor: ToolSet, HITL decision events
 toolset/                    # v2 可逆工具注册（pulse.tools）+ AsToolSet；mcp/ Source；builtins/ 基础工具；lsp/ 可选 LSP 工具
-memory/                     # P2 记忆与会话（设计 Accepted：docs/design/memory-layer-research-and-v2-design.md）；session/ 已落地（P2-A in-memory+JSONL/blobs/文件锁、P2-B Replace fold），compaction/ 已落地（P2-B meter+事务编排+pruning），store/ 已落地（P2-C 内存 item store + SQLite/FTS5 backend：namespace 隔离+Supersede/Revoke+CAS；SQLite 带 build tag，plan9/js 主包不锁死），assemble/ 已落地（P2-C3 Context Assembler：按类预算+stable snapshot+引用模板）；index 未建
+memory/                     # P2 记忆与会话（设计 Accepted：docs/design/memory-layer-research-and-v2-design.md）；session/ 已落地（P2-A in-memory+JSONL/blobs/文件锁、P2-B Replace fold），compaction/ 已落地（P2-B meter+事务编排+pruning），store/ 已落地（P2-C 内存 item store + SQLite/FTS5 backend：namespace 隔离+Supersede/Revoke+CAS；SQLite 带 build tag，plan9/js 主包不锁死），assemble/ 已落地（P2-C3 Context Assembler：按类预算+stable snapshot+引用模板），selfedit/ 已落地（P2-C4 self-edit 记忆工具组：put/supersede/revoke opt-in 注册、模型参数最小化、scope env 钉死）；index 未建
 skills/                     # v2 Skills 装载器（agentskills.io）；Skill ≠ Tool/Source
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1 / memory-layer-v1
