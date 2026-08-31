@@ -16,6 +16,7 @@ P2「记忆与会话」层（设计事实源：[docs/design/memory-layer-researc
 | `assemble` | **已落地**（P2-C3 + D2 hybrid，Issue #80/#88） | Context Assembler：按类预算（稳定记忆/检索/surface，诊断可解释）、稳定前缀缓存（§8.3 frozen snapshot）、混合召回 + §8.2 融合排序（keyword ∪ semantic 函数 seam 去重，w_semantic/w_keyword/w_conf/w_taint 默认 0.5/0.3/0.2/0.3）、引用模板注入 |
 | `selfedit` | **已落地**（P2-C4，Issue #82） | self-edit 记忆工具组：`memory_put`/`memory_supersede`/`memory_revoke`（模型参数最小化、scope env 钉死、OriginFn 回链强制、Preview opaque 卡片），显式 opt-in 注册 |
 | `index` | **已落地**（P2-D1 内存向量索引，Issue #84） | 派生向量索引（EmbeddingProvider seam，可丢可重建）：namespace 先过滤再召回、余弦 top-k、命中复核 Active、异步队列（满丢弃计数 + Rebuild 兜底）；`openai/` 适配器（P2-D1.5，Issue #86）：OpenAI 兼容 embeddings（SDK 薄包装 + textsplit 截断 + OnTruncate 可观测）；hybrid 接 assemble 在 D2 |
+| `candidate` | **已落地**（P2-D3，Issue #90） | 候选记忆管线：extractor seam（宿主 LLM 提取，模型参数最小化）→ 去重（归一包含式保守口径）→ Pending 入库（检索天然不可见）→ approve=Supersede 晋升 / reject=Revoke；taint 默认 untrusted-external（ASI06），批准不改 taint |
 
 ## 依赖方向（评审定案，不可违反）
 
@@ -27,6 +28,7 @@ memory/assemble  → memory/session + memory/store
 memory/selfedit  → memory/store + toolset + llm（opt-in 写工具组；不直接 import loop）
 memory/index     → memory/store
 memory/index/openai → memory/index + textsplit
+memory/candidate → memory/store
 ```
 
 - service key 归 `memory/*` 各包（对齐 `toolset.ServiceKey` 先例）；**kernel 不 import memory，loop 不 import memory**。
