@@ -12,7 +12,7 @@ dispose, err := selfedit.Register(scope, reg, selfedit.Options{
     OriginFn:  func() store.SourceRef {     // 当前 session 回链（实时 Seq）
         return store.SourceRef{Type: store.SourceSession, SessionID: sessID, Seq: currentSeq()}
     },
-    // Taint: store.TaintTrusted,           // 默认；审批面在人
+    // Taint: store.TaintUntrustedExt,      // 默认（ASI06 对位）；可信写手显式升 trusted
     // NewID:  myIDGen,                     // 默认 crypto/rand 16B hex
     // Source: "memory.selfedit",           // Registration.Source 元数据
 })
@@ -30,7 +30,9 @@ dispose, err := selfedit.Register(scope, reg, selfedit.Options{
 
 ## 不变式
 
-- **scope 防污染**（§17.1 Letta 失效模式对位）：namespace/来源/信任级/置信度/状态/revision 全部 env 钉死，模型给不了也改不了——scope 是存储层边界，不是提示词约定。跨 namespace 操作天然不可能：supersede/revoke 先 `Get(env.ns, id)`，不可见即不存在（scope 向下可见、向上不可见）。
+- **scope 防污染**（§17.1 Letta 失效模式对位）：namespace/来源/信任级/置信度/状态/revision 全部 env 钉死，模型给不了也改不了——scope 是存储层边界，不是提示词约定。
+- **写权限口径**（复审定案）：supersede/revoke 先 `Get(env.ns, id)`（不可见即不存在），且要求 item.Namespace 与 env.Namespace **完全相等**——store 前缀可见性是读口径（向下可见），写入钉死 env.ns：父 scope 工具不得下钻改写子 scope item（`ErrOutsideScope`）。宿主要管子 scope 记忆 = 按目标 scope 各配一个 env（组合，而非放权）。
+- **taint 保守默认**：写入默认 `TaintUntrustedExt`（§17.7 ASI06 对位——self-edit 是模型把工具输出/外部内容复述进记忆的通道，不得默认与宿主权威写入同级；`before_tool_call` 审批是晋升闸，taint 是诚实的数据属性；可信写手宿主显式覆盖）。
 - **回链强制**：写入 SourceRefs 只来自 `OriginFn()`；缺省 Register 直接失败，不静默降级为无来源。
 - **只写不读**：没有检索工具——读取归 `memory/assemble`（§8）/宿主管线，避免「记忆编辑替代回答」。模型写入的生效路径 = 下轮 Assemble / RefreshStable。
 - **禁物理 DELETE**：只有 supersede（留痕替代）与 revoke（幂等作废）；状态机错误原样透传 store 哨兵（`ErrSupersedeRevoked` / `ErrRevokeSuperseded` / `ErrItemNotFound`）。

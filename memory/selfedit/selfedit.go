@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Luo-root/pulse/kernel"
@@ -20,6 +22,11 @@ const defaultSource = "memory.selfedit"
 // excerptLimit 是 Preview 卡片里人读摘要的截断长度（rune）。
 const excerptLimit = 120
 
+// ErrOutsideScope 是写权限哨兵：目标 item 的 namespace 与 env 绑定作用域
+// 不完全相等。store 的前缀可见性是**读**口径（向下可见）；写入钉死在
+// env.ns——父 scope 工具不得下钻改写子 scope 的 item（票 #82 复审定案）。
+var ErrOutsideScope = errors.New("selfedit: item namespace is outside the write scope")
+
 // Options 是 self-edit 工具组的装配项（票 #82 冻结）。模型侧参数刻意最小
 // 化：namespace / 来源 / 信任级 / 置信度 / 状态 / revision 全部由本结构钉
 // 死——scope 是存储层边界，不是提示词约定（§17.1 Letta 失效模式对位）。
@@ -33,8 +40,10 @@ type Options struct {
 	// 必填：每条模型写的记忆都要能定位「哪轮会话写的」，缺省 Register 直接
 	// 失败，不静默降级为无来源。
 	OriginFn func() store.SourceRef
-	// Taint 是写入信任级（空 = TaintTrusted：审批面在人，模型产出属 agent
-	// 自身记忆；taint gate 的执行方是 P2-D policy，本包只承载）。
+	// Taint 是写入信任级（空 = TaintUntrustedExt——ASI06 对位，§17.7：
+	// self-edit 是模型把工具输出/外部内容复述进长期记忆的通道，默认不得
+	// 与宿主权威写入同级；before_tool_call 审批是晋升闸，taint 保持诚实的
+	// 数据属性。可信写手场景宿主显式覆盖为 TaintTrusted）。
 	Taint store.TaintLevel
 	// NewID 生成 item ID（空 = crypto/rand 16B hex）。
 	NewID func() string
@@ -59,7 +68,7 @@ func (o Options) withDefaults() (Options, error) {
 		return o, fmt.Errorf("selfedit: origin fn (session source ref) is required: model-written memories must be attributable")
 	}
 	if o.Taint == "" {
-		o.Taint = store.TaintTrusted
+		o.Taint = store.TaintUntrustedExt
 	}
 	if o.NewID == nil {
 		o.NewID = randomID
@@ -251,11 +260,16 @@ func (e *env) supersede(ctx context.Context, args json.RawMessage) (string, erro
 	if err != nil {
 		return "", fmt.Errorf("selfedit/memory_supersede: %w", err)
 	}
+	// 写权限口径（复审定案）：env.ns 是读可见前缀，但写入要求 namespace
+	// 完全相等——父 scope 工具不得下钻改写子 scope item。
+	if !slices.Equal(old.Namespace, e.opt.Namespace) {
+		return "", fmt.Errorf("selfedit/memory_supersede: item %s: %w", p.ID, ErrOutsideScope)
+	}
 	kind := old.Kind // 缺省沿用旧类别
 	if k := strings.TrimSpace(p.Kind); k != "" {
 		kind = store.MemoryKind(k)
 	}
-	// next 保持原 item 的 namespace（env.ns 只是可见性前缀，不是重置）；
+	// next 保持原 item 的 namespace（写权限口径下 old.ns 恒等于 env.ns）；
 	// structured 不继承——修正语义下旧领域载荷未必还成立。
 	next, err := e.newItem(old.Namespace, string(kind), p.Content, "")
 	if err != nil {
@@ -328,9 +342,14 @@ func (e *env) revoke(ctx context.Context, args json.RawMessage) (string, error) 
 	if strings.TrimSpace(p.Reason) == "" {
 		return "", fmt.Errorf("selfedit/memory_revoke: reason is required (audit trail)")
 	}
-	// 边界先行：同 supersede。
-	if _, err := e.opt.Store.Get(ctx, e.opt.Namespace, p.ID); err != nil {
+	// 边界先行 + 写权限口径：同 supersede（不可见即不存在；namespace 不
+	// 完全相等拒绝——不下钻改写）。
+	old, err := e.opt.Store.Get(ctx, e.opt.Namespace, p.ID)
+	if err != nil {
 		return "", fmt.Errorf("selfedit/memory_revoke: %w", err)
+	}
+	if !slices.Equal(old.Namespace, e.opt.Namespace) {
+		return "", fmt.Errorf("selfedit/memory_revoke: item %s: %w", p.ID, ErrOutsideScope)
 	}
 	if err := e.opt.Store.Revoke(ctx, p.ID, p.Reason); err != nil {
 		return "", fmt.Errorf("selfedit/memory_revoke: %w", err)

@@ -14,8 +14,13 @@
 //     id/reason）——scope 是存储层边界，不是提示词约定；
 //   - 回链强制：写入 SourceRefs 只来自 Options.OriginFn()（session 回链），
 //     缺省 Register 直接失败，不静默降级为无来源；
-//   - 边界先行：supersede/revoke 都先 Get(Namespace, id)，不可见即不存在
-//     （store 前缀可见性：scope 向下可见、向上不可见）；
+//   - 写权限口径：supersede/revoke 先 Get(Namespace, id)（不可见即不存在），
+//     且要求 item.Namespace 与 env.Namespace **完全相等**——store 前缀
+//     可见性是读口径（向下可见），写入钉死 env.ns：父 scope 工具不得
+//     下钻改写子 scope item（ErrOutsideScope）；
+//   - taint 保守默认：写入默认 TaintUntrustedExt（§17.7 ASI06 对位——
+//     self-edit 是模型复述工具/外部内容的通道，不得默认与宿主权威写入
+//     同级；before_tool_call 审批是晋升闸，宿主可显式覆盖）；
 //   - 禁物理 DELETE：只有 supersede（留痕替代）与 revoke（幂等作废），
 //     状态机错误原样透传 store 哨兵；
 //   - Preview 只读：三工具卡片 kind=opaque/action=write（envelope #56 已

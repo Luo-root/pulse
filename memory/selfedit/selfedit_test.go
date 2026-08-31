@@ -120,8 +120,8 @@ func TestPutAnchorsItem(t *testing.T) {
 	if len(it.SourceRefs) != 1 || it.SourceRefs[0] != origin() {
 		t.Fatalf("sourceRefs = %+v, want OriginFn value（回链恒等）", it.SourceRefs)
 	}
-	if it.Taint != store.TaintTrusted {
-		t.Fatalf("taint = %s, want default trusted", it.Taint)
+	if it.Taint != store.TaintUntrustedExt {
+		t.Fatalf("taint = %s, want default untrusted-external（ASI06 保守默认）", it.Taint)
 	}
 	if it.Status != store.StatusActive || it.Confidence != 1.0 {
 		t.Fatalf("status/confidence = %s/%v, want active/1.0", it.Status, it.Confidence)
@@ -131,6 +131,27 @@ func TestPutAnchorsItem(t *testing.T) {
 	}
 	if !strings.Contains(out, it.ID) {
 		t.Fatalf("result %q must carry the new id（模型后续 supersede 用）", out)
+	}
+}
+
+// TestTaintOverride：宿主显式覆盖 Taint（可信写手场景）——默认
+// untrusted-external，覆盖后写入 trusted。
+func TestTaintOverride(t *testing.T) {
+	cs := &countingStore{inner: store.NewMemoryStore()}
+	opt, err := (Options{Store: cs, Namespace: []string{"tenant:a"}, OriginFn: origin, Taint: store.TaintTrusted}).withDefaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &env{opt: opt}
+	if _, err := e.put(t.Context(), jsonArgs(t, map[string]any{"kind": "lesson", "content": "host-verified fact"})); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := cs.inner.Search(t.Context(), store.MemoryQuery{Namespace: []string{"tenant:a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].Item.Taint != store.TaintTrusted {
+		t.Fatalf("items = %+v, want one trusted item", hits)
 	}
 }
 
@@ -243,6 +264,24 @@ func TestScopeIsolation(t *testing.T) {
 	idB := firstID(t, ctx, cs.inner, []string{"tenant:b"})
 	if _, err := eA.supersede(ctx, jsonArgs(t, map[string]any{"id": idB, "content": "hijack"})); !errors.Is(err, store.ErrItemNotFound) {
 		t.Fatalf("A supersede B item err = %v, want ErrItemNotFound", err)
+	}
+
+	// 写权限口径（复审定案）：父 scope 工具能 Get 到子 scope item（前缀
+	// 可见），但 namespace 不完全相等 → ErrOutsideScope，不下钻改写。
+	eChild := newEnv(t, cs, []string{"tenant:a", "user:u1"})
+	if _, err := eChild.put(ctx, jsonArgs(t, map[string]any{"kind": "profile", "content": "child-scope fact"})); err != nil {
+		t.Fatal(err)
+	}
+	childID := firstID(t, ctx, cs.inner, []string{"tenant:a", "user:u1"})
+	if _, err := eA.supersede(ctx, jsonArgs(t, map[string]any{"id": childID, "content": "drill-down"})); !errors.Is(err, ErrOutsideScope) {
+		t.Fatalf("parent supersede child item err = %v, want ErrOutsideScope", err)
+	}
+	if _, err := eA.revoke(ctx, jsonArgs(t, map[string]any{"id": childID, "reason": "drill-down"})); !errors.Is(err, ErrOutsideScope) {
+		t.Fatalf("parent revoke child item err = %v, want ErrOutsideScope", err)
+	}
+	// 子 scope 工具改自己的 item 没问题。
+	if _, err := eChild.supersede(ctx, jsonArgs(t, map[string]any{"id": childID, "content": "self-managed"})); err != nil {
+		t.Fatalf("child supersede own item: %v", err)
 	}
 }
 
