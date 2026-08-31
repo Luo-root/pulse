@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -32,15 +33,18 @@ type indexOp struct {
 }
 
 // NewAsyncIndexer 包装同步 VectorIndex 并启动 worker。queueSize <= 0
-// 用默认 64。
-func NewAsyncIndexer(idx VectorIndex, queueSize int) *AsyncIndexer {
+// 用默认 64。idx 必填。
+func NewAsyncIndexer(idx VectorIndex, queueSize int) (*AsyncIndexer, error) {
+	if idx == nil {
+		return nil, fmt.Errorf("index: underlying vector index is required")
+	}
 	if queueSize <= 0 {
 		queueSize = 64
 	}
 	a := &AsyncIndexer{idx: idx, queue: make(chan indexOp, queueSize)}
 	a.wg.Add(1)
 	go a.run()
-	return a
+	return a, nil
 }
 
 // Upsert 实现 VectorIndex：非阻塞入队；满 → 丢弃计数；Close 后拒绝。

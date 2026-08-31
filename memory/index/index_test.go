@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,12 +15,17 @@ import (
 
 // fakeProvider 是确定性假 embedding：把文本首词映到预置向量表，未登记
 // 的词给零向量——测试据此控制「哪些 item 相近」。dims 维数可配。
+// onEmbed 是非 nil 时每次 Embed 调用触发（测试注入阻塞点）。
 type fakeProvider struct {
-	dims int
-	vecs map[string][]float32 // 首词 → 向量
+	dims    int
+	vecs    map[string][]float32 // 首词 → 向量
+	onEmbed func()
 }
 
 func (f *fakeProvider) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	if f.onEmbed != nil {
+		f.onEmbed()
+	}
 	out := make([][]float32, len(texts))
 	for i, t := range texts {
 		first := strings.Fields(t)
@@ -132,9 +138,9 @@ func TestDimsMismatch(t *testing.T) {
 	if err := idx.Upsert(ctx, it); err != nil {
 		t.Fatal(err)
 	}
-	// 换 8 维 provider：Upsert 与 Search 都拒。
-	p8 := &fakeProvider{dims: 8, vecs: map[string][]float32{"b": unit(8, 0)}}
-	idx.provider = p8
+	// 同一 provider 维度漂移（如宿主换模型未 Rebuild）：Upsert 与 Search 都拒。
+	p.dims = 8
+	p.vecs = map[string][]float32{"b": unit(8, 0)}
 	it2 := putItem(t, ctx, s, "d2", []string{"tenant:a"}, "b fact")
 	if err := idx.Upsert(ctx, it2); !errors.Is(err, ErrDimsMismatch) {
 		t.Fatalf("upsert err = %v, want ErrDimsMismatch", err)
@@ -262,7 +268,10 @@ func TestAsyncQueueDropAndDrain(t *testing.T) {
 	p := &fakeProvider{dims: 4, vecs: map[string][]float32{"deploy": unit(4, 0)}}
 	idx := newTestIndex(t, s, p)
 	// 队列容量 1：灌 50 条必然大量丢弃。
-	a := NewAsyncIndexer(idx, 1)
+	a, err := NewAsyncIndexer(idx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 50; i++ {
 		it := putItem(t, ctx, s, strings.Repeat("x", 1)+string(rune('a'+i%26))+string(rune('0'+i/26)), []string{"tenant:a"}, "deploy note")
 		if err := a.Upsert(ctx, it); err != nil {
@@ -337,6 +346,54 @@ func TestSearchValidation(t *testing.T) {
 	}
 }
 
+// TestRebuildMergesConcurrentWrites：Rebuild 的锁外 embed 窗口内并发的
+// Upsert 不被 swap 抹掉（写入代际合并——swap 保留 seq 晚于 Rebuild 起点
+// 的条目）。
+func TestRebuildMergesConcurrentWrites(t *testing.T) {
+	ctx := t.Context()
+	s := store.NewMemoryStore()
+	p := &fakeProvider{dims: 4, vecs: map[string][]float32{"deploy": unit(4, 0)}}
+	idx := newTestIndex(t, s, p)
+	it1 := putItem(t, ctx, s, "e1", []string{"tenant:a"}, "deploy via kubectl")
+	if err := idx.Upsert(ctx, it1); err != nil {
+		t.Fatal(err)
+	}
+	// hook 在 Upsert(e1) 之后才挂上——否则第一次阻塞发生在本线程的
+	// Upsert(e1) 上（放行也在本线程，死锁）。
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var blocked atomic.Bool
+	// 第一次 Embed（Rebuild 的批量）阻塞，制造并发窗口；后续 Embed
+	// （主线程 Upsert 的）直接通过——不用 sync.Once（并发 Do 会等待
+	// 首次完成，与「放行在主线程」互相等待死锁）。
+	p.onEmbed = func() {
+		if blocked.CompareAndSwap(false, true) {
+			close(entered)
+			<-release
+		}
+	}
+	rebuildDone := make(chan error, 1)
+	go func() { rebuildDone <- idx.Rebuild(ctx) }()
+	<-entered // Rebuild 已扫完 store、正在 embed（锁外窗口）
+	// 并发窗口写入 e2：写入代际晚于 Rebuild 起点。
+	it2 := putItem(t, ctx, s, "e2", []string{"tenant:a"}, "deploy via helm")
+	if err := idx.Upsert(ctx, it2); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-rebuildDone; err != nil {
+		t.Fatal(err)
+	}
+	// e2 不被 swap 抹掉：fresh（扫描时快照，只有 e1）+ 并发保留（e2）。
+	hits, err := idx.Search(ctx, []string{"tenant:a"}, "deploy", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("hits = %d, want 2（并发窗口写入不丢）", len(hits))
+	}
+}
+
 // TestConcurrentIndexAccess：并发 Upsert/Remove/Search/Rebuild（-race）。
 func TestConcurrentIndexAccess(t *testing.T) {
 	ctx := t.Context()
@@ -350,7 +407,17 @@ func TestConcurrentIndexAccess(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 20; i++ {
 				id := fmt.Sprintf("w%d-i%d", w, i)
-				it := putItem(t, ctx, s, id, []string{"tenant:a"}, "deploy note")
+				// t.Fatal 不能用于非测试 goroutine——内联构造 + t.Errorf。
+				it := store.MemoryItem{
+					ID: id, Namespace: []string{"tenant:a"}, Kind: store.KindEpisode,
+					Content: "deploy note", Status: store.StatusActive, Confidence: 1.0,
+					Taint:      store.TaintTrusted,
+					SourceRefs: []store.SourceRef{{Type: store.SourceSession, SessionID: "s1", Seq: 1}},
+				}
+				if _, err := s.Put(ctx, it, store.PutMemoryOptions{}); err != nil {
+					t.Errorf("put %s: %v", id, err)
+					return
+				}
 				_ = idx.Upsert(ctx, it)
 				_, _ = idx.Search(ctx, []string{"tenant:a"}, "deploy", 5)
 				if i%5 == 0 {
@@ -375,7 +442,10 @@ func TestAsyncWorkerUsesBackgroundContext(t *testing.T) {
 	s := store.NewMemoryStore()
 	p := &fakeProvider{dims: 4, vecs: map[string][]float32{"deploy": unit(4, 0)}}
 	idx := newTestIndex(t, s, p)
-	a := NewAsyncIndexer(idx, 8)
+	a, err := NewAsyncIndexer(idx, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	it := putItem(t, context.Background(), s, "e1", []string{"tenant:a"}, "deploy note")
 	if err := a.Upsert(ctx, it); err != nil {

@@ -53,7 +53,7 @@ var (
 	ErrDimsMismatch = errors.New("index: embedding dims mismatch")
 	// ErrProviderShape：provider 返回向量数与输入文本数不符，或空向量。
 	ErrProviderShape = errors.New("index: provider response shape invalid")
-	// ErrInvalidQuery：Search 条件非法（空 query / 负 k 以外的形状错误）。
+	// ErrInvalidQuery：Search 条件非法（空 query）。
 	ErrInvalidQuery = errors.New("index: query invalid")
 	// ErrIndexClosed：AsyncIndexer Close 之后的写入——显式拒绝，不
 	// 静默丢弃（丢弃只发生在运行中队列满）。
@@ -62,20 +62,26 @@ var (
 
 // indexEntry 是索引内的一条拷贝：向量 + namespace（过滤在索引内完成，
 // 不回查 store——先过滤再召回要求授权判定发生在相似度排序之前）。
+// seq 是写入代际：Rebuild 与并发 Upsert 竞态时，swap 保留 seq 大于
+// Rebuild 起始代际的条目（并发窗口写入不丢——见 Rebuild）。
 type indexEntry struct {
 	vector    []float32
 	namespace []string
+	seq       uint64
 }
 
 // MemIndex 是 VectorIndex 的内存实现：暴力扫描余弦 top-k（HNSW 等近似
 // 索引是 provider/后续的事，内存语义测绿优先）。纯 Go，零新依赖。
+// provider 构造后不可换（无锁字段）——换 provider/模型 = 新建 MemIndex
+// 或先 Rebuild（Rebuild 会按新 provider 重钉维度）。
 type MemIndex struct {
 	store    store.MemoryStore
 	provider EmbeddingProvider
 
-	mu      sync.RWMutex
-	entries map[string]indexEntry
-	dims    int // 首次成功 embed 钉死；其后不符 → ErrDimsMismatch
+	mu       sync.RWMutex
+	entries  map[string]indexEntry
+	dims     int    // 首次成功 embed 钉死；其后不符 → ErrDimsMismatch
+	writeSeq uint64 // 写入代际：Upsert/Remove 递增，Rebuild 合并用
 }
 
 // NewMemIndex 创建内存向量索引。store 是 canonical 来源（Rebuild 与
@@ -104,7 +110,8 @@ func (m *MemIndex) Upsert(ctx context.Context, item store.MemoryItem) error {
 	if err := m.checkDimsLocked(vec); err != nil {
 		return err
 	}
-	m.entries[item.ID] = indexEntry{vector: vec, namespace: item.Namespace}
+	m.writeSeq++
+	m.entries[item.ID] = indexEntry{vector: vec, namespace: item.Namespace, seq: m.writeSeq}
 	return nil
 }
 
@@ -112,6 +119,7 @@ func (m *MemIndex) Upsert(ctx context.Context, item store.MemoryItem) error {
 func (m *MemIndex) Remove(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.writeSeq++
 	delete(m.entries, id)
 	return nil
 }
@@ -174,7 +182,14 @@ func (m *MemIndex) Search(ctx context.Context, ns []string, query string, k int)
 }
 
 // Rebuild 实现 VectorIndex：全量 Active item 重 embed，原子替换。
+// embed 在锁外（IO 不持锁），与并发 Upsert 存在窗口——swap 时保留
+// 写入代际晚于 Rebuild 起点的条目（并发窗口写入不丢）；与 fresh 维度
+// 不符的保留条目丢弃（Rebuild 换 provider 的场景，旧维度条目由下一次
+// Rebuild/Upsert 收敛）。
 func (m *MemIndex) Rebuild(ctx context.Context) error {
+	m.mu.RLock()
+	g0 := m.writeSeq
+	m.mu.RUnlock()
 	hits, err := m.store.Search(ctx, store.MemoryQuery{})
 	if err != nil {
 		return fmt.Errorf("index: rebuild scan store: %w", err)
@@ -209,6 +224,17 @@ func (m *MemIndex) Rebuild(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// 合并并发窗口（g0 之后）的写入：fresh 是扫描时刻的 store 快照，
+	// 并发 Upsert 的条目可能不在其中——保留之（Remove 的条目已不在
+	// entries，天然不保留；其若残留在 fresh，Search 的 store 复核兜底）。
+	for id, e := range m.entries {
+		if e.seq > g0 && (dims == 0 || len(e.vector) == dims) {
+			fresh[id] = e
+			if dims == 0 {
+				dims = len(e.vector)
+			}
+		}
+	}
 	m.entries = fresh
 	m.dims = dims // 空索引时 dims 归零，下次 embed 重新钉
 	return nil
