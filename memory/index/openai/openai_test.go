@@ -33,6 +33,7 @@ type fakeServer struct {
 	status   int  // 非 0 = 恒定错误状态码
 	dropOne  bool // 少返回一个向量（形状错）
 	emptyVec bool // 返回空向量（形状错）
+	dupIndex bool // 全部向量 Index=0（Index 重复——形状错）
 	vectors  map[string][]float64
 	dims     int
 }
@@ -80,7 +81,11 @@ func (f *fakeServer) handler(w http.ResponseWriter, r *http.Request) {
 		if f.emptyVec {
 			vec = []float64{}
 		}
-		data = append(data, dataItem{Index: i, Embedding: vec, Object: "embedding"})
+		idx := i
+		if f.dupIndex {
+			idx = 0 // Index 全 0：len 匹配但重复——批内必有输入位缺向量
+		}
+		data = append(data, dataItem{Index: idx, Embedding: vec, Object: "embedding"})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -331,4 +336,35 @@ func TestLiveEmbed(t *testing.T) {
 		t.Fatalf("live embed = %d vectors, first len %d", len(vecs), len(vecs[0]))
 	}
 	fmt.Printf("live embed dims = %d\n", len(vecs[0]))
+}
+
+// TestEmbedDuplicateIndexShape：响应 Index 重复（[0,0,…]）——len 匹配
+// 且 index 范围合法，但批内必有输入位缺向量。fail closed 拒绝，不把
+// nil 向量混进返回值（审稿建议 2 的回归锁）。
+func TestEmbedDuplicateIndexShape(t *testing.T) {
+	f := newFakeServer(t, 4, map[string][]float64{"deploy": {1, 0, 0, 0}})
+	f.dupIndex = true
+	p := newProvider(t, f, nil)
+	_, err := p.Embed(t.Context(), []string{"deploy a", "deploy b"})
+	if !errors.Is(err, index.ErrProviderShape) {
+		t.Fatalf("err = %v, want ErrProviderShape（Index 重复）", err)
+	}
+}
+
+// TestTruncateDefensiveNoCallback：truncate 的防御回退分支（Split 参数
+// 非法，实际不可达——白盒置零 maxChars 触发）不触发 OnTruncate——
+// 回调语义 = 真截断发生（审稿建议 3 的回归锁）。
+func TestTruncateDefensiveNoCallback(t *testing.T) {
+	f := newFakeServer(t, 4, map[string][]float64{"deploy": {1, 0, 0, 0}})
+	calls := 0
+	p := newProvider(t, f, func(c *Config) {
+		c.OnTruncate = func(original, kept int) { calls++ }
+	})
+	p.maxChars = 0 // 白盒：使 Split 参数非法，走进防御分支
+	if got := p.truncate("abc"); got != "abc" {
+		t.Fatalf("defensive truncate = %q, want untouched input", got)
+	}
+	if calls != 0 {
+		t.Fatalf("onTruncate calls = %d, want 0（回退路径不触发回调）", calls)
+	}
 }

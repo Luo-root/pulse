@@ -82,12 +82,15 @@ func New(cfg Config) (*Provider, error) {
 	if maxChars <= 0 {
 		maxChars = DefaultMaxInputChars
 	}
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		// 显式化默认端点：SDK 默认恰为同值，这里自文档化（审稿建议 1）。
+		baseURL = DefaultBaseURL
+	}
 	o := []option.RequestOption{
 		option.WithAPIKey(cfg.APIKey),
+		option.WithBaseURL(baseURL),
 		option.WithMaxRetries(cfg.Retries), // 默认 0：显式关闭 SDK 自动重试（llm/openai 先例）
-	}
-	if cfg.BaseURL != "" {
-		o = append(o, option.WithBaseURL(cfg.BaseURL))
 	}
 	if cfg.HTTPClient != nil {
 		o = append(o, option.WithHTTPClient(cfg.HTTPClient))
@@ -140,6 +143,14 @@ func (p *Provider) Embed(ctx context.Context, texts []string) ([][]float32, erro
 			}
 			out[lo+int(d.Index)] = vec
 		}
+		// Index 重复（如 [0,0,1]）会让某位被覆盖、另一位留 nil——形状
+		// 不符，fail closed（审稿建议 2）；nil 向量混进返回会静默降召回
+		//（cosine 对 nil 得 0）。
+		for i, v := range out[lo:hi] {
+			if v == nil {
+				return nil, fmt.Errorf("%w: missing vector at input index %d", index.ErrProviderShape, lo+i)
+			}
+		}
 	}
 	return out, nil
 }
@@ -153,11 +164,14 @@ func (p *Provider) truncate(t string) string {
 	}
 	kept := t
 	chunks, err := textsplit.Split(t, textsplit.Options{MaxLen: p.maxChars})
-	if err == nil && len(chunks) > 0 {
-		kept = chunks[0].Text
+	if err != nil || len(chunks) == 0 {
+		// 防御分支（MaxLen 固定为正，实际不可达）：回退为不截断、交由
+		// 服务端报错，不静默丢内容；不触发 OnTruncate——回调语义 =
+		// 真截断发生（original != kept），与「恰好未超预算」可区分
+		//（审稿建议 3）。
+		return kept
 	}
-	// Split 的参数恒合法（MaxLen 固定为正），err 分支纯防御——回退为
-	// 不截断交由服务端报错，不静默丢内容。
+	kept = chunks[0].Text
 	if p.cfg.OnTruncate != nil {
 		p.cfg.OnTruncate(utf8.RuneCountInString(t), utf8.RuneCountInString(kept))
 	}
