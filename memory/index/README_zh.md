@@ -11,7 +11,7 @@ err = idx.Remove(ctx, oldID)                         // Supersede/Revoke 后调
 hits, err := idx.Search(ctx, ns, "deploy", 10)       // 先过滤再 top-k
 err = idx.Rebuild(ctx)                               // 全量重建（索引丢失兜底）
 
-async := index.NewAsyncIndexer(idx, 64)              // 异步队列：写路径不阻塞
+async, err := index.NewAsyncIndexer(idx, 64)         // 异步队列：写路径不阻塞
 defer async.Close(ctx)
 async.Upsert(ctx, item)                              // 非阻塞入队；满丢弃计数
 n := async.Dropped()                                 // 丢弃数（Rebuild 兜底）

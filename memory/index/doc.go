@@ -23,10 +23,10 @@
 //
 // # 接入姿态
 //
-//	idx := index.NewMemIndex(memStore, myProvider) // provider 宿主注入
-//	_ = idx.Upsert(ctx, item)                       // 写入方在 store.Put 后调
-//	hits, _ := idx.Search(ctx, ns, "deploy", 10)    // 先过滤再 top-k
-//	async := index.NewAsyncIndexer(idx, 64)         // 异步：写路径不阻塞
+//	idx, err := index.NewMemIndex(memStore, myProvider) // provider 宿主注入
+//	_ = idx.Upsert(ctx, item)                           // 写入方在 store.Put 后调
+//	hits, _ := idx.Search(ctx, ns, "deploy", 10)        // 先过滤再 top-k
+//	async, err := index.NewAsyncIndexer(idx, 64)        // 异步：写路径不阻塞
 //	defer async.Close(ctx)
 //
 // 设计全貌见 docs/design/memory-layer-research-and-v2-design.md §6.5/

@@ -468,3 +468,48 @@ func TestAsyncWorkerUsesBackgroundContext(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestAsyncCloseRaceWithEnqueue：enqueue 与 Close 并发交叠的历史竞态回归
+// 锁——无互斥时「通过 closed 检查的 enqueue」会对已关闭 channel 发送
+// （panic: send on closed channel；select/default 只防满队列）。RWMutex
+// 互斥后只允许三种合法结果：入队成功 / 满丢弃 / ErrIndexClosed。
+func TestAsyncCloseRaceWithEnqueue(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		s := store.NewMemoryStore()
+		p := &fakeProvider{dims: 4, vecs: map[string][]float32{"deploy": unit(4, 0)}}
+		idx := newTestIndex(t, s, p)
+		a, err := NewAsyncIndexer(idx, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		for w := 0; w < 4; w++ {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				it := store.MemoryItem{
+					ID: fmt.Sprintf("w%d", w), Namespace: []string{"tenant:a"},
+					Kind: store.KindEpisode, Content: "deploy note",
+					Status: store.StatusActive, Confidence: 1.0,
+					Taint:      store.TaintTrusted,
+					SourceRefs: []store.SourceRef{{Type: store.SourceSession, SessionID: "s1", Seq: 1}},
+				}
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					_ = a.Upsert(context.Background(), it)
+				}
+			}(w)
+		}
+		time.Sleep(2 * time.Millisecond) // writer 先转起来
+		if err := a.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		close(stop) // Close 之后才停 writer——确保 enqueue 与 Close 真正交叠
+		wg.Wait()
+	}
+}

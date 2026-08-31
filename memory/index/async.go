@@ -19,6 +19,11 @@ import (
 type AsyncIndexer struct {
 	idx VectorIndex
 
+	// mu 保护 queue 的关闭与发送互斥：enqueue 持 RLock 发送、Close 持
+	// Lock 后才 close(queue)。没有它，「通过 closed 检查的 enqueue」可能
+	// 对已关闭 channel 发送（panic: send on closed channel——select 的
+	// default 只防满队列，防不了已关闭）。
+	mu      sync.RWMutex
 	queue   chan indexOp
 	dropped atomic.Uint64
 	closed  atomic.Bool
@@ -75,9 +80,11 @@ func (a *AsyncIndexer) Dropped() uint64 {
 
 // Close 关队列并等 worker drain 完已入队的操作。之后 Upsert/Remove 拒绝。
 func (a *AsyncIndexer) Close(ctx context.Context) error {
+	a.mu.Lock()
 	if a.closed.CompareAndSwap(false, true) {
 		close(a.queue)
 	}
+	a.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		a.wg.Wait()
@@ -92,7 +99,12 @@ func (a *AsyncIndexer) Close(ctx context.Context) error {
 }
 
 // enqueue 非阻塞入队；满丢弃计数；Close 后拒绝。
+//
+// RLock 与 Close 的 Lock 互斥：通过 closed 检查后 queue 必未关闭——
+// send on closed channel 的竞态窗口由此消除。
 func (a *AsyncIndexer) enqueue(op indexOp) error {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	if a.closed.Load() {
 		return ErrIndexClosed
 	}
