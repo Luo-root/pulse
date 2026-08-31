@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Luo-root/pulse/llm"
+	"github.com/Luo-root/pulse/memory/index"
 	"github.com/Luo-root/pulse/memory/store"
 )
 
@@ -214,27 +215,242 @@ func TestBudgetDiagnostics(t *testing.T) {
 	}
 }
 
-// TestRankDeterministic：untrusted-external 降权 + recency 降序；
-// Confidence 不参与排序（两个不同 Confidence 的同 taint/recency item 按
-// ID 稳定序）。
-func TestRankDeterministic(t *testing.T) {
-	trusted := item("t1", store.KindLesson, "trusted lesson")
-	untrusted := item("u1", store.KindLesson, "untrusted lesson")
-	untrusted.Taint = store.TaintUntrustedExt
-	ranked := rankHits([]store.MemoryHit{{Item: untrusted}, {Item: trusted}})
-	if ranked[0].ID != "t1" {
-		t.Fatalf("ranked[0] = %s, want trusted first（taint 降权）", ranked[0].ID)
+// TestFusionOrder：§8.2 融合排序（D2 默认权重）——双路命中 > semantic
+// 单路 > keyword 单路；同 item 双路命中只出现一次（去重，4 输入 3 块）。
+func TestFusionOrder(t *testing.T) {
+	a := &DefaultAssembler{
+		Semantic: func(ctx context.Context, ns []string, q string, k int) ([]store.MemoryItem, []float64, error) {
+			return []store.MemoryItem{
+					item("both", store.KindEpisode, "b"),
+					item("sem", store.KindEpisode, "s"),
+				},
+				[]float64{0.9, 0.9}, nil
+		},
 	}
-	// recency。
-	old := item("old", store.KindEpisode, "old")
-	new := item("new", store.KindEpisode, "new")
-	old.UpdatedAt = old.UpdatedAt.Add(-time.Hour)
-	ranked = rankHits([]store.MemoryHit{{Item: old}, {Item: new}})
-	if ranked[0].ID != "new" {
-		t.Fatalf("ranked[0] = %s, want newest first", ranked[0].ID)
+	kwHits := []store.MemoryHit{
+		{Item: item("kw", store.KindEpisode, "k")},
+		{Item: item("both", store.KindEpisode, "b")},
+	}
+	var diag []Diagnostic
+	ranked := a.fuseAndRank(t.Context(), AssembleInput{Namespace: []string{"tenant:a"}, Query: "deploy"}, kwHits, DefaultRankingWeights, &diag)
+	// both = 0.3 + 0.5*0.9 = 0.75；sem = 0.45；kw = 0.3。
+	want := []string{"both", "sem", "kw"}
+	if len(ranked) != len(want) {
+		t.Fatalf("ranked = %d, want %d（4 输入去重为 3）", len(ranked), len(want))
+	}
+	for i, id := range want {
+		if ranked[i].ID != id {
+			t.Fatalf("ranked[%d] = %s, want %s", i, ranked[i].ID, id)
+		}
 	}
 }
 
+// TestFusionConfidenceAndTaint：D2 启用 w_conf（同路命中 conf 高者前）；
+// P2-C 的 taint 固定 −4 由 w_taint*taint_pen 取代。
+func TestFusionConfidenceAndTaint(t *testing.T) {
+	a := &DefaultAssembler{}
+	var diag []Diagnostic
+	in := AssembleInput{Namespace: []string{"tenant:a"}, Query: "deploy"}
+
+	hiConf := item("hi", store.KindLesson, "h")
+	hiConf.Confidence = 0.9
+	loConf := item("lo", store.KindLesson, "l")
+	loConf.Confidence = 0.5
+	ranked := a.fuseAndRank(t.Context(), in, []store.MemoryHit{{Item: loConf}, {Item: hiConf}}, DefaultRankingWeights, &diag)
+	// keyword-only：hi = 0.3+0.2*0.9 = 0.48 > lo = 0.3+0.2*0.5 = 0.4。
+	if ranked[0].ID != "hi" {
+		t.Fatalf("ranked[0] = %s, want higher confidence first（w_conf D2 启用）", ranked[0].ID)
+	}
+
+	untrusted := item("u", store.KindLesson, "u")
+	untrusted.Taint = store.TaintUntrustedExt
+	trusted := item("t", store.KindLesson, "t")
+	ranked = a.fuseAndRank(t.Context(), in, []store.MemoryHit{{Item: untrusted}, {Item: trusted}}, DefaultRankingWeights, &diag)
+	// t = 0.3+0.2 = 0.5；u = 0.5 − 0.3 = 0.2。
+	if ranked[0].ID != "t" {
+		t.Fatalf("ranked[0] = %s, want trusted first（w_taint 取代固定 −4）", ranked[0].ID)
+	}
+}
+
+// TestFusionTiebreak：同分 → UpdatedAt 降序 → ID 升序（确定性）。
+func TestFusionTiebreak(t *testing.T) {
+	a := &DefaultAssembler{}
+	var diag []Diagnostic
+	in := AssembleInput{Namespace: []string{"tenant:a"}, Query: "deploy"}
+	old := item("old", store.KindEpisode, "same content")
+	newer := item("new", store.KindEpisode, "same content")
+	old.UpdatedAt = old.UpdatedAt.Add(-time.Hour)
+	ranked := a.fuseAndRank(t.Context(), in, []store.MemoryHit{{Item: old}, {Item: newer}}, DefaultRankingWeights, &diag)
+	if ranked[0].ID != "new" || ranked[1].ID != "old" {
+		t.Fatalf("ranked = %v, want newest first on tie", []string{ranked[0].ID, ranked[1].ID})
+	}
+	sameA := item("a", store.KindEpisode, "x")
+	sameB := item("b", store.KindEpisode, "x")
+	ranked = a.fuseAndRank(t.Context(), in, []store.MemoryHit{{Item: sameB}, {Item: sameA}}, DefaultRankingWeights, &diag)
+	if ranked[0].ID != "a" || ranked[1].ID != "b" {
+		t.Fatalf("ranked = %v, want ID asc on full tie", []string{ranked[0].ID, ranked[1].ID})
+	}
+}
+
+// TestSemanticFailureDiag：Semantic 失败 → 诊断 + keyword 结果照常
+//（fail safe，与 FTS 失败同口径，组装不中断）。
+func TestSemanticFailureDiag(t *testing.T) {
+	cs := &countingStore{inner: store.NewMemoryStore()}
+	ctx := t.Context()
+	seedStable(t, ctx, cs)
+	if _, err := cs.Put(ctx, item("e1", store.KindEpisode, "deploy via kubectl"), store.PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	a := NewDefaultAssembler(cs, nil, Budget{})
+	a.Semantic = func(ctx context.Context, ns []string, q string, k int) ([]store.MemoryItem, []float64, error) {
+		return nil, nil, errors.New("vector offline")
+	}
+	ac, err := a.Assemble(ctx, AssembleInput{Namespace: []string{"tenant:a"}, Query: "deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range ac.Diagnostics {
+		if strings.Contains(d.Reason, "semantic search failed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("diagnostics = %+v, want semantic-failure entry", ac.Diagnostics)
+	}
+	// keyword 结果照常：稳定 2 条 + 检索 e1。
+	if len(ac.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3（稳定 2 + 检索 1）", len(ac.Messages))
+	}
+}
+
+// TestSemanticShapeMismatchDiag：items/scores 长度不符 → 丢弃语义路
+//（诊断），keyword 照常。
+func TestSemanticShapeMismatchDiag(t *testing.T) {
+	cs := &countingStore{inner: store.NewMemoryStore()}
+	ctx := t.Context()
+	if _, err := cs.Put(ctx, item("e1", store.KindEpisode, "deploy via kubectl"), store.PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	a := NewDefaultAssembler(cs, nil, Budget{})
+	a.Semantic = func(ctx context.Context, ns []string, q string, k int) ([]store.MemoryItem, []float64, error) {
+		return []store.MemoryItem{item("v1", store.KindEpisode, "vec hit")}, []float64{0.9, 0.8}, nil
+	}
+	ac, err := a.Assemble(ctx, AssembleInput{Namespace: []string{"tenant:a"}, Query: "deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range ac.Diagnostics {
+		if strings.Contains(d.Reason, "shape mismatch") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("diagnostics = %+v, want shape-mismatch entry", ac.Diagnostics)
+	}
+	// 语义路被丢弃：只剩 keyword 命中 e1（稳定前缀为空）。
+	if len(ac.Messages) != 1 {
+		t.Fatalf("messages = %d, want 1（语义路丢弃，keyword 照常）", len(ac.Messages))
+	}
+}
+
+// TestRankingOverride：Ranking 覆盖——Keyword=0/Semantic=1 时 semantic
+// 独占排序（kw-only 得 0 分垫底）；指针 nil = 默认、显式 0 = 关闭。
+func TestRankingOverride(t *testing.T) {
+	a := &DefaultAssembler{
+		Semantic: func(ctx context.Context, ns []string, q string, k int) ([]store.MemoryItem, []float64, error) {
+			return []store.MemoryItem{item("v", store.KindEpisode, "v")}, []float64{0.8}, nil
+		},
+		Ranking: &RankingWeights{Semantic: 1, Keyword: 0, Confidence: 0, Taint: 0},
+	}
+	var diag []Diagnostic
+	ranked := a.fuseAndRank(t.Context(), AssembleInput{Namespace: []string{"tenant:a"}, Query: "deploy"},
+		[]store.MemoryHit{{Item: item("k", store.KindEpisode, "k")}}, *a.Ranking, &diag)
+	// v = 0.8；k = 0。
+	if ranked[0].ID != "v" || ranked[1].ID != "k" {
+		t.Fatalf("ranked = %v, want semantic-dominant order", []string{ranked[0].ID, ranked[1].ID})
+	}
+}
+
+// e2eProvider 是与 index 包测试同构的确定性假 embedding（首词 → 预置
+// 向量，未登记词给零向量）。
+type e2eProvider struct {
+	dims int
+	vecs map[string][]float32
+}
+
+func (f *e2eProvider) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, t := range texts {
+		out[i] = make([]float32, f.dims)
+		if fs := strings.Fields(t); len(fs) > 0 {
+			if v, ok := f.vecs[fs[0]]; ok {
+				copy(out[i], v)
+			}
+		}
+	}
+	return out, nil
+}
+
+// TestHybridE2EWithMemIndex：MemIndex 包成 Semantic seam 接进
+// Assemble——keyword（子串）+ semantic（余弦）双路命中同一 item，融合
+// 去重后注入一次；诊断含 semantic seam 标记。
+func TestHybridE2EWithMemIndex(t *testing.T) {
+	s := store.NewMemoryStore()
+	ctx := t.Context()
+	seedStable(t, ctx, s)
+	saved, err := s.Put(ctx, item("e1", store.KindEpisode, "deploy via kubectl"), store.PutMemoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memIdx, err := index.NewMemIndex(s, &e2eProvider{dims: 4, vecs: map[string][]float32{"deploy": {1, 0, 0, 0}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := memIdx.Upsert(ctx, saved); err != nil {
+		t.Fatal(err)
+	}
+	a := NewDefaultAssembler(s, nil, Budget{})
+	a.Semantic = func(ctx context.Context, ns []string, q string, k int) ([]store.MemoryItem, []float64, error) {
+		hits, err := memIdx.Search(ctx, ns, q, k)
+		if err != nil {
+			return nil, nil, err
+		}
+		items := make([]store.MemoryItem, len(hits))
+		scores := make([]float64, len(hits))
+		for i, h := range hits {
+			items[i], scores[i] = h.Item, h.Score
+		}
+		return items, scores, nil
+	}
+	ac, err := a.Assemble(ctx, AssembleInput{Namespace: []string{"tenant:a"}, Query: "deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 稳定前缀 2 条 + e1 恰好一次（双路命中去重）。
+	if len(ac.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3", len(ac.Messages))
+	}
+	count := 0
+	for _, m := range ac.Messages {
+		if strings.Contains(m.Text(), "e1") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("e1 appears %d times, want 1（双路去重）", count)
+	}
+	viaSemantic := false
+	for _, d := range ac.Diagnostics {
+		if strings.Contains(d.Reason, "recall via semantic seam") {
+			viaSemantic = true
+		}
+	}
+	if !viaSemantic {
+		t.Fatalf("diagnostics = %+v, want semantic seam entry", ac.Diagnostics)
+	}
+}
 // TestSearchFailureDiag：store 召回失败 → 诊断记录、组装不中断、surface
 // 照常。
 func TestSearchFailureDiag(t *testing.T) {

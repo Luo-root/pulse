@@ -63,7 +63,7 @@ func (a *AsyncIndexer) Remove(_ context.Context, id string) error {
 }
 
 // Search 直接透传底层索引（读路径无异步语义）。
-func (a *AsyncIndexer) Search(ctx context.Context, ns []string, query string, k int) ([]store.MemoryHit, error) {
+func (a *AsyncIndexer) Search(ctx context.Context, ns []string, query string, k int) ([]ScoredHit, error) {
 	return a.idx.Search(ctx, ns, query, k)
 }
 

@@ -28,6 +28,14 @@ type EmbeddingProvider interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
+// ScoredHit 是向量召回命中：item 本体 + 余弦相似度。Score 是 §8.2
+// hybrid 融合的 semantic 路输入（D2）——keyword 检索无分，store 的
+// MemoryHit 不动（store 不知道评分）。
+type ScoredHit struct {
+	Item  store.MemoryItem
+	Score float64 // cosine ∈ [-1,1]；融合侧 clamp 到 [0,1]
+}
+
 // VectorIndex 是派生向量索引（§12 P2-D）：canonical 在 store，本接口的
 // 一切数据都可用 Rebuild 从 store 重建。
 type VectorIndex interface {
@@ -38,9 +46,11 @@ type VectorIndex interface {
 	// Remove 摘除一条（Supersede/Revoke 后由写入方调用）；不存在幂等。
 	Remove(ctx context.Context, id string) error
 	// Search 召回：embed query → 索引内先按 ns 前缀过滤（§8.2，ANN
-	// 之前授权过滤）→ 余弦 top-k → 回 store 复核 Active（竞态 fail
-	// safe）。k<=0 用 defaultTopK；空 query → ErrInvalidQuery。
-	Search(ctx context.Context, ns []string, query string, k int) ([]store.MemoryHit, error)
+	// 之前授权过滤）→ 余弦 top-k（Score 降序，同分 ID 升序）→ 回 store
+	// 复核 Active（竞态 fail safe）。D2 起 Score 随命中返回——§8.2
+	// hybrid 融合的 semantic 路输入。k<=0 用 defaultTopK；空 query →
+	// ErrInvalidQuery。
+	Search(ctx context.Context, ns []string, query string, k int) ([]ScoredHit, error)
 	// Rebuild 全量从 store 重建（全量 Active item 重 embed，原子替换
 	// 索引内容）。索引删除/损坏后的恢复路径；代价 = 重 embed 全部。
 	Rebuild(ctx context.Context) error
@@ -124,8 +134,9 @@ func (m *MemIndex) Remove(_ context.Context, id string) error {
 	return nil
 }
 
-// Search 实现 VectorIndex：先 namespace 前缀过滤，再余弦 top-k。
-func (m *MemIndex) Search(ctx context.Context, ns []string, query string, k int) ([]store.MemoryHit, error) {
+// Search 实现 VectorIndex：先 namespace 前缀过滤，再余弦 top-k
+//（Score 降序、同分 ID 升序——D2 起随命中返回）。
+func (m *MemIndex) Search(ctx context.Context, ns []string, query string, k int) ([]ScoredHit, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("%w: empty query", ErrInvalidQuery)
 	}
@@ -164,7 +175,7 @@ func (m *MemIndex) Search(ctx context.Context, ns []string, query string, k int)
 	if len(cands) > k {
 		cands = cands[:k]
 	}
-	hits := make([]store.MemoryHit, 0, len(cands))
+	hits := make([]ScoredHit, 0, len(cands))
 	for _, c := range cands {
 		// 回 store 复核：索引与 store 之间存在写入方同步窗口，命中项
 		// 可能已被 Revoke/Supersede——非 Active 不返回（fail safe），
@@ -176,7 +187,7 @@ func (m *MemIndex) Search(ctx context.Context, ns []string, query string, k int)
 		if it.Status != store.StatusActive {
 			continue
 		}
-		hits = append(hits, store.MemoryHit{Item: it})
+		hits = append(hits, ScoredHit{Item: it, Score: c.score})
 	}
 	return hits, nil
 }

@@ -13,7 +13,7 @@ P2「记忆与会话」层（设计事实源：[docs/design/memory-layer-researc
 | `session` | **已落地**（P2-A1 in-memory + P2-A2 JSONL + P2-B Replace fold，Issue #68/#70/#73） | 会话事件日志契约、事件分级 codec registry、surface fold（§6.3 映射表 + checkpoint Replace）、in-memory store、JSONL 持久层（blobs 溢出 + 文件锁 + 撕裂恢复）、Open 即冷恢复、`FoldTrace` 溯源 |
 | `compaction` | **已落地**（P2-B，Issue #73） | token meter（CharMeter 估算 + Pressure）、CompactionEngine seam（LLM / deterministic backend）、§9.1 八步压缩事务编排、§9.2 tool result deterministic pruning |
 | `store` | **已落地**（P2-C 内存版 + SQLite/FTS5，Issue #76/#78） | MemoryItem canonical store：Namespace 前缀隔离（scope helper 展开）、Supersede/Revoke 状态机（禁物理 DELETE）、revision CAS、SourceRefs 强制回链、Search 过滤、SQLite + FTS5（CGO-free，build tag 排除 plan9/js） |
-| `assemble` | **已落地**（P2-C3，Issue #80） | Context Assembler：按类预算（稳定记忆/检索/surface，诊断可解释）、稳定前缀缓存（§8.3 frozen snapshot）、确定性排序（taint/recency，不依赖 Confidence）、引用模板注入 |
+| `assemble` | **已落地**（P2-C3 + D2 hybrid，Issue #80/#88） | Context Assembler：按类预算（稳定记忆/检索/surface，诊断可解释）、稳定前缀缓存（§8.3 frozen snapshot）、混合召回 + §8.2 融合排序（keyword ∪ semantic 函数 seam 去重，w_semantic/w_keyword/w_conf/w_taint 默认 0.5/0.3/0.2/0.3）、引用模板注入 |
 | `selfedit` | **已落地**（P2-C4，Issue #82） | self-edit 记忆工具组：`memory_put`/`memory_supersede`/`memory_revoke`（模型参数最小化、scope env 钉死、OriginFn 回链强制、Preview opaque 卡片），显式 opt-in 注册 |
 | `index` | **已落地**（P2-D1 内存向量索引，Issue #84） | 派生向量索引（EmbeddingProvider seam，可丢可重建）：namespace 先过滤再召回、余弦 top-k、命中复核 Active、异步队列（满丢弃计数 + Rebuild 兜底）；`openai/` 适配器（P2-D1.5，Issue #86）：OpenAI 兼容 embeddings（SDK 薄包装 + textsplit 截断 + OnTruncate 可观测）；hybrid 接 assemble 在 D2 |
 

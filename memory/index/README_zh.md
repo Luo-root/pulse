@@ -8,7 +8,7 @@ P2-D1 的派生检索索引：embedding provider seam + 向量索引（内存版
 idx, err := index.NewMemIndex(memStore, myProvider) // provider 宿主注入
 err = idx.Upsert(ctx, item)                          // 写入方在 store.Put 后调
 err = idx.Remove(ctx, oldID)                         // Supersede/Revoke 后调
-hits, err := idx.Search(ctx, ns, "deploy", 10)       // 先过滤再 top-k
+hits, err := idx.Search(ctx, ns, "deploy", 10)       // 先过滤再 top-k（[]ScoredHit：Item + Score 余弦）
 err = idx.Rebuild(ctx)                               // 全量重建（索引丢失兜底）
 
 async, err := index.NewAsyncIndexer(idx, 64)         // 异步队列：写路径不阻塞
@@ -20,7 +20,7 @@ n := async.Dropped()                                 // 丢弃数（Rebuild 兜�
 ## 不变式
 
 - **派生索引可丢**：索引只存 `item_id → (vector, namespace)` 拷贝；`Rebuild` 全量从 store 重 embed（原子替换）。删除/损坏索引不损失任何 canonical item——验收钉第一条。
-- **namespace 先过滤再召回**（§8.2）：授权过滤在相似度排序之前——兄弟 namespace 的 item 向量再近也不出现在结果（不泄漏存在性，不可见项也不挤占 top-k）。命中后回 store 复核 `Status==Active`（写入方同步窗口的 fail safe）。
+- **namespace 先过滤再召回**（§8.2）：授权过滤在相似度排序之前——兄弟 namespace 的 item 向量再近也不出现在结果（不泄漏存在性，不可见项也不挤占 top-k）。命中后回 store 复核 `Status==Active`（写入方同步窗口的 fail safe）。`Search` 返回 `[]ScoredHit`（Item + Score 余弦，降序）——D2 起 assemble 的 hybrid 融合把它当 semantic 路消费（装配层包成 `assemble.DefaultAssembler.Semantic` 函数 seam 接线，见 assemble README）。
 - **索引只放 Active**：`Upsert` 非 Active 等价 `Remove`；状态同步靠写入方（import 图 index → store 单向，store 不知道 index 存在）。
 - **维度由 provider 钉死**：首次成功 embed 定维度，其后不符 → `ErrDimsMismatch`（fail closed；换 provider/模型必须 `Rebuild`）。
 - **embed 输入 = Content**：`Structured` 领域载荷不进向量（与 C2/C3「Structured 不入检索域」口径一致）。
