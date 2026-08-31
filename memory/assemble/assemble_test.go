@@ -272,6 +272,50 @@ func TestFusionConfidenceAndTaint(t *testing.T) {
 	}
 }
 
+// TestFusionConfidenceClamp：w_conf 输入归一（clamp01）——store 只强制
+// Active conf > 0、无上限，conf=5 未归一时以 1.3 碾碎双路命中 0.65；
+// clamp 后与 conf=1 同分（审稿必修项的回归锁）。
+func TestFusionConfidenceClamp(t *testing.T) {
+	a := &DefaultAssembler{
+		Semantic: func(ctx context.Context, ns []string, q string, k int) ([]store.MemoryItem, []float64, error) {
+			return []store.MemoryItem{item("b", store.KindEpisode, "b")}, []float64{0.9}, nil
+		},
+	}
+	var diag []Diagnostic
+	in := AssembleInput{Namespace: []string{"tenant:a"}, Query: "deploy"}
+	inflated := item("a", store.KindEpisode, "a")
+	inflated.Confidence = 5 // store 无上限校验；排序侧必须 clamp
+	plain := item("k", store.KindEpisode, "k")
+	ranked := a.fuseAndRank(t.Context(), in, []store.MemoryHit{{Item: inflated}, {Item: plain}}, DefaultRankingWeights, &diag)
+	// clamp 后：b = 0.45+0.2 = 0.65；a = k = 0.3+0.2 = 0.5（tie → ID asc）。
+	if ranked[0].ID != "b" {
+		t.Fatalf("ranked[0] = %s, want double-path hit b（conf=5 未归一时会以 1.3 碾碎 0.65）", ranked[0].ID)
+	}
+	if ranked[1].ID != "a" || ranked[2].ID != "k" {
+		t.Fatalf("ranked = %v, want [b a k]（clamp 后 a=k=0.5，ID asc）", []string{ranked[0].ID, ranked[1].ID, ranked[2].ID})
+	}
+}
+
+// TestSemanticFiltersInactive：semantic 路非 Active 过滤——seam 是任意
+// 宿主函数，契约之外的实现可能不复核状态，融合层兜底（审稿建议 2）。
+func TestSemanticFiltersInactive(t *testing.T) {
+	a := &DefaultAssembler{
+		Semantic: func(ctx context.Context, ns []string, q string, k int) ([]store.MemoryItem, []float64, error) {
+			active := item("v1", store.KindEpisode, "v1")
+			superseded := item("v2", store.KindEpisode, "v2")
+			superseded.Status = store.StatusSuperseded
+			revoked := item("v3", store.KindEpisode, "v3")
+			revoked.Status = store.StatusRevoked
+			return []store.MemoryItem{active, superseded, revoked}, []float64{0.9, 0.9, 0.9}, nil
+		},
+	}
+	var diag []Diagnostic
+	ranked := a.fuseAndRank(t.Context(), AssembleInput{Namespace: []string{"tenant:a"}, Query: "deploy"}, nil, DefaultRankingWeights, &diag)
+	if len(ranked) != 1 || ranked[0].ID != "v1" {
+		t.Fatalf("ranked = %+v, want only active v1（非 Active 不进融合）", ranked)
+	}
+}
+
 // TestFusionTiebreak：同分 → UpdatedAt 降序 → ID 升序（确定性）。
 func TestFusionTiebreak(t *testing.T) {
 	a := &DefaultAssembler{}

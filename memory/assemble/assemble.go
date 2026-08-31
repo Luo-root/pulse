@@ -86,7 +86,8 @@ type DefaultAssembler struct {
 	// Semantic 是可选的向量召回函数 seam（§8.2 hybrid 的 semantic 路，
 	// D2）：返回 items 与 scores 平行数组（等长，score 为余弦相似度）。
 	// nil = keyword-only。装配层把 memory/index 的 VectorIndex 包成该
-	// 函数接线——四接口解耦（§17 决议 4），本包不 import index。
+	// 函数接线——四接口解耦（§17 决议 4），生产路径不 import index
+	//（E2E 测试缝合除外）。
 	Semantic func(ctx context.Context, ns []string, query string, k int) ([]store.MemoryItem, []float64, error)
 	// Ranking 是 §8.2 融合权重（nil = DefaultRankingWeights）。
 	Ranking *RankingWeights
@@ -313,6 +314,11 @@ func (a *DefaultAssembler) fuseAndRank(ctx context.Context, in AssembleInput, kw
 		default:
 			*diag = append(*diag, Diagnostic{Region: "retrieved", Reason: fmt.Sprintf("recall via semantic seam (%d hits)", len(items))})
 			for i, it := range items {
+				// 非 Active 过滤：seam 是任意宿主函数，契约之外的实现
+				// 可能不复核状态——融合层兜底（与 index 复核同口径）。
+				if it.Status != store.StatusActive {
+					continue
+				}
 				f, ok := m[it.ID]
 				if !ok {
 					f = &fused{item: it}
@@ -331,7 +337,7 @@ func (a *DefaultAssembler) fuseAndRank(ctx context.Context, in AssembleInput, kw
 	for i := range list {
 		list[i].score = w.Keyword*b2f(list[i].lexical) +
 			w.Semantic*list[i].sim +
-			w.Confidence*float64(list[i].item.Confidence) -
+			w.Confidence*clamp01(float64(list[i].item.Confidence)) -
 			w.Taint*taintPen(list[i].item)
 	}
 	sort.SliceStable(list, func(i, j int) bool {

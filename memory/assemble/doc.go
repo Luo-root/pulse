@@ -12,9 +12,10 @@
 //   - 本轮立即应用的记忆走 Injected（明确 session injected context，
 //     紧贴当前消息），不修改已缓存稳定前缀；
 //   - 检索排序（§8.2 hybrid，D2）：keyword ∪ semantic（可选函数
-//     seam，四接口解耦——本包不 import index）双路召回按 ID 去重，
-//     融合评分 w_semantic/w_keyword/w_conf/w_taint（默认 0.5/0.3/
-//     0.2/0.3，宿主经 Ranking 覆盖）；recency/ID 为 tiebreaker；
+//     seam，四接口解耦——生产路径不 import index，E2E 测试缝合除外）
+//     双路召回按 ID 去重，融合评分 w_semantic/w_keyword/w_conf/w_taint
+//     （默认 0.5/0.3/0.2/0.3，宿主经 Ranking 覆盖；sim/conf 均 clamp01
+//     归一）；recency/ID 为 tiebreaker；
 //   - 每条注入记忆带 SourceRefs 可读引用模板——避免模型把低置信候选
 //     当成无条件事实（§8.2）。
 //

@@ -25,7 +25,7 @@ ac, err := a.Assemble(ctx, assemble.AssembleInput{
 
 ### 接入向量路（D2 hybrid，可选）
 
-assemble 不 import index（§17 决议 4「四接口解耦」）——装配层把 `index.VectorIndex` 包成函数 seam 接进来：
+assemble 生产路径不 import index（§17 决议 4「四接口解耦」；E2E 测试缝合除外）——装配层把 `index.VectorIndex` 包成函数 seam 接进来：
 
 ```go
 memIdx, _ := index.NewMemIndex(memStore, provider)
