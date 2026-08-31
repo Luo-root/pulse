@@ -114,6 +114,7 @@ type Report struct {
 // 作用域钉死在 Options.Namespace（scope 防污染同 selfedit）。
 type Pipeline struct {
 	opt Options
+	m   metrics // D4 指标面：累计动作计数（atomic，metrics.go）
 }
 
 // New 创建候选管线（显式装配；本包默认关——无后台循环，调用时机归宿主）。
@@ -140,13 +141,19 @@ func (p *Pipeline) Extract(ctx context.Context, surface []*llm.Message) ([]store
 	// 存量/候选两侧同口径）后已有 item 的 Content 包含候选 → 丢弃（子
 	// 串冗余即重复，超集不拦——超集归 Supersede 修订语义）。全量扫而
 	// 不用 store 子串查询作粗筛：store 的 asciiFold 不收紧空白，存量侧
-	// 脏数据（双空格等）会被漏拦——双归一必须在内存做。
+	// 脏数据（双空格等）会被漏拦——双归一必须在内存做。判定集 = 存量
+	// 归一快照 + 本轮已入库候选的归一（随入库追加）——快照不含本轮
+	// 写入，缺后者批次内重复会漏拦。
 	existing, err := p.opt.Store.Search(ctx, store.MemoryQuery{
 		Namespace:       p.opt.Namespace,
 		IncludeInactive: true,
 	})
 	if err != nil {
 		return nil, rep, fmt.Errorf("candidate: dedup search: %w", err)
+	}
+	norms := make([]string, 0, len(existing)+len(proposals))
+	for _, h := range existing {
+		norms = append(norms, normalize(h.Item.Content))
 	}
 	accepted := make([]store.MemoryItem, 0, len(proposals))
 	for _, prop := range proposals {
@@ -161,8 +168,8 @@ func (p *Pipeline) Extract(ctx context.Context, surface []*llm.Message) ([]store
 		}
 		norm := normalize(content)
 		dup := false
-		for _, h := range existing {
-			if strings.Contains(normalize(h.Item.Content), norm) {
+		for _, n := range norms {
+			if strings.Contains(n, norm) {
 				dup = true
 				break
 			}
@@ -194,8 +201,15 @@ func (p *Pipeline) Extract(ctx context.Context, surface []*llm.Message) ([]store
 			return accepted, rep, fmt.Errorf("candidate: put: %w", err)
 		}
 		accepted = append(accepted, saved)
+		norms = append(norms, norm) // 批次内去重：本轮入库进判定集
 		rep.Stored++
 	}
+	// D4 指标面：整轮成功才累计（错误中断的批次不计——宿主重试成功后
+	// 完整计一轮；rep 已是本轮完整计数）。
+	p.m.extracted.Add(uint64(rep.Extracted))
+	p.m.stored.Add(uint64(rep.Stored))
+	p.m.duplicates.Add(uint64(rep.Duplicates))
+	p.m.invalid.Add(uint64(rep.Invalid))
 	return accepted, rep, nil
 }
 
@@ -259,6 +273,7 @@ func (p *Pipeline) Approve(ctx context.Context, id string) (store.MemoryItem, er
 	if err != nil {
 		return store.MemoryItem{}, fmt.Errorf("candidate: approve: %w", err)
 	}
+	p.m.approved.Add(1)
 	return saved, nil
 }
 
@@ -281,6 +296,10 @@ func (p *Pipeline) Reject(ctx context.Context, id, reason string) error {
 	}
 	if err := p.opt.Store.Revoke(ctx, id, reason); err != nil {
 		return fmt.Errorf("candidate: reject: %w", err)
+	}
+	p.m.rejected.Add(1)
+	if old.Taint == store.TaintUntrustedExt {
+		p.m.rejectedUntrusted.Add(1) // ASI06 污染闸实证（仅 untrusted-external 档）
 	}
 	return nil
 }

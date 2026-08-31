@@ -179,6 +179,27 @@ func TestExtractDedupDirtyExisting(t *testing.T) {
 	}
 }
 
+// TestExtractDedupWithinBatch：批次内重复同样拦住——判定集含本轮已
+// 入库候选（存量快照不含本轮写入，缺后者批次内重复会漏拦）。
+func TestExtractDedupWithinBatch(t *testing.T) {
+	p, _ := newPipeline(t, func(o *Options) {
+		o.Extractor = &fakeExtractor{items: []store.MemoryItem{
+			prop("lesson", "same note"),
+			prop("lesson", "same  note"), // 归一后与第一条相同 → 批次内重复
+		}}
+	})
+	stored, rep, err := p.Extract(t.Context(), surface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep != (Report{Extracted: 2, Stored: 1, Duplicates: 1}) {
+		t.Fatalf("report = %+v, want {2,1,1,0}", rep)
+	}
+	if len(stored) != 1 || stored[0].Content != "same note" {
+		t.Fatalf("stored = %+v, want first only", stored)
+	}
+}
+
 // TestExtractSkipsInvalid：空 Content / Structured 非法 JSON 计 Invalid，
 // 不中断批次。
 func TestExtractSkipsInvalid(t *testing.T) {
@@ -408,5 +429,91 @@ func TestNewValidation(t *testing.T) {
 	}
 	if _, err := New(Options{Store: base.Store, Extractor: base.Extractor, Namespace: []string{"tenant:a", " "}, OriginFn: origin}); err == nil {
 		t.Fatal("empty namespace element must fail")
+	}
+}
+
+// TestMetricsExtractCounts：D4 指标面——Extract 计数（累计语义；错误轮
+// 不计）。
+func TestMetricsExtractCounts(t *testing.T) {
+	p, _ := newPipeline(t, func(o *Options) {
+		o.Extractor = &fakeExtractor{items: []store.MemoryItem{
+			prop("lesson", "alpha one"),
+			prop("lesson", "alpha one"), // 去重
+			prop("lesson", "  "),        // Invalid
+		}}
+	})
+	if _, _, err := p.Extract(t.Context(), surface); err != nil {
+		t.Fatal(err)
+	}
+	m := p.Metrics()
+	if m.Extracted != 3 || m.Stored != 1 || m.Duplicates != 1 || m.Invalid != 1 {
+		t.Fatalf("metrics = %+v, want {3,1,1,1}", m)
+	}
+	// 二轮同内容：前两条与存量重复、空内容仍 Invalid → 累计口径。
+	if _, _, err := p.Extract(t.Context(), surface); err != nil {
+		t.Fatal(err)
+	}
+	m = p.Metrics()
+	if m.Extracted != 6 || m.Stored != 1 || m.Duplicates != 3 || m.Invalid != 2 {
+		t.Fatalf("metrics = %+v, want cumulative {6,1,3,2}", m)
+	}
+}
+
+// TestMetricsApprovalCounts：批准/否决计数；默认 taint（untrusted-
+// external）被拒计入 RejectedUntrusted。
+func TestMetricsApprovalCounts(t *testing.T) {
+	p, _ := newPipeline(t, func(o *Options) {
+		o.Extractor = &fakeExtractor{items: []store.MemoryItem{
+			prop("lesson", "approve me"),
+			prop("lesson", "reject me"),
+		}}
+	})
+	stored, _, err := p.Extract(t.Context(), surface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Approve(t.Context(), stored[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Reject(t.Context(), stored[1].ID, "noisy"); err != nil {
+		t.Fatal(err)
+	}
+	m := p.Metrics()
+	if m.Approved != 1 || m.Rejected != 1 || m.RejectedUntrusted != 1 {
+		t.Fatalf("metrics = %+v, want approved=1 rejected=1 untrusted=1", m)
+	}
+}
+
+// TestMetricsRejectUserSuppliedNotUntrusted：user-supplied 被拒不算污染
+// 闸实证——RejectedUntrusted 仅 untrusted-external 档计入（票 #92 补强）。
+func TestMetricsRejectUserSuppliedNotUntrusted(t *testing.T) {
+	p, _ := newPipeline(t, func(o *Options) {
+		o.Extractor = &fakeExtractor{items: []store.MemoryItem{prop("lesson", "user said so")}}
+		o.Taint = store.TaintUserSupplied
+	})
+	stored, _, err := p.Extract(t.Context(), surface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Reject(t.Context(), stored[0].ID, "noisy"); err != nil {
+		t.Fatal(err)
+	}
+	m := p.Metrics()
+	if m.Rejected != 1 || m.RejectedUntrusted != 0 {
+		t.Fatalf("metrics = %+v, want rejected=1 untrusted=0", m)
+	}
+}
+
+// TestMetricsErrorRoundNotCounted：错误轮不计数（Extract 整轮失败零累计
+// ——宿主重试成功后完整计一轮）。
+func TestMetricsErrorRoundNotCounted(t *testing.T) {
+	p, _ := newPipeline(t, func(o *Options) {
+		o.Extractor = &fakeExtractor{err: errors.New("llm offline")}
+	})
+	if _, _, err := p.Extract(t.Context(), surface); err == nil {
+		t.Fatal("extract must fail")
+	}
+	if m := p.Metrics(); m.Extracted != 0 || m.Stored != 0 || m.Duplicates != 0 || m.Invalid != 0 {
+		t.Fatalf("metrics = %+v, want zero（错误轮不计数）", m)
 	}
 }
