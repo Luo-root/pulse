@@ -75,7 +75,7 @@ v2 的目标：把 Cordis 的思想以 Go 的方式重新实现为 pulse 的内�
 ```go
 // 作用域与效应
 root := kernel.New()
-child := root.Derive()                    // 子作用域：父销毁级联，子销毁不伤父
+child := root.Derive()                    // 子作用域：父销毁级联，子销毁不伤父（示意；实际签名 (*Context).Derive() (*Context, error)，以代码为准）
 d, err := ctx.Effect(func() (func(), error) {
     ln, _ := net.Listen(...)              // 装载动作
     return func() { ln.Close() }, nil     // 撤销动作（登记即跟踪）

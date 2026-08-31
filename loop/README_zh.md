@@ -10,7 +10,7 @@ Agent 接收对话历史与本轮输入，驱动「模型 ↔ 工具」直到模
 
 | 不做 | 归谁 |
 |---|---|
-| 会话存储 | 调用方持有 `history`；P2 session 再补 |
+| 会话存储 | 调用方持有 `history`；会话真相见 [`memory/session`](../memory/session/README_zh.md)（P2 已落地，loop 不 import memory） |
 | 重试 / failover | 上层编排；`llm.KindOf` 是弹药 |
 | 硬接某家模型或某套工具 | 只依赖 `llm.ChatModel` 与 `ToolSet` |
 | 填齐请求采样/限长字段 | Agent 组请求主要带 Messages/Tools；Temperature / **MaxTokens** 等由调用方经 `before_generate` 或显式 `GenerateRequest` 补齐 |

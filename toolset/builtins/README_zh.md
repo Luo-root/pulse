@@ -2,7 +2,7 @@
 
 通用基础工具，经 `toolset.Registry` 挂入 `pulse.tools`。
 
-中性命名：`read` / `ls` / `glob` / `grep` / `exec` / `edit` / `write` / `apply_patch` / `web_fetch` / `web_search` / `question`。
+中性命名：`read` / `ls` / `glob` / `grep` / `exec` / `edit` / `write` / `apply_patch` / `web_fetch` / `web_search` / `question` / `job_output` / `job_kill`。
 
 ## 上手
 
