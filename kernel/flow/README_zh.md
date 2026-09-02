@@ -312,7 +312,7 @@ g := flow.New(ctx, flow.WithObserver(obs))
 
 - 每节点 Waiting/Running/Finished 至多一次；`Retry` 多次 attempt 不重复打点。
 - observer panic **不得**变成节点失败。
-- 桥侧常见落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；节点身份放 `FiberName`（不扩官方信封）。见 `examples/03-flow-agent`。
+- 桥侧常见落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；节点身份放 `FiberName`（不扩官方信封）。见 `examples/04-flow`（记录定义在 `examples/internal/demoapp/bridge.go`，04-flow README 已表格化）。
 
 ## 声明式装图（E2）
 
@@ -324,7 +324,7 @@ g := flow.New(ctx, flow.WithObserver(obs))
 
 ### 图结束后没有公开读槽 API
 
-`Graph` 没有 Run 后的公开 `Get`。叶子若不能双 Provide 同一输出 Key（单生产者），又不能靠 AND 汇聚两条 Final（Skip 会级联吃掉汇聚节点），示例层可用闭包写出终端结果——这是**契约权宜**，不是「输出都走闭包」的惯例。详见 [`examples/04-flow-dag/README.md`](../../examples/04-flow-dag/README.md)「闭包写 Final」三条约束。
+`Graph` 没有 Run 后的公开 `Get`。叶子若不能双 Provide 同一输出 Key（单生产者），又不能靠 AND 汇聚两条 Final（Skip 会级联吃掉汇聚节点），示例层可用闭包写出终端结果——这是**契约权宜**，不是「输出都走闭包」的惯例。详见 [`examples/04-flow/README.md`](../../examples/04-flow/README.md)「闭包写 Final」三条约束。
 
 ## 声明期校验
 

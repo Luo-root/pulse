@@ -16,7 +16,7 @@
 
 `index.NewMemIndex(memStore, provider)`——canonical 在 store，索引可丢可重建（`Rebuild`）。**写入方负责 store 写后 `Upsert`**（import 图 index → store 单向的代价，漏调只影响召回）。Search 是「namespace 先过滤再召回」：授权判定发生在相似度排序之前。
 
-demo 的 `demoProvider` 是词表 one-hot 假实现；真实项目换 `memory/index/openai`（OpenAI 兼容 embeddings）或自研，调用侧零改动。
+demo 的 `demoProvider` 是词表 one-hot 假实现（首维恒 0.1——刻意规避全零向量：余弦相似度对零向量未定义，demo 复改时别把这句去掉）；真实项目换 `memory/index/openai`（OpenAI 兼容 embeddings）或自研，调用侧零改动。
 
 ### ③ assemble：把记忆装进请求
 
