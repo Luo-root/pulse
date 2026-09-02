@@ -10,7 +10,7 @@ import (
 	"github.com/Luo-root/pulse/observability"
 )
 
-// 槽位：classify 用 FactGate/ChatGate 做分支（Set 一边 Skip 一边）。
+// DAG 分支图：classify 用 FactGate/ChatGate 做分支（Set 一边 Skip 一边）。
 // 不设 Intent Key：意图只用于分支门闩与摘要，门闩已编码分支，避免死槽。
 // Final 不进双 Provide：answer / smalltalk 经共用闭包写出（见 README「闭包写 Final」）。
 var (
@@ -21,57 +21,6 @@ var (
 	WebDocs    = flow.NewKey[[]Document]("demo04.web_docs")
 	MergedDocs = flow.NewKey[[]Document]("demo04.merged_docs")
 )
-
-// Document 是内存假检索命中。
-type Document struct {
-	Source  string
-	Title   string
-	Content string
-}
-
-// Retriever 可注入延迟/错误，便于并行与失败测试。
-type Retriever interface {
-	Search(ctx context.Context, query string, limit int) ([]Document, error)
-}
-
-type memoryRetriever struct {
-	source string
-	docs   []Document
-	delay  time.Duration
-	err    error
-}
-
-func (r memoryRetriever) Search(ctx context.Context, query string, limit int) ([]Document, error) {
-	if r.delay > 0 {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(r.delay):
-		}
-	}
-	if r.err != nil {
-		return nil, r.err
-	}
-	q := strings.ToLower(strings.TrimSpace(query))
-	if q == "" {
-		return nil, nil
-	}
-	var out []Document
-	for _, doc := range r.docs {
-		hay := strings.ToLower(doc.Title + " " + doc.Content)
-		if strings.Contains(hay, q) {
-			d := doc
-			if d.Source == "" {
-				d.Source = r.source
-			}
-			out = append(out, d)
-			if limit > 0 && len(out) >= limit {
-				break
-			}
-		}
-	}
-	return out, nil
-}
 
 func classifyIntent(text string) string {
 	t := strings.ToLower(text)

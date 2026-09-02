@@ -9,7 +9,7 @@ Go library (`github.com/Luo-root/pulse`) — an AI Agent framework under v2 reco
 ```bash
 go build ./...          # verify compilation
 go test ./...           # run all tests
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/ ./examples/03-flow-agent/ ./examples/04-flow-dag/ ./examples/05-tools-sources/   # v2 core + flow/tools examples
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/ ./examples/04-flow/ ./examples/07-production/   # v2 core + flow/tools examples
 ```
 
 - Requires **Go 1.25.0+** (toolchain auto-downloads if missing).
@@ -31,7 +31,7 @@ observability/              # v2 正式观测包：Bootstrap + Record + Sink（�
 textsplit/                  # 独立文本分块：尺寸预算+分隔符优先级（段落>句读>空白>硬切）+字节 offset；index/openai 与未来长文本模块共用
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1 / memory-layer-v1
                            # 未列出的 memory-layer 草稿不存在；P2 记忆层事实源是 memory-layer-research-and-v2-design.md（含 §17 补遗）
-examples/                   # 01–05 渐进示例
+examples/                   # 00–07 渐进示例（8 课：kernel→chat→react→hitl→flow→memory-session→memory-agent→production）
   internal/demoapp/         # 示例私有装配层（库包本身无 internal/；此处不违反「库无 internal」）
   skills/                   # 示例 Skill 材料（历史私有 frontmatter 键会被装载器忽略）
 ```

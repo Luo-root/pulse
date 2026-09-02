@@ -18,14 +18,13 @@ import (
 	mcpsrc "github.com/Luo-root/pulse/toolset/mcp"
 )
 
-func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "05-tools-sources: %v\n", err)
-		os.Exit(1)
-	}
+// RunSourcesDemo 演示三路工具装配（本地 toolset + MCP Source + Skills）
+// 与一次聚合工具回合。07 课把工具来源聚合进生产形态入口（main.go）。
+func RunSourcesDemo() error {
+	return runSources()
 }
 
-func run() error {
+func runSources() error {
 	host := kernel.New()
 	defer host.Dispose()
 
@@ -38,7 +37,7 @@ func run() error {
 	reg := demo.Reg
 	metas := demo.Metas
 	defs := reg.AsToolSet().Definitions()
-	fmt.Println("=== 05-tools-sources：三路装配对照 ===")
+	fmt.Println("=== 07-production：三路装配对照 ===")
 	fmt.Println()
 	fmt.Println("[1] toolset 本地注册 → pulse.tools")
 	fmt.Println("    lookup, delete_file")
