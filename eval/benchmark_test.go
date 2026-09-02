@@ -30,7 +30,7 @@ import (
 //	                         （每轮 user/assistant 两条事件 Append）。
 //
 // 运行：go test -bench . -benchmem -run '^$' ./eval/
-// 数字是单机参考值（见 PR 跑分记录），比的是**同机分层差值**，不是绝对值。
+// 数字是单机参考值：比的是同机分层差值，不是绝对值，不作通用结论。
 
 // nopSink 是黑洞 Sink：benchmark 只测框架路径开销，不让 MemorySink 的
 // 无限增长污染 allocs 口径。
