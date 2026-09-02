@@ -86,7 +86,7 @@ Pulse 评测叙事的差异化锚点由此确定：
 
 ## 5. 三步走评测策略
 
-三步全部要做，排序由依赖关系决定：第二步的 harness 复用第一步的 mock 基建，第三步成本高且依赖前两步建立的可信度。
+三步全部要做：第二步**不依赖**第一步（property tests 只吃进程内断言，无需 mock 基建，可并行甚至先行——#99 即证）；第三步依赖前两步建立的可信度，且成本高，排在最后。
 
 ### 5.1 第一步：基建 benchmark（不依赖真实 LLM）
 
@@ -95,6 +95,8 @@ Pulse 评测叙事的差异化锚点由此确定：
 **怎么测**：mock LLM（ScriptedModel 已具备）+ 固定任务集 + 逐请求计数。生产路径优先原则：测量代码直接跑各框架的生产入口，不另写旁路工具；Pulse 侧已有 `observability.Record`（含 Duration/Usage）作为数据面。
 
 **产出**：Go 框架第一份同口径成本/延迟对比表（CLEAR 的 Cost/Latency 维度），公开 harness 与原始数据。
+
+**成本**：CI 内跑完，无 API 开销（mock LLM 零网络）；Go 内战对比票引入外部框架依赖时另评构建成本。
 
 ### 5.2 第二步：工程能力 property tests（确定性断言）
 
@@ -108,6 +110,8 @@ Pulse 评测叙事的差异化锚点由此确定：
 **怎么测**：Go 原生 property testing（快速生成器 + 不变式断言），CI 可跑、无需外部依赖。
 
 **产出**：一套公开的「agent 框架工程可靠性检查表」——竞品可以直接拿来测自己，测不过的项就是 Pulse 的证据。这是把设计文档里的不变式变成行业口径的动作。
+
+**成本**：CI 内跑完，无 API 开销（纯进程内断言，零外部依赖）。
 
 ### 5.3 第三步：能力基准（GAIA / tau-bench）
 
@@ -126,9 +130,11 @@ Pulse 评测叙事的差异化锚点由此确定：
 
 ## 7. 后续票拆分（实现时逐票开）
 
-1. `eval/harness`：mock LLM 基建 + 固定任务集 + 计数面（第一步）；
-2. `eval/property`：工程能力 property test 套件（第二步，可先于 1）；
-3. HAL / tau-bench 接入票（第三步，依赖 1 的口径与凭据管理）。
+包布局按实际落地更新（#99 拍板顶层扁平 `eval/`，不建子包）：
+
+1. ~~工程能力 property test 套件~~——已落地（#99 → PR #100，`eval/` 四主题测试文件）；
+2. 基建 benchmark：Pulse 分层开销基线（裸 Generate → Registry 装配 → loop.Agent → session 持久化，`eval/benchmark_test.go`）先行；Go 内战对比（Eino 等外部依赖）另票；
+3. HAL / tau-bench 接入票（第三步，依赖 2 的口径与凭据管理）。
 
 ## 8. 来源清单
 
