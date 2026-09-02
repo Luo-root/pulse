@@ -92,6 +92,24 @@ func main() {
 
 更多模型、流式、多模态、推理参数、能力矩阵与错误处理见 [`llm/README_zh.md`](llm/README_zh.md)；HITL 事件示例见 [`loop/README_zh.md`](loop/README_zh.md)。
 
+## 性能基准
+
+框架基建开销有同机同任务的量化对比：[`eval/war`](eval/war/README_zh.md)（独立嵌套 module，[Issue #103](https://github.com/Luo-root/pulse/issues/103)）——Pulse 全家桶生产装配 vs Eino v0.9.19 官方生产入口，等薄 stub 模型对齐，正确性哨兵断言每个任务真实跑通（i9-14900HX / Go 1.25；**比量级与倍数区间，不比个位数**）：
+
+| 任务 | Pulse | Eino v0.9.19 | 倍数区间 |
+|---|---|---|---|
+| T1 文本回合（复用：装配一次，纯运行） | 3.6 µs / 22 allocs | 36.6–40.9 µs / 407 allocs | **~10–11×** |
+| T1 文本回合（冷启动：每轮重建） | 10.5–10.7 µs / 139 allocs | 38.8–39.0 µs / 425 allocs | **~3.7×** |
+| T2 工具往返（冷启动上界） | 15.1–15.9 µs / 177 allocs | 116.4–117.7 µs / 1364 allocs | **~7.4–7.7×** |
+| T3 线性链编排（3 透传节点） | 8.6–8.9 µs / 73 allocs | 17.9–18.1 µs / 323 allocs | **~2.0×** |
+| T4 分支汇聚 DAG（1 源→2 分支→AND join） | 9.0–9.3 µs / 73 allocs | 30.3–37.9 µs / 411–462 allocs（Graph 键化 fan-in / Workflow 字段映射两变体） | **~3.3–4.1×** |
+
+数字口径、复现命令与完整解读见 [`eval/war/README_zh.md`](eval/war/README_zh.md)。相对真实 LLM 调用（秒级）这些差值都可忽略——量化的是架构选择的基础价格，不是「对方不可用」的判断。三条要点：
+
+1. **编排 fan-out 免费**：flow 的 AND 槽位让分支汇聚几乎不加价——DAG（T4）与线性链（T3）同价同 allocs；Eino 的 join 调度较其自身线性链贵 ~1.7×，`compose.Workflow` 字段映射再 +15–20%。
+2. **DAG 数据流显式**：flow 节点在构造处声明 Requires / Provides（Key + 槽位三态），分支汇聚的依赖关系写在节点签名上；`compose.Graph` 同拓扑要靠 AllPredecessor 触发模式 + `WithOutputKey` 键化 + map 默认合并等运行期机制拼出汇聚语义，`compose.Workflow` 再叠加一层字段映射——同等拓扑下数据流语义更隐式。
+3. **与 kernel 分层组装**：flow 不 import kernel，可零依赖独立跑图（T3/T4 即此形态）；需要时在装配层把 kernel 宿主 / 服务以闭包注入节点，编排步骤内直接取用注册能力（T1/T2 的 Agent 回合即 kernel 全家桶形态）。另有 [`kernel/flow/yaml`](kernel/flow/yaml/README_zh.md) 声明式装图——独立运行、kernel 组装、YAML 声明三种用法正交，按场景组合。
+
 ## v2 架构
 
 ```text
@@ -161,6 +179,7 @@ textsplit/                 文本分块（index/openai 与长文本模块共用�
 memory/                    P2 记忆与会话（session / compaction / store / assemble / selfedit / index / candidate / reflection）
 observability/             v2 正式观测包（Bootstrap / Record / Sink）
 docs/design/               架构设计与迁移文档（Accepted）
+eval/                      分层基准（#102）/ property tests / eval/war 跨框架对比（独立 go.mod）
 examples/                  00–07 渐进示例 + internal/demoapp 装配层
 ```
 
