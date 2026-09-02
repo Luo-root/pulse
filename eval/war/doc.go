@@ -14,11 +14,12 @@
 //     T2 工具往返（user → assistant(tool_call) → 执行 → 回填 → assistant）。
 //     工具本体同样最薄：一次 map 写计数 + 返回固定 JSON。
 //   - **构造计入（上界口径）**：脚本化 stub 耗尽后停在末条，两步脚本
-//     必须每轮重建模型与 agent——两边构造都计入，数字是各自「含构造的
-//     完整回合上界」，上界 vs 上界对比有效。
+//     必须每轮重建**全套装配**（Pulse 含 kernel 宿主与 Registry；Eino 含
+//     agent 与 runner）——两边构造都计入，数字是各自「含构造的完整回合
+//     上界」，上界 vs 上界对比有效。
 //   - **生产入口**：Pulse 用 loop.Agent.Run；Eino 用 adk.Runner.Run
 //     （ADK 官方指示 agent.Run 不直接用于生产）——各框架生产装配链。
-//   - **事件面**：两边都不挂观测监听（Pulse 不装 Bootstrap 桥；Eino 不
-//     配 callback）——测的是框架核心路径，不含观测旁路（Pulse 观测开销
-//     已在 #102 L1 层单独量化）。
+//   - **事件面**：观测出口为黑洞（Pulse 挂 Bootstrap(nopSink)——生产装配
+//     链的一环，不落任何记录；Eino 不配 callback）——两边各自携带自身的
+//     事件机器常量开销，测的是框架核心路径。
 package war
