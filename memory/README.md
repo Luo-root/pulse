@@ -4,7 +4,7 @@
 
 The P2 "memory & session" layer (design source of truth: [docs/design/memory-layer-research-and-v2-design.md](../docs/design/memory-layer-research-and-v2-design.md), Accepted). This package is Pulse v2's memory infrastructure: **9 sub-packages cover the full chain "session truth → context projection → compaction governance → long-term memory → retrieval injection → automatic distillation → approval promotion"**, and all P2 tickets (phases A/B/C/D) have landed and been merged.
 
-Each sub-package has its own `README_zh.md` (interface surface / semantics / error quick reference) and `doc.go` (godoc) — this document is the **global view**: problem inventory, end-to-end data flow, the complete dependency graph, cross-package invariants, and assembly bridge points. Read this first to build the map before diving into any sub-package.
+Each sub-package has its own `README_zh.md` / `README.md` pair (interface surface / semantics / error quick reference) and `doc.go` (godoc) — this document is the **global view**: problem inventory, end-to-end data flow, the complete dependency graph, cross-package invariants, and assembly bridge points. Read this first to build the map before diving into any sub-package.
 
 ## What problem does this layer solve
 
