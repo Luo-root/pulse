@@ -109,7 +109,7 @@ export default defineConfig({
   lang: 'zh-CN',
   title: 'Pulse',
   description: 'Go AI Agent 框架——可逆效应与依赖响应式的插件内核，v2 核心已以 v0.1.0 预览发布',
-  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }]],
+  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/pulse/favicon.svg' }]], // head 里的自定义 link 不吃 base 自动前缀，硬编码（与 base 同步）
   locales: { root: zh, en },
   // v1.x dead-link checker 会把「目录尾斜杠链接」(/dir/) 规范化为 /dir/index 后查路由表，
   // 而路由表条目是目录形式 → 纯误报（GH Pages 与 SPA 运行时均正确解析尾斜杠目录链接）。

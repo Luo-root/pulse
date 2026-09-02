@@ -34,8 +34,9 @@ function* walk(dir) {
   }
 }
 
-function rewriteLinks(md, srcRelDir, lang) {
-  // 处理 [text](target) 行内链接（不含图片 ![…]；图片统一走 GitHub blob，下方一并处理）
+function rewriteLinks(md, srcRelDir, lang, pageDirs) {
+  // 处理 [text](target) 行内链接（不含图片 ![…]；图片统一走 GitHub，下方一并处理）
+  // pageDirs：该语言已有站点页面的包目录集合（相对仓库根的 POSIX 路径）
   return md.replace(/(!?)\[((?:[^\]\\\n]|\[[^\]]*\])*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (full, bang, text, target) => {
     if (/^(https?:)?\/\//.test(target) || target.startsWith('#') || target.startsWith('mailto:')) {
       return full
@@ -45,11 +46,11 @@ function rewriteLinks(md, srcRelDir, lang) {
     const anchor = anchorParts.length ? `#${anchorParts.join('#')}` : ''
     // 解析相对路径 → 仓库相对路径
     const absPosix = posix.normalize(posix.join(srcRelDir.replaceAll('\\', '/'), pathPart))
-    let repoPath = absPosix
     if (absPosix.startsWith('../')) {
       // 超出仓库根（不应发生）：原样保留
       return full
     }
+    const pkgPrefix = lang === 'en' ? `${BASE}en/packages/` : `${BASE}packages/`
     const isReadme = /(^|\/)README(_zh)?\.md$/.test(absPosix)
     if (isReadme) {
       // 包 README 互引 → 站点路由（根 README → 站点首页）
@@ -57,8 +58,16 @@ function rewriteLinks(md, srcRelDir, lang) {
       if (dir === '.') {
         return `${bang}[${text}](${lang === 'en' ? BASE + 'en/' : BASE}${anchor})`
       }
-      if (lang === 'en') return `${bang}[${text}](${BASE}en/packages/${dir}/${anchor})`
-      return `${bang}[${text}](${BASE}packages/${dir}/${anchor})`
+      return `${bang}[${text}](${pkgPrefix}${dir}/${anchor})`
+    }
+    // 目录链接（尾斜杠或无扩展名）：目标目录在本语言有站点页 → 站内路由；否则回退 GitHub
+    const looksLikeDir = pathPart.endsWith('/') || !/\.[A-Za-z0-9]+$/.test(pathPart)
+    if (looksLikeDir) {
+      const dir = absPosix.replaceAll('\\', '/').replace(/\/$/, '')
+      if (dir !== '.' && pageDirs.has(dir)) {
+        return `${bang}[${text}](${pkgPrefix}${dir}/${anchor})`
+      }
+      return `${bang}[${text}](${GITHUB}/${absPosix}${anchor})`
     }
     if (bang === '!') {
       // 图片：走 GitHub raw（blob 也能渲染，raw 更直接）
@@ -74,7 +83,7 @@ function firstHeading(md) {
   return m ? m[1].trim() : null
 }
 
-function convert(srcFile, lang) {
+function convert(srcFile, lang, pageDirs) {
   const rel = relative(repoDir, srcFile)
   const relPosix = rel.replaceAll('\\', '/')
   if (relPosix === 'README.md' || relPosix === 'README_zh.md') return null // 根 README 跳过
@@ -89,7 +98,7 @@ function convert(srcFile, lang) {
   md = md.split('\n').filter((line, i) => !(i === 0 && NAV_LINE.test(line.trim()))).join('\n')
   // 首个 H1 降级为 frontmatter title（避免每页重复大标题与侧栏冲突）——保留 H1，VitePress 页面需要
   const title = firstHeading(md) ?? relDir
-  md = rewriteLinks(md, relDir, lang)
+  md = rewriteLinks(md, relDir, lang, pageDirs)
   const fm = `---\ntitle: "${title.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"\n---\n\n`
   // zh 是 root locale：页面落在 site/packages/...（URL /packages/...）；en 落在 site/en/packages/...
   const dest = join(siteDir, lang === 'en' ? 'en' : '.', 'packages', relDir, 'index.md')
@@ -98,14 +107,32 @@ function convert(srcFile, lang) {
   return dest
 }
 
-let n = 0
-// 先清理旧生成物（防落点调整 / 源 README 删除后的残留）
-for (const stale of [join(siteDir, 'packages'), join(siteDir, 'en', 'packages'), join(siteDir, 'zh')]) {
-  rmSync(stale, { recursive: true, force: true })
+// ---- Pass 1：收集双语 README 目录清单（供目录链接的站内路由判定）----
+const readmeByLang = { zh: new Map(), en: new Map() } // relDir → srcFile
+for (const f of walk(repoDir)) {
+  const rel = relative(repoDir, f).replaceAll('\\', '/')
+  if (rel === 'README.md' || rel === 'README_zh.md') continue // 根 README 不收录
+  if (rel.endsWith('README_zh.md')) readmeByLang.zh.set(posix.dirname(rel), f)
+  else if (rel.endsWith('README.md')) readmeByLang.en.set(posix.dirname(rel), f)
 }
+
+let n = 0
+// 先清理旧生成物（防落点调整 / 源 README 删除后的残留）——保留手写的 packages/index.md 总览页
+function cleanGenerated(dir) {
+  if (!existsSync(dir)) return
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name)
+    if (name === 'index.md') continue // 手写总览页不动
+    rmSync(p, { recursive: true, force: true })
+  }
+}
+cleanGenerated(join(siteDir, 'packages'))
+cleanGenerated(join(siteDir, 'en', 'packages'))
+rmSync(join(siteDir, 'zh'), { recursive: true, force: true })
 for (const lang of ['zh', 'en']) {
-  for (const f of walk(repoDir)) {
-    if (convert(f, lang)) n++
+  const pageDirs = new Set(readmeByLang[lang].keys())
+  for (const [, f] of readmeByLang[lang]) {
+    if (convert(f, lang, pageDirs)) n++
   }
 }
 console.log(`sync-docs: wrote ${n} pages from repo READMEs`)
