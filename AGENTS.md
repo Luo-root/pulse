@@ -2,7 +2,7 @@
 
 ## What this is
 
-Go library (`github.com/Luo-root/pulse`) — an AI Agent framework under v2 reconstruction. The v2 core is `kernel/` (plugin kernel + `kernel/flow` dataflow), `llm/` (provider-neutral model vocabulary + adapters), `loop/` (stateless ReAct turn executor), `toolset/` (reversible tool registry adapting to `loop.ToolSet`) and `skills/` (Agent Skills loader per agentskills.io). The entire v1 `components/` tree has been removed. `pulse.go` at root is a stub (`package pulse`); it is not an entrypoint.
+Go library (`github.com/Luo-root/pulse`) — an AI Agent framework; the v2 core has landed and ships as the v0.1.0 preview. The v2 core is `kernel/` (plugin kernel + `kernel/flow` dataflow), `llm/` (provider-neutral model vocabulary + adapters), `loop/` (stateless ReAct turn executor), `toolset/` (reversible tool registry adapting to `loop.ToolSet`) and `skills/` (Agent Skills loader per agentskills.io). The entire v1 `components/` tree has been removed. `pulse.go` at root is a stub (`package pulse`); it is not an entrypoint.
 
 ## Build & test
 
@@ -30,6 +30,7 @@ skills/                     # v2 Skills 装载器（agentskills.io）；Skill �
 observability/              # v2 正式观测包：Bootstrap + Record + Sink（只依赖 kernel）
 textsplit/                  # 独立文本分块：尺寸预算+分隔符优先级（段落>句读>空白>硬切）+字节 offset；index/openai 与未来长文本模块共用
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1 / memory-layer-v1
+eval/                      # 评测：分层基准（#102）+ property tests + eval/war 跨框架对比（独立 go.mod，Issue #103）
                            # 未列出的 memory-layer 草稿不存在；P2 记忆层事实源是 memory-layer-research-and-v2-design.md（含 §17 补遗）
 examples/                   # 00–07 渐进示例（8 课：kernel→chat→react→hitl→flow→memory-session→memory-agent→production）
   internal/demoapp/         # 示例私有装配层（库包本身无 internal/；此处不违反「库无 internal」）
