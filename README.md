@@ -5,9 +5,9 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25.0-blue.svg)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**Pulse** is a Go AI Agent framework undergoing a v2 rewrite.
+**Pulse** is a Go AI Agent framework, shipping its v2 core as a preview (v0.1.0).
 
-The v2 kernel is built on reversible effects and dependency-reactive loading: a plugin kernel, a model adapter layer, and a stateless ReAct turn executor land first. The v1 Agent, legacy model adapters, DAG, memory, HITL, and telemetry implementations have been removed entirely; everything going forward is rewritten around the v2 kernel with no compatibility layer.
+The v2 kernel is built on reversible effects and dependency-reactive loading. The core rewrite has landed: a plugin kernel, a provider-neutral model layer, a stateless ReAct turn executor, the tool & skills system, the memory layer (sessions, compaction, long-term store, assembly), observability, and declarative flow orchestration. The v1 Agent, legacy model adapters, DAG, memory, HITL, and telemetry implementations were removed entirely with no compatibility layer; APIs may still adjust during the preview window.
 
 ## Current Capabilities
 
