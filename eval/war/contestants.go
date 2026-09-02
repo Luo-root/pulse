@@ -9,21 +9,39 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/loop"
+	"github.com/Luo-root/pulse/observability"
 )
 
 // ---- Pulse 参赛方 ----
 
+// nopSink 是黑洞观测出口：装配 observability.Bootstrap 需要一个 Sink，
+// benchmark 只测框架路径开销，不让 MemorySink 的无限增长污染 allocs 口径。
+type nopSink struct{}
+
+func (nopSink) Write(observability.Record) {}
+
 // pulseToolHits 是 Pulse 侧工具执行计数（副作用痕迹，断言用）。
 var pulseToolHits int
 
-// runPulseTextRound 跑一轮 Pulse 完整生产装配的单步文本回合：每轮重建
-// ScriptedModel + Agent（脚本耗尽语义，构造计入 = 上界口径，与 Eino 侧
-// 对齐）。装配链 = #102 分层基线的 L2a 口径。
+// runPulseTextRound 跑一轮 Pulse **全家桶生产装配**的单步文本回合：kernel
+// 宿主 + observability.Bootstrap（nopSink 黑洞）+ llm.Plugin（Registry 装载
+// + observed 包装）+ 命名实例 Declare/Open + 请求 scope——即 #102 分层基线
+// 的 **L2a 口径**。模型与 Agent 的重建每轮进行（脚本耗尽语义，构造计入 =
+// 上界口径，与 Eino 侧对齐）；kernel/Registry/sink 是装配期一次性的。
 func runPulseTextRound(ctx context.Context) error {
-	model := llm.NewScripted(llm.Resp("done"))
-	agent, err := loop.NewAgent(model)
+	host := kernel.New()
+	defer host.Dispose()
+	if _, err := kernel.Use(host, observability.Bootstrap("war", nopSink{})); err != nil {
+		return err
+	}
+	model, scope, err := assemblePulseRegistry(host, llm.Resp("done"))
+	if err != nil {
+		return err
+	}
+	agent, err := loop.NewAgent(model, loop.WithEventScope(scope))
 	if err != nil {
 		return err
 	}
@@ -37,14 +55,54 @@ func runPulseTextRound(ctx context.Context) error {
 	return nil
 }
 
-// runPulseToolRound 跑一轮 Pulse 完整生产装配的工具往返（含工具声明进
-// 请求、执行、结果回填）：每轮重建 ScriptedModel + Agent + 工具计数复位。
-// 装配链 = #102 分层基线的 L2b 口径。
+// assemblePulseRegistry 装配 llm.Registry（Plugin + scripted provider +
+// Declare/Open），返回打开的模型与请求 scope。对应 #102 的 L1 装配层。
+// steps 是该 provider 的响应脚本（按任务区分：文本回合给纯文本，工具
+// 回合给 [tool_calls, done]——每轮重建 host，脚本首次 Run 完整消费）。
+func assemblePulseRegistry(host *kernel.Context, steps ...*llm.Response) (llm.ChatModel, *kernel.Context, error) {
+	if _, err := kernel.Use(host, llm.Plugin()); err != nil {
+		return nil, nil, err
+	}
+	reg, ok := kernel.Get(host, llm.ServiceKey)
+	if !ok {
+		return nil, nil, fmt.Errorf("war: pulse registry missing")
+	}
+	if _, err := reg.RegisterProvider(host, "scripted", func(llm.Config) (llm.ChatModel, error) {
+		return llm.NewScripted(steps...), nil
+	}); err != nil {
+		return nil, nil, err
+	}
+	if err := reg.Declare("main", llm.Config{Provider: "scripted", Model: "scripted"}); err != nil {
+		return nil, nil, err
+	}
+	model, err := reg.Open("main")
+	if err != nil {
+		return nil, nil, err
+	}
+	scope, err := host.Derive()
+	if err != nil {
+		return nil, nil, err
+	}
+	return model, scope, nil
+}
+
+// runPulseToolRound 跑一轮 Pulse **全家桶生产装配**的工具往返：L1 装配 +
+// MemToolSet 注册 + Agent 挂请求 scope——即 #102 分层基线的 **L2b 口径**
+// （tool_calls → 执行 → 结果回填 → 最终回答）。每轮重建模型与 Agent（上界
+// 口径，与 Eino 侧对齐）。
 func runPulseToolRound(ctx context.Context) error {
-	model := llm.NewScripted(
+	host := kernel.New()
+	defer host.Dispose()
+	if _, err := kernel.Use(host, observability.Bootstrap("war", nopSink{})); err != nil {
+		return err
+	}
+	model, scope, err := assemblePulseRegistry(host,
 		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "lookup", Arguments: json.RawMessage(`{}`)}),
 		llm.Resp("done"),
 	)
+	if err != nil {
+		return err
+	}
 	tools := loop.NewMemToolSet()
 	if err := tools.Register(llm.ToolDef{
 		Name:        "lookup",
@@ -56,7 +114,7 @@ func runPulseToolRound(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	agent, err := loop.NewAgent(model, loop.WithToolSet(tools))
+	agent, err := loop.NewAgent(model, loop.WithToolSet(tools), loop.WithEventScope(scope))
 	if err != nil {
 		return err
 	}
@@ -71,9 +129,6 @@ func runPulseToolRound(ctx context.Context) error {
 }
 
 // ---- Eino 参赛方 ----
-
-// einoToolHits 是 Eino 侧工具执行计数。
-var einoToolHits int
 
 // runEinoTextRound 跑一轮 Eino 完整生产装配的单步文本回合：ChatModelAgent
 // + Runner（ADK 官方生产入口）——每轮重建 stub 模型与 agent（与 Pulse 侧
@@ -96,7 +151,7 @@ func runEinoTextRound(ctx context.Context) error {
 			break
 		}
 		if event.Err != nil {
-			return err
+			return event.Err
 		}
 	}
 	return nil
@@ -142,7 +197,7 @@ func runEinoToolRound(ctx context.Context) error {
 	if !sawTool {
 		return fmt.Errorf("eino tool round: no tool call observed")
 	}
-	if einoToolHits == 0 && wt.hits == 0 {
+	if wt.hits == 0 {
 		return fmt.Errorf("eino tool round: tool never executed")
 	}
 	return nil

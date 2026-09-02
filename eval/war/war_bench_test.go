@@ -6,12 +6,15 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
+	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/loop"
+	"github.com/Luo-root/pulse/observability"
 )
 
-// BenchmarkWar_PulseTextRound T1 单步文本回合：Pulse 全生产装配，每轮重建
-// 模型与 Agent（上界口径，构造计入）。
+// BenchmarkWar_PulseTextRound T1 单步文本回合（冷启动口径）：Pulse 全家桶
+// 生产装配每轮重建（kernel 宿主 + Registry + observed + scope + 模型 +
+// Agent），度量「从零装配到跑完一个回合」的完整价格。
 func BenchmarkWar_PulseTextRound(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()
@@ -23,13 +26,22 @@ func BenchmarkWar_PulseTextRound(b *testing.B) {
 	}
 }
 
-// BenchmarkWar_PulseTextRoundReused T1 复用版：装配一次（模型 + Agent），
-// 循环只跑回合——把「构造成本」从运行成本中剥离（单条脚本耗尽后停在末
-// 条，每轮返回同一文本，复用语义成立）。与 #102 L2a 同口径。
+// BenchmarkWar_PulseTextRoundReused T1 复用版：全家桶装配一次（kernel 宿主
+// + observability + llm.Registry + observed 模型 + 请求 scope，Agent 复用），
+// 循环只跑回合——把构造成本从运行成本中剥离。单条脚本耗尽后停在末条
+// （每轮返回同一文本），复用语义成立。对齐 #102 L2a 原味口径。
 func BenchmarkWar_PulseTextRoundReused(b *testing.B) {
 	ctx := context.Background()
-	model := llm.NewScripted(llm.Resp("done"))
-	agent, err := loop.NewAgent(model)
+	host := kernel.New()
+	defer host.Dispose()
+	if _, err := kernel.Use(host, observability.Bootstrap("war", nopSink{})); err != nil {
+		b.Fatal(err)
+	}
+	model, scope, err := assemblePulseRegistry(host, llm.Resp("done"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	agent, err := loop.NewAgent(model, loop.WithEventScope(scope))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -108,7 +120,6 @@ func BenchmarkWar_EinoToolRound(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		einoToolHits = 0
 		if err := runEinoToolRound(ctx); err != nil {
 			b.Fatal(err)
 		}
