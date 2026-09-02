@@ -63,7 +63,12 @@ func (t *sessionTrust) grant(name string) {
 	t.always[name] = true
 }
 
+// names 列出已授权工具名（回合摘要用）。**nil 安全**与 trusted 对称：
+// denylist/allowlist/off 模式下 trust 为 nil，回调里照样能调。
 func (t *sessionTrust) names() []string {
+	if t == nil {
+		return nil
+	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	out := make([]string, 0, len(t.always))

@@ -52,7 +52,7 @@ go run ./examples/03-hitl
 1. **scope 对齐**：每轮 `reqScope` 与 Agent 共用；loop 用 `WaterfallLocal` 派发 `before_tool_call`，监听装在别的 scope 什么也听不到。监听随 `reqScope.Dispose()` 自动摘除。
 2. **拒绝 = 改写 `BeforeToolCall`，不调 next**：`btc.Rejected = true` + `RejectReason` 后直接返回 `btc`；放行才 `next(btc)`。loop 把 Rejected 转成 IsError 工具结果回传——**回合不失败**，模型可自行改道并向你解释。
 3. **fail-closed**：审批输入不可读（`ReadLine` 出错且无输入）时按拒绝处理，绝不静默放行。
-4. **trust 与 scope 分离**：`sessionTrust` 由 REPL 外层持有、逐轮传入 `installHITL`——reqScope 销毁不影响 trust 对象，`a` 授予的会话白名单在后续轮次仍生效。`sessionTrust.trusted` 对 nil 接收者安全（返回 false），不装审批的调用方可以直接传 nil。
+4. **trust 与 scope 分离**：`sessionTrust` 由 REPL 外层持有、逐轮传入 `installHITL`——reqScope 销毁不影响 trust 对象，`a` 授予的会话白名单在后续轮次仍生效。`trusted` / `names` 对 nil 接收者安全（返回 false / nil）——denylist 等不建 trust 的模式下，回合摘要回调照样会调 `names()`；漏保护一个方法就是 nil panic（本课 README 初稿就栽在这，实跑抓出来的）。
 5. **LineSource 共享**：REPL 与审批器共享同一个 `demoapp.NewLineSource`（单一行缓冲、同一 goroutine 顺序消费），审批时的 `y/n/a` 不会被 REPL 预读缓冲抢走。多 Agent 并发审批需要服务化通道，demo 不伪装支持。
 
 两份名单变量语义相反、不互相复用：denylist 只读 `PULSE_DEMO_DENY_TOOL`（拒绝谁），allowlist 只读 `PULSE_DEMO_ALLOW_TOOL`（只许谁）——`installHITL` 的参数注释把这条写死。
