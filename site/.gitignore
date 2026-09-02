@@ -1,0 +1,6 @@
+node_modules/
+.vitepress/cache/
+.vitepress/dist/
+# 同步脚本生成的包文档页面（单源 = 仓库各包 README，构建时生成）
+/packages/*/
+/en/packages/*/
