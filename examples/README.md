@@ -46,7 +46,7 @@ go test ./examples/...
 ## 观测日志
 
 - **装配期**（各课共用）：`observability.Bootstrap` → `MemorySink` / `SlogSink`，字段见 [`observability/README_zh.md`](../observability/README_zh.md)。
-- **运行期**：`demoapp.Bridge` 把 llm/loop/flow 事实折进同一 Sink（`source=bridge`，必填 `trace_id`）。
+- **运行期**：观测桥把 llm/loop/flow 事实折进同一 Sink（`source=bridge`，必填 `trace_id`）——02 课手写 `reqBridge` 教学，03 课起复用 `demoapp.Bridge` 封装版。
 - 隐私边界：记录**元数据**（次数、字节长度、耗时、状态），不记录 prompt 内容、附件内容、密钥和思维链。
 
 ## 当前不做
@@ -56,6 +56,6 @@ go test ./examples/...
 
 ## 设计说明
 
-- `examples/internal/demoapp` 是课程私有的装配层桥（kernel 装配、REPL、HITL、观测桥），**库包本身无 internal**——此处不违反「库无 internal」约定。
-- 每课的 `main.go` 刻意保持「能读一遍」的长度；复杂度都沉淀进 demoapp 或对应包。
+- `examples/internal/demoapp` 是课程私有的装配层（REPL 壳、`.env` 加载、封装版 Bridge/HITL），**库包本身无 internal**——此处不违反「库无 internal」约定。
+- 教学节奏：01–03 关键实现（装配链 / Bridge / HITL）在课内**手写展开**，demoapp 封装版是它们的对照原型；04 起复用封装版，每课 `main.go` 刻意保持「能读一遍」的长度，复杂度沉淀进 demoapp 或对应包。
 - 遇到 API 疑问：每个正式包的 `README_zh.md` 是事实源，`doc.go` 是 godoc 入口。

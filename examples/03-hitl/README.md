@@ -45,13 +45,17 @@ go run ./examples/03-hitl
 2. **fail-closed**。审批输入不可读（如 EOF）时按拒绝处理，绝不静默放行。
 3. **阻塞安全的前提（已在代码里解决）**。REPL 与审批器共享同一个 `LineSource`（单一行缓冲、同一 goroutine 顺序消费），审批时的 `y/n/a` 不会被 REPL 预读缓冲抢走。多 Agent 并发审批是服务化通道的范畴，demo 不伪装支持。
 
-## 实现形态：监听器而非插件
+## 手写 HITL：监听器 + 会话信任表
 
-HITL 的实现是挂在**请求 scope** 上的 `kernel.OnWaterfall` 监听器（`demoapp.InstallHITLWithTrust`）+ 会话信任表，不是独立 Plugin：
+本课把 `demoapp.InstallHITLWithTrust` 完整展开成 `installHITL`。实现是挂在**请求 scope** 上的 `kernel.OnWaterfall` 监听器 + 会话信任表，不是独立 Plugin。手写时要注意五件事：
 
-- 每轮 `reqScope` 与 Agent / Bridge 共用；loop 用 `WaterfallLocal` 派发 `before_tool_call`，所以监听必须装在同一 scope，否则听不到；
-- 监听随 `reqScope.Dispose()` 自动摘除；
-- `trust` 跨轮传入 `InstallHITLWithTrust`：reqScope 销毁不影响 trust 对象，`a` 授予的会话白名单在后续轮次仍生效。
+1. **scope 对齐**：每轮 `reqScope` 与 Agent 共用；loop 用 `WaterfallLocal` 派发 `before_tool_call`，监听装在别的 scope 什么也听不到。监听随 `reqScope.Dispose()` 自动摘除。
+2. **拒绝 = 改写 `BeforeToolCall`，不调 next**：`btc.Rejected = true` + `RejectReason` 后直接返回 `btc`；放行才 `next(btc)`。loop 把 Rejected 转成 IsError 工具结果回传——**回合不失败**，模型可自行改道并向你解释。
+3. **fail-closed**：审批输入不可读（`ReadLine` 出错且无输入）时按拒绝处理，绝不静默放行。
+4. **trust 与 scope 分离**：`sessionTrust` 由 REPL 外层持有、逐轮传入 `installHITL`——reqScope 销毁不影响 trust 对象，`a` 授予的会话白名单在后续轮次仍生效。`sessionTrust.trusted` 对 nil 接收者安全（返回 false），不装审批的调用方可以直接传 nil。
+5. **LineSource 共享**：REPL 与审批器共享同一个 `demoapp.NewLineSource`（单一行缓冲、同一 goroutine 顺序消费），审批时的 `y/n/a` 不会被 REPL 预读缓冲抢走。多 Agent 并发审批需要服务化通道，demo 不伪装支持。
+
+两份名单变量语义相反、不互相复用：denylist 只读 `PULSE_DEMO_DENY_TOOL`（拒绝谁），allowlist 只读 `PULSE_DEMO_ALLOW_TOOL`（只许谁）——`installHITL` 的参数注释把这条写死。
 
 ## 工具与边界
 
@@ -64,7 +68,7 @@ HITL 的实现是挂在**请求 scope** 上的 `kernel.OnWaterfall` 监听器（
 go test ./examples/internal/demoapp/ -run HITL -v
 ```
 
-覆盖：模式解析、denylist 放行/拒绝、allowlist default-deny、interactive 的 y/n/a 三分支、`a` 后同会话自动放行、EOF fail-closed。真人键鼠路径属手动验收：启动后看到横幅 `hitl=interactive` 再触发删除类请求，终端会停在审批提示等待按键（光标停在 `>` 后不是卡死）。
+覆盖对象是 demoapp 封装版：模式解析、denylist 放行/拒绝、allowlist default-deny、interactive 的 y/n/a 三分支、`a` 后同会话自动放行、EOF fail-closed。手写 `installHITL` 与封装版同语义，靠四个模式实跑验证；真人键鼠路径属手动验收：启动后看到横幅 `hitl=interactive` 再触发删除类请求，终端会停在审批提示等待按键（光标停在 `>` 后不是卡死）。
 
 无凭据时 ScriptedModel 回放固定脚本（lookup → delete_file → 总结）；interactive 模式下脚本第二步会真的停下来等按键。
 

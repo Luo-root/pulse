@@ -1,6 +1,6 @@
 # 02-react
 
-验证 `loop.Agent` 的核心语义：**ReAct 工具回合、多轮 history、流式输出**。前一层（01-chat）的 kernel + Registry 装配在本层原样复用，不重复验证。审批（HITL）是下一课的独立主题——本课只装只读工具、零监听，先看清循环本身。
+验证 `loop.Agent` 的核心语义：**ReAct 工具回合、多轮 history、流式输出**，以及本课主角——**手写一个运行期观测桥**（reqBridge：把一次请求的观测事实聚合进同一个 Sink）。装配链在 01 已手写展开，本课复用 `demoapp.Open` 封装版；审批（HITL）是下一课的独立主题——本课只装只读工具，先看清循环本身与观测怎么接。
 
 ## 本课依赖
 
@@ -38,16 +38,30 @@ Registry 带来两样 MemToolSet 没有的东西：**Risk/Source 元数据**（0
 ## 每轮请求的标准形态：reqScope + Bridge + Agent
 
 ```go
-reqScope, _ := host.Ctx.Derive()   // 每轮独立子作用域
+reqScope, _ := host.Ctx.Derive()      // 每轮独立子作用域
 defer reqScope.Dispose()
-bridge, _ := host.NewBridge(reqScope)  // 运行期观测桥（trace_id 每轮独立）
+bridge := newReqBridge(host.Sink, host.HostID(), host.NewTraceID())
+bridge.install(reqScope)              // 本课手写：监听挂 reqScope
 agent, _ := loop.NewAgent(host.Model,
     loop.WithToolSet(tools),
-    loop.WithEventScope(reqScope), // Local 派发：监听与 Agent 同 scope 才听得到
+    loop.WithEventScope(reqScope),    // Local 派发：监听与 Agent 同 scope 才听得到
 )
 ```
 
 这是 02 起所有课程的标准形态：tool / turn / llm 事件走 `EmitLocal`/`WaterfallLocal`，请求之间不串扰；`reqScope.Dispose()` 随手清干净本轮监听。
+
+## 手写 Bridge：一次请求的观测聚合
+
+`reqBridge` 是 `demoapp.Bridge` 的教学展开，四个设计决定各回答一个问题：
+
+1. **生命周期为什么 = 请求？** 监听挂在 reqScope 上，Dispose 自动摘除——桥对象不需要 Close，本轮监听也不会泄漏进下一轮。
+2. **两层标识怎么分？** HostID 宿主稳定（装配期一次生成）；TraceID 每请求独立，且**只从 `host.NewTraceID()` 单一生成源拿**——桥自己不另造序号，跨系统对账才对得上。
+3. **Waterfall 和 On 怎么选？** `BeforeGenerate` 是 Waterfall：链上可改写请求（本课用它兜底注入 Anthropic MaxTokens），**礼仪是拿到参数后调用 `next(req)` 放行**——不调 next 会中断链上后续监听；`AfterResponse` / `AfterToolCall` / `TurnEnd` 是普通 On 事件：只观察，不修改。
+4. **官方 Record 不扩字段怎么记 token？** token 数等装不进信封的指标走 `slog` 附加键（`token usage` / `turn summary`）；桥事件名遵守 `<组件>.<事实>` 点分约定（`llm.generate_finished` / `loop.tool_finished` / `react.summary`），Sink 聚合时天然分组。
+
+`AfterToolCall` 的三态值得注意：`completed` / `rejected` / `failed`——**rejected 是 HITL 的拒绝，不算 crash**，是独立状态（03 课接手）。
+
+03 课起复用 demoapp 封装版 Bridge——那是你在这里亲手写过一遍的东西。
 
 ## 多轮 history 归属
 
