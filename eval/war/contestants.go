@@ -226,20 +226,33 @@ func assistantToolCall(id, name, args string) *schema.Message {
 // Compile/Run，构造计入），与 T1/T2 冷启动一致。
 //
 // 等价性声明：
-//   - T3：3 个透传节点串联，输入字符串原样流到输出；
+//   - T3：3 个透传节点串联，输入字符串原样流到终端（sanity 断言输出保真）；
 //   - T4：1 源 → 2 并行分支 → AND 汇聚（join 等两路输入齐才跑）→ 拼接
-//     输出。Pulse 用 AND 槽位语义（Requires 两个 key）；Eino 用
-//     AllPredecessor 触发模式（多入边 fan-in 成 []string）——语义对齐点。
-//   - 生产入口：Pulse 用 kernel/flow 的 Graph（Add/Seed/Run）；Eino 用
-//     compose.Chain（T3）与 compose.Workflow（T4，字段映射 AND 汇聚）。
+//     输出。Pulse 用 AND 槽位语义（Requires 两个 key）；Eino 侧跑两个
+//     等价变体：
+//       a) compose.Graph + AllPredecessor：分支输出经 WithOutputKey 键化，
+//          join 输入 map[string]any——多入边合并走 map 默认合并函数
+//          （string 值的裸 fan-in 才需要 RegisterValuesMergeFunc，map 类型
+//          开箱即用）；这是「join 调度价」的基准；
+//       b) compose.Workflow：START 接线 + ToField 字段映射填 join 的
+//          map[string]string——官方开箱 DAG 姿势，额外含字段映射/类型
+//          推断的价格（a、b 两数字之差 = Workflow 字段映射税）。
+//   - 复用语义不对称：flow Graph 是一次性运行（Run 提交全部节点并阻塞
+//     到全部终止，实例即废）；Eino Runnable 可 Compile 一次 Invoke N 次。
+//     T3/T4 是单次运行口径（Eino 的 Compile 计入每轮）；宿主复用
+//     Runnable 的场景下 Eino 每轮数字会低于表中值。
+//   - 生产入口：Pulse 用 kernel/flow 的 Graph（Add/Seed/Run，无 kernel
+//     宿主——flow 可独立使用）；Eino 用 compose.Chain（T3）/ Graph 与
+//     Workflow（T4）独立 Compile/Invoke（同样无容器）。装配深度对齐。
 
-// runPulseFlowChain T3：Pulse kernel/flow 三节点线性链。
-func runPulseFlowChain(ctx context.Context) error {
+// runPulseFlowChain T3：Pulse kernel/flow 三节点线性链。末节点为汇聚
+// sink（Requires 终端 key、不 Provides，闭包写出终端值）——与 T4 join
+// 同一模式，Graph 无 Run 后公开读槽（flow README 声明的契约权宜）。
+func runPulseFlowChain(ctx context.Context) (string, error) {
 	g := flow.New(ctx)
 	kIn := flow.NewKey[string]("in")
 	k1 := flow.NewKey[string]("m1")
 	k2 := flow.NewKey[string]("m2")
-	kOut := flow.NewKey[string]("out")
 	pass := func(in, out flow.Key[string]) func(*flow.RunCtx) error {
 		return func(rc *flow.RunCtx) error {
 			v, err := flow.Get(rc, in)
@@ -249,23 +262,34 @@ func runPulseFlowChain(ctx context.Context) error {
 			return flow.Set(rc, out, v)
 		}
 	}
+	var out string
 	for _, n := range []*flow.Node{
 		flow.NewNode("n1", flow.Requires[string](kIn), flow.Provides[string](k1), pass(kIn, k1)),
 		flow.NewNode("n2", flow.Requires[string](k1), flow.Provides[string](k2), pass(k1, k2)),
-		flow.NewNode("n3", flow.Requires[string](k2), flow.Provides[string](kOut), pass(k2, kOut)),
+		flow.NewNode("n3", flow.Requires[string](k2), nil, func(rc *flow.RunCtx) error {
+			v, err := flow.Get(rc, k2)
+			if err != nil {
+				return err
+			}
+			out = v
+			return nil
+		}),
 	} {
 		if err := g.Add(n); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if err := flow.Seed(g, kIn, "war payload"); err != nil {
-		return err
+		return "", err
 	}
-	return g.Run()
+	if err := g.Run(); err != nil {
+		return "", err
+	}
+	return out, nil
 }
 
 // runEinoChain T3：Eino compose.Chain 三节点线性链。
-func runEinoChain(ctx context.Context) error {
+func runEinoChain(ctx context.Context) (string, error) {
 	pass := compose.InvokableLambda(func(_ context.Context, s string) (string, error) {
 		return s, nil
 	})
@@ -275,10 +299,9 @@ func runEinoChain(ctx context.Context) error {
 	c.AppendLambda(pass)
 	r, err := c.Compile(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
-	_, err = r.Invoke(ctx, "war payload")
-	return err
+	return r.Invoke(ctx, "war payload")
 }
 
 // runPulseFlowDAG T4：Pulse kernel/flow 分支汇聚（1 源 Seed → 2 并行分支
@@ -328,12 +351,52 @@ func runPulseFlowDAG(ctx context.Context) (string, error) {
 	return out, nil
 }
 
-// runEinoDAG T4：Eino compose.Workflow 分支汇聚——Workflow 是 Eino 的显式
-// 依赖 + 字段映射 DAG（底层 AllPredecessor 触发）：START 整输出喂给 a/b 两
-// 个透传节点；join 的输入 map[string]string 由 a/b 两路输出经 ToField 字段
-// 映射填充（= AND 汇聚语义）。注：compose.Graph 的裸多入边 fan-in 对
-// string 需内部 MergeFunc 注册（外部 module 不可达），Workflow 字段映射是
-// 官方开箱姿势。
+// runEinoDAGGraph T4 变体 a：Eino compose.Graph + AllPredecessor——分支
+// 输出经 WithOutputKey 键化，join 输入 map[string]any（多入边合并走 map
+// 默认合并函数；string 裸 fan-in 才需要 RegisterValuesMergeFunc）。测
+// 「join 调度价」，与 Workflow 变体之差 = 字段映射税。
+func runEinoDAGGraph(ctx context.Context) (string, error) {
+	pass := compose.InvokableLambda(func(_ context.Context, s string) (string, error) {
+		return s, nil
+	})
+	join := compose.InvokableLambda(func(_ context.Context, m map[string]any) (string, error) {
+		return m["a"].(string) + m["b"].(string), nil
+	})
+	g := compose.NewGraph[string, string]()
+	if err := g.AddLambdaNode("a", pass, compose.WithOutputKey("a")); err != nil {
+		return "", err
+	}
+	if err := g.AddLambdaNode("b", pass, compose.WithOutputKey("b")); err != nil {
+		return "", err
+	}
+	if err := g.AddLambdaNode("join", join); err != nil {
+		return "", err
+	}
+	for _, e := range [][2]string{
+		{compose.START, "a"}, {compose.START, "b"},
+		{"a", "join"}, {"b", "join"},
+		{"join", compose.END},
+	} {
+		if err := g.AddEdge(e[0], e[1]); err != nil {
+			return "", err
+		}
+	}
+	r, err := g.Compile(ctx, compose.WithNodeTriggerMode(compose.AllPredecessor))
+	if err != nil {
+		return "", err
+	}
+	out, err := r.Invoke(ctx, "war payload")
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// runEinoDAG T4 变体 b：Eino compose.Workflow 分支汇聚——Workflow 是
+// Eino 的显式依赖 + 字段映射 DAG（底层同为 AllPredecessor 触发）：START
+// 整输出喂给 a/b 两个透传节点；join 的输入 map[string]string 由 a/b 两
+// 路输出经 ToField 字段映射填充。与 Graph 变体（runEinoDAGGraph）语义
+// 等价，差价 = 字段映射/类型推断在 Compile 与 Invoke 两端的额外成本。
 func runEinoDAG(ctx context.Context) (string, error) {
 	pass := compose.InvokableLambda(func(_ context.Context, s string) (string, error) {
 		return s, nil

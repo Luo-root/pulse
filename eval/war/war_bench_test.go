@@ -135,7 +135,7 @@ func BenchmarkWar_PulseFlowChain(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := runPulseFlowChain(ctx); err != nil {
+		if _, err := runPulseFlowChain(ctx); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -148,7 +148,7 @@ func BenchmarkWar_EinoChain(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := runEinoChain(ctx); err != nil {
+		if _, err := runEinoChain(ctx); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -167,8 +167,23 @@ func BenchmarkWar_PulseFlowDAG(b *testing.B) {
 	}
 }
 
-// BenchmarkWar_EinoDAG T4 分支汇聚：Eino compose.Workflow（AddLambdaNode +
-// ToField 字段映射 AND 汇聚），每轮重建（冷启动口径）。
+// BenchmarkWar_EinoDAGGraph T4 分支汇聚（Eino 变体 a）：compose.Graph +
+// AllPredecessor + WithOutputKey 键化 fan-in——测「join 调度价」；与
+// Workflow 变体（BenchmarkWar_EinoDAG）之差 = Workflow 字段映射税。每轮
+// 重建（冷启动口径）。
+func BenchmarkWar_EinoDAGGraph(b *testing.B) {
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := runEinoDAGGraph(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkWar_EinoDAG T4 分支汇聚（Eino 变体 b）：compose.Workflow
+//（AddLambdaNode + ToField 字段映射 AND 汇聚），每轮重建（冷启动口径）。
 func BenchmarkWar_EinoDAG(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()
@@ -200,11 +215,19 @@ func TestWarSanity(t *testing.T) {
 		t.Fatalf("eino tool: %v", err)
 	}
 	// 编排任务：输出正确性断言（透传链保真 + DAG 拼接）。
-	if err := runPulseFlowChain(ctx); err != nil {
+	chainOut, err := runPulseFlowChain(ctx)
+	if err != nil {
 		t.Fatalf("pulse flow chain: %v", err)
 	}
-	if err := runEinoChain(ctx); err != nil {
+	if want := "war payload"; chainOut != want {
+		t.Fatalf("pulse flow chain out = %q, want %q", chainOut, want)
+	}
+	einoChainOut, err := runEinoChain(ctx)
+	if err != nil {
 		t.Fatalf("eino chain: %v", err)
+	}
+	if want := "war payload"; einoChainOut != want {
+		t.Fatalf("eino chain out = %q, want %q", einoChainOut, want)
 	}
 	out, err := runPulseFlowDAG(ctx)
 	if err != nil {
@@ -212,6 +235,13 @@ func TestWarSanity(t *testing.T) {
 	}
 	if want := "war payloadwar payload"; out != want {
 		t.Fatalf("pulse flow dag out = %q, want %q", out, want)
+	}
+	graphOut, err := runEinoDAGGraph(ctx)
+	if err != nil {
+		t.Fatalf("eino graph dag: %v", err)
+	}
+	if want := "war payloadwar payload"; graphOut != want {
+		t.Fatalf("eino graph dag out = %q, want %q", graphOut, want)
 	}
 	dagOut, err := runEinoDAG(ctx)
 	if err != nil {
