@@ -247,6 +247,12 @@ func TestPropertySessionTornRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(r.failf("iter=%d cut=%d: events: %v", iter, cut, err))
 		}
+		// 二次 Open 前必须先关闭 s2：A2 语义下同进程重复 Open 命中 store
+		// 缓存直接返回 live 会话、不做冷恢复——不关的话 evs2 与 evs1 是同
+		// 一个 live session 的两次自查询，恒等，「合成事件只补一次」这条
+		// 真不变式（二次冷恢复重复合成）测不出来。关闭后第二次 Open 走
+		// 真·冷恢复路径，读回的是已写回合成事件且 Flush 过的 healed 文件。
+		closeJSONL(t, s2)
 		s2b, err := store2.Open(ctx, "prop")
 		if err != nil {
 			t.Fatal(r.failf("iter=%d cut=%d: reopen#2: %v", iter, cut, err))
