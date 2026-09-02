@@ -97,7 +97,7 @@ go run ./examples/02-react
 go run ./examples/03-flow-agent
 go run ./examples/04-flow-dag
 go run ./examples/05-tools-sources
-go test  ./examples/internal/... ./examples/04-flow-dag/ ./examples/05-tools-sources/
+go test  ./examples/internal/... ./examples/03-flow-agent/ ./examples/04-flow-dag/ ./examples/05-tools-sources/
 ```
 
 ## 观测日志
@@ -110,6 +110,6 @@ go test  ./examples/internal/... ./examples/04-flow-dag/ ./examples/05-tools-sou
 
 ## 当前不做
 
-- 记忆层、会话持久化（history 只活在进程内，退出即丢）
+- 记忆层、会话持久化（示例刻意不接 memory/——P2 记忆层已落地，见 [`memory/README_zh.md`](../memory/README_zh.md)；history 只活在进程内，退出即丢）
 - 真实向量库 / embedding（demo3 / demo4 用内存关键词检索）
 - flow wait/run 的 otel 导出等（E1 分段已在 04 用两条 Record 落地；正式 observability 包仍不 import flow）

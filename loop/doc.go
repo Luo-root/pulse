@@ -2,9 +2,9 @@
 //
 // Agent 接收对话历史与本轮输入，驱动「模型 ↔ 工具」循环至自然结束
 // （模型不再发起工具调用），返回本回合新增的全部消息。它刻意不做
-// 三件事：不管会话存储（调用方持有历史，P2 的 session 层再补）、
-// 不做重试与 failover（上层编排职责，llm 包的错误分类是弹药）、
-// 不硬接任何模型或工具实现。
+// 三件事：不管会话存储（调用方持有历史；会话真相见 memory/session，
+// P2 已落地，loop 不 import memory）、不做重试与 failover（上层编排
+// 职责，llm 包的错误分类是弹药）、不硬接任何模型或工具实现。
 //
 //	agent := loop.NewAgent(model, loop.WithToolSet(tools))
 //	res, err := agent.Run(ctx, history, llm.UserText("帮我查一下…"))

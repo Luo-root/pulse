@@ -4,7 +4,7 @@
 
 ## kernel 在这里做的事
 
-`demoapp.Open` 的装配链是真实的内核使用流程（三个 demo 共用）：
+`demoapp.Open` 的装配链是真实的内核使用流程（01–04 四个 demo 共用；05 自建 kernel）：
 
 ```text
 kernel.New()

@@ -10,7 +10,7 @@ pulse v2 的可逆工具注册面（Accepted：[`docs/design/toolset-v1-design.m
 |---|---|
 | 模型回合 / HITL UI | `loop` + 装配层 |
 | SSE / Streamable HTTP 必达 | `ConnectSDK` 可接任意 Transport；默认测 InMemory + 提供 stdio 工厂 |
-| Skills 装载器 | T4 另文；Skill ≠ Tool / ≠ Source |
+| Skills 装载器 | 已落地：[`skills/`](../skills/README_zh.md)（agentskills.io）；Skill ≠ Tool / ≠ Source |
 | 权限写进 `llm.ToolDef` | Risk/Source 是宿主侧元数据 |
 | 独立脚本 Sandbox | 脚本若要跑须映射到已注册工具 |
 

@@ -16,10 +16,12 @@ v2 以可逆效应和依赖响应式为内核，先落地插件内核、模型�
 | [`llm/openai`](llm/openai/README_zh.md) | OpenAI Chat Completions + Responses 官方 SDK 适配器 | `openai.Register()` |
 | [`llm/anthropic`](llm/anthropic/README_zh.md) | Anthropic Messages 官方 SDK 适配器 | `anthropic.Register()` |
 | [`loop`](loop/README_zh.md) | 无状态 ReAct 回合执行器，工具调用与 HITL 决策事件 | `loop.NewAgent()` |
-| [`toolset`](toolset/README_zh.md) | 可逆工具注册中心（`pulse.tools`），`AsToolSet()` 适配 loop | `toolset.Plugin()` / `Registry.Register` |
+| [`toolset`](toolset/README_zh.md) | 可逆工具注册中心（`pulse.tools`），`AsToolSet()` 适配 loop；builtins / mcp / lsp 子包 | `toolset.Plugin()` / `Registry.Register` |
 | [`skills`](skills/README_zh.md) | Agent Skills 装载器（agentskills.io；规程包，非 Tool） | `skills.Open()` / `List`/`Load`/`ReadFile` |
+| [`textsplit`](textsplit/README_zh.md) | 文本分块：尺寸预算 + 分隔符优先级 + 字节 offset | `textsplit.Split` |
 | [`kernel/flow`](kernel/flow/README_zh.md) | 数据就绪驱动的节点编排（槽位三态、Skip、E1 Observer） | `flow.New(ctx)` |
 | [`kernel/flow/yaml`](kernel/flow/yaml/README_zh.md) | E2 YAML 声明式装图（拓扑归属 A：Factory 只给 Run） | `flowyaml.Load` |
+| [`memory`](memory/README_zh.md) | P2 记忆与会话（9 子包）：session / compaction / store / assemble / selfedit / index / candidate / reflection | `memory/README_zh.md` 全局地图 |
 | [`observability`](observability/README_zh.md) | 正式观测包：Bootstrap + Record + Sink（只依赖 kernel） | `observability.Bootstrap()` |
 | [`examples`](examples/README.md) | 渐进示例 01–05：chat / ReAct+HITL / flow / DAG / tools·MCP·Skills | `go run ./examples/01-chat` |
 
@@ -136,14 +138,14 @@ go build ./...
 go test ./...
 
 # v2 核心回归（无真实 API）
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./observability/ ./examples/04-flow-dag/
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/ ./examples/03-flow-agent/ ./examples/04-flow-dag/ ./examples/05-tools-sources/
 
 # 单独测试 provider adapter
 go test -race -skip TestLive ./llm/openai/
 go test -race -skip TestLive ./llm/anthropic/
 ```
 
-OpenAI / Anthropic / MiniMax / MiMo 的真实 API 冒烟测试都由环境变量门控；未设置凭据会自动跳过。不要提交 `.env`、Token 或私钥。
+OpenAI / Anthropic / MiMo 的真实 API 冒烟测试由环境变量门控（`PULSE_OPENAI_*` / `PULSE_ANTHROPIC_*` / `PULSE_MIMO_*`）；未设置凭据会自动跳过。MiniMax 经 `PULSE_OPENAI_BASE_URL` 走 OpenAI 兼容通用路径（见 llm/openai README）。不要提交 `.env`、Token 或私钥。
 
 ## 仓库结构
 
@@ -153,8 +155,12 @@ kernel/                    v2 插件内核
   flow/yaml/               E2 YAML 声明式装图
 llm/                       v2 模型词汇表、Registry 与 provider adapter
 loop/                      v2 无状态 ReAct 回合
+toolset/                   可逆工具注册（builtins / mcp / lsp 子包）
+skills/                    Agent Skills 装载器（agentskills.io）
+textsplit/                 文本分块（index/openai 与长文本模块共用）
+memory/                    P2 记忆与会话（session / compaction / store / assemble / selfedit / index / candidate / reflection）
 observability/             v2 正式观测包（Bootstrap / Record / Sink）
-docs/design/               架构设计与迁移文档（Accepted；memory 调研稿另计）
+docs/design/               架构设计与迁移文档（Accepted）
 examples/                  01–05 渐进示例 + internal/demoapp 装配层桥
 ```
 

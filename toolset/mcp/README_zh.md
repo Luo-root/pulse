@@ -23,7 +23,7 @@ toolset.Registry（Source = "mcp.<id>"）
 | 不做 | 说明 |
 |---|---|
 | resources / prompts | 不进 ToolSet |
-| Skills | Skill ≠ Source；见 T4 |
+| Skills | Skill ≠ Source；见 [`skills/`](../../skills/README_zh.md) |
 | 冲突自动改名 | `name_prefix` 在 Register 前定名，撞名失败 |
 | Name 前缀猜来源 | 批量撤销只走 `DisposeSource("mcp.<id>")` |
 | SSE / Streamable HTTP 必达 | `ConnectSDK` 可接任意 Transport；默认测 InMemory |

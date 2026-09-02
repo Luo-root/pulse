@@ -17,6 +17,8 @@
 coverage.*
 *.coverprofile
 profile.cov
+coverage
+coverage_gorm
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
