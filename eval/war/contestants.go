@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/Luo-root/pulse/kernel"
+	"github.com/Luo-root/pulse/kernel/flow"
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/loop"
 	"github.com/Luo-root/pulse/observability"
@@ -216,4 +217,144 @@ func assistantToolCall(id, name, args string) *schema.Message {
 			{ID: id, Function: schema.FunctionCall{Name: name, Arguments: args}},
 		},
 	}
+}
+
+// ---- 编排执行器对比（T3 线性链 / T4 DAG 分支汇聚）----
+//
+// 任务集：全部节点为零计算透传（测量对象 = 图执行机本身：调度、数据
+// 传递、汇聚同步；不含模型与工具）。两边都是冷启动口径（每轮重建 +
+// Compile/Run，构造计入），与 T1/T2 冷启动一致。
+//
+// 等价性声明：
+//   - T3：3 个透传节点串联，输入字符串原样流到输出；
+//   - T4：1 源 → 2 并行分支 → AND 汇聚（join 等两路输入齐才跑）→ 拼接
+//     输出。Pulse 用 AND 槽位语义（Requires 两个 key）；Eino 用
+//     AllPredecessor 触发模式（多入边 fan-in 成 []string）——语义对齐点。
+//   - 生产入口：Pulse 用 kernel/flow 的 Graph（Add/Seed/Run）；Eino 用
+//     compose.Chain（T3）与 compose.Workflow（T4，字段映射 AND 汇聚）。
+
+// runPulseFlowChain T3：Pulse kernel/flow 三节点线性链。
+func runPulseFlowChain(ctx context.Context) error {
+	g := flow.New(ctx)
+	kIn := flow.NewKey[string]("in")
+	k1 := flow.NewKey[string]("m1")
+	k2 := flow.NewKey[string]("m2")
+	kOut := flow.NewKey[string]("out")
+	pass := func(in, out flow.Key[string]) func(*flow.RunCtx) error {
+		return func(rc *flow.RunCtx) error {
+			v, err := flow.Get(rc, in)
+			if err != nil {
+				return err
+			}
+			return flow.Set(rc, out, v)
+		}
+	}
+	for _, n := range []*flow.Node{
+		flow.NewNode("n1", flow.Requires[string](kIn), flow.Provides[string](k1), pass(kIn, k1)),
+		flow.NewNode("n2", flow.Requires[string](k1), flow.Provides[string](k2), pass(k1, k2)),
+		flow.NewNode("n3", flow.Requires[string](k2), flow.Provides[string](kOut), pass(k2, kOut)),
+	} {
+		if err := g.Add(n); err != nil {
+			return err
+		}
+	}
+	if err := flow.Seed(g, kIn, "war payload"); err != nil {
+		return err
+	}
+	return g.Run()
+}
+
+// runEinoChain T3：Eino compose.Chain 三节点线性链。
+func runEinoChain(ctx context.Context) error {
+	pass := compose.InvokableLambda(func(_ context.Context, s string) (string, error) {
+		return s, nil
+	})
+	c := compose.NewChain[string, string]()
+	c.AppendLambda(pass)
+	c.AppendLambda(pass)
+	c.AppendLambda(pass)
+	r, err := c.Compile(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.Invoke(ctx, "war payload")
+	return err
+}
+
+// runPulseFlowDAG T4：Pulse kernel/flow 分支汇聚（1 源 Seed → 2 并行分支
+// → AND 汇聚节点 → 拼接输出）。终端结果经 join 闭包写出——Graph 没有
+// Run 后的公开读槽，这是 flow README 声明的契约权宜（非输出惯例）。
+func runPulseFlowDAG(ctx context.Context) (string, error) {
+	g := flow.New(ctx)
+	kIn := flow.NewKey[string]("in")
+	kA := flow.NewKey[string]("a")
+	kB := flow.NewKey[string]("b")
+	pass := func(in, out flow.Key[string]) func(*flow.RunCtx) error {
+		return func(rc *flow.RunCtx) error {
+			v, err := flow.Get(rc, in)
+			if err != nil {
+				return err
+			}
+			return flow.Set(rc, out, v)
+		}
+	}
+	var out string
+	for _, n := range []*flow.Node{
+		flow.NewNode("a", flow.Requires[string](kIn), flow.Provides[string](kA), pass(kIn, kA)),
+		flow.NewNode("b", flow.Requires[string](kIn), flow.Provides[string](kB), pass(kIn, kB)),
+		flow.NewNode("join", flow.Requires[string](kA, kB), nil, func(rc *flow.RunCtx) error {
+			a, err := flow.Get(rc, kA)
+			if err != nil {
+				return err
+			}
+			bVal, err := flow.Get(rc, kB)
+			if err != nil {
+				return err
+			}
+			out = a + bVal
+			return nil
+		}),
+	} {
+		if err := g.Add(n); err != nil {
+			return "", err
+		}
+	}
+	if err := flow.Seed(g, kIn, "war payload"); err != nil {
+		return "", err
+	}
+	if err := g.Run(); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// runEinoDAG T4：Eino compose.Workflow 分支汇聚——Workflow 是 Eino 的显式
+// 依赖 + 字段映射 DAG（底层 AllPredecessor 触发）：START 整输出喂给 a/b 两
+// 个透传节点；join 的输入 map[string]string 由 a/b 两路输出经 ToField 字段
+// 映射填充（= AND 汇聚语义）。注：compose.Graph 的裸多入边 fan-in 对
+// string 需内部 MergeFunc 注册（外部 module 不可达），Workflow 字段映射是
+// 官方开箱姿势。
+func runEinoDAG(ctx context.Context) (string, error) {
+	pass := compose.InvokableLambda(func(_ context.Context, s string) (string, error) {
+		return s, nil
+	})
+	join := compose.InvokableLambda(func(_ context.Context, m map[string]string) (string, error) {
+		return m["a"] + m["b"], nil
+	})
+	wf := compose.NewWorkflow[string, string]()
+	wf.AddLambdaNode("a", pass).AddInput(compose.START)
+	wf.AddLambdaNode("b", pass).AddInput(compose.START)
+	wf.AddLambdaNode("join", join).
+		AddInput("a", compose.ToField("a")).
+		AddInput("b", compose.ToField("b"))
+	wf.AddEnd("join")
+	r, err := wf.Compile(ctx)
+	if err != nil {
+		return "", err
+	}
+	out, err := r.Invoke(ctx, "war payload")
+	if err != nil {
+		return "", err
+	}
+	return out, nil
 }

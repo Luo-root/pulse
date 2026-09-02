@@ -20,9 +20,10 @@ go test -run TestWarSanity -count=1 .           # correctness sentinel: every ta
 | Production assembly | kernel host + observability.Bootstrap (nopSink) + llm.Registry (observed wrapper) + request scope | ChatModelAgent (compose tool node built in) + Runner |
 | Stub model | `llm.NewScripted` (mutex + index + shallow copy) | `einoStubModel` (same semantics) |
 | Tool | `MemToolSet` (counter + fixed JSON) | `tool.InvokableTool` (same semantics) |
+| Orchestrator | `kernel/flow` Graph (Add + Seed + Run, AND slots) | `compose.Chain` (T3) + `compose.Workflow` (T4: field-mapped AND join) |
 | Construction accounting | cold-start variant (full rebuild each run) + reused variant (assemble once) | cold-start variant (agent+runner rebuilt each run) + reused variant (assemble once) |
 
-## Results (i9-14900HX / Go 1.25 / Windows, -count=2; **run-to-run variance is significant — compare magnitudes and multiplier ranges, not single digits**)
+## Results (i9-14900HX / Go 1.25 / Windows, T1/T2 two rounds, T3/T4 three rounds; **run-to-run variance is significant — compare magnitudes and multiplier ranges, not single digits**)
 
 ```
 BenchmarkWar_PulseTextRound-32          	  126460	     10497 ns/op	    8369 B/op	     139 allocs/op
@@ -31,6 +32,10 @@ BenchmarkWar_EinoTextRoundReused-32     	   33534	     36595 ns/op	   27480 B/op
 BenchmarkWar_PulseToolRound-32          	   73598	     15871 ns/op	   11729 B/op	     177 allocs/op
 BenchmarkWar_EinoTextRound-32           	   31104	     38789 ns/op	   28999 B/op	     425 allocs/op
 BenchmarkWar_EinoToolRound-32           	   10000	    116405 ns/op	   89804 B/op	    1364 allocs/op
+BenchmarkWar_PulseFlowChain-32          	   131997	      9170 ns/op	    6208 B/op	      77 allocs/op
+BenchmarkWar_EinoChain-32               	    66117	     17664 ns/op	   24367 B/op	     323 allocs/op
+BenchmarkWar_PulseFlowDAG-32            	   134004	      8975 ns/op	    5831 B/op	      73 allocs/op
+BenchmarkWar_EinoDAG-32                 	    37092	     33132 ns/op	   35433 B/op	     462 allocs/op
 ```
 
 | Task | Pulse | Eino | Multiplier range |
@@ -38,6 +43,8 @@ BenchmarkWar_EinoToolRound-32           	   10000	    116405 ns/op	   89804 B/op
 | T1 text round (reused: assemble once, pure runtime) | 3.6 µs / 22 allocs | 36.6–40.9 µs / 407 allocs | **~10–11×** |
 | T1 text round (cold start: full rebuild each run) | 10.5–10.7 µs / 139 allocs | 38.8–39.0 µs / 425 allocs | **~3.7×** |
 | T2 tool round-trip (cold-start upper bound) | 15.1–15.9 µs / 177 allocs | 116.4–117.7 µs / 1364 allocs | **~7.4–7.7×** |
+| T3 linear chain (3 passthrough nodes, cold start) | 8.9–9.3 µs / 77 allocs | 17.7–18.0 µs / 323 allocs | **~2.0×** |
+| T4 fan-out/fan-in (1 source → 2 branches → AND join, cold start) | 8.9–9.1 µs / 73 allocs | 32.5–35.3 µs / 462 allocs | **~3.6–3.9×** |
 
 ## Side-by-side with the #102 Layered Baseline (same machine, same family)
 
@@ -59,7 +66,8 @@ The war T1 reused number cross-checks #102's L2a under the same accounting (3.6 
 2. **Both are negligible against a real LLM call** (38µs vs seconds). This comparison quantifies the base price of an architectural choice (direct calls vs a graph executor); the gap compounds in high-frequency / high-concurrency / long multi-step scenarios. It is not a "Eino is unusable" verdict.
 3. **T1 reused (pure runtime) 10–11× vs cold start 3.7×** — the gap's main body is the per-run path; the cold-start gap narrows because Eino's construction is comparatively cheap (same as point 1).
 4. Upper-bound accounting: cold-start T2 rebuilds the full assembly every run (forced by the scripted-exhaustion semantics, same on both sides).
+5. **Orchestrators (T3/T4): graph dispatch itself is cheap, and Eino's orchestration layer is heavier than its own agent path** — the task set is pure zero-compute passthrough (measuring the graph executor: scheduling, data transfer, join synchronization). Pulse flow's three-node chain is ~9µs / 77 allocs and the fan-out/fan-in DAG is ~9µs / 73 allocs (AND slots make fan-out nearly free); Eino Chain is ~18µs / 323 allocs (~2.0×) and the Workflow field-mapped DAG is ~33–35µs / 462 allocs (~3.6–3.9×) — field mapping and type inference add cost on both the Compile and Invoke sides. Still negligible against a real LLM call; this quantifies the base price of an architectural choice.
 
 ## Adding a Contestant
 
-Implement three pieces (see `contestants.go`): `runXxxTextRound` / `runXxxToolRound` (production assembly + stub-alignment declaration) + benchmarks + a Sanity assertion. Assembly equivalence (stub thinness, task alignment, production entry) goes in the comments.
+Implement three pieces (see `contestants.go`): `runXxxTextRound` / `runXxxToolRound` (production assembly + stub-alignment declaration) + benchmarks + a Sanity assertion; orchestration contestants add `runXxxFlowChain` / `runXxxFlowDAG` (task set: zero-compute passthrough). Assembly equivalence (stub thinness, task alignment, production entry) goes in the comments.

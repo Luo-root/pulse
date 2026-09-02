@@ -126,6 +126,60 @@ func BenchmarkWar_EinoToolRound(b *testing.B) {
 	}
 }
 
+// ---- 编排执行器对比（T3/T4）----
+
+// BenchmarkWar_PulseFlowChain T3 线性链（3 透传节点）：Pulse kernel/flow
+// Graph（Add + Seed + Run），每轮重建（冷启动口径）。
+func BenchmarkWar_PulseFlowChain(b *testing.B) {
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := runPulseFlowChain(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkWar_EinoChain T3 线性链：Eino compose.Chain（AppendLambda ×3 +
+// Compile + Invoke），每轮重建（冷启动口径）。
+func BenchmarkWar_EinoChain(b *testing.B) {
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := runEinoChain(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkWar_PulseFlowDAG T4 分支汇聚（1→2→AND join）：Pulse kernel/flow
+//（AND 槽位语义），每轮重建（冷启动口径）。
+func BenchmarkWar_PulseFlowDAG(b *testing.B) {
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := runPulseFlowDAG(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkWar_EinoDAG T4 分支汇聚：Eino compose.Workflow（AddLambdaNode +
+// ToField 字段映射 AND 汇聚），每轮重建（冷启动口径）。
+func BenchmarkWar_EinoDAG(b *testing.B) {
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := runEinoDAG(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // TestWarSanity 是 benchmark 的正确性哨兵：每个参赛方每条任务至少跑通
 // 一次，工具确实被执行（防止 benchmark 静默退化成空转）。
 func TestWarSanity(t *testing.T) {
@@ -144,5 +198,26 @@ func TestWarSanity(t *testing.T) {
 	}
 	if err := runEinoToolRound(ctx); err != nil {
 		t.Fatalf("eino tool: %v", err)
+	}
+	// 编排任务：输出正确性断言（透传链保真 + DAG 拼接）。
+	if err := runPulseFlowChain(ctx); err != nil {
+		t.Fatalf("pulse flow chain: %v", err)
+	}
+	if err := runEinoChain(ctx); err != nil {
+		t.Fatalf("eino chain: %v", err)
+	}
+	out, err := runPulseFlowDAG(ctx)
+	if err != nil {
+		t.Fatalf("pulse flow dag: %v", err)
+	}
+	if want := "war payloadwar payload"; out != want {
+		t.Fatalf("pulse flow dag out = %q, want %q", out, want)
+	}
+	dagOut, err := runEinoDAG(ctx)
+	if err != nil {
+		t.Fatalf("eino dag: %v", err)
+	}
+	if want := "war payloadwar payload"; dagOut != want {
+		t.Fatalf("eino dag out = %q, want %q", dagOut, want)
 	}
 }
