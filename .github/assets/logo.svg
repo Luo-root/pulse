@@ -1,5 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-  <rect width="48" height="48" rx="11" fill="#2563EB"/>
-  <path d="M9 27h9.5l4.5-12 6 24 4.5-12H39" stroke="#FFFFFF" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="23" cy="15" r="3.4" fill="#FFFFFF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 96" fill="none" role="img" aria-label="Pulse">
+  <rect width="280" height="96" rx="20" fill="#1E40AF"/>
+  <g transform="translate(20 12) scale(1.5)">
+    <path d="M5 27h10.5l5-13.5 6.5 27 5-13.5H43" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="20.5" cy="13.5" r="4" fill="#FFFFFF"/>
+  </g>
+  <text x="112" y="64" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="54" font-weight="700" letter-spacing="1" fill="#FFFFFF">Pulse</text>
 </svg>

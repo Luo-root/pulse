@@ -2,7 +2,7 @@
 
 <div align="center">
   <a href="https://luo-root.github.io/pulse/">
-    <img alt="Pulse" src=".github/assets/logo.svg" width="112" />
+    <img alt="Pulse" src=".github/assets/logo.svg" width="260" />
   </a>
 </div>
 
