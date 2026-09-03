@@ -28,6 +28,8 @@ jobs:
         # 包清单与根 README「构建与测试」节的权威回归命令逐字一致；
         # TestLive 系 live 用例，无凭证时自动跳过。
         run: go test -race -count=1 -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/ ./examples/04-flow/ ./examples/07-production/
+      - name: Test eval (property tests)
+        run: go test -race -count=1 ./eval/
 
   test-eval-war:
     name: test (eval/war nested module)

@@ -175,6 +175,9 @@ go test ./...
 # v2 core regression (no real API)
 go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/ ./examples/04-flow/ ./examples/07-production/
 
+# eval property tests (main module; fixed seeds, ~10s)
+go test -race -count=1 ./eval/
+
 # Provider adapters separately
 go test -race -skip TestLive ./llm/openai/
 go test -race -skip TestLive ./llm/anthropic/

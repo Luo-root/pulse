@@ -10,11 +10,12 @@ Go library (`github.com/Luo-root/pulse`) — an AI Agent framework; the v2 core 
 go build ./...          # verify compilation
 go test ./...           # run all tests
 go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/ ./examples/04-flow/ ./examples/07-production/   # v2 core + flow/tools examples
+go test -race -count=1 ./eval/   # eval property tests (main module)
 ```
 
 - Requires **Go 1.25.0+** (toolchain auto-downloads if missing).
 - Provider adapter live-API smoke tests (`TestLive*` in `llm/openai`, `llm/anthropic`) are gated by environment variables (`PULSE_OPENAI_*`, `PULSE_ANTHROPIC_*`, `PULSE_MIMO_*`); without credentials they skip automatically.
-- No Makefile, linter config, or CI pipeline exists. `go test ./...` is the only verification step.
+- No Makefile or linter config. GitHub Actions CI (`.github/workflows/ci.yml`) runs `go build ./...` plus the `-race` regression above (and the `eval/war` nested module separately) on every PR and on pushes to `main`.
 
 ## Repo layout
 
