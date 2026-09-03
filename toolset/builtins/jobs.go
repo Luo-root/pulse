@@ -260,7 +260,12 @@ func (t *jobTable) killAll() {
 	t.mu.Lock()
 	alive := make([]*job, 0, len(t.jobs))
 	for _, j := range t.jobs {
-		if !j.done {
+		// done 由 j.mu 保护（后台 wait goroutine 锁内回写），读它必须持 j.mu；
+		// 仅凭 t.mu 读是数据竞争（Linux -race 下 killAll 与刚退出的 job 相撞实测报 race）。
+		j.mu.Lock()
+		done := j.done
+		j.mu.Unlock()
+		if !done {
 			alive = append(alive, j)
 		}
 	}

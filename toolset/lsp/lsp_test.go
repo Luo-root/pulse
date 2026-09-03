@@ -18,7 +18,9 @@ import (
 	"github.com/Luo-root/pulse/toolset"
 )
 
-// fakeConn 是内存 frameConn：记录 server 发出的帧，onSend 异步回调供 fake server 回帧。
+// fakeConn 是内存 frameConn：记录 server 发出的帧。onSend 在 Send 调用者
+// goroutine 内同步回调——记录序因此严格等于客户端发送序（异步回调曾导致
+// Linux -race 下记录序与发送序错位）；回帧仍由 handle 自行异步投递。
 type fakeConn struct {
 	mu     sync.Mutex
 	sent   [][]byte
@@ -36,7 +38,7 @@ func (c *fakeConn) Send(body []byte) error {
 	c.sent = append(c.sent, append([]byte(nil), body...))
 	c.mu.Unlock()
 	if c.onSend != nil {
-		go c.onSend(body)
+		c.onSend(body)
 	}
 	return nil
 }
@@ -91,7 +93,8 @@ func newFakeServer() *fakeServer {
 		fs.methods = append(fs.methods, f.Method)
 		fs.mu.Unlock()
 		if fs.handle != nil {
-			fs.handle(f)
+			// 回帧保持异步：不阻塞 Send，客户端经 Recv 等待，时序语义与旧实现一致。
+			go fs.handle(f)
 		}
 	}
 	return fs
