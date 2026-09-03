@@ -54,6 +54,8 @@ undo, err := ctx.Effect(func() (func(), error) {
 // undo() 可提前撤销（幂等）；没手动调的，Dispose 兜底。
 ```
 
+Returning a nil `undo` from a successful `apply` is legal — it declares that the effect **needs no restoration**; registration proceeds as usual and the kernel substitutes a no-op (the dispose path never panics). But an `apply` that holds reversible resources (file descriptors, connections, goroutines, etc.) **must** return an undo: forgetting it leaks silently, and the kernel cannot verify reversibility on the caller's behalf.
+
 On a disposed scope, `Effect` / `Derive` / `Use` all return `ErrDisposed`.
 
 ## 2. Services: Provide / Get
@@ -199,7 +201,7 @@ Positioning: the plugin foundation. Design: unload reverts the effect + dependen
 | `New` | Creates the root scope | `ctx := kernel.New(); defer ctx.Dispose()` |
 | `(*Context).Derive` | Derives a child scope | Shares global services; child `Dispose` reclaims only itself. Already disposed → `ErrDisposed` |
 | `(*Context).Dispose` | Cascading disposal of this layer and descendants | LIFO-unwinds effects |
-| `(*Context).Effect` | Registers a reversible side effect | `apply` returns `undo`; call `undo()` early, or `Dispose` cleans up |
+| `(*Context).Effect` | Registers a reversible side effect | `apply` returns `undo` (nil = declares no restoration, no-op fallback); call `undo()` early, or `Dispose` cleans up; reversible resources must return an undo |
 | `(*Context).Parent` | Parent scope | Root returns nil |
 | `ErrDisposed` | Operating on a disposed scope | `errors.Is(err, kernel.ErrDisposed)` |
 

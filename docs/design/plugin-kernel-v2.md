@@ -30,7 +30,7 @@ v2 的目标：把 Cordis 的思想以 Go 的方式重新实现为 pulse 的内�
 
 | 论文概念 | 含义 | kernel 对应 |
 |---|---|---|
-| revertible effect | 每个上下文变换携带显式逆元，运行时跟踪 | `Context.Effect(apply)` 返回 dispose，作用域销毁 LIFO unwind |
+| revertible effect | 每个上下文变换携带显式逆元，运行时跟踪 | `Context.Effect(apply)` 返回 dispose，作用域销毁 LIFO unwind；apply 可返回 nil undo（逆元为恒等，no-op 兜底）= 声明该效应无需还原 |
 | reactive coeffect | 依赖声明规范，环境变化时响应式通知 | `Plugin.Inject() []Dependency` + 服务变更广播 + fiber 收敛 |
 | context type Γ | 效应上下文与余效应上下文统一 | `Context`：服务仓库 + 效应栈 + 作用域树节点 |
 | component {inject, apply} | 组件声明 | `Plugin` 接口 |

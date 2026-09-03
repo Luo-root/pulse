@@ -52,6 +52,8 @@ undo, err := ctx.Effect(func() (func(), error) {
 // undo() 可提前撤销（幂等）；没手动调的，Dispose 兜底。
 ```
 
+`apply` 成功后返回 nil `undo` 合法——等价于声明该效应**无需还原动作**，登记照常、kernel 以空函数兜底（dispose 路径永不 panic）。但持有可逆资源（文件描述符、连接、goroutine 等）的 apply **必须**返回 undo：忘写会静默泄漏，kernel 无法替调用方验证副作用是否可逆。
+
 作用域已销毁时 `Effect` / `Derive` / `Use` 都返回 `ErrDisposed`。
 
 ## 2. 服务：Provide / Get
@@ -197,7 +199,7 @@ _ = kernel.Parallel(ctx, Tick, 0)      // 并发；返回 []error 或 nil
 | `New` | 建根作用域 | `ctx := kernel.New(); defer ctx.Dispose()` |
 | `(*Context).Derive` | 派生子作用域 | 共享全局服务；子 `Dispose` 只收回自己。已销毁 → `ErrDisposed` |
 | `(*Context).Dispose` | 级联销毁本层与后代 | LIFO unwind 效应 |
-| `(*Context).Effect` | 登记可逆副作用 | `apply` 返回 `undo`；可提前 `undo()`，否则 Dispose 兜底 |
+| `(*Context).Effect` | 登记可逆副作用 | `apply` 返回 `undo`（nil = 声明无需还原，no-op 兜底）；可提前 `undo()`，否则 Dispose 兜底；可逆资源必须返回 undo |
 | `(*Context).Parent` | 父作用域 | 根返回 nil |
 | `ErrDisposed` | 对已销毁作用域操作 | `errors.Is(err, kernel.ErrDisposed)` |
 
