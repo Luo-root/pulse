@@ -84,8 +84,10 @@ func TestThreeSourcesDefinitionsAndRound(t *testing.T) {
 	if isErr["c3"] {
 		t.Fatalf("list_skills err: %q", listOut)
 	}
+	// 不泄漏绝对路径：Windows 由 "X:\"（含 ":\") 兜底，Unix 由 /home/、/Users/ 兜底。
+	// 注意不能用 filepath.VolumeName(Dir)+"\\" 拼盘符前缀——Unix 上 VolumeName 返回空串，
+	// 该条件会退化为「输出不含反斜杠字符」，被 JSON 转义序列（如 \"）误触发。
 	if strings.Contains(listOut, `"directory"`) || strings.Contains(listOut, `Dir`) ||
-		strings.Contains(listOut, filepath.VolumeName(demo.Metas[0].Dir)+`\`) ||
 		strings.Contains(listOut, ":\\") || strings.Contains(listOut, "/Users/") || strings.Contains(listOut, "/home/") {
 		t.Fatalf("list_skills must not leak absolute Dir: %s", listOut)
 	}
