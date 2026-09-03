@@ -1,9 +1,23 @@
 [English](README.md) | [中文](README_zh.md)
 
-# Pulse
+<div align="center">
+  <a href="https://luo-root.github.io/pulse/">
+    <img alt="Pulse" src=".github/assets/logo.svg" width="260" />
+  </a>
+</div>
 
-[![Go Version](https://img.shields.io/badge/Go-1.25.0-blue.svg)](https://go.dev/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+<div align="center">
+  <h3>Go AI Agent 框架——一切皆插件，卸载即还原。</h3>
+</div>
+
+<div align="center">
+  <a href="https://go.dev/"><img alt="Go 1.25.0" src="https://img.shields.io/badge/Go-1.25.0-blue.svg" /></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg" /></a>
+  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.1.0"><img alt="Release v0.1.0 preview" src="https://img.shields.io/badge/release-v0.1.0--preview-2563eb.svg" /></a>
+  <a href="https://luo-root.github.io/pulse/"><img alt="Docs: English | 中文" src="https://img.shields.io/badge/docs-English%20%7C%20%E4%B8%AD%E6%96%87-2563eb.svg" /></a>
+</div>
+
+<br />
 
 **Pulse** 是一个 Go AI Agent 框架，v2 内核以预览版（v0.1.0）发布。
 
