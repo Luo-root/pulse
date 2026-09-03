@@ -1,9 +1,16 @@
 [English](README.md) | [中文](README_zh.md)
 
-# Pulse
-
-[![Go Version](https://img.shields.io/badge/Go-1.25.0-blue.svg)](https://go.dev/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+<div align="center">
+  <img src=".github/assets/logo.svg" width="112" alt="Pulse logo" />
+  <h1>Pulse</h1>
+  <p><strong>Go AI Agent framework — everything is a plugin, unload to restore.</strong></p>
+  <p>
+    <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25.0-blue.svg" alt="Go 1.25.0" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT" /></a>
+    <a href="https://github.com/Luo-root/pulse/releases/tag/v0.1.0"><img src="https://img.shields.io/badge/release-v0.1.0--preview-2563eb.svg" alt="Release v0.1.0 preview" /></a>
+    <a href="https://luo-root.github.io/pulse/"><img src="https://img.shields.io/badge/docs-English%20%7C%20%E4%B8%AD%E6%96%87-2563eb.svg" alt="Docs" /></a>
+  </p>
+</div>
 
 **Pulse** is a Go AI Agent framework, shipping its v2 core as a preview (v0.1.0).
 
