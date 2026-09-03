@@ -105,6 +105,11 @@ func (c *Context) Derive() (*Context, error) {
 //
 // dispose 返回后可手动调用以提前撤销该效应（幂等）；未手动调用
 // 的部分由作用域销毁兜底。
+//
+// apply 成功后返回 nil undo 合法——等价于声明「本效应无需还原动作」：
+// 登记照常进行，kernel 以空函数兜底（dispose 路径永不 panic）。但
+// 持有可逆资源（文件描述符、连接、goroutine 等）的 apply 必须返回
+// undo：忘写会静默泄漏，kernel 无法替调用方验证副作用是否可逆。
 func (c *Context) Effect(apply func() (func(), error)) (dispose func(), err error) {
 	c.mu.Lock()
 	if c.disposed {
