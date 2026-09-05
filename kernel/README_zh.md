@@ -36,13 +36,13 @@ kernel 用同一套 `Context` 同时记住「现在有什么」和「曾经改�
 ```mermaid
 flowchart TB
     subgraph tree[Context 作用域树]
-        ROOT["Context 根<br>bindings = 全局服务仓库<br>effects = LIFO 效应栈<br>events = eventBus<br>fibers = 插件实例"]
-        CHILD["Context 子作用域<br>effects / events / fibers"]
+        ROOT["Context 根（全局服务仓库）"]
+        CHILD["Context 子作用域"]
     end
-    LOADER["Loader<br>factories / fibers（ID 索引）/ entries"]
-    FIBER["Fiber 惯性状态机<br>plugin / host / state / ctx"]
-    PLUGIN["Plugin<br>Inject + Apply"]
-    LOADER -- "mount：factory → Configure → Use" --> FIBER
+    LOADER["Loader（条目调和）"]
+    FIBER["Fiber 惯性状态机"]
+    PLUGIN["Plugin: Inject + Apply"]
+    LOADER -- "mount: factory → Configure → Use" --> FIBER
     FIBER -.->|"host 挂载层"| ROOT
     FIBER ==>|"ctx = 私有作用域（Apply 的现场）"| CHILD
     FIBER -- "plugin" --> PLUGIN

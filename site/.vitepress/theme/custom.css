@@ -14,3 +14,38 @@
   --vp-c-brand-3: #93c5fd;
   --vp-c-brand-soft: rgba(96, 165, 250, 0.16);
 }
+
+/* mermaid 图容器：白底卡片、横向滚动、SVG 自适应宽度。
+   font-size / line-height 必须锁定到与 mermaid 布局计算一致的值
+   （13px × 1.5 = 19.5px/行）：mermaid 按 1.5 倍行高算 foreignObject
+   高度，而容器内文字若继承 .vp-doc 的 1.7 行高或使用 normal（CJK
+   fallback 字体 normal ≈ 1.77 倍），每行都比计算值高，多行 label 的
+   底行整行被裁出节点框（实测复现：normal 下单行即溢出 3.5px）。 */
+.mermaid-block {
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 16px;
+  background: #ffffff;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  overflow-x: auto;
+  margin: 16px 0;
+}
+.mermaid-block svg,
+.mermaid-block foreignObject div,
+.mermaid-block span.nodeLabel {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+  overflow: visible; /* 兜底：残余度量偏差不再裁切文字 */
+}
+/* 关键：foreignObject 默认 hidden——CJK 字体 metrics（微软雅黑
+   ascent+descent ≈ 1.77×fs）大于行盒（1.5×fs），字形上下沿溢出
+   foreignObject 被裁。放行溢出后墨迹完整显示，节点框由 mermaid
+   的 padding 留出余量。 */
+.mermaid-block foreignObject {
+  overflow: visible;
+}
