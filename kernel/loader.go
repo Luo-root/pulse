@@ -39,6 +39,18 @@ type Factory func() Plugin
 // Loader 把声明式条目列表翻译成 Fiber 的增删改，并在条目变化时
 // 做最小破坏的增量调和。
 //
+// # 读语义：代际提交 + 读侧最终一致
+//
+// fibers / entries 是「最近一次完整应用的代」，阶段三原子换代。
+// Reconcile 进行中，Fiber(id) / Snapshot 读到的是上一个已提交代际
+// ——属正常现象，不是异常：调用方据此做最终一致推断，kernel 不提供
+// mid-reconcile 的强一致视图。两条配套约定：
+//
+//   - 条目在阶段二回收前已从索引摘除（卸载即不可见）：重建/卸载
+//     窗口内 Fiber(id) 返回 nil，而不是已 Close 的旧实例；
+//   - mount 动作事件派发时新实例尚未提交——观察者在事件回调里
+//     Fiber(id) 拿到 nil，实例在阶段三提交后才可见。
+//
 // 调和规则：
 //   - 新增 ID => 装载；
 //   - 移除 ID => 卸载并注销；
@@ -51,7 +63,9 @@ type Loader struct {
 	// reconcileMu 串行化整个调和过程；mu 只保护下面的数据结构
 	// （短临界区）。因此装载期间插件代码可以安全调用 Fiber /
 	// Snapshot 做查询——但不得反向调用 Reconcile（插件不应知道
-	// Loader 的存在）。
+	// Loader 的存在）。loader_action 同步观察者同理：回调内查询
+	// Fiber/Snapshot/Register 安全（动作事件在解锁后派发），唯
+	// Reconcile 重入被禁止。
 	reconcileMu sync.Mutex
 
 	mu        sync.Mutex
@@ -123,12 +137,16 @@ func (l *Loader) Reconcile(entries []Entry) error {
 	closing := make(map[string]struct{})
 	var plans []mountPlan
 	newEntries := make(map[string]*Entry, len(want))
+	// 阶段一产生的动作事件先收集、解锁后统一派发：Emit 同步逐个调用
+	// 观察者，若在持 l.mu 期间派发，观察者回调里调用 Fiber/Snapshot/
+	// Register（都拿 l.mu）即不可重入死锁。事件相对顺序与原实现一致。
+	var pending []LoaderAction
 
 	for id, f := range l.fibers {
 		if _, keep := want[id]; !keep {
 			toClose = append(toClose, f)
 			closing[id] = struct{}{}
-			Emit(l.host, EventLoaderAction, LoaderAction{
+			pending = append(pending, LoaderAction{
 				Kind: ActionUnmount, EntryID: id,
 			})
 		}
@@ -145,14 +163,14 @@ func (l *Loader) Reconcile(entries []Entry) error {
 			toClose = append(toClose, old)
 			closing[id] = struct{}{}
 			if recreate {
-				Emit(l.host, EventLoaderAction, LoaderAction{
+				pending = append(pending, LoaderAction{
 					Kind: ActionRecreate, EntryID: id, Name: e.Name,
 				})
 			}
 		}
 		if e.Disabled {
 			newEntries[id] = cloneEntry(e)
-			Emit(l.host, EventLoaderAction, LoaderAction{
+			pending = append(pending, LoaderAction{
 				Kind: ActionDisable, EntryID: id, Name: e.Name,
 			})
 			continue // 保留记录但不装载
@@ -162,7 +180,7 @@ func (l *Loader) Reconcile(entries []Entry) error {
 			err := fmt.Errorf("kernel: entry %q references unknown plugin %q", id, e.Name)
 			errs = append(errs, err)
 			newEntries[id] = cloneEntry(e)
-			Emit(l.host, EventLoaderAction, LoaderAction{
+			pending = append(pending, LoaderAction{
 				Kind: ActionDisable, EntryID: id, Name: e.Name, Err: err,
 			})
 			continue
@@ -173,9 +191,24 @@ func (l *Loader) Reconcile(entries []Entry) error {
 	l.mu.Unlock()
 
 	// ---- 阶段二：解锁执行回收与装载 ----
+
+	// 先摘除再回收：重建/卸载窗口内 Fiber(id) 返回 nil（卸载即不可见），
+	// 读侧无需「返回已关闭实例须再查 State()」的特例；快照同理。
+	l.mu.Lock()
+	for id := range closing {
+		delete(l.fibers, id)
+	}
+	l.mu.Unlock()
+
+	// 派发阶段一收集的动作事件（不持任何 Loader 锁）。摘除先行，故
+	// unmount/recreate 回调里 Fiber(id) 已不可见；事件仍先于 Close
+	// 执行，保持「动作事件先于动作」的观察序。
+	for _, a := range pending {
+		Emit(l.host, EventLoaderAction, a)
+	}
+
 	for _, f := range toClose {
 		f.Close()
-		// unmount 动作跟随 Close 派发；recreate 的旧实例卸载同样算 unmount。
 	}
 
 	type mountedFiber struct {
@@ -200,9 +233,6 @@ func (l *Loader) Reconcile(entries []Entry) error {
 
 	// ---- 阶段三：持锁提交结果 ----
 	l.mu.Lock()
-	for id := range closing {
-		delete(l.fibers, id)
-	}
 	for _, m := range mountedList {
 		l.fibers[m.id] = m.f
 	}
@@ -225,13 +255,19 @@ func (l *Loader) mount(cfg map[string]any, factory Factory) (*Fiber, error) {
 }
 
 // Fiber 返回某条目当前对应的实例；不存在（含 Disabled）返回 nil。
+//
+// 读语义见 Loader 类型注释：Reconcile 进行中读到的是上一个已提交
+// 代际；卸载/重建窗口内条目已先行摘除，本方法返回 nil（卸载即不可
+// 见），不存在「返回已 Close 实例」的中间形态。mount 动作事件的
+// 回调里查新条目同样得到 nil——实例在阶段三提交后才可见。
 func (l *Loader) Fiber(id string) *Fiber {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.fibers[id]
 }
 
-// Snapshot 返回 ID -> 状态 的快照，供诊断与测试。
+// Snapshot 返回 ID -> 状态 的快照，供诊断与测试。读语义同 Fiber：
+// 代际提交 + 读侧最终一致，Reconcile 进行中看到的是上一代。
 func (l *Loader) Snapshot() map[string]string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
