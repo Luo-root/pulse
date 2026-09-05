@@ -21,8 +21,10 @@ async function renderMermaid() {
     mermaid.initialize({
       startOnLoad: false,
       theme: 'base',
+      // 节点内边距：给 CJK 字体 metrics 超出行盒的部分留出余量
+      flowchart: { padding: 16 },
       themeVariables: {
-        fontFamily: "'Outfit', 'PingFang SC', 'Microsoft YaHei', sans-serif",
+        fontFamily: "'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif",
         fontSize: '13px',
         primaryColor: '#eff6ff',
         primaryBorderColor: '#2563eb',
