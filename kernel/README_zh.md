@@ -199,7 +199,7 @@ err := loader.Reconcile([]kernel.Entry{
 | 运行期热重载、按条件启停、禁用保留 | Loader（增量调和，最小破坏重建） |
 | 装配形态由外部输入（配置文件 / 管理面）决定 | Loader |
 
-职责边界：Loader 只经 `Snapshot` **只读旁观**状态机——状态转换不可从外部驱动；`(*Loader).Fiber(id)` 查的是 Loader 自己的 ID 索引，全树快照 `FiberSnapshots` 走 host.fibers、不经 Loader。bundle 级宿主（CLI/server 从配置起系统）落地时，Loader 才成为那条通路的入口（见设计文档「有意取舍」节）。
+职责边界：Loader **不持有状态机 setter**——它经生命周期原语（mount = `Use`、Reconcile 回收 = `Close`）触发转换，转换本身在 Fiber 内生执行；状态查询只经 `Snapshot` 只读。`(*Loader).Fiber(id)` 查的是 Loader 自己的 ID 索引，全树快照 `FiberSnapshots` 走 host.fibers、不经 Loader。bundle 级宿主（CLI/server 从配置起系统）落地时，Loader 才成为那条通路的入口（见设计文档「有意取舍」节）。
 
 ## 5. 事件
 

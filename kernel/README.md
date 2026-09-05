@@ -201,7 +201,7 @@ Reconciliation rules:
 | Runtime hot-reload, conditional start/stop, disable with retained config | Loader (incremental reconcile, minimal disruption rebuilds) |
 | Assembly shape decided by external input (config file / control plane) | Loader |
 
-Boundary: the Loader only **observes** the state machine via `Snapshot` — transitions cannot be driven from outside; `(*Loader).Fiber(id)` consults the Loader's own ID index, while the whole-tree snapshot `FiberSnapshots` walks host.fibers and never touches the Loader. When a bundle-level host (CLI/server booting a system from config) lands, the Loader becomes the entry point of that path (see the "deliberate trade-offs" section of the design doc).
+Boundary: the Loader **holds no state setter** — it triggers transitions through lifecycle primitives (`mount` = `Use`, `Reconcile` teardown = `Close`); the transitions themselves execute inside the Fiber. State queries are read-only via `Snapshot`. `(*Loader).Fiber(id)` consults the Loader's own ID index, while the whole-tree snapshot `FiberSnapshots` walks host.fibers and never touches the Loader. When a bundle-level host (CLI/server booting a system from config) lands, the Loader becomes the entry point of that path (see the "deliberate trade-offs" section of the design doc).
 
 ## 5. Events
 
