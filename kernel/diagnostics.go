@@ -72,7 +72,7 @@ func diagnosticName(p Plugin, seq uint64) string {
 
 // setName 完成 Fiber 诊断名初始化。只在 Use / Loader.mount 创建时、
 // fiber 尚未发布（未进入 host.fibers）前调用一次——诊断名一经创建
-// 不再变更，无需加锁。
+// 不再变更，无需加锁。（写点共两处：本方法与 Name 的空名兜底。）
 func (f *Fiber) setName(name string) { f.name = name }
 
 // Name 返回实例的稳定诊断名（横幅、fiber_state 载荷使用）。
@@ -80,7 +80,11 @@ func (f *Fiber) Name() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.name == "" {
-		return fmt.Sprintf("fiber#%d", fiberSeq.Load())
+		// 防御路径：正常创建（Use）必经 setName 领号，f.name 恒非空；
+		// 此分支只在未来新创建路径漏调 setName 时兜底。必须领号
+		// （Add）并存回 f.name——用 Load() 只读不存，同一实例的返回值
+		// 会随其他 fiber 创建而漂移，违背「稳定诊断名」契约。
+		f.name = fmt.Sprintf("fiber#%d", fiberSeq.Add(1))
 	}
 	return f.name
 }
