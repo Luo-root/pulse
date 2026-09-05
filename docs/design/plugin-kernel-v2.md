@@ -111,6 +111,8 @@ l.Reconcile([]kernel.Entry{
 // 条目增删改 => fiber 增删改；Config 变化 => 重建；Disabled => 卸载保留记录
 ```
 
+**读语义：代际提交 + 读侧最终一致。** `fibers` / `entries` 是「最近一次完整应用的代」，`Reconcile` 三阶段末尾原子换代；调和进行中 `Loader.Fiber(id)` / `Snapshot` 读到的是上一个已提交代际——属模型内正常现象，kernel 不提供 mid-reconcile 的强一致视图。两条配套约定：① 卸载/重建窗口内条目**先摘除再回收**，`Fiber(id)` 返回 nil（卸载即不可见），不存在「返回已 Close 实例」的中间形态；② `loader_action` 动作事件在解锁后派发——同步观察者回调内查询 `Fiber` / `Snapshot` / `Register` 安全，mount 回调里新实例尚未提交（阶段三后可见）。写路径不持锁执行插件代码（阶段二解锁）是死锁安全的根基，观察者重入面与此对齐。
+
 ## 5. LLM 适配层（llm 包）设计
 
 定位对标 DSH 的 `ctx.llm`：**provider 中立的词汇表 + 适配器注册中心**。

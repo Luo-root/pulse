@@ -711,6 +711,73 @@ func TestUnknownFactoryRejected(t *testing.T) {
 	}
 }
 
+// #119 回归：loader_action 同步观察者回调内查询 Loader 不得死锁
+// （动作事件在解锁后派发），且读语义契约成立——unmount 回调里
+// 条目已先摘除（卸载即不可见），mount 回调里新实例尚未提交。
+func TestLoaderActionObserverReentrancy(t *testing.T) {
+	ctx := New()
+	defer ctx.Dispose()
+	l := NewLoader(ctx)
+	l.MustRegister("nop", func() Plugin { return Func(func(*Context) error { return nil }) })
+
+	var mu sync.Mutex
+	var fiberAtMount, fiberAtUnmount *Fiber
+	_, err := On(ctx, EventLoaderAction, func(a *LoaderAction) {
+		_ = l.Snapshot() // 修复前：阶段一持 l.mu 派发，这里即死锁
+		mu.Lock()
+		defer mu.Unlock()
+		switch a.Kind {
+		case ActionMount:
+			if a.EntryID == "a" && a.Err == nil {
+				fiberAtMount = l.Fiber("a") // 阶段三提交前：nil
+			}
+		case ActionUnmount:
+			fiberAtUnmount = l.Fiber(a.EntryID) // 先摘除：nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- l.Reconcile([]Entry{{ID: "a", Name: "nop"}}) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Reconcile deadlocked: loader_action observer re-entered the Loader")
+	}
+	waitForState(t, l.Fiber("a"), time.Second, StateActive)
+
+	mu.Lock()
+	if fiberAtMount != nil {
+		t.Fatal("mount event fires before commit: Fiber(id) must be nil in the callback")
+	}
+	mu.Unlock()
+
+	// 移除条目：unmount 事件回调里实例已先行摘除（卸载即不可见）。
+	done = make(chan error, 1)
+	go func() { done <- l.Reconcile(nil) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Reconcile deadlocked on removal")
+	}
+	if l.Fiber("a") != nil {
+		t.Fatal("entry removed but still visible")
+	}
+	mu.Lock()
+	if fiberAtUnmount != nil {
+		t.Fatal("unmount callback must see Fiber(id) == nil (removed before Close)")
+	}
+	mu.Unlock()
+}
+
 // 销毁后的作用域策略统一为返回错误，绝不 panic。
 func TestDisposedScopeReturnsErrors(t *testing.T) {
 	ctx := New()
