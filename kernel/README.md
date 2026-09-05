@@ -31,6 +31,47 @@ Where the core concepts live in the source:
 | `diagnostics.go` | `FiberStateChange` / `LoaderAction` typed events and diagnostic names |
 | `snapshot.go` | `FiberSnapshots` read-only whole-tree snapshot (for the banner) |
 
+## Structure Overview and Call Chains
+
+The skeleton is a Context tree: every scope has an event bus, an effect stack, and a fiber table, but the **service repository lives only in the root** — `Provide` / `Get` locate the root repository via `root()`; the scope tree owns lifecycle and event propagation, not service visibility.
+
+```mermaid
+flowchart TB
+    subgraph tree[Context scope tree]
+        ROOT["Context root<br>bindings = global service repository<br>effects = LIFO effect stack<br>events = eventBus<br>fibers = plugin instances"]
+        CHILD["Context child scope<br>effects / events / fibers"]
+    end
+    LOADER["Loader<br>factories / fibers (ID index) / entries"]
+    FIBER["Fiber inertial state machine<br>plugin / host / state / ctx"]
+    PLUGIN["Plugin<br>Inject + Apply"]
+    LOADER -- "mount: factory → Configure → Use" --> FIBER
+    FIBER -.->|"host (mount layer)"| ROOT
+    FIBER ==>|"ctx = private scope (where Apply runs)"| CHILD
+    FIBER -- "plugin" --> PLUGIN
+```
+
+Three chains cover all interactions:
+
+1. **Assembly chain**: `Reconcile` runs in three phases (locked diff → unlocked mount/Close → locked commit) → `mount` = factory → `Configure` → `Use` (loader.go:217) → `settleSync` synchronous first load → `doLoad` = `host.Derive()` builds a private scope + `plugin.Apply(ctx)` (plugin.go:257). Everything registered inside Apply (services, listeners, effects) lands in that private scope — unloading means disposing it.
+2. **Reactive chain**: any `Provide` or binding removal → `notifyServiceChange` broadcasts tree-wide (context.go:278) → the change subscription registered by `Use` filters against the fiber's declared dependency names (plugin.go:132) → on a hit, `markDirty` → the single-flight `settleLoop` re-evaluates (plugin.go:226): dependencies satisfied → `doLoad`, missing → `doUnload`. Disposing the private scope removes bindings, which **broadcasts again** — unloading cascades downstream naturally.
+3. **Destruction chain**: `Dispose` in a fixed order (context.go:180): snapshot and mark under lock → `forceUnload` local fibers (**silent, no fiber_state**) → cascade child scopes in reverse → clear the event bus → remove itself from the parent → unwind effects LIFO.
+
+Fiber states and their triggers (`from == to` emits nothing; tree destruction is silent throughout):
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Inactive: Use, deps unsatisfied
+    [*] --> Loading: Use, deps satisfied (sync first load)
+    Inactive --> Loading: deps satisfied (automatic)
+    Failed --> Loading: dependency view changed (auto retry)
+    Loading --> Active: Apply succeeded
+    Loading --> Failed: Apply errored / panicked
+    Loading --> Inactive: host disposed / Close race rollback
+    Active --> Unloading: deps gone / explicit Close
+    Unloading --> Inactive: private scope reclaimed
+```
+
 ## 1. Scopes and Effects
 
 ```go
@@ -149,6 +190,19 @@ Reconciliation rules:
 
 `MustRegister` panics on conflict; it is intended for package-level `init`.
 
+### Choosing an Assembly Style
+
+`Use` is the only loading primitive — the last step of `Loader.mount` is `Use` (loader.go:224). The Loader is an optional declarative layer on top of it that manages **entries**, not plugins: reactive loading/unloading, state-machine convergence, event dispatch, and effect reclamation all live in the Use/Fiber layer; bypassing the Loader breaks no invariant. The two assembly paths coexist by design — pick by assembly shape:
+
+| Scenario | Expected usage |
+|---|---|
+| Library-embedded agents, CLIs, plugin set fixed at compile time | Direct `Use` — assembly code is the type-safe configuration |
+| Multiple instances of one plugin, parameters from external config | Loader (`Configurable` private delivery, entries never overwrite each other) |
+| Runtime hot-reload, conditional start/stop, disable with retained config | Loader (incremental reconcile, minimal disruption rebuilds) |
+| Assembly shape decided by external input (config file / control plane) | Loader |
+
+Boundary: the Loader **holds no state setter** — it triggers transitions through lifecycle primitives (`mount` = `Use`, `Reconcile` teardown = `Close`); the transitions themselves execute inside the Fiber. State queries are read-only via `Snapshot`. `(*Loader).Fiber(id)` consults the Loader's own ID index, while the whole-tree snapshot `FiberSnapshots` walks host.fibers and never touches the Loader. When a bundle-level host (CLI/server booting a system from config) lands, the Loader becomes the entry point of that path (see the "deliberate trade-offs" section of the design doc).
+
 ## 5. Events
 
 Observer-style listeners use **`On`**; waterfalls use **`OnWaterfall`**. There is no `OnParallel`: `Emit` and `Parallel` share `On`.
@@ -188,6 +242,7 @@ In `Emit`, a single listener panic **propagates upward**; `Parallel` collects pa
 - The service repository is globally unique; no visibility across Context trees is by design.
 - Overwrites do not revert the previous value.
 - Lock order is fixed: `ctx.mu → bus.mu`; `bus.mu` is the leaf lock.
+- Two assembly paths coexist by design: `Use` is the only loading primitive; the Loader does not funnel it (it manages entries, not the state machine).
 - No realm / isolate, no code-level HMR. A Loader "reload" = dispose the old Fiber + rebuild from the same factory.
 
 ## Exported API at a Glance

@@ -29,6 +29,47 @@ kernel 用同一套 `Context` 同时记住「现在有什么」和「曾经改�
 | `diagnostics.go` | `FiberStateChange` / `LoaderAction` typed 事件与诊断名 |
 | `snapshot.go` | `FiberSnapshots` 只读全树快照（横幅用） |
 
+## 结构全景与调用链
+
+骨架是一棵 Context 树：每层都有事件总线、效应栈、插件实例表，但**服务仓库只在根层**——`Provide` / `Get` 都经 `root()` 定位到根仓库；作用域树管生命周期归属与事件传播，不管服务可见性。
+
+```mermaid
+flowchart TB
+    subgraph tree[Context 作用域树]
+        ROOT["Context 根<br>bindings = 全局服务仓库<br>effects = LIFO 效应栈<br>events = eventBus<br>fibers = 插件实例"]
+        CHILD["Context 子作用域<br>effects / events / fibers"]
+    end
+    LOADER["Loader<br>factories / fibers（ID 索引）/ entries"]
+    FIBER["Fiber 惯性状态机<br>plugin / host / state / ctx"]
+    PLUGIN["Plugin<br>Inject + Apply"]
+    LOADER -- "mount：factory → Configure → Use" --> FIBER
+    FIBER -.->|"host 挂载层"| ROOT
+    FIBER ==>|"ctx = 私有作用域（Apply 的现场）"| CHILD
+    FIBER -- "plugin" --> PLUGIN
+```
+
+三条主链贯穿全部交互：
+
+1. **装配链**：`Reconcile` 三阶段（锁内 diff → 解锁执行 mount/Close → 持锁提交）→ `mount` = factory → `Configure` → `Use`（loader.go:217）→ `settleSync` 同步首装 → `doLoad` = `host.Derive()` 建私有作用域 + `plugin.Apply(ctx)`（plugin.go:257）。Apply 内注册的一切（服务、监听、效应）都归到私有作用域——卸载即 Dispose 它。
+2. **响应式链**：任何 `Provide` 或绑定撤除 → `notifyServiceChange` 全树广播（context.go:278）→ Fiber 在 Use 时注册的变更订阅过滤自己声明的依赖名（plugin.go:132）→ 命中则 `markDirty` → 单飞 `settleLoop` 重评估（plugin.go:226）：依赖齐 → `doLoad`，缺 → `doUnload`。卸载 Dispose 私有作用域时绑定撤除**再次广播**——卸载天然向下游级联。
+3. **销毁链**：`Dispose` 固定顺序（context.go:180）：锁内快照并标记 → `forceUnload` 本层 Fiber（**静默，不发 fiber_state**）→ 逆序级联子作用域 → 清空事件总线 → 从父层摘除自己 → LIFO 执行效应栈。
+
+Fiber 五态与触发源（`from == to` 不发事件；树销毁整条链静默）：
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Inactive: Use 且依赖未满足
+    [*] --> Loading: Use 且依赖满足（同步首装）
+    Inactive --> Loading: 依赖满足（自动）
+    Failed --> Loading: 依赖视图变化（自动重试）
+    Loading --> Active: Apply 成功
+    Loading --> Failed: Apply 报错 / panic
+    Loading --> Inactive: 宿主已销毁 / Close 竞态回滚
+    Active --> Unloading: 依赖消失 / 主动 Close
+    Unloading --> Inactive: 私有作用域回收完成
+```
+
 ## 1. 作用域与效应
 
 ```go
@@ -147,6 +188,19 @@ err := loader.Reconcile([]kernel.Entry{
 
 `MustRegister` 冲突时 panic，给包级 `init` 用。
 
+### 装配方式的选择
+
+`Use` 是唯一的装载原语——`Loader.mount` 的最后一步就是 `Use`（loader.go:224）。Loader 是它之上的可选声明式层，管理的是**条目（Entry）**而不是插件：响应式装卸、状态机收敛、事件派发、效应回收全在 Use/Fiber 层，绕过 Loader 不破坏任何不变式。两条通路并存是有意的，按装配形态选择：
+
+| 场景 | 预期用法 |
+|---|---|
+| 库内嵌 agent、CLI、插件集合编译期固定 | `Use` 直挂——装配代码即类型安全配置 |
+| 同一插件多实例、参数来自外部配置 | Loader（`Configurable` 私有分发，条目间互不覆盖） |
+| 运行期热重载、按条件启停、禁用保留 | Loader（增量调和，最小破坏重建） |
+| 装配形态由外部输入（配置文件 / 管理面）决定 | Loader |
+
+职责边界：Loader **不持有状态机 setter**——它经生命周期原语（mount = `Use`、Reconcile 回收 = `Close`）触发转换，转换本身在 Fiber 内生执行；状态查询只经 `Snapshot` 只读。`(*Loader).Fiber(id)` 查的是 Loader 自己的 ID 索引，全树快照 `FiberSnapshots` 走 host.fibers、不经 Loader。bundle 级宿主（CLI/server 从配置起系统）落地时，Loader 才成为那条通路的入口（见设计文档「有意取舍」节）。
+
 ## 5. 事件
 
 观察型监听用 **`On`**，waterfall 用 **`OnWaterfall`**。没有 `OnParallel`：`Emit` 和 `Parallel` 共用 `On`。
@@ -186,6 +240,7 @@ _ = kernel.Parallel(ctx, Tick, 0)      // 并发；返回 []error 或 nil
 - 服务仓库全局唯一；跨 Context 树不互通是 by design。
 - 覆盖不还原前值。
 - 锁序固定：`ctx.mu → bus.mu`，`bus.mu` 是叶子锁。
+- 两条装配通路并存 by design：`Use` 是唯一装载原语，Loader 不收口（管 Entry、不管状态机）。
 - 不做 realm / isolate，不做代码级 HMR。Loader「重载」= dispose 旧 Fiber + 同一工厂重建。
 
 ## 导出一览
