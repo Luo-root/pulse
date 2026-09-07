@@ -16,6 +16,10 @@
 package observability
 
 import (
+	"bytes"
+	"encoding/json"
+	"reflect"
+	"sort"
 	"time"
 )
 
@@ -36,15 +40,19 @@ const (
 	EventHostReady    = "observability.host_ready"
 )
 
-// Record 是观测信封：通用可空字段 + 装配专用具名段。
+// Record 是观测信封：通用可空字段 + 装配专用具名段 + Attrs 开放段。
 //
-// 隐私边界由编译器保证：没有 Attributes map 或任何任意 kv 注入口。
-// prompt、附件字节、密钥、思维链等payload 内容在类型上就无法进入。
+// 隐私边界：没有 map[string]any 或任意对象注入口——Attrs 的值域经
+// 泛型 Set/Get 锁死在标量（string/int64/float64/bool），Message 切片、
+// 附件字节、思维链等 payload 结构在类型上就无法进入；「把 payload
+// 塞进一个标量值」属于蓄意行为，防线是 key 自述意图 + Sink 侧
+// redact 钩子（宿主实现可拒绝敏感 key / 截断超长 / 限条数）。
 //
 // 字段填充规则：
-//   - kernel 装配记录（Bootstrap 产生）：TraceID/Duration 为零值
-//   - 桥记录：填 TraceID/Duration/Status；token 数等装不进信封的
-//     业务指标走 SlogSink 附加键或桥自己的类型，不要扩本结构
+//   - kernel 装配记录（Bootstrap 产生）：TraceID/Duration/Attrs 为零值
+//   - 桥记录（observability/bridge 产生）：填 TraceID/Duration/Status/
+//     Attrs（key 契约见 llm/loop/flow 各包的 Attr* 常量，如
+//     llm.model、loop.tool、flow.node）；不要再扩本结构
 type Record struct {
 	Time    time.Time
 	HostID  string
@@ -68,6 +76,186 @@ type Record struct {
 	LoaderKind string // loader_action: mount|unmount|recreate|disable
 	EntryID    string // loader_action: 条目 ID
 	PluginName string // loader_action: plugin 注册名
+
+	// Attrs 是产生方自定义的标量 kv（运行期桥与业务插件使用，
+	// 经 Set/Get 写读）。出口实现应按 key 排序输出以获得确定性。
+	Attrs Attrs
+}
+
+// AttrValue 是 Attrs 的值域约束：仅标量（含底层类型命中约束的命名
+// 类型）。它只能出现在 Set/Get 的泛型约束位置——Go 的 union 接口不能
+// 作普通变量类型，这恰好堵死「绕过约束直接构造值」的口子。
+type AttrValue interface {
+	~string | ~int64 | ~float64 | ~bool
+}
+
+// Attrs 是产生方自定义的标量 kv。key 约定 <组件>.<字段> 点分
+//（如 llm.model、loop.tool、flow.node），各组件独立 key 空间。
+//
+// 零值可用。写入经泛型 Set（就地），读取经泛型 Get；Range 供出口
+// 无序遍历，MarshalJSON 按 key 排序输出。并发语义与 Record 一致：
+// 产生方单 goroutine 填充，进入 Sink 后只读。
+type Attrs struct {
+	m map[string]attrScalar
+}
+
+type attrKind uint8
+
+const (
+	attrString attrKind = iota
+	attrInt
+	attrFloat
+	attrBool
+)
+
+// attrScalar 是标量的定长联合表示：kind 决定哪个字段有效。
+type attrScalar struct {
+	kind attrKind
+	s    string
+	i    int64
+	f    float64
+	b    bool
+}
+
+// native 把标量还原为基础类型值（string/int64/float64/bool），
+// 供 slog 等出口按原生类型输出。
+func (x attrScalar) native() any {
+	switch x.kind {
+	case attrString:
+		return x.s
+	case attrInt:
+		return x.i
+	case attrFloat:
+		return x.f
+	case attrBool:
+		return x.b
+	}
+	return nil
+}
+
+// Set 把标量键值就地写入 a（零值 Attrs 可用，同名覆盖）。T 的类型集
+// 见 AttrValue——[]byte、struct、slice、任意对象在类型上就无法进入，
+// 内容载荷（prompt、消息、思维链）不能以 kv 形式进入观测记录，
+// 这是本包隐私边界的类型部分。
+func Set[T AttrValue](a *Attrs, key string, val T) {
+	if a.m == nil {
+		a.m = make(map[string]attrScalar)
+	}
+	var x attrScalar
+	switch v := any(val).(type) {
+	case string:
+		x = attrScalar{kind: attrString, s: v}
+	case int64:
+		x = attrScalar{kind: attrInt, i: v}
+	case float64:
+		x = attrScalar{kind: attrFloat, f: v}
+	case bool:
+		x = attrScalar{kind: attrBool, b: v}
+	default:
+		// 底层类型命中约束的命名类型（如 type Model string）。
+		switch rv := reflect.ValueOf(val); rv.Kind() {
+		case reflect.String:
+			x = attrScalar{kind: attrString, s: rv.String()}
+		case reflect.Int64:
+			x = attrScalar{kind: attrInt, i: rv.Int()}
+		case reflect.Float64:
+			x = attrScalar{kind: attrFloat, f: rv.Float()}
+		case reflect.Bool:
+			x = attrScalar{kind: attrBool, b: rv.Bool()}
+		default:
+			return // 约束保证不可达
+		}
+	}
+	a.m[key] = x
+}
+
+// Get 读取标量值：缺失或与 T 底层类型不符返回零值与 false。
+func Get[T AttrValue](a Attrs, key string) (T, bool) {
+	var zero T
+	x, ok := a.m[key]
+	if !ok {
+		return zero, false
+	}
+	if out, ok := x.native().(T); ok {
+		return out, true
+	}
+	// T 是命中约束的命名类型（如 type Model string）时走反射转换；
+	// T 的底层 kind 必须与存储 kind 一致，否则类型不符。
+	var want reflect.Kind
+	switch x.kind {
+	case attrString:
+		want = reflect.String
+	case attrInt:
+		want = reflect.Int64
+	case attrFloat:
+		want = reflect.Float64
+	case attrBool:
+		want = reflect.Bool
+	default:
+		return zero, false
+	}
+	if tp := reflect.TypeFor[T](); tp.Kind() != want {
+		return zero, false
+	}
+	out := reflect.New(reflect.TypeFor[T]()).Elem()
+	switch x.kind {
+	case attrString:
+		out.SetString(x.s)
+	case attrInt:
+		out.SetInt(x.i)
+	case attrFloat:
+		out.SetFloat(x.f)
+	case attrBool:
+		out.SetBool(x.b)
+	}
+	got, ok := out.Interface().(T)
+	return got, ok
+}
+
+// Len 返回条数。
+func (a Attrs) Len() int { return len(a.m) }
+
+// Range 无序遍历键值对；val 已还原为基础类型（string/int64/float64/bool）。
+// 出口实现如需确定性输出，请按 key 排序（参考 SlogSink / MarshalJSON）。
+func (a Attrs) Range(fn func(key string, val any)) {
+	for k, x := range a.m {
+		fn(k, x.native())
+	}
+}
+
+// sortedKeys 返回按键排序的全部 key（同包出口用）。
+func (a Attrs) sortedKeys() []string {
+	keys := make([]string, 0, len(a.m))
+	for k := range a.m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// MarshalJSON 按 key 排序输出为对象（确定性）；空 Attrs 输出 {}。
+func (a Attrs) MarshalJSON() ([]byte, error) {
+	keys := a.sortedKeys()
+	buf := bytes.NewBuffer(make([]byte, 0, 16*len(keys)+2))
+	buf.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		kb, err := json.Marshal(k)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(kb)
+		buf.WriteByte(':')
+		vb, err := json.Marshal(a.m[k].native())
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(vb)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
 }
 
 // Sink 是记录出口。实现必须并发安全且不得长时间阻塞调用方

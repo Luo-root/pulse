@@ -65,3 +65,15 @@ type TurnEnd struct {
 	Steps     int             // 实际执行的步数
 	StoppedBy StopReason      // 终止原因
 }
+
+// 观测 attrs key 契约（归属 loop 层）：桥折叠 loop 事件为
+// observability.Record 时使用；token 用量事实归 llm 层，key 见
+// llm.AttrTokensIn / llm.AttrTokensOut。
+//
+// key 约定 <组件>.<字段> 点分，各组件独立 key 空间互不冲突。
+const (
+	// AttrTool 是被执行工具的注册名（after_tool_call）。
+	AttrTool = "loop.tool"
+	// AttrSteps 是回合实际执行的步数（turn_end）。
+	AttrSteps = "loop.steps"
+)

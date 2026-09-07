@@ -60,7 +60,7 @@ func (m *responsesModel) Generate(ctx context.Context, req *llm.GenerateRequest)
 			m.provider, 0, nil, "%s: %s", resp.Error.Code, resp.Error.Message)
 	}
 	msg, finish, usage := mapResponsesResponse(resp)
-	return &llm.Response{Message: msg, FinishReason: finish, Usage: usage}, nil
+	return &llm.Response{Message: msg, FinishReason: finish, Usage: usage, Model: resp.Model}, nil
 }
 
 func (m *responsesModel) Stream(ctx context.Context, req *llm.GenerateRequest) (<-chan llm.StreamEvent, error) {
@@ -458,7 +458,7 @@ func (m *responsesModel) pump(ctx context.Context, stream *ssestream.Stream[resp
 		case responses.ResponseCompletedEvent:
 			msg, finish, usage := mapResponsesResponse(&ev.Response)
 			if !send(llm.StreamEvent{Kind: llm.EventDone, Response: &llm.Response{
-				Message: msg, FinishReason: finish, Usage: usage}}) {
+				Message: msg, FinishReason: finish, Usage: usage, Model: ev.Response.Model}}) {
 				return
 			}
 			done = true
@@ -468,7 +468,9 @@ func (m *responsesModel) pump(ctx context.Context, stream *ssestream.Stream[resp
 			if !send(llm.StreamEvent{Kind: llm.EventDone, Response: &llm.Response{
 				Message:      msg,
 				FinishReason: incompleteFinish(&ev.Response),
-				Usage:        usage}}) {
+				Usage:        usage,
+				Model:        ev.Response.Model,
+			}}) {
 				return
 			}
 			done = true

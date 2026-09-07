@@ -442,6 +442,7 @@ func mapResponse(provider string, msg *sdk.Message) (*llm.Response, error) {
 		Message:      &llm.Message{Role: llm.RoleAssistant, Parts: parts},
 		FinishReason: mapFinishReason(msg.StopReason),
 		Usage:        usage,
+		Model:        msg.Model,
 	}, nil
 }
 
@@ -503,6 +504,7 @@ func (m *messagesModel) pump(ctx context.Context, stream *ssestream.Stream[sdk.M
 		calls     []*tcAcc
 		finish    sdk.StopReason
 		usage     llm.TokenUsage
+		model     string
 	)
 	for stream.Next() {
 		ev := stream.Current()
@@ -510,6 +512,7 @@ func (m *messagesModel) pump(ctx context.Context, stream *ssestream.Stream[sdk.M
 		case "message_start":
 			usage.InputTokens = int(ev.Message.Usage.InputTokens)
 			usage.CachedInputTokens = int(ev.Message.Usage.CacheReadInputTokens)
+			model = ev.Message.Model
 
 		case "content_block_start":
 			cb := ev.ContentBlock
@@ -591,6 +594,7 @@ func (m *messagesModel) pump(ctx context.Context, stream *ssestream.Stream[sdk.M
 				Message:      msg,
 				FinishReason: mapFinishReason(finish),
 				Usage:        usage,
+				Model:        model,
 			}}) {
 				return
 			}
