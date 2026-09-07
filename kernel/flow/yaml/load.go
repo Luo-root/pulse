@@ -13,7 +13,7 @@ import (
 // Document 是声明式流程图的解码形态。
 type Document struct {
 	// Version 缺省或 1 接受；其它值拒绝。
-	Version int `yaml:"version"`
+	Version int        `yaml:"version"`
 	Seeds   []SeedSpec `yaml:"seeds"`
 	Nodes   []NodeSpec `yaml:"nodes"`
 	// Observer 仅文档提示位：Load 忽略。观察者走 LoadOptions.Graph / WithObserver。

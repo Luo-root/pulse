@@ -4,12 +4,12 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/schema"
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/loop"
 	"github.com/Luo-root/pulse/observability"
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
 )
 
 // BenchmarkWar_PulseTextRound T1 单步文本回合（冷启动口径）：Pulse 全家桶

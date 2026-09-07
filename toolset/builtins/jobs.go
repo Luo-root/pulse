@@ -21,11 +21,11 @@ const jobKillWait = 5 * time.Second
 
 // job 是一个后台命令：合流输出环形缓冲 + 退出状态。
 type job struct {
-	id       string
-	command  string
-	cmd      *exec.Cmd
-	cancel   context.CancelFunc
-	waitCh   chan struct{} // 关闭表示 Wait 已返回
+	id      string
+	command string
+	cmd     *exec.Cmd
+	cancel  context.CancelFunc
+	waitCh  chan struct{} // 关闭表示 Wait 已返回
 
 	mu       sync.Mutex
 	buf      []byte
@@ -87,7 +87,7 @@ func (j *job) status() (running bool, killed bool, exitCode int, total int, drop
 
 // jobWriter 把进程输出写进 job 环形缓冲（stdout/stderr 共用，交错了不保证）。
 type jobWriter struct {
-	j     *job
+	j      *job
 	bufMax int
 }
 

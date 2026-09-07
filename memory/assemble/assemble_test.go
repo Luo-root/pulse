@@ -495,6 +495,7 @@ func TestHybridE2EWithMemIndex(t *testing.T) {
 		t.Fatalf("diagnostics = %+v, want semantic seam entry", ac.Diagnostics)
 	}
 }
+
 // TestSearchFailureDiag：store 召回失败 → 诊断记录、组装不中断、surface
 // 照常。
 func TestSearchFailureDiag(t *testing.T) {

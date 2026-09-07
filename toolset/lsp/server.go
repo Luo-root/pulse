@@ -136,9 +136,9 @@ type textDocumentItem struct {
 }
 
 type initializeParams struct {
-	ProcessID    *int      `json:"processId"`
-	RootURI      string    `json:"rootUri"`
-	Capabilities struct{}  `json:"capabilities"`
+	ProcessID    *int     `json:"processId"`
+	RootURI      string   `json:"rootUri"`
+	Capabilities struct{} `json:"capabilities"`
 }
 
 type didOpenParams struct {
@@ -389,7 +389,7 @@ func (s *server) ensureOpen(ctx context.Context, abs, ext string) error {
 	var oldVersion int
 	if st != nil {
 		oldVersion = st.version
-		st.version++  // 预占下一版
+		st.version++   // 预占下一版
 		st.hash = hash // 先提交意图：并发调用者在锁内看到已同步即跳过
 	}
 	s.mu.Unlock()

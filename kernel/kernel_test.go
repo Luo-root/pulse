@@ -450,7 +450,7 @@ func TestEventDisposeOnScopeDispose(t *testing.T) {
 	}
 	child.Dispose()
 
-	Emit(root, ev, 1)   // 不应触达已死层
+	Emit(root, ev, 1) // 不应触达已死层
 	Waterfall(root, ev, 2)
 }
 
@@ -544,7 +544,8 @@ func TestEventBusConcurrentAddRemoveDispatch(t *testing.T) {
 // 回归：同层多个插件的变更订阅互不误删。Use 为每个 Fiber 注册的
 // 订阅闭包来自同一函数字面量（仅捕获变量不同），按函数代码指针
 // 判等会把它们当成同一个订阅——第一个 Close 会摘掉别人的订阅。
-func TestSiblingFiberSubscriptionNotCrossRemoved(t *testing.T) {	ctx := New()
+func TestSiblingFiberSubscriptionNotCrossRemoved(t *testing.T) {
+	ctx := New()
 	disposeDep := mustProvide(t, ctx, keyStr, "dep")
 
 	pa := &countingPlugin{deps: []Dependency{Require(keyStr)}}
@@ -570,8 +571,8 @@ func TestSiblingFiberSubscriptionNotCrossRemoved(t *testing.T) {	ctx := New()
 
 type tagPlugin struct {
 	countingPlugin
-	entryID string
-	tag     string
+	entryID    string
+	tag        string
 	configured bool
 }
 

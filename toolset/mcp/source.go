@@ -131,9 +131,9 @@ func (s *Source) Sync(scope *kernel.Context, ctx context.Context) error {
 			preview = DefaultPreview(srcKey, upstream, s.cfg.DefaultRisk)
 		}
 		_, err := s.reg.Register(scope, toolset.Registration{
-			Def:       DefFromTool(final, t),
-			Source:    srcKey,
-			Risk: s.cfg.DefaultRisk,
+			Def:    DefFromTool(final, t),
+			Source: srcKey,
+			Risk:   s.cfg.DefaultRisk,
 			Fn: func(callCtx context.Context, args json.RawMessage) (string, error) {
 				return client.CallTool(callCtx, upstream, args)
 			},

@@ -11,10 +11,10 @@ import (
 
 // mockClient 是可控制的 Client：支持动态改工具表、模拟断开与取消。
 type mockClient struct {
-	mu      sync.Mutex
-	tools   []mcpsrc.Tool
-	closed  bool
-	calls   []string
+	mu       sync.Mutex
+	tools    []mcpsrc.Tool
+	closed   bool
+	calls    []string
 	failList error
 	failCall error
 }

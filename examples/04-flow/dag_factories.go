@@ -9,7 +9,7 @@ import (
 
 // dagRuns 是代码建图与 YAML 装图共用的 Run 集合（E2 拓扑 A：工厂只给 Run）。
 type dagRuns struct {
-	classify       flow.RunFunc
+	classify      flow.RunFunc
 	retrieveLocal flow.RunFunc
 	retrieveWeb   flow.RunFunc
 	merge         flow.RunFunc
