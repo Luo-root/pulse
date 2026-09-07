@@ -32,7 +32,7 @@
 │   每请求：ObserveConfig{Sink,HostID,TraceID} +        │
 │   AttachCollector + llm/loop.Observe + flow 图挂      │
 │   NewRecordObserver；宿主业务 Observer 经 MultiObserver│
-│   组合；Host.NewTraceID 单一生成源注入（D3）           │
+│   组合；TraceID 宿主单一生成源注入（D3）               │
 └───────────────┬─────────────────────────────────────┘
                 │ 显式装配（可选注册：不调即零足迹）
 ┌───────────────▼─────────────────────────────────────┐
