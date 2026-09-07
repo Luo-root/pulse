@@ -2,7 +2,6 @@ package observability
 
 import (
 	"errors"
-	"time"
 
 	"github.com/Luo-root/pulse/kernel"
 )
@@ -48,25 +47,25 @@ type Collector struct {
 
 // Write 直写一条状态型事实。
 func (c *Collector) Write(event, status string) {
-	c.write(event, status, 0, nil, nil)
+	c.write(event, status, nil)
 }
 
 // WriteAttrs 带 attrs 直写：set 收到空 Attrs，可多次 observability.Set；
 // set 为 nil 等价 Write。引用语义见 Sink 接口契约（Write 后不再修改）。
 func (c *Collector) WriteAttrs(event, status string, set func(a *Attrs)) {
-	c.write(event, status, 0, nil, set)
+	c.write(event, status, set)
 }
 
 // write 是 Collector 的统一出口：补齐信封公共段，装配专用字段保持零值。
-func (c *Collector) write(event, status string, d time.Duration, err error, set func(a *Attrs)) {
+// 直写面定位为状态型事实——不带 Duration/Err（运行期耗时与失败语义
+// 由各包 Observe 折叠产生，不经业务直写口）。
+func (c *Collector) write(event, status string, set func(a *Attrs)) {
 	rec := Record{
-		HostID:   c.hostID,
-		TraceID:  c.traceID,
-		Source:   SourceAdapter,
-		Event:    event,
-		Status:   status,
-		Duration: d,
-		Err:      err,
+		HostID:  c.hostID,
+		TraceID: c.traceID,
+		Source:  SourceAdapter,
+		Event:   event,
+		Status:  status,
 	}
 	if set != nil {
 		set(&rec.Attrs)
