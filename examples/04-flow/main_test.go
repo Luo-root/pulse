@@ -14,10 +14,9 @@ import (
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/loop"
 	"github.com/Luo-root/pulse/observability"
-	"github.com/Luo-root/pulse/observability/bridge"
 )
 
-// nodeID 从桥记录的 attrs 里取节点标识（flow.AttrNode 契约）。
+// nodeID 从观测记录的 attrs 里取节点标识（flow.AttrNode 契约）。
 func nodeID(rec observability.Record) string {
 	v, _ := observability.Get[string](rec.Attrs, flow.AttrNode)
 	return v
@@ -86,19 +85,20 @@ func (errRetriever) Search(context.Context, string, int) ([]Document, error) {
 	return nil, errors.New("search backend down")
 }
 
-// testBridge 为测试请求创建独立桥（挂宿主私有子作用域）。
-func testBridge(t *testing.T, h *demoapp.Host) *bridge.Bridge {
+// testObserve 为测试请求装配观测（挂宿主私有子作用域），返回 cfg
+// 供 flow 图的 NewRecordObserver 复用（同一请求共享 TraceID）。
+func testObserve(t *testing.T, h *demoapp.Host) observability.ObserveConfig {
 	t.Helper()
 	scope, err := h.Ctx.Derive()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(scope.Dispose)
-	b, err := h.NewBridge(scope)
+	cfg, _, err := h.NewObserve(scope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b
+	return cfg
 }
 
 // 空命中是合法数据：图成功跑完，且 answer 的 prompt 必须带上查询原文与「无命中」标注。
@@ -106,7 +106,7 @@ func TestRunGraphEmptyHitIsData(t *testing.T) {
 	h := newTestHost(t)
 	r := memoryRetriever{docs: []Document{{Title: "kernel", Content: "卸载即还原"}}}
 	agent, cap := newCapturingAgent(t, &capturingModel{})
-	res, _, err := runRAGGraph(h, agent, r, nil, llm.UserText("晚饭吃什么"), testBridge(t, h))
+	res, _, err := runRAGGraph(h, agent, r, nil, llm.UserText("晚饭吃什么"), testObserve(t, h))
 	if err != nil {
 		t.Fatalf("empty hit must not fail graph: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestRunGraphEmptyHitIsData(t *testing.T) {
 // 检索失败 → 节点 error → 取消整图，runRAGGraph 返回该错误且无结果。
 func TestRunGraphRetrievalErrorCancels(t *testing.T) {
 	h := newTestHost(t)
-	res, _, err := runRAGGraph(h, mustAgent(t, h.Model), errRetriever{}, nil, llm.UserText("任意"), testBridge(t, h))
+	res, _, err := runRAGGraph(h, mustAgent(t, h.Model), errRetriever{}, nil, llm.UserText("任意"), testObserve(t, h))
 	if err == nil {
 		t.Fatal("expected retrieval error to cancel graph")
 	}
@@ -147,7 +147,7 @@ func TestRunGraphHitConsumesQueryAndDocs(t *testing.T) {
 		{Title: "kernel", Content: "卸载即还原，依赖响应式装载。"},
 	}}
 	agent, cap := newCapturingAgent(t, &capturingModel{})
-	if _, _, err := runRAGGraph(h, agent, r, nil, llm.UserText("kernel 卸载"), testBridge(t, h)); err != nil {
+	if _, _, err := runRAGGraph(h, agent, r, nil, llm.UserText("kernel 卸载"), testObserve(t, h)); err != nil {
 		t.Fatal(err)
 	}
 	prompt := cap.lastText()
@@ -205,9 +205,9 @@ func TestFactPathParallelPeakAndRecords(t *testing.T) {
 			continue
 		}
 		switch rec.Event {
-		case bridge.EventNodeWaitFinished:
+		case flow.EventNodeWaitFinished:
 			waits[nodeID(rec)]++
-		case bridge.EventNodeRunFinished:
+		case flow.EventNodeRunFinished:
 			runs[nodeID(rec)]++
 		}
 	}
@@ -238,14 +238,14 @@ func TestChitchatSkipsRetrieves(t *testing.T) {
 	waitSkip := map[string]bool{}
 	for _, rec := range sink.Snapshot() {
 		switch rec.Event {
-		case bridge.EventNodeRunFinished:
+		case flow.EventNodeRunFinished:
 			switch nodeID(rec) {
 			case "retrieve_local", "retrieve_web", "merge", "answer":
 				t.Fatalf("chitchat must not run %s", nodeID(rec))
 			case "smalltalk":
 				smalltalkRun = true
 			}
-		case bridge.EventNodeWaitFinished:
+		case flow.EventNodeWaitFinished:
 			if rec.Status == string(flow.NodeSkipped) {
 				waitSkip[nodeID(rec)] = true
 			}

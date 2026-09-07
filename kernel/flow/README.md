@@ -316,6 +316,10 @@ Contract highlights:
 - an observer panic **must not** become a node failure.
 - the usual bridge implementation: the two Records `flow.node_wait_finished` / `flow.node_run_finished`, each carrying `Duration`; node identity goes in `FiberName` (the official envelope is not extended). See `examples/04-flow` (record definitions in `examples/internal/demoapp/bridge.go`; the 04-flow README is already tabulated).
 
+### Observation Adapter: NewRecordObserver
+
+`NewRecordObserver(cfg)` returns a segment-timing observer that writes observation records: one each for wait-finished and run-finished (per-segment Duration, node ID in `AttrNode`, named fields untouched); a skipped node produces only one skipped wait record. One adapter instance per graph run (nodeID bookkeeping; leftovers from abnormal paths are dropped with the instance). Combine with host-owned observers via `MultiObserver`. A nil cfg.Sink returns a sentinel error. See `observer_record.go` and design doc §9.
+
 ## Declarative Graph Assembly (E2)
 
 **YAML only** graph assembly lives in the subpackage [`yaml`](yaml/README.md): `Load` / `SeedPlan`. Topology belongs to A — YAML must carry `id` / `uses` / `requires` / `provides`; `uses` maps to a Run factory on the `Registry`. No JSON parser will be added.

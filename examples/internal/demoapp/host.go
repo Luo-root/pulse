@@ -13,8 +13,8 @@ import (
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/llm/anthropic"
 	"github.com/Luo-root/pulse/llm/openai"
+	"github.com/Luo-root/pulse/loop"
 	"github.com/Luo-root/pulse/observability"
-	"github.com/Luo-root/pulse/observability/bridge"
 )
 
 // hostSeq 保证同纳秒内多次 Open 的 hostID 仍唯一。
@@ -232,7 +232,7 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 	// Anthropic MaxTokens 必填：loop 组请求不填该字段。
 	// 无 reqScope 时 observed 回退 Registry.EventScope()（llm.Plugin
 	// Apply 私有子 ctx）。EmitLocal 不向父冒泡——挂 host 根无效。
-	// 每请求 NewBridge 还会在 reqScope 再挂一次。
+	// 每请求 NewObserve 还会在 reqScope 再挂一次。
 	if err := InstallAnthropicMaxTokensDefault(reg.EventScope()); err != nil {
 		host.Dispose()
 		return nil, err
@@ -265,18 +265,27 @@ func InstallAnthropicMaxTokensDefault(scope *kernel.Context) error {
 	return err
 }
 
-// NewBridge 为一次请求创建官方观测桥（observability/bridge.Attach）：
-// TraceID 由 NewTraceID 注入（宿主单一生成源），llm/loop 监听挂 scope
-// （随其销毁自动摘除），Collector 服务同时注册进 scope。
-func (h *Host) NewBridge(scope *kernel.Context) (*bridge.Bridge, error) {
+// NewObserve 为一次请求装配观测（双基座形态）：Collector 服务注册进
+// scope（宿主/业务插件直写），llm/loop 观测适配挂同一 scope。TraceID
+// 由 NewTraceID 注入（宿主单一生成源）；返回的 cfg 供请求内其他适配
+// 复用（如 flow 图的 NewRecordObserver——同一请求共享 TraceID 即 D3
+// 请求级关联）。
+func (h *Host) NewObserve(scope *kernel.Context) (observability.ObserveConfig, *observability.Collector, error) {
 	if err := InstallAnthropicMaxTokensDefault(scope); err != nil {
-		return nil, err
+		return observability.ObserveConfig{}, nil, err
 	}
-	return bridge.Attach(scope, bridge.Config{
-		Sink:    h.Sink,
-		HostID:  h.hostID,
-		TraceID: h.NewTraceID(),
-	})
+	cfg := observability.ObserveConfig{Sink: h.Sink, HostID: h.hostID, TraceID: h.NewTraceID()}
+	c, err := observability.AttachCollector(scope, cfg)
+	if err != nil {
+		return observability.ObserveConfig{}, nil, err
+	}
+	if err := llm.Observe(scope, cfg); err != nil {
+		return observability.ObserveConfig{}, nil, err
+	}
+	if err := loop.Observe(scope, cfg); err != nil {
+		return observability.ObserveConfig{}, nil, err
+	}
+	return cfg, c, nil
 }
 
 // Close 回收 kernel 作用域及全部效应。

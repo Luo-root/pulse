@@ -127,6 +127,10 @@ Retryability is determined **solely** by `Kind` (`KindOf` / `IsRetryable`):
 
 This package **does not retry**. Upper layers back off or fail over based on Kind.
 
+## Observation Adapter
+
+`Observe(scope, cfg)` folds runtime facts into the observation envelope and writes them to the host Sink: after_response → `llm.generate_finished` (model name and token usage in Attrs, key contract in `llm/obs.go`); before_generate serves only as the timing origin (waterfall passthrough, request untouched). The scope must be the same one passed to `llm.WithEventScope`; calling it twice on one scope = duplicate listeners and records (godoc warning). See `observe.go` and `docs/design/observability-v1-design.md` §9.
+
 ## Registry
 
 Kernel service key: `llm.ServiceKey` (`"pulse.llm"`). You can also use `NewRegistry` directly as a library.

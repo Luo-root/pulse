@@ -314,6 +314,10 @@ g := flow.New(ctx, flow.WithObserver(obs))
 - observer panic **不得**变成节点失败。
 - 桥侧常见落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；节点身份放 `FiberName`（不扩官方信封）。见 `examples/04-flow`（记录定义在 `examples/internal/demoapp/bridge.go`，04-flow README 已表格化）。
 
+### 观测适配：NewRecordObserver
+
+`NewRecordObserver(cfg)` 返回写观测信封的分段计时观察者：等待完成与执行完成各一条记录（Duration 分段，nodeID 走 `AttrNode`，不占具名字段），跳过节点只有一条 skipped 等待记录。单次图运行一个实例（nodeID 记账，异常路径残留随实例丢弃）；与宿主自有 Observer 经 `MultiObserver` 组合。cfg.Sink 为 nil 返回哨兵错误。详见 `observer_record.go` 与设计文档 §9。
+
 ## 声明式装图（E2）
 
 **YAML only** 装图在子包 [`yaml`](yaml/README_zh.md)：`Load` / `SeedPlan`。拓扑归属 A——YAML 必填 `id` / `uses` / `requires` / `provides`；`uses` 对应 `Registry` 上的 Run 工厂。不补 JSON 解析器。

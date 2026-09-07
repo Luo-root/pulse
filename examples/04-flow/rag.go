@@ -10,7 +10,7 @@ import (
 	"github.com/Luo-root/pulse/kernel/flow"
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/loop"
-	"github.com/Luo-root/pulse/observability/bridge"
+	"github.com/Luo-root/pulse/observability"
 )
 
 // RAG 线性图：extract_text → retrieve → answer，三个节点经槽位依赖
@@ -24,10 +24,14 @@ var (
 )
 
 // runRAGGraph 构造并运行 RAG 线性图，返回 agent 结果与耗时。
-func runRAGGraph(host *demoapp.Host, agent *loop.Agent, retriever Retriever, history []*llm.Message, user *llm.Message, obs *bridge.Bridge) (*loop.Result, time.Duration, error) {
-	// 官方桥节点分段计时 + demo 峰值统计，组合挂图。
+func runRAGGraph(host *demoapp.Host, agent *loop.Agent, retriever Retriever, history []*llm.Message, user *llm.Message, obsCfg observability.ObserveConfig) (*loop.Result, time.Duration, error) {
+	// 官方分段计时 Observer + demo 峰值统计，组合挂图。
+	obs, err := flow.NewRecordObserver(obsCfg)
+	if err != nil {
+		return nil, 0, err
+	}
 	g := flow.New(context.Background(),
-		flow.WithObserver(flow.MultiObserver{obs.FlowObserver(), host.Peak.Observer()}),
+		flow.WithObserver(flow.MultiObserver{obs, host.Peak.Observer()}),
 	)
 	if err := flow.Seed(g, RagUserInput, user); err != nil {
 		return nil, 0, err

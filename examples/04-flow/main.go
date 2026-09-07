@@ -53,7 +53,7 @@ func run() error {
 			return nil, err
 		}
 		defer reqScope.Dispose()
-		obs, err := host.NewBridge(reqScope)
+		obsCfg, c, err := host.NewObserve(reqScope)
 		if err != nil {
 			return nil, err
 		}
@@ -66,7 +66,7 @@ func run() error {
 		}
 
 		// 图 1：RAG 线性链——检索管道确定性执行，answer 节点把自主权交给 agent。
-		res, ragDur, err := runRAGGraph(host, agent, local, history, msg, obs)
+		res, ragDur, err := runRAGGraph(host, agent, local, history, msg, obsCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +87,7 @@ func run() error {
 
 		fmt.Fprintf(os.Stderr, "summary rag_ms=%d dag_ms=%d dag_peak=%d intent=%s history=%d\n",
 			ragDur.Milliseconds(), dagDur.Milliseconds(), dagRes.Peak, dagRes.Intent, len(history)+1)
-		obs.Write("flow.summary", fmt.Sprintf(
+		c.Write("flow.summary", fmt.Sprintf(
 			"rag_duration_ms=%d dag_duration_ms=%d dag_alive_nodes_peak=%d",
 			ragDur.Milliseconds(), dagDur.Milliseconds(), dagRes.Peak))
 
