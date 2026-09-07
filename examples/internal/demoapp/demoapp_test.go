@@ -103,7 +103,7 @@ func TestHostAndTraceIDSeparation(t *testing.T) {
 
 // 桥运行期事实写入统一 Sink：generate_finished 同时携带 HostID 与桥的
 // 请求级 TraceID（桥创建时生成；host 前缀保证日志聚合可分组）。
-func TestBridgeWritesRuntimeRecords(t *testing.T) {
+func TestObserveWritesRuntimeRecords(t *testing.T) {
 	h, err := Open(Flags{Scripted: true}, llm.Resp("bridge ok"))
 	if err != nil {
 		t.Fatal(err)
@@ -115,12 +115,12 @@ func TestBridgeWritesRuntimeRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reqScope.Dispose()
-	bridge, err := h.NewBridge(reqScope)
+	obsCfg, _, err := h.NewObserve(reqScope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bridge.TraceID == "" {
-		t.Fatal("bridge trace id should be set at creation")
+	if obsCfg.TraceID == "" {
+		t.Fatal("observe config trace id should be set at creation")
 	}
 	before := len(h.Sink.Snapshot())
 	_, genErr := h.Model.Generate(llm.WithEventScope(context.Background(), reqScope), llm.NewRequest(llm.UserText("hi")))
@@ -141,8 +141,8 @@ func TestBridgeWritesRuntimeRecords(t *testing.T) {
 		if rec.HostID != h.HostID() {
 			t.Fatalf("host mismatch: %q vs %q", rec.HostID, h.HostID())
 		}
-		if rec.TraceID != bridge.TraceID {
-			t.Fatalf("trace mismatch: %q vs bridge %q", rec.TraceID, bridge.TraceID)
+		if rec.TraceID != obsCfg.TraceID {
+			t.Fatalf("trace mismatch: %q vs observe cfg %q", rec.TraceID, obsCfg.TraceID)
 		}
 		if rec.Status == "" {
 			t.Fatal("status should be set")
@@ -156,9 +156,9 @@ func TestBridgeWritesRuntimeRecords(t *testing.T) {
 	}
 }
 
-// 请求级 Bridge 隔离：scopeA 上的 Agent 工具事件只能写 bridgeA 的 trace；
-// 即使 scopeB/bridgeB 同时存活，也绝不能复制为 B 的记录。
-func TestRequestBridgesDoNotCrossTalk(t *testing.T) {
+// 请求级观测隔离：scopeA 上的 Agent 工具事件只能写 cfgA 的 trace；
+// 即使 scopeB/cfgB 同时存活，也绝不能复制为 B 的记录。
+func TestRequestObservesDoNotCrossTalk(t *testing.T) {
 	h, err := Open(Flags{Scripted: true})
 	if err != nil {
 		t.Fatal(err)
@@ -176,16 +176,16 @@ func TestRequestBridgesDoNotCrossTalk(t *testing.T) {
 	}
 	defer scopeB.Dispose()
 
-	bridgeA, err := h.NewBridge(scopeA)
+	cfgA, _, err := h.NewObserve(scopeA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bridgeB, err := h.NewBridge(scopeB)
+	cfgB, _, err := h.NewObserve(scopeB)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bridgeA.TraceID == bridgeB.TraceID {
-		t.Fatal("two request bridges must have different trace IDs")
+	if cfgA.TraceID == cfgB.TraceID {
+		t.Fatal("two request observes must have different trace IDs")
 	}
 
 	tools := loop.NewMemToolSet()
@@ -229,18 +229,18 @@ func TestRequestBridgesDoNotCrossTalk(t *testing.T) {
 		switch rec.Event {
 		case "loop.tool_finished":
 			switch rec.TraceID {
-			case bridgeA.TraceID:
+			case cfgA.TraceID:
 				aTools++
-			case bridgeB.TraceID:
+			case cfgB.TraceID:
 				bTools++
 			default:
 				t.Fatalf("tool event with foreign trace %q", rec.TraceID)
 			}
 		case "llm.generate_finished":
 			switch rec.TraceID {
-			case bridgeA.TraceID:
+			case cfgA.TraceID:
 				aLLM++
-			case bridgeB.TraceID:
+			case cfgB.TraceID:
 				bLLM++
 			}
 		}
@@ -265,14 +265,14 @@ func TestAnthropicMaxTokensDefaultInstalled(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reqScope.Dispose()
-	if _, err := h.NewBridge(reqScope); err != nil {
+	if _, _, err := h.NewObserve(reqScope); err != nil {
 		t.Fatal(err)
 	}
 
 	var seen *int
 	_, err = kernel.OnWaterfall(reqScope, llm.EventBeforeGenerate,
 		func(req *llm.GenerateRequest, next func(*llm.GenerateRequest) *llm.GenerateRequest) *llm.GenerateRequest {
-			out := next(req) // 内层含 NewBridge 安装的默认 MaxTokens 注入
+			out := next(req) // 内层含 NewObserve 安装的默认 MaxTokens 注入
 			seen = out.MaxTokens
 			return out
 		})
@@ -288,7 +288,7 @@ func TestAnthropicMaxTokensDefaultInstalled(t *testing.T) {
 	}
 }
 
-// 01-chat 路径：不 NewBridge、不 WithEventScope，observed 回退 Registry.EventScope()。
+// 01-chat 路径：不 NewObserve、不 WithEventScope，observed 回退 Registry.EventScope()。
 // 必须由 Open 时挂在该 scope 上的默认注入补 MaxTokens，否则 anthropic 会 ErrBadRequest。
 func TestAnthropicMaxTokensDefaultOnRegistryFallback(t *testing.T) {
 	h, err := Open(Flags{Scripted: true}, llm.Resp("ok"))

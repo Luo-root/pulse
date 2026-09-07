@@ -126,6 +126,10 @@ type Error struct {
 
 本包**不做重试**。上层按 Kind 退避或 failover。
 
+## 观测适配
+
+`Observe(scope, cfg)` 把运行期事实折叠进观测信封写宿主 Sink：after_response → `llm.generate_finished`（模型名与 token 用量进 Attrs，key 契约见 `llm/obs.go`）；before_generate 只作计时起点（waterfall 透传，不改请求）。scope 必须与 `llm.WithEventScope` 相同；同一 scope 重复调用 = 双监听双记录（godoc 警告）。详见 `observe.go` 与 `docs/design/observability-v1-design.md` §9。
+
 ## 注册中心
 
 kernel 服务键：`llm.ServiceKey`（`"pulse.llm"`）。也可以直接 `NewRegistry` 当库用。

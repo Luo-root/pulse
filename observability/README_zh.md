@@ -1,17 +1,18 @@
 # observability
 
-pulse v2 正式观测包：旁路订阅 kernel 装配事件，写出统一 `Record` 信封；运行期业务事件由伴生桥 [`observability/bridge`](./bridge/) 折进同一 `Sink`。
+pulse v2 正式观测包（双基座之一）：旁路订阅 kernel 装配事件，写出统一 `Record` 信封；运行期业务事实由各业务包的观测适配（`llm.Observe` / `loop.Observe` / `flow.NewRecordObserver`）折进同一 `Sink`。
 
-读完这篇应能：最先 `Use(Bootstrap)`、选一个 `Sink`、知道运行期业务指标走 bridge 的 Attrs 开放段而不是本包具名字段。
+读完这篇应能：最先 `Use(Bootstrap)`、选一个 `Sink`、知道运行期业务指标经 `ObserveConfig` 复用同一出口与 TraceID。
 
-## 分层纪律
+## 分层纪律（双基座模型）
 
 | 层 | 认识什么 | 不认识什么 |
 |---|---|---|
-| 本包 | `kernel` typed 事件、`Sink`、`Record` | `llm` / `loop` / `flow` |
-| 伴生桥 `observability/bridge` | llm/loop/flow 公开事件 + 本包信封 | 不得绕过 Sink 另开出口冒充官方记录 |
+| 本包（基座） | `kernel` typed 事件、`Sink`、`Record` | `llm` / `loop` / `flow` |
+| 业务包（租户） | kernel + observability + 自身事实 | —— |
+| 宿主（装配层） | 全部 | —— |
 
-正式包只产生 `SourceKernel` 记录。token、HITL、节点耗时由桥折进同一 `Sink`（`SourceBridge`）——**同一出口 ≠ Record 变万能袋**；业务维度（模型名、token 数、工具名、节点 ID）走 `Attrs` 开放段，key 契约由事实归属包定义（`llm.AttrModel`、`loop.AttrTool`、`flow.AttrNode`）。
+依赖箭头统一朝基座：本包只 import kernel 且无任何例外（原伴生 bridge 包已废除，折叠适配下沉至各事实归属包）。业务维度（模型名、token 数、工具名、节点 ID）走 `Attrs` 开放段，key 契约由事实归属包定义（`llm.AttrModel`、`loop.AttrTool`、`flow.AttrNode`）——**同一出口 ≠ Record 变万能袋**。
 
 ## 接入
 
@@ -24,14 +25,13 @@ sink := &observability.MemorySink{} // 或 SlogSink{Logger: slog.Default()}
 if _, err := kernel.Use(host, observability.Bootstrap("host-1", sink)); err != nil {
     panic(err)
 }
-// 此后其它插件正常 Use；fiber_state / loader_action 进 Sink。
 
-// 每请求：官方桥挂监听 + Collector 服务（见 bridge 子包 README）。
-reqScope, _ := host.Derive()
-defer reqScope.Dispose()
-b, err := bridge.Attach(reqScope, bridge.Config{
-    Sink: sink, HostID: "host-1", TraceID: host.NewTraceID(),
-})
+// 每请求：cfg 复用即 D3 请求级关联；跨请求必须新建。
+cfg := observability.ObserveConfig{Sink: sink, HostID: "host-1", TraceID: host.NewTraceID()}
+c, err := observability.AttachCollector(reqScope, cfg) // 业务插件直写服务
+err = llm.Observe(reqScope, cfg)                       // llm 包适配
+err = loop.Observe(reqScope, cfg)                      // loop 包适配
+// flow 图：flow.WithObserver(must(flow.NewRecordObserver(cfg)))
 ```
 
 `Bootstrap` 订阅全树 `Emit` 的 `fiber_state` / `loader_action`，并在 Apply 末尾写 `host_ready` 快照横幅。树销毁（Dispose）**不发**逐 Fiber `fiber_state`（T7 裁决）；验收是 Dispose 后 Sink 零残留。
@@ -54,13 +54,14 @@ Attrs 开放段：标量 kv（~string/~int64/~float64/~bool）
 | 事实 | 派发 | 谁听 |
 |---|---|---|
 | fiber_state / loader_action | 全树 `Emit` | `Bootstrap` |
-| tool / turn / llm generate | `EmitLocal` / `WaterfallLocal` | `bridge.Attach`（挂 `reqScope`） |
-| 业务自定义事实 | —— | `bridge.CollectorKey` 服务直写（`kernel.Get`） |
+| tool / turn / llm generate | `EmitLocal` / `WaterfallLocal` | 各包 `Observe`（挂 reqScope） |
+| flow 节点分段 | Observer 回调 | `flow.NewRecordObserver` |
+| 业务自定义事实 | —— | `observability.CollectorKey` 服务直写（`kernel.Get`） |
 
 详见 [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md) 与 [`docs/design/observability-v1-design.md`](../docs/design/observability-v1-design.md)。
 
 ## 刻意不做
 
-- 本包不 import / 不订阅 llm、loop、flow 业务事件（桥包才认识它们）
-- 不做第二套字符串事件总线（无 `Collector.Emit(string, map)`；业务直写走类型化的 `bridge.CollectorKey`）
+- 本包不 import / 不订阅 llm、loop、flow 业务事件（各包自适配，依赖箭头朝基座）
+- 不做第二套字符串事件总线（无 `Collector.Emit(string, map)`；业务直写走类型化的 `CollectorKey`）
 - 不把 token 计数塞进官方 Record 具名字段（走 Attrs，key 归属包定义）

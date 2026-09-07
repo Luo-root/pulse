@@ -137,6 +137,10 @@ _, _ = kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
 
 文本增量只走 `onDelta`，不走这些事件。
 
+## 观测适配
+
+`Observe(scope, cfg)` 折叠 `after_tool_call` → `loop.tool_finished`（completed|failed|rejected 三态判定归本包）与 `turn_end` → `loop.turn_finished`（stopped_by + steps；token 以 llm 单次口径为准不重复记）。`before_tool_call` 刻意不订阅：AfterToolCall 自带 Duration/Err，订阅无观测增益，少一份与 HITL 审批链的顺序耦合。scope 必须与 Agent 的 `llm.WithEventScope` 相同。详见 `observe.go` 与设计文档 §9。
+
 ## 有意钉死
 
 - `Messages` 仅本回合产出，调用方自己 append 成多轮历史

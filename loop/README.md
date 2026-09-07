@@ -139,6 +139,10 @@ Contract: throughout, the `Call` in the return value is authoritative (Arguments
 
 Text deltas only travel through `onDelta`, not through these events.
 
+## Observation Adapter
+
+`Observe(scope, cfg)` folds `after_tool_call` → `loop.tool_finished` (completed|failed|rejected triage owned by this package) and `turn_end` → `loop.turn_finished` (stopped_by + steps; tokens are not repeated — the llm per-call figure is authoritative). `before_tool_call` is deliberately not subscribed: AfterToolCall already carries Duration/Err, so subscribing gains nothing and adds one more ordering coupling to the HITL approval chain. The scope must be the same one passed to the Agent via `llm.WithEventScope`. See `observe.go` and design doc §9.
+
 ## Deliberately Pinned
 
 - `Messages` only contains what this turn produced; the caller appends them into multi-turn history itself
