@@ -8,6 +8,7 @@ import (
 	"github.com/Luo-root/pulse/examples/internal/demoapp"
 	"github.com/Luo-root/pulse/kernel/flow"
 	"github.com/Luo-root/pulse/observability"
+	"github.com/Luo-root/pulse/observability/bridge"
 )
 
 // DAG 分支图：classify 用 FactGate/ChatGate 做分支（Set 一边 Skip 一边）。
@@ -55,9 +56,10 @@ type dagDeps struct {
 func buildDAG(deps dagDeps) (*flow.Graph, *string, error) {
 	var final string
 	runs := newDAGRuns(deps.local, deps.web, &final)
-	bridge := &demoapp.Bridge{Sink: deps.sink, HostID: deps.host, TraceID: deps.trace}
+	// 官方桥（纯出口构造，无 scope）+ demo 峰值统计，组合挂图。
+	obs := bridge.New(bridge.Config{Sink: deps.sink, HostID: deps.host, TraceID: deps.trace})
 	g := flow.New(context.Background(),
-		flow.WithObserver(bridge.FlowObserver(deps.peak)),
+		flow.WithObserver(flow.MultiObserver{obs.FlowObserver(), deps.peak.Observer()}),
 	)
 
 	if err := g.Add(flow.NewNode("classify",

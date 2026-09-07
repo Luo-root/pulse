@@ -14,7 +14,14 @@ import (
 	"github.com/Luo-root/pulse/loop"
 	flowyaml "github.com/Luo-root/pulse/kernel/flow/yaml"
 	"github.com/Luo-root/pulse/observability"
+	"github.com/Luo-root/pulse/observability/bridge"
 )
+
+// nodeID 从桥记录的 attrs 里取节点标识（flow.AttrNode 契约）。
+func nodeID(rec observability.Record) string {
+	v, _ := observability.Get[string](rec.Attrs, flow.AttrNode)
+	return v
+}
 
 // ---- RAG 线性图测试（原 03-flow-agent）----
 
@@ -80,7 +87,7 @@ func (errRetriever) Search(context.Context, string, int) ([]Document, error) {
 }
 
 // testBridge 为测试请求创建独立桥（挂宿主私有子作用域）。
-func testBridge(t *testing.T, h *demoapp.Host) *demoapp.Bridge {
+func testBridge(t *testing.T, h *demoapp.Host) *bridge.Bridge {
 	t.Helper()
 	scope, err := h.Ctx.Derive()
 	if err != nil {
@@ -198,10 +205,10 @@ func TestFactPathParallelPeakAndRecords(t *testing.T) {
 			continue
 		}
 		switch rec.Event {
-		case demoapp.EventFlowNodeWaitFinished:
-			waits[rec.FiberName]++
-		case demoapp.EventFlowNodeRunFinished:
-			runs[rec.FiberName]++
+		case bridge.EventNodeWaitFinished:
+			waits[nodeID(rec)]++
+		case bridge.EventNodeRunFinished:
+			runs[nodeID(rec)]++
 		}
 	}
 	for _, id := range []string{"retrieve_local", "retrieve_web"} {
@@ -231,16 +238,16 @@ func TestChitchatSkipsRetrieves(t *testing.T) {
 	waitSkip := map[string]bool{}
 	for _, rec := range sink.Snapshot() {
 		switch rec.Event {
-		case demoapp.EventFlowNodeRunFinished:
-			switch rec.FiberName {
+		case bridge.EventNodeRunFinished:
+			switch nodeID(rec) {
 			case "retrieve_local", "retrieve_web", "merge", "answer":
-				t.Fatalf("chitchat must not run %s", rec.FiberName)
+				t.Fatalf("chitchat must not run %s", nodeID(rec))
 			case "smalltalk":
 				smalltalkRun = true
 			}
-		case demoapp.EventFlowNodeWaitFinished:
+		case bridge.EventNodeWaitFinished:
 			if rec.Status == string(flow.NodeSkipped) {
-				waitSkip[rec.FiberName] = true
+				waitSkip[nodeID(rec)] = true
 			}
 		}
 	}
