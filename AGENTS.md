@@ -2,7 +2,7 @@
 
 ## What this is
 
-Go library (`github.com/Luo-root/pulse`) — an AI Agent framework; the v2 core has landed and ships as the v0.1.0 preview. The v2 core is `kernel/` (plugin kernel + `kernel/flow` dataflow), `llm/` (provider-neutral model vocabulary + adapters), `loop/` (stateless ReAct turn executor), `toolset/` (reversible tool registry adapting to `loop.ToolSet`) and `skills/` (Agent Skills loader per agentskills.io). The entire v1 `components/` tree has been removed. `pulse.go` at root is a stub (`package pulse`); it is not an entrypoint.
+Go library (`github.com/Luo-root/pulse`) — an AI Agent framework; the v2 core has landed and ships as the v0.2.0 preview. The v2 core is `kernel/` (plugin kernel + `kernel/flow` dataflow), `llm/` (provider-neutral model vocabulary + adapters), `loop/` (stateless ReAct turn executor), `toolset/` (reversible tool registry adapting to `loop.ToolSet`) and `skills/` (Agent Skills loader per agentskills.io). The entire v1 `components/` tree has been removed. `pulse.go` at root is a stub (`package pulse`); it is not an entrypoint.
 
 ## Build & test
 
