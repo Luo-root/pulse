@@ -79,7 +79,7 @@ func run() error {
 		dagRes, dagDur, err := runDAG(msg.Text(), dagDeps{
 			local: local, web: web,
 			sink: host.Sink, peak: &demoapp.FlowPeak{},
-			host: host.HostID(), trace: host.NewTraceID(),
+			host: host.HostID(), trace: observability.NewTraceID(),
 		})
 		if err != nil {
 			return nil, err

@@ -42,17 +42,11 @@ type Host struct {
 	Model    llm.ChatModel
 	Flags    Flags
 
-	hostID string        // 宿主生命周期稳定标识（装配/横幅用）
-	seq    atomic.Uint64 // 每请求 trace_id 序号源
+	hostID string // 宿主生命周期稳定标识（装配/横幅用）
 }
 
 // HostID 返回宿主稳定标识。
 func (h *Host) HostID() string { return h.hostID }
-
-// NewTraceID 为每次用户请求生成独立 trace 标识（D3：与 hostID 分层）。
-func (h *Host) NewTraceID() string {
-	return fmt.Sprintf("%s-req-%d", h.hostID, h.seq.Add(1))
-}
 
 func init() {
 	loadDotEnv()
@@ -267,14 +261,14 @@ func InstallAnthropicMaxTokensDefault(scope *kernel.Context) error {
 
 // NewObserve 为一次请求装配观测（双基座形态）：Collector 服务注册进
 // scope（宿主/业务插件直写），llm/loop 观测适配挂同一 scope。TraceID
-// 由 NewTraceID 注入（宿主单一生成源）；返回的 cfg 供请求内其他适配
-// 复用（如 flow 图的 NewRecordObserver——同一请求共享 TraceID 即 D3
-// 请求级关联）。
+// 由 observability.NewTraceID 生成（官方默认生成器，每请求一次）；
+// 返回的 cfg 供请求内其他适配复用（如 flow 图的 NewRecordObserver——
+// 同一请求共享 TraceID 即 D3 请求级关联）。
 func (h *Host) NewObserve(scope *kernel.Context) (observability.ObserveConfig, *observability.Collector, error) {
 	if err := InstallAnthropicMaxTokensDefault(scope); err != nil {
 		return observability.ObserveConfig{}, nil, err
 	}
-	cfg := observability.ObserveConfig{Sink: h.Sink, HostID: h.hostID, TraceID: h.NewTraceID()}
+	cfg := observability.ObserveConfig{Sink: h.Sink, HostID: h.hostID, TraceID: observability.NewTraceID()}
 	c, err := observability.AttachCollector(scope, cfg)
 	if err != nil {
 		return observability.ObserveConfig{}, nil, err

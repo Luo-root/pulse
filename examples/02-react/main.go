@@ -85,8 +85,8 @@ func run() error {
 
 		// 本课手写观测接入（03 课起复用 demoapp.Host.NewObserve 封装版）。
 		// cfg 生命周期 = 请求：同一请求多适配复用同一值即 D3 请求级关联；
-		// TraceID 从宿主单一生成源拿（适配层从不自造序号）。
-		cfg := observability.ObserveConfig{Sink: host.Sink, HostID: host.HostID(), TraceID: host.NewTraceID()}
+		// TraceID 由官方默认生成器生成（每请求一次；宿主也可自带方案）。
+		cfg := observability.ObserveConfig{Sink: host.Sink, HostID: host.HostID(), TraceID: observability.NewTraceID()}
 		// 装配层示范默认值：Anthropic 线格式 MaxTokens 必填（nil →
 		// ErrBadRequest），loop 组请求不填——请求 scope 上兜底注入
 		// （demoapp 封装，非库 API；与 llm.Observe 同挂 reqScope）。
