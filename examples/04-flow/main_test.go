@@ -201,7 +201,7 @@ func TestFactPathParallelPeakAndRecords(t *testing.T) {
 	runs := map[string]int{}
 	waits := map[string]int{}
 	for _, rec := range sink.Snapshot() {
-		if rec.Source != observability.SourceBridge {
+		if rec.Source != observability.SourceAdapter {
 			continue
 		}
 		switch rec.Event {

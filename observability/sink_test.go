@@ -16,7 +16,7 @@ func TestSlogSinkAttrsSorted(t *testing.T) {
 	rec := Record{
 		HostID:  "h1",
 		TraceID: "tr-1",
-		Source:  SourceBridge,
+		Source:  SourceAdapter,
 		Event:   "llm.after_response",
 	}
 	Set(&rec.Attrs, "llm.tokens_out", int64(20))
@@ -48,7 +48,7 @@ func TestSlogSinkAttrsNamedTypes(t *testing.T) {
 
 	var buf bytes.Buffer
 	sink := SlogSink{Logger: slog.New(slog.NewTextHandler(&buf, nil))}
-	rec := Record{Source: SourceBridge, Event: "loop.turn_end"}
+	rec := Record{Source: SourceAdapter, Event: "loop.turn_end"}
 	Set(&rec.Attrs, "loop.steps", step(3))
 	Set(&rec.Attrs, "loop.tool", "calculator")
 	sink.Write(rec)

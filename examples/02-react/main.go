@@ -98,7 +98,7 @@ func (b *reqBridge) install(scope *kernel.Context) error {
 		b.sink.Write(observability.Record{
 			HostID:   b.hostID,
 			TraceID:  b.traceID,
-			Source:   observability.SourceBridge,
+			Source:   observability.SourceAdapter,
 			Event:    "llm.generate_finished",
 			Duration: time.Since(started),
 			Status:   string(resp.FinishReason),
@@ -125,7 +125,7 @@ func (b *reqBridge) install(scope *kernel.Context) error {
 		b.sink.Write(observability.Record{
 			HostID:   b.hostID,
 			TraceID:  b.traceID,
-			Source:   observability.SourceBridge,
+			Source:   observability.SourceAdapter,
 			Event:    "loop.tool_finished",
 			Status:   status,
 			Duration: after.Duration,
@@ -156,7 +156,7 @@ func (b *reqBridge) write(event, status string) {
 	b.sink.Write(observability.Record{
 		HostID:  b.hostID,
 		TraceID: b.traceID,
-		Source:  observability.SourceBridge,
+		Source:  observability.SourceAdapter,
 		Event:   event,
 		Status:  status,
 	})

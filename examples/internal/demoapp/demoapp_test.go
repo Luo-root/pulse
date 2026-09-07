@@ -135,7 +135,7 @@ func TestBridgeWritesRuntimeRecords(t *testing.T) {
 			continue
 		}
 		found = true
-		if rec.Source != observability.SourceBridge {
+		if rec.Source != observability.SourceAdapter {
 			t.Fatalf("source = %s", rec.Source)
 		}
 		if rec.HostID != h.HostID() {

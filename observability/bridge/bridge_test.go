@@ -95,7 +95,7 @@ func TestAttachFullChain(t *testing.T) {
 
 	var gens, tools, turns int
 	for _, rec := range sink.Snapshot() {
-		if rec.HostID != "h1" || rec.TraceID != "tr-1" || rec.Source != observability.SourceBridge {
+		if rec.HostID != "h1" || rec.TraceID != "tr-1" || rec.Source != observability.SourceAdapter {
 			t.Fatalf("envelope mismatch: %+v", rec)
 		}
 		switch rec.Event {
@@ -265,7 +265,7 @@ func TestCollectorServiceWrite(t *testing.T) {
 		if rec.Event != "app.evt" && rec.Event != "app.custom" {
 			continue
 		}
-		if rec.HostID != "h9" || rec.TraceID != "tr-9" || rec.Source != observability.SourceBridge {
+		if rec.HostID != "h9" || rec.TraceID != "tr-9" || rec.Source != observability.SourceAdapter {
 			t.Fatalf("collector record envelope mismatch: %+v", rec)
 		}
 		switch rec.Event {

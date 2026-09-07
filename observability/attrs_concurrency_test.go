@@ -18,7 +18,7 @@ func TestMultiSinkConcurrentAttrsFanout(t *testing.T) {
 	}
 	multi := MultiSink(sinksList)
 
-	rec := Record{HostID: "h", TraceID: "tr-fanout", Source: SourceBridge, Event: "llm.after_response"}
+	rec := Record{HostID: "h", TraceID: "tr-fanout", Source: SourceAdapter, Event: "llm.after_response"}
 	Set(&rec.Attrs, "llm.model", "m1")
 	Set(&rec.Attrs, "llm.tokens_in", int64(10))
 

@@ -193,7 +193,7 @@ func (b *Bridge) write(event, status string, d time.Duration, err error, set fun
 	rec := observability.Record{
 		HostID:   b.HostID,
 		TraceID:  b.TraceID,
-		Source:   observability.SourceBridge,
+		Source:   observability.SourceAdapter,
 		Event:    event,
 		Status:   status,
 		Duration: d,

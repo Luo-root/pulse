@@ -30,7 +30,11 @@ type Source string
 
 const (
 	SourceKernel Source = "kernel" // fiber_state / loader_action（Bootstrap 产生）
-	SourceBridge Source = "bridge" // 装配层桥的运行期事件（trace_id 必填）
+	// SourceAdapter 是运行期观测适配来源：各包 Observe 折叠与宿主经
+	// Collector 的直写共用（trace_id 必填）。历史名 SourceBridge——
+	// 伴生桥时代（#126 已废）的常量名，折叠主体改为各包自身后原名
+	// 名不副实；字面值保持 "bridge" 不变，兼容既有日志解析。
+	SourceAdapter Source = "bridge"
 )
 
 // Event 名称常量。仅列正式包自己产出的事件；桥的事件名自定义，
@@ -92,7 +96,7 @@ type AttrValue interface {
 }
 
 // Attrs 是产生方自定义的标量 kv。key 约定 <组件>.<字段> 点分
-//（如 llm.model、loop.tool、flow.node），各组件独立 key 空间。
+// （如 llm.model、loop.tool、flow.node），各组件独立 key 空间。
 //
 // 零值可用。写入经泛型 Set（就地），读取经泛型 Get；Range 供出口
 // 无序遍历，MarshalJSON 按 key 排序输出。并发语义与 Record 一致：
