@@ -75,7 +75,7 @@ type ContextAssembler interface {
 }
 
 // DefaultAssembler 是 ContextAssembler 的默认实现：keyword ∪ semantic
-//（可选 seam）混合召回 + §8.2 融合排序 + 预算边界 + stable snapshot 缓存。
+// （可选 seam）混合召回 + §8.2 融合排序 + 预算边界 + stable snapshot 缓存。
 type DefaultAssembler struct {
 	// Store 是记忆来源（必填）。
 	Store store.MemoryStore

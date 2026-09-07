@@ -12,9 +12,9 @@ import (
 //
 //	m := llm.NewScripted(llm.Resp("你好"), llm.Resp("再见"))
 type ScriptedModel struct {
-	mu   sync.Mutex
-	seq  []scriptedStep
-	idx  int
+	mu  sync.Mutex
+	seq []scriptedStep
+	idx int
 }
 
 type scriptedStep struct {

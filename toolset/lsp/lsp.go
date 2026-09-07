@@ -23,8 +23,8 @@ import (
 
 // 默认上限（产品参数，不是行业标准）。
 const (
-	DefaultTimeout    = 30 * time.Second
-	DefaultDiagWindow = 3 * time.Second
+	DefaultTimeout      = 30 * time.Second
+	DefaultDiagWindow   = 3 * time.Second
 	DefaultSourcePrefix = "lsp"
 )
 

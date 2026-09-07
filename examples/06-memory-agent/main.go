@@ -150,7 +150,9 @@ func run() error {
 		Store:     memStore,
 		Extractor: &demoExtractor{items: []store.MemoryItem{{Kind: store.KindLesson, Content: "prefer structured YAML for CI config"}}},
 		Namespace: ns,
-		OriginFn:  func() store.SourceRef { return store.SourceRef{Type: store.SourceSession, SessionID: "demo-session", Seq: 7} },
+		OriginFn: func() store.SourceRef {
+			return store.SourceRef{Type: store.SourceSession, SessionID: "demo-session", Seq: 7}
+		},
 	})
 	if err != nil {
 		return err

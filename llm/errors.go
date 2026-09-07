@@ -10,16 +10,16 @@ import (
 type ErrKind string
 
 const (
-	ErrAuth           ErrKind = "auth"            // 凭据缺失/无效，不可重试
-	ErrRateLimit      ErrKind = "rate_limit"      // 限流，可重试（宜退避）
-	ErrContextLength  ErrKind = "context_length"  // 上下文超长，重试前须压缩
-	ErrContentFilter  ErrKind = "content_filter"  // 安全策略拦截，通常不可重试
-	ErrBadRequest     ErrKind = "bad_request"     // 参数错误，不可重试
-	ErrNetwork        ErrKind = "network"         // 网络层失败，可重试
-	ErrProvider       ErrKind = "provider"        // 上游 5xx，可重试
-	ErrNoModel        ErrKind = "no_model"        // 注册中心无此实例/提供方
-	ErrCanceled       ErrKind = "canceled"        // 调用方取消
-	ErrUnknown        ErrKind = "unknown"
+	ErrAuth          ErrKind = "auth"           // 凭据缺失/无效，不可重试
+	ErrRateLimit     ErrKind = "rate_limit"     // 限流，可重试（宜退避）
+	ErrContextLength ErrKind = "context_length" // 上下文超长，重试前须压缩
+	ErrContentFilter ErrKind = "content_filter" // 安全策略拦截，通常不可重试
+	ErrBadRequest    ErrKind = "bad_request"    // 参数错误，不可重试
+	ErrNetwork       ErrKind = "network"        // 网络层失败，可重试
+	ErrProvider      ErrKind = "provider"       // 上游 5xx，可重试
+	ErrNoModel       ErrKind = "no_model"       // 注册中心无此实例/提供方
+	ErrCanceled      ErrKind = "canceled"       // 调用方取消
+	ErrUnknown       ErrKind = "unknown"
 )
 
 // Error 是本包所有对外错误的统一形态。

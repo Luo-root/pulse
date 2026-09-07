@@ -1,4 +1,4 @@
-﻿package demoapp
+package demoapp
 
 import (
 	"sync"
@@ -6,14 +6,12 @@ import (
 	"time"
 
 	"github.com/Luo-root/pulse/kernel/flow"
-	"github.com/Luo-root/pulse/observability"
 )
 
-// FlowPeak 必须记住历史最大值：Waiting..Finished 之间 defer leave 后 Peak 仍保持。
+// FlowPeak 必须记住历史最大值：Waiting..Finished 之间 leave 后 Peak 仍保持。
 func TestFlowPeakRemembersHistoricalMax(t *testing.T) {
 	peak := &FlowPeak{}
-	bridge := &Bridge{Sink: &observability.MemorySink{}, HostID: "h", TraceID: "t"}
-	obs := bridge.FlowObserver(peak)
+	obs := peak.Observer()
 
 	var wg sync.WaitGroup
 	runOne := func(id string) {

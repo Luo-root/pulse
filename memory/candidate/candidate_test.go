@@ -522,7 +522,7 @@ func TestMetricsErrorRoundNotCounted(t *testing.T) {
 }
 
 // seqExtractor 每次 Extract 返回唯一内容候选——并发计数断言竞态无关
-//（候选内容互不重复，Stored 恰为动作数；固定内容会因并发窗口的扫描
+// （候选内容互不重复，Stored 恰为动作数；固定内容会因并发窗口的扫描
 // 快照互不可见而入库多条，Stored 不确定）。
 type seqExtractor struct {
 	n atomic.Int64

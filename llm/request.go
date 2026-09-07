@@ -213,6 +213,10 @@ type Response struct {
 	Message      *Message // 助手回复（text / tool_call / reasoning 块）
 	FinishReason FinishReason
 	Usage        TokenUsage
+	// Model 是产生响应的模型标识，由 adapter 从 SDK 响应填充
+	//（观测折叠、路由审计用）。流式实现若协议在首事件前不暴露
+	// model，允许为零值。
+	Model string
 }
 
 // ---- 流式 ----

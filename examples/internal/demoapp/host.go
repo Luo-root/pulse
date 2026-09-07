@@ -14,6 +14,7 @@ import (
 	"github.com/Luo-root/pulse/llm/anthropic"
 	"github.com/Luo-root/pulse/llm/openai"
 	"github.com/Luo-root/pulse/observability"
+	"github.com/Luo-root/pulse/observability/bridge"
 )
 
 // hostSeq 保证同纳秒内多次 Open 的 hostID 仍唯一。
@@ -264,19 +265,19 @@ func InstallAnthropicMaxTokensDefault(scope *kernel.Context) error {
 	return err
 }
 
-// NewBridge 为一次请求创建观测桥（TraceID = NewTraceID），并把监听
-// 安装到 scope（建议传每轮请求自己的子作用域；随其销毁自动摘除）。
-func (h *Host) NewBridge(scope *kernel.Context) (*Bridge, error) {
+// NewBridge 为一次请求创建官方观测桥（observability/bridge.Attach）：
+// TraceID 由 NewTraceID 注入（宿主单一生成源），llm/loop 监听挂 scope
+// （随其销毁自动摘除），Collector 服务同时注册进 scope。
+func (h *Host) NewBridge(scope *kernel.Context) (*bridge.Bridge, error) {
 	if err := InstallAnthropicMaxTokensDefault(scope); err != nil {
 		return nil, err
 	}
-	b := &Bridge{Sink: h.Sink, HostID: h.hostID, TraceID: h.NewTraceID()}
-	if err := b.install(scope); err != nil {
-		return nil, err
-	}
-	return b, nil
+	return bridge.Attach(scope, bridge.Config{
+		Sink:    h.Sink,
+		HostID:  h.hostID,
+		TraceID: h.NewTraceID(),
+	})
 }
-
 
 // Close 回收 kernel 作用域及全部效应。
 func (h *Host) Close() {
@@ -292,5 +293,3 @@ func GetRegistry(h *Host) (*llm.Registry, bool) {
 	}
 	return kernel.Get(h.Ctx, llm.ServiceKey)
 }
-
-

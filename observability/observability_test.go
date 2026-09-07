@@ -242,7 +242,6 @@ func TestTreeDisposeZeroResidual(t *testing.T) {
 	}
 }
 
-
 // T8a：手动 Close 的两段卸载序列。
 func TestCloseEmitsT8a(t *testing.T) {
 	r := newRecorder()
@@ -318,7 +317,6 @@ func TestSinkStampsZeroTime(t *testing.T) {
 		t.Fatalf("stamped time %v before write started %v", recs[0].Time, before)
 	}
 }
-
 
 // blockingDepPlugin 可在 Apply 中阻塞，用于制造 Close 与 doLoad 竞态（T8b）。
 type blockingDepPlugin struct {

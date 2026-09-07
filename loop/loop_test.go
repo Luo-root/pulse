@@ -77,23 +77,41 @@ func attachTrace(t *testing.T, scope *kernel.Context) *trace {
 	subs := []struct {
 		reg func() error
 	}{
-		{func() error { _, e := kernel.On(scope, EventTurnStart, func(p *TurnStart) { tr.record("turn_start") }); return e }},
-		{func() error { _, e := kernel.On(scope, EventStepStart, func(p *StepStart) {
-			tr.record(fmt.Sprintf("step_start(%d)", p.Step))
-		}); return e }},
-		{func() error { _, e := kernel.On(scope, EventAfterModel, func(p *AfterModel) {
-			tr.record(fmt.Sprintf("after_model(%s)", p.Response.Message.Text()))
-		}); return e }},
-		{func() error { _, e := kernel.OnWaterfall(scope, EventBeforeToolCall, func(p *BeforeToolCall, next func(*BeforeToolCall) *BeforeToolCall) *BeforeToolCall {
-			tr.record(fmt.Sprintf("before_tool(%s)", p.Call.Name))
-			return next(p)
-		}); return e }},
-		{func() error { _, e := kernel.On(scope, EventAfterToolCall, func(p *AfterToolCall) {
-			tr.record(fmt.Sprintf("after_tool(%s=%q err=%v rej=%v)", p.Call.Name, p.Result, p.Err != nil, p.Rejected))
-		}); return e }},
-		{func() error { _, e := kernel.On(scope, EventTurnEnd, func(p *TurnEnd) {
-			tr.record(fmt.Sprintf("turn_end(%s,steps=%d,in=%d,out=%d)", p.StoppedBy, p.Steps, p.Usage.InputTokens, p.Usage.OutputTokens))
-		}); return e }},
+		{func() error {
+			_, e := kernel.On(scope, EventTurnStart, func(p *TurnStart) { tr.record("turn_start") })
+			return e
+		}},
+		{func() error {
+			_, e := kernel.On(scope, EventStepStart, func(p *StepStart) {
+				tr.record(fmt.Sprintf("step_start(%d)", p.Step))
+			})
+			return e
+		}},
+		{func() error {
+			_, e := kernel.On(scope, EventAfterModel, func(p *AfterModel) {
+				tr.record(fmt.Sprintf("after_model(%s)", p.Response.Message.Text()))
+			})
+			return e
+		}},
+		{func() error {
+			_, e := kernel.OnWaterfall(scope, EventBeforeToolCall, func(p *BeforeToolCall, next func(*BeforeToolCall) *BeforeToolCall) *BeforeToolCall {
+				tr.record(fmt.Sprintf("before_tool(%s)", p.Call.Name))
+				return next(p)
+			})
+			return e
+		}},
+		{func() error {
+			_, e := kernel.On(scope, EventAfterToolCall, func(p *AfterToolCall) {
+				tr.record(fmt.Sprintf("after_tool(%s=%q err=%v rej=%v)", p.Call.Name, p.Result, p.Err != nil, p.Rejected))
+			})
+			return e
+		}},
+		{func() error {
+			_, e := kernel.On(scope, EventTurnEnd, func(p *TurnEnd) {
+				tr.record(fmt.Sprintf("turn_end(%s,steps=%d,in=%d,out=%d)", p.StoppedBy, p.Steps, p.Usage.InputTokens, p.Usage.OutputTokens))
+			})
+			return e
+		}},
 	}
 	for i, s := range subs {
 		if err := s.reg(); err != nil {

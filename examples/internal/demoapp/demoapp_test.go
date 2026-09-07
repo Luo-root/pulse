@@ -15,8 +15,8 @@ import (
 
 func TestInputMessageMultimodal(t *testing.T) {
 	in := Input{
-		Text:     "describe this",
-		ImageURL: "https://example.com/cat.png",
+		Text:      "describe this",
+		ImageURL:  "https://example.com/cat.png",
 		ImageType: "image/png",
 	}
 	msg, err := in.Message()
@@ -135,7 +135,7 @@ func TestBridgeWritesRuntimeRecords(t *testing.T) {
 			continue
 		}
 		found = true
-		if rec.Source != observability.SourceBridge {
+		if rec.Source != observability.SourceAdapter {
 			t.Fatalf("source = %s", rec.Source)
 		}
 		if rec.HostID != h.HostID() {
@@ -252,7 +252,6 @@ func TestRequestBridgesDoNotCrossTalk(t *testing.T) {
 		t.Fatalf("llm cross-talk: A=%d B=%d", aLLM, bLLM)
 	}
 }
-
 
 func TestAnthropicMaxTokensDefaultInstalled(t *testing.T) {
 	h, err := Open(Flags{Scripted: true}, llm.Resp("ok"))

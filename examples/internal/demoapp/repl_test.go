@@ -19,7 +19,7 @@ func TestParseCommand(t *testing.T) {
 		{"/file D:\\a.pdf application/pdf", "file"},
 		{"/send", "send"},
 		{"\uFEFF/exit", "exit"},
-				{"", "empty"},
+		{"", "empty"},
 		{"/nope", "unknown"},
 	}
 	for _, c := range cases {

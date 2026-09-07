@@ -231,7 +231,7 @@ func TestWebSearchInjectedAndDDGParse(t *testing.T) {
 	}
 
 	_, reg2, cleanup2 := setup(t, builtins.Options{
-		Root: t.TempDir(),
+		Root:     t.TempDir(),
 		Searcher: stubSearcher{hits: []builtins.SearchHit{{Title: "X", URL: "https://x.test", Snippet: "y"}}},
 	})
 	defer cleanup2()

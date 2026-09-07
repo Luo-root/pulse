@@ -53,7 +53,7 @@ func run() error {
 			return nil, err
 		}
 		defer reqScope.Dispose()
-		bridge, err := host.NewBridge(reqScope)
+		obs, err := host.NewBridge(reqScope)
 		if err != nil {
 			return nil, err
 		}
@@ -66,7 +66,7 @@ func run() error {
 		}
 
 		// 图 1：RAG 线性链——检索管道确定性执行，answer 节点把自主权交给 agent。
-		res, ragDur, err := runRAGGraph(host, agent, local, history, msg, bridge)
+		res, ragDur, err := runRAGGraph(host, agent, local, history, msg, obs)
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +87,7 @@ func run() error {
 
 		fmt.Fprintf(os.Stderr, "summary rag_ms=%d dag_ms=%d dag_peak=%d intent=%s history=%d\n",
 			ragDur.Milliseconds(), dagDur.Milliseconds(), dagRes.Peak, dagRes.Intent, len(history)+1)
-		bridge.Write("flow.summary", fmt.Sprintf(
+		obs.Write("flow.summary", fmt.Sprintf(
 			"rag_duration_ms=%d dag_duration_ms=%d dag_alive_nodes_peak=%d",
 			ragDur.Milliseconds(), dagDur.Milliseconds(), dagRes.Peak))
 
@@ -98,7 +98,7 @@ func run() error {
 }
 
 // demoYAMLParity 用固定输入验证「代码建图 ≡ YAML 装图」：同一套工厂
-//（registerDAGFactories）喂给两种拓扑来源，Final 必须一致。
+// （registerDAGFactories）喂给两种拓扑来源，Final 必须一致。
 // YAML 文本里的 type 标签来自 flow.Registry.TypeTagOf——类型标注是
 // 注册表的运行时事实，不是手写常量。
 func demoYAMLParity(local, web Retriever) error {
@@ -141,7 +141,7 @@ func demoYAMLParity(local, web Retriever) error {
 }
 
 // registerDemoKeys 把 DAG 用的全部槽位 Key 注册进 flow.Registry
-//（YAML 的 key 引用与类型标签都以注册表为准）。
+// （YAML 的 key 引用与类型标签都以注册表为准）。
 func registerDemoKeys(reg *flow.Registry) {
 	flow.MustRegisterKey(reg, UserText)
 	flow.MustRegisterKey(reg, FactGate)

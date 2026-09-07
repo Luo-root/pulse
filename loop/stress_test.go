@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"runtime"
-	"time"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
@@ -98,7 +98,10 @@ func TestStressEventFloodTraceCount(t *testing.T) {
 	for _, reg := range []func() error{
 		func() error { _, e := kernel.On(scope, EventTurnStart, func(*TurnStart) { tr.record("ts") }); return e },
 		func() error { _, e := kernel.On(scope, EventStepStart, func(*StepStart) { tr.record("ss") }); return e },
-		func() error { _, e := kernel.On(scope, EventAfterModel, func(*AfterModel) { tr.record("am") }); return e },
+		func() error {
+			_, e := kernel.On(scope, EventAfterModel, func(*AfterModel) { tr.record("am") })
+			return e
+		},
 		func() error { _, e := kernel.On(scope, EventTurnEnd, func(*TurnEnd) { tr.record("te") }); return e },
 	} {
 		if err := reg(); err != nil {

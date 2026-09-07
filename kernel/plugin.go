@@ -330,7 +330,6 @@ func (f *Fiber) forceUnload() {
 	f.ctx = nil
 }
 
-
 // Close 主动卸载并注销本实例：撤销订阅、从宿主摘除、回收副作用。
 // 幂等。
 func (f *Fiber) Close() {

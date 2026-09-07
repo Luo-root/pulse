@@ -337,7 +337,7 @@ func TestFusionTiebreak(t *testing.T) {
 }
 
 // TestSemanticFailureDiag：Semantic 失败 → 诊断 + keyword 结果照常
-//（fail safe，与 FTS 失败同口径，组装不中断）。
+// （fail safe，与 FTS 失败同口径，组装不中断）。
 func TestSemanticFailureDiag(t *testing.T) {
 	cs := &countingStore{inner: store.NewMemoryStore()}
 	ctx := t.Context()
@@ -369,7 +369,7 @@ func TestSemanticFailureDiag(t *testing.T) {
 }
 
 // TestSemanticShapeMismatchDiag：items/scores 长度不符 → 丢弃语义路
-//（诊断），keyword 照常。
+// （诊断），keyword 照常。
 func TestSemanticShapeMismatchDiag(t *testing.T) {
 	cs := &countingStore{inner: store.NewMemoryStore()}
 	ctx := t.Context()
@@ -495,6 +495,7 @@ func TestHybridE2EWithMemIndex(t *testing.T) {
 		t.Fatalf("diagnostics = %+v, want semantic seam entry", ac.Diagnostics)
 	}
 }
+
 // TestSearchFailureDiag：store 召回失败 → 诊断记录、组装不中断、surface
 // 照常。
 func TestSearchFailureDiag(t *testing.T) {

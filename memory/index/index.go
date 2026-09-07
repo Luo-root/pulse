@@ -135,7 +135,7 @@ func (m *MemIndex) Remove(_ context.Context, id string) error {
 }
 
 // Search 实现 VectorIndex：先 namespace 前缀过滤，再余弦 top-k
-//（Score 降序、同分 ID 升序——D2 起随命中返回）。
+// （Score 降序、同分 ID 升序——D2 起随命中返回）。
 func (m *MemIndex) Search(ctx context.Context, ns []string, query string, k int) ([]ScoredHit, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("%w: empty query", ErrInvalidQuery)

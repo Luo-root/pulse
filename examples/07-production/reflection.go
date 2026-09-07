@@ -26,7 +26,9 @@ func reflectionDemo() error {
 		Store:     memStore,
 		Extractor: &fixedExtractor{},
 		Namespace: ns,
-		OriginFn:  func() store.SourceRef { return store.SourceRef{Type: store.SourceSession, SessionID: "prod-session", Seq: 42} },
+		OriginFn: func() store.SourceRef {
+			return store.SourceRef{Type: store.SourceSession, SessionID: "prod-session", Seq: 42}
+		},
 	})
 	if err != nil {
 		return err

@@ -10,6 +10,15 @@ const (
 	NodeCanceled  NodeFinishReason = "canceled"
 )
 
+// 观测 attrs key 契约（归属 flow 层）：桥折叠 flow 节点生命周期为
+// observability.Record 时使用。
+//
+// key 约定 <组件>.<字段> 点分，各组件独立 key 空间互不冲突。
+const (
+	// AttrNode 是产生生命周期事件的节点 ID。
+	AttrNode = "flow.node"
+)
+
 // Observer 观察单次 Graph 运行里每个节点的生命周期。
 // 默认无观察者（no-op）。实现必须并发安全：每个节点在独立 goroutine
 // 里回调。panic / error 不得升格为节点失败（由 Graph 吞掉）。

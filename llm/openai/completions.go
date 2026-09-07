@@ -64,6 +64,7 @@ func (m *completionsModel) Generate(ctx context.Context, req *llm.GenerateReques
 		Message:      msg,
 		FinishReason: mapFinishReason(choice.FinishReason),
 		Usage:        mapUsage(completion.Usage),
+		Model:        completion.Model,
 	}, nil
 }
 
@@ -409,9 +410,13 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 		finish          string
 		usage           sdk.CompletionUsage
 		usageSeen       bool
+		model           string
 	)
 	for stream.Next() {
 		chunk := stream.Current()
+		if model == "" {
+			model = chunk.Model
+		}
 		if chunk.Usage.JSON.PromptTokens.Valid() {
 			usage, usageSeen = chunk.Usage, true
 		}
@@ -526,7 +531,7 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 		}
 		msg.Parts = append(msg.Parts, llm.Call(llm.ToolCall{ID: acc.id, Name: acc.name, Arguments: json.RawMessage(args)}))
 	}
-	resp := &llm.Response{Message: msg, FinishReason: mapFinishReason(finish)}
+	resp := &llm.Response{Message: msg, FinishReason: mapFinishReason(finish), Model: model}
 	if usageSeen {
 		resp.Usage = mapUsage(usage)
 	}
