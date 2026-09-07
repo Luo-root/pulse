@@ -267,7 +267,7 @@ func InstallAnthropicMaxTokensDefault(scope *kernel.Context) error {
 
 // NewBridge 为一次请求创建官方观测桥（observability/bridge.Attach）：
 // TraceID 由 NewTraceID 注入（宿主单一生成源），llm/loop 监听挂 scope
-//（随其销毁自动摘除），Collector 服务同时注册进 scope。
+// （随其销毁自动摘除），Collector 服务同时注册进 scope。
 func (h *Host) NewBridge(scope *kernel.Context) (*bridge.Bridge, error) {
 	if err := InstallAnthropicMaxTokensDefault(scope); err != nil {
 		return nil, err
@@ -278,7 +278,6 @@ func (h *Host) NewBridge(scope *kernel.Context) (*bridge.Bridge, error) {
 		TraceID: h.NewTraceID(),
 	})
 }
-
 
 // Close 回收 kernel 作用域及全部效应。
 func (h *Host) Close() {
@@ -294,5 +293,3 @@ func GetRegistry(h *Host) (*llm.Registry, bool) {
 	}
 	return kernel.Get(h.Ctx, llm.ServiceKey)
 }
-
-

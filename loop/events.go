@@ -52,18 +52,18 @@ type BeforeToolCall struct {
 // AfterToolCall 是工具执行完成的事件载荷。
 type AfterToolCall struct {
 	Call     llm.ToolCall
-	Result   string        // 回传给模型的文本（失败时为错误说明）
+	Result   string // 回传给模型的文本（失败时为错误说明）
 	Duration time.Duration
-	Err      error         // 工具自身的错误；nil 表示成功
-	Rejected bool          // true 表示被 before_tool_call 拒绝，未真实执行
+	Err      error // 工具自身的错误；nil 表示成功
+	Rejected bool  // true 表示被 before_tool_call 拒绝，未真实执行
 }
 
 // TurnEnd 是回合结束的事件载荷。
 type TurnEnd struct {
-	Final     *llm.Message    // 最后一条 assistant 消息
-	Usage     llm.TokenUsage  // 全回合用量累计
-	Steps     int             // 实际执行的步数
-	StoppedBy StopReason      // 终止原因
+	Final     *llm.Message   // 最后一条 assistant 消息
+	Usage     llm.TokenUsage // 全回合用量累计
+	Steps     int            // 实际执行的步数
+	StoppedBy StopReason     // 终止原因
 }
 
 // 观测 attrs key 契约（归属 loop 层）：桥折叠 loop 事件为

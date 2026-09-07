@@ -10,9 +10,9 @@ import (
 
 	"github.com/Luo-root/pulse/examples/internal/demoapp"
 	"github.com/Luo-root/pulse/kernel/flow"
+	flowyaml "github.com/Luo-root/pulse/kernel/flow/yaml"
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/loop"
-	flowyaml "github.com/Luo-root/pulse/kernel/flow/yaml"
 	"github.com/Luo-root/pulse/observability"
 	"github.com/Luo-root/pulse/observability/bridge"
 )

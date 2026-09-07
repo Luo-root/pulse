@@ -98,7 +98,7 @@ func run() error {
 }
 
 // demoYAMLParity 用固定输入验证「代码建图 ≡ YAML 装图」：同一套工厂
-//（registerDAGFactories）喂给两种拓扑来源，Final 必须一致。
+// （registerDAGFactories）喂给两种拓扑来源，Final 必须一致。
 // YAML 文本里的 type 标签来自 flow.Registry.TypeTagOf——类型标注是
 // 注册表的运行时事实，不是手写常量。
 func demoYAMLParity(local, web Retriever) error {
@@ -141,7 +141,7 @@ func demoYAMLParity(local, web Retriever) error {
 }
 
 // registerDemoKeys 把 DAG 用的全部槽位 Key 注册进 flow.Registry
-//（YAML 的 key 引用与类型标签都以注册表为准）。
+// （YAML 的 key 引用与类型标签都以注册表为准）。
 func registerDemoKeys(reg *flow.Registry) {
 	flow.MustRegisterKey(reg, UserText)
 	flow.MustRegisterKey(reg, FactGate)

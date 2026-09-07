@@ -1,4 +1,4 @@
-﻿package demoapp
+package demoapp
 
 import (
 	"sync"
