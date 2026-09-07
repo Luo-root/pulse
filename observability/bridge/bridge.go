@@ -8,14 +8,17 @@
 // 系统，不做 OTel 导出（宿主侧 Sink 自行实现）。
 //
 // 折叠映射（v1 定案）：
-//   - llm.before_generate：只计时，不写记录（waterfall 透传）；
+//   - llm.before_generate：只计时，不写记录（waterfall 透传）。
+//     必须订阅——after_response 不携带耗时，Waterfall 回调是唯一
+//     可行的计时起点；恒 next 且不改参数的观察者不改变 Waterfall 语义；
 //   - llm.after_response：写 llm.generate_finished（模型/token 进 Attrs，
 //     key 契约见 llm.Attr*）；
 //   - loop.after_tool_call：写 loop.tool_finished（tool 进 Attrs）；
 //   - loop.turn_end：写 loop.turn_finished（steps 进 Attrs；token 用量
 //     以 after_response 单次口径为准，桥不做累计）；
-//   - loop.before_tool_call：**刻意不订阅**——它是 Waterfall HITL 审批
-//     挂载点，桥不得进入审批链污染人机决策。
+//   - loop.before_tool_call：**刻意不订阅**——AfterToolCall 已自带
+//     Duration/Err，订阅无观测增益，少一份与 HITL 审批链的顺序耦合；
+//     与 before_generate 的差异是「有无替代计时手段」，不是 Waterfall 本身。
 //
 // 接入姿态：
 //
@@ -137,7 +140,9 @@ func Attach(scope *kernel.Context, cfg Config) (*Bridge, error) {
 	}); err != nil {
 		return nil, err
 	}
-	// after_tool_call：工具执行事实。before_tool_call 刻意不订阅（HITL 中立）。
+	// after_tool_call：工具执行事实。before_tool_call 不订阅——事件已
+	// 自带 Duration/Err，订阅无观测增益，少一份与 HITL 审批链的顺序耦合
+	//（before_generate 订阅是因 after_response 无耗时，计时起点无替代）。
 	if _, err := kernel.On(scope, loop.EventAfterToolCall, func(after *loop.AfterToolCall) {
 		status := StatusCompleted
 		switch {

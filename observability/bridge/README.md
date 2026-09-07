@@ -10,11 +10,11 @@ Layering position: the `observability` package itself imports only kernel (plan 
 
 | Event | Handling | Record |
 |---|---|---|
-| `llm.before_generate` | **Timing only** (waterfall passthrough) | none |
+| `llm.before_generate` | **Timing only** (waterfall passthrough). Must subscribe: `after_response` carries no duration, so the Waterfall callback is the only timing origin; an observer that always calls `next` unchanged does not alter Waterfall semantics | none |
 | `llm.after_response` | write | `llm.generate_finished`: Status=finish_reason, Duration=this generation, Attrs=model / tokens_in / tokens_out / tokens_cached |
 | `loop.after_tool_call` | write | `loop.tool_finished`: Status=completed\|failed\|rejected, Duration/Err passthrough, Attrs=tool |
 | `loop.turn_end` | write | `loop.turn_finished`: Status=stopped_by, Attrs=steps; tokens are not repeated here (the after_response per-call figure is authoritative) |
-| `loop.before_tool_call` | **deliberately not subscribed** | the Waterfall HITL approval mount point; the bridge must not enter the approval chain and pollute human decisions |
+| `loop.before_tool_call` | **deliberately not subscribed** | `AfterToolCall` already carries Duration/Err — subscribing gains nothing and adds one more ordering coupling to the HITL approval chain |
 | flow Observer | adapter with segment timing | two records, `flow.node_wait_finished` / `flow.node_run_finished`, Attrs=node |
 
 ## Wiring
@@ -67,6 +67,6 @@ var CollectorKey = kernel.NewServiceKey[*Bridge]("pulse.observability.collector"
 ## Deliberately out of scope
 
 - No OTel / Prometheus exporter (implemented as a host-side Sink)
-- No subscription to `loop.before_tool_call` (HITL neutrality, see the table above)
+- No subscription to `loop.before_tool_call` (no observational gain, see the table above)
 - No changes to the kernel event system; business custom observation goes through Collector direct writes, not the bus
 - No map[string]any escape hatch (attr values are locked down by the generic `observability.Set`)

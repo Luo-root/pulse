@@ -5,9 +5,9 @@
 //
 // 本包只 import kernel，绝不 import llm/loop/flow。它只认识两样东西：
 // kernel 发出的装配期事实（typed 事件），以及下游的 Sink 出口。
-// 运行期业务事件（token 计数、HITL 结果、节点耗时）由装配层桥
-// （如 examples/internal/demoapp/bridge.go）订阅后折进 Record 信封写同一 Sink，
-// 不经过本包。
+// 运行期业务事件（token 计数、HITL 结果、节点耗时）由伴生装配层
+// observability/bridge 订阅 llm/loop 公开事件后折进 Record 信封写
+// 同一 Sink——认识业务组件的适配器单独成包，依赖方向不变、无环。
 //
 // # 接入姿态
 //
@@ -21,18 +21,20 @@
 //
 // # 与运行期观测的关系
 //
-// token/HITL/flow 节点耗时等业务指标不进本包。装配层桥将它们折进
-// Record 信封（填 TraceID/Duration/Status）写同一 Sink；装不进信封的
-// 指标走 SlogSink 附加键。「同一出口」= 同一 Sink 实现 ≠ Record 变
-// 万能袋。
+// token/HITL/flow 节点耗时等业务指标不在本包扩具名字段。伴生桥
+// observability/bridge 将它们折进 Record 信封（填
+// TraceID/Duration/Status/Attrs）写同一 Sink，业务维度经 Attrs 进入，
+// key 契约由事实归属包定义（llm.AttrModel、loop.AttrTool、
+// flow.AttrNode）。「同一出口」= 同一 Sink 实现 ≠ Record 变万能袋。
 //
 // # 隐私边界
 //
-// Record 无 Attributes map 或任意 kv 注入口：prompt、附件字节、密钥、
-// 思维链无法通过字段进入。注意边界：Err 字符串来源于调用方传入的
+// Record 无 map[string]any 逃生舱：Attrs 的写入面只有泛型 Set（标量
+// 约束 ~string|~int64|~float64|~bool），prompt、附件字节、密钥、思维
+// 链无法通过字段进入。注意边界：Err 字符串来源于调用方传入的
 // error——Bootstrap 仅记录 kernel 自产的错误（Apply 失败原因等）；
 // 桥不得把 provider 原始错误体直接塞入 Err，应传已分类的摘要。
 //
-// 设计全貌（决策记录 D1–D6 与被否方案）见
-// docs/design/observability-v1-design.md；可实现契约见 Issue #16。
+// 设计全貌（决策记录 D1–D10 与被否方案）见
+// docs/design/observability-v1-design.md；可实现契约见 Issue #16、#125。
 package observability

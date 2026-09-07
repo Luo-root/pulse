@@ -184,8 +184,9 @@ func TestTraceIDIsolationAndDispose(t *testing.T) {
 	}
 }
 
-// HITL 中立：桥不订阅 before_tool_call（Waterfall 审批挂载点）——
-// 审批监听只被调到一次；拒绝后桥如实记 rejected，工具未执行。
+// HITL 中立：桥不订阅 before_tool_call（AfterToolCall 自带 Duration/Err，
+// 订阅无观测增益）——审批监听只被调到一次；拒绝后桥如实记 rejected，
+// 工具未执行。
 func TestBridgeIsHITLNeutral(t *testing.T) {
 	scope := kernel.New()
 	t.Cleanup(scope.Dispose)
@@ -221,7 +222,7 @@ func TestBridgeIsHITLNeutral(t *testing.T) {
 	}
 
 	if got := hitlCount.Load(); got != 1 {
-		t.Fatalf("before_tool_call listeners fired %d times, want 1 (bridge must not subscribe)", got)
+		t.Fatalf("before_tool_call listeners fired %d times, want 1 (bridge gains nothing by subscribing)", got)
 	}
 	if ran.Load() != 0 {
 		t.Fatal("rejected tool must not execute")

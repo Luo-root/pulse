@@ -162,7 +162,9 @@ LoaderAction 对照 Reconcile 三阶段实际分支：removed→unmount、Name/C
 
 ## 7. 明确不做
 
-otel/prometheus 导出器 · 采样与动态级别 · Web UI · 正式包内业务事件订阅 · 在 observability 本包订阅 flow NodeWaiting/Running/Finished（E1 已定形且归属 flow.Observer + bridge 适配器，方案 A 禁止本体 import flow）· Diagnostic 接口与组件发现（v2）· Waterfall 旁路（bridge 不订阅 `before_tool_call`，见 §9）· Record map 逃生舱 · prompt/附件/密钥/思维链内容记录。
+otel/prometheus 导出器 · 采样与动态级别 · Web UI · 正式包内业务事件订阅 · 在 observability 本包订阅 flow NodeWaiting/Running/Finished（E1 已定形且归属 flow.Observer + bridge 适配器，方案 A 禁止本体 import flow）· Diagnostic 接口与组件发现（v2）· 本体侧 Waterfall 计量旁路（D5：正式包观察只用 On/Emit；bridge 对 `before_generate` 的订阅是装配层适配器的计时起点例外，见 §9.2）· prompt/附件/密钥/思维链内容记录。
+
+**「Record map 逃生舱」条款的精确化决议（Issue #125，2026-09）**：本条「不做」指 D2 意义上的**无类型 any 逃生舱**——`map[string]any` 字符串分发，未知键静默吞、跨 provider/出口行为漂移。#125 引入的 `Attrs` 不是该意义上的逃生舱：值域被泛型标量约束锁死（`~string|~int64|~float64|~bool`），payload 结构（Message 切片/附件/思维链）在类型上进不来，开放面经 `Set/Get` 单一入口。本票即对该条款的重开与收窄记录；「无 map[string]any」四个字仍然成立。
 
 原「Collector 概念本身」一条已由 #125 推翻并落地为 `bridge.CollectorKey` 直写服务（D10）：被否的是「Collector.Emit 字符串总线」（D2），不是「宿主直写观测」这件事。每一条「不做」都对应一轮评审的具体反对意见；重开时需先推翻对应决策记录。
 
@@ -201,11 +203,23 @@ var CollectorKey = kernel.NewServiceKey[*Bridge]("pulse.observability.collector"
 
 | 事件 | 处理 | Record |
 |---|---|---|
-| `llm.before_generate` | **只计时**（waterfall 透传，不改请求） | 不写 |
+| `llm.before_generate` | **只计时**（waterfall 透传，不改请求）。**必须订阅**：`after_response` 不携带耗时，Waterfall 回调是唯一可行的计时起点；恒 `next` 且不改参数的观察者不改变 Waterfall 语义 | 不写 |
 | `llm.after_response` | 写记录 | `llm.generate_finished`：Status=finish_reason，Duration=本次生成耗时，Attrs=model/tokens_in/tokens_out/tokens_cached |
 | `loop.after_tool_call` | 写记录 | `loop.tool_finished`：Status=completed\|failed\|rejected，Duration/Err 透传，Attrs=tool |
 | `loop.turn_end` | 写记录 | `loop.turn_finished`：Status=stopped_by，Attrs=steps；**token 不在此重复**（以 after_response 单次口径为准，桥不做累计） |
-| `loop.before_tool_call` | **刻意不订阅** | Waterfall HITL 审批挂载点，桥不得进入审批链污染人机决策（测试锚：审批监听恰被调到一次） |
+| `loop.before_tool_call` | **刻意不订阅** | `AfterToolCall` 已自带 Duration/Err，订阅无观测增益，少一份与 HITL 审批链的顺序耦合——与 before_generate 的差异是「有无替代计时手段」，不是 Waterfall 本身 |
 | flow Observer | 适配器分段计时 | `flow.node_wait_finished` / `flow.node_run_finished` 两条，Status=finish reason，Attrs=node |
 
-桥事件名保持 `<组件>.<事实>` 点分，与 observability 本包 Event* 同风格不重叠。kernel 事件系统不因桥做任何改造（D2/D10：业务自定义观测走 Collector 直写，不走总线）。
+实现注意：`TokenUsage` 字段是 `int`，attrs 契约锁 `~int64`（32 位平台值域考量，不加 `~int`），折叠处显式 `int64()` 收窄。
+
+桥事件名保持 `<组件>.<事实>` 点分，与 observability 本包 Event* 同风格不重叠。**key 前缀约定**：`llm.` / `loop.` / `flow.` / `kernel.` / `observability.` 为官方组件保留；业务插件用自己的包路径或宿主自有前缀（如 `myhost/orders.status`），无注册机制防冲突，靠约定（与 OTel attribute 命名同理）。kernel 事件系统不因桥做任何改造（D2/D10：业务自定义观测走 Collector 直写，不走总线）。
+
+### 9.3 Attrs 引用语义契约
+
+`Attrs` 是 Record 第一个引用类型字段，`MultiSink` 会把同一个 Attrs 递给多个 Sink。契约（已写入 `Sink` 接口 godoc）：
+
+- 产出方每次构造独立 Attrs，`Write` 返回后不再修改该 Record；
+- Sink 实现不得修改收到的 Record 及其 Attrs（只读消费）；
+- 异步导出器（队列化后再落盘/上报）必须自行拷贝所需字段后再持有。
+
+验收锚：`TestMultiSinkConcurrentAttrsFanout`——多 Sink 扇出同一带 Attrs 的 Record，多 goroutine 并发写 + 并发读，`-race` 下无竞争。

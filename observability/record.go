@@ -4,8 +4,9 @@
 // 分层纪律（方案 A）：本包只 import kernel，绝不 import llm/loop/flow。
 // 它只认识两样东西——kernel 发出的装配期事实（typed 事件），以及
 // 下游的 Sink 出口。运行期业务事件（token 计数、HITL 结果、节点耗时）
-// 由装配层桥（如 examples/internal/demoapp/bridge.go）订阅后折进 Record 信封写
-// 同一 Sink，不经过本包。
+// 由伴生装配层 observability/bridge 订阅 llm/loop 公开事件后折进
+// Record 信封写同一 Sink——认识业务组件的适配器单独成包，依赖方向
+// 不变、无环（见 observability-v1-design.md §2 / §9）。
 //
 // 接入姿态（v1 仅一种）：
 //
@@ -79,6 +80,7 @@ type Record struct {
 
 	// Attrs 是产生方自定义的标量 kv（运行期桥与业务插件使用，
 	// 经 Set/Get 写读）。出口实现应按 key 排序输出以获得确定性。
+	// 引用语义见 Sink 接口契约：产出方 Write 后不再修改，Sink 只读。
 	Attrs Attrs
 }
 
@@ -263,6 +265,12 @@ func (a Attrs) MarshalJSON() ([]byte, error) {
 //
 // 契约：无 context.Context——kernel Emit 路径不带 ctx；需要截止时间
 // 的导出器自行持有内部队列，不把阻塞回传到派发路径。
+//
+// 引用语义契约（Attrs 是 Record 第一个引用类型字段，MultiSink 会把
+// 同一个 Attrs 递给多个 Sink）：
+//   - 产出方每次构造独立 Attrs，Write 返回后不再修改该 Record；
+//   - Sink 实现不得修改收到的 Record 及其 Attrs（只读消费）；
+//   - 异步导出器（队列化后再落盘/上报）必须自行拷贝所需字段后再持有。
 type Sink interface {
 	Write(r Record)
 }

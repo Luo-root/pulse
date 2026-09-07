@@ -8,11 +8,11 @@
 
 | 事件 | 处理 | Record |
 |---|---|---|
-| `llm.before_generate` | **只计时**（waterfall 透传） | 不写 |
+| `llm.before_generate` | **只计时**（waterfall 透传）。必须订阅：`after_response` 不携带耗时，Waterfall 回调是唯一计时起点；恒 `next` 不改参的观察者不改变 Waterfall 语义 | 不写 |
 | `llm.after_response` | 写记录 | `llm.generate_finished`：Status=finish_reason，Duration=本次生成耗时，Attrs=model / tokens_in / tokens_out / tokens_cached |
 | `loop.after_tool_call` | 写记录 | `loop.tool_finished`：Status=completed\|failed\|rejected，Duration/Err 透传，Attrs=tool |
 | `loop.turn_end` | 写记录 | `loop.turn_finished`：Status=stopped_by，Attrs=steps；token 不在此重复（以 after_response 单次口径为准） |
-| `loop.before_tool_call` | **刻意不订阅** | Waterfall HITL 审批挂载点，桥不得进入审批链污染人机决策 |
+| `loop.before_tool_call` | **刻意不订阅** | `AfterToolCall` 已自带 Duration/Err，订阅无观测增益，少一份与 HITL 审批链的顺序耦合 |
 | flow Observer | 适配器分段计时 | `flow.node_wait_finished` / `flow.node_run_finished` 两条，Attrs=node |
 
 ## 接入
@@ -62,6 +62,6 @@ var CollectorKey = kernel.NewServiceKey[*Bridge]("pulse.observability.collector"
 ## 明确不做
 
 - 不做 OTel / Prometheus 导出器（宿主侧 Sink 自行实现）
-- 不订阅 `loop.before_tool_call`（HITL 中立，见上表）
+- 不订阅 `loop.before_tool_call`（无观测增益，见上表）
 - 不改 kernel 事件系统；业务自定义观测走 Collector 直写，不走总线
 - 不做 map[string]any 逃生舱（attrs 值域经 `observability.Set` 泛型锁死）
