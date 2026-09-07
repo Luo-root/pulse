@@ -7,7 +7,7 @@ const isZh = computed(() => lang.value.startsWith('zh'))
 
 const copy = {
   zh: {
-    badge: 'v0.1.0 预览 · 开源 MIT',
+    badge: 'v0.2.0 预览 · 开源 MIT',
     heroTitle: '一切皆插件，',
     heroTitleAccent: '卸载即还原',
     tagline: 'Pulse 是一个 Go AI Agent 框架——以可逆效应与依赖响应式为基座的插件内核。模型、工具、编排、记忆、观测全部插件化组合，v2 核心已发布预览。',
@@ -31,12 +31,12 @@ const copy = {
     start2Title: '跑通第一课',
     start2Desc: '8 课渐进示例从内核地基走到生产集成；缺 API Key 时自动走脚本模型，课程不依赖真实凭据。',
     ctaTitle: '在开源、可逆、可组合的基座上构建 Agent',
-    ctaDesc: 'v0.1.0 预览已发布——27 个包的双语文档、8 课渐进示例与跨框架评测数字全部就绪。',
-    ctaRelease: 'v0.1.0 Release',
+    ctaDesc: 'v0.2.0 预览已发布——双基座观测栈、27 个包的双语文档、8 课渐进示例与跨框架评测数字全部就绪。',
+    ctaRelease: 'v0.2.0 Release',
     ctaEval: '评测数字',
   },
   en: {
-    badge: 'v0.1.0 Preview · Open Source MIT',
+    badge: 'v0.2.0 Preview · Open Source MIT',
     heroTitle: 'Everything is a plugin, ',
     heroTitleAccent: 'unload to restore',
     tagline: 'Pulse is a Go AI Agent framework — a plugin kernel grounded in reversible effects and dependency-reactive loading. Models, tools, orchestration, memory, observability: all pluggable, shipping as a v2 preview.',
@@ -60,8 +60,8 @@ const copy = {
     start2Title: 'Run the first lesson',
     start2Desc: 'Eight progressive lessons walk from kernel ground to production; without an API key they fall back to scripted models — no real credentials needed.',
     ctaTitle: 'Build agents on a reversible, composable foundation',
-    ctaDesc: 'v0.1.0 preview is out — bilingual docs for 27 packages, eight progressive lessons, and cross-framework benchmark numbers, all ready.',
-    ctaRelease: 'v0.1.0 Release',
+    ctaDesc: 'v0.2.0 preview is out — a dual-foundation observability stack, bilingual docs for 27 packages, eight progressive lessons, and cross-framework benchmark numbers, all ready.',
+    ctaRelease: 'v0.2.0 Release',
     ctaEval: 'Benchmarks',
   },
 }
@@ -153,7 +153,7 @@ const icons = {
         <p class="cta-desc">{{ t.ctaDesc }}</p>
         <div class="actions center">
           <a class="btn btn-primary" href="https://github.com/Luo-root/pulse" target="_blank" rel="noopener">{{ t.ctaGithub }}</a>
-          <a class="btn btn-ghost" href="https://github.com/Luo-root/pulse/releases/tag/v0.1.0" target="_blank" rel="noopener">{{ t.ctaRelease }}</a>
+          <a class="btn btn-ghost" href="https://github.com/Luo-root/pulse/releases/tag/v0.2.0" target="_blank" rel="noopener">{{ t.ctaRelease }}</a>
           <a class="btn btn-ghost" href="/pulse/eval">{{ t.ctaEval }}</a>
         </div>
       </div>

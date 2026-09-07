@@ -108,7 +108,7 @@ export default defineConfig({
   base: '/pulse/',
   lang: 'zh-CN',
   title: 'Pulse',
-  description: 'Go AI Agent 框架——可逆效应与依赖响应式的插件内核，v2 核心已以 v0.1.0 预览发布',
+  description: 'Go AI Agent 框架——可逆效应与依赖响应式的插件内核，v2 核心已以 v0.2.0 预览发布',
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/pulse/favicon.svg' }]], // head 里的自定义 link 不吃 base 自动前缀，硬编码（与 base 同步）
   locales: { root: zh, en },
   // v1.x dead-link checker 会把「目录尾斜杠链接」(/dir/) 规范化为 /dir/index 后查路由表，
@@ -120,7 +120,7 @@ export default defineConfig({
     siteTitle: 'Pulse',
     socialLinks: [{ icon: 'github', link: 'https://github.com/Luo-root/pulse' }],
     footer: {
-      message: '开源 · MIT · v0.1.0 预览',
+      message: '开源 · MIT · v0.2.0 预览',
       copyright: 'Copyright © 2026 Luo-root',
     },
   },

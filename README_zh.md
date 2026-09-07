@@ -13,15 +13,15 @@
 <div align="center">
   <a href="https://go.dev/"><img alt="Go 1.25.0" src="https://img.shields.io/badge/Go-1.25.0-blue.svg" /></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg" /></a>
-  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.1.0"><img alt="Release v0.1.0 preview" src="https://img.shields.io/badge/release-v0.1.0--preview-2563eb.svg" /></a>
+  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.2.0"><img alt="Release v0.2.0 preview" src="https://img.shields.io/badge/release-v0.2.0--preview-2563eb.svg" /></a>
   <a href="https://luo-root.github.io/pulse/"><img alt="Docs: English | 中文" src="https://img.shields.io/badge/docs-English%20%7C%20%E4%B8%AD%E6%96%87-2563eb.svg" /></a>
 </div>
 
 <br />
 
-**Pulse** 是一个 Go AI Agent 框架，v2 内核以预览版（v0.1.0）发布。
+**Pulse** 是一个 Go AI Agent 框架，v2 内核以预览版（v0.2.0）发布。
 
-v2 内核以可逆效应和依赖响应式为基座。核心重构已落地：插件内核、provider 中立模型层、无状态 ReAct 回合执行器、工具与 Skills 体系、记忆层（会话、压缩、长期存储、上下文装配）、可观测性，以及声明式 flow 编排。v1 的 Agent、旧模型适配器、DAG、记忆、HITL 与遥测实现已彻底移除，不保留兼容层；预览期间 API 仍可能调整。
+v2 内核以可逆效应和依赖响应式为基座。核心重构已落地：插件内核、provider 中立模型层、无状态 ReAct 回合执行器、工具与 Skills 体系、记忆层（会话、压缩、长期存储、上下文装配）、双基座观测栈（信封 + 各包折叠适配 + Collector 直写服务），以及声明式 flow 编排。v1 的 Agent、旧模型适配器、DAG、记忆、HITL 与遥测实现已彻底移除，不保留兼容层；预览期间 API 仍可能调整。
 
 ## 当前可用能力
 
