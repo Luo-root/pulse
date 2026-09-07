@@ -1,6 +1,6 @@
 # Observability
 
-`observability` is v2's official observability package: **Bootstrap + Record + Sink** — three things, kernel-only dependency, zero business imports (never imports llm/loop/flow).
+`observability` is v2's official observability package: **Bootstrap + Record + Sink** — three things plus the default per-request TraceID generator (`NewTraceID`), kernel-only dependency, zero business imports (never imports llm/loop/flow).
 
 ## The three things
 

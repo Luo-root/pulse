@@ -38,7 +38,7 @@ The v2 kernel is built on reversible effects and dependency-reactive loading. Th
 | [`kernel/flow`](kernel/flow/README.md) | Data-ready driven node orchestration (three slot states, Skip, E1 Observer) | `flow.New(ctx)` |
 | [`kernel/flow/yaml`](kernel/flow/yaml/README.md) | E2 declarative YAML graph loading (topology home A: Factory only exposes Run) | `flowyaml.Load` |
 | [`memory`](memory/README.md) | P2 memory & sessions (9 sub-packages): session / compaction / store / assemble / selfedit / index / candidate / reflection | `memory/README.md` global map |
-| [`observability`](observability/README.md) | Official observability package: Bootstrap + Record + Sink (depends only on kernel) | `observability.Bootstrap()` |
+| [`observability`](observability/README.md) | Official observability package: Bootstrap + Record + Sink + NewTraceID (depends only on kernel) | `observability.Bootstrap()` |
 | [`examples`](examples/README.md) | Progressive lessons 00–07: kernel ground / assembly + vocabulary / ReAct / HITL / flow / session memory / long-term memory / production | `go run ./examples/00-hello-kernel` |
 | [`eval`](eval/README.md) | Evaluation suite: engineering-capability property tests + layered benchmarks + cross-framework comparison suite (`eval/war`) | `go test -race ./eval/` |
 

@@ -1,6 +1,6 @@
 # 可观测性
 
-`observability` 是 v2 的正式观测包：**Bootstrap + Record + Sink** 三件事，只依赖 kernel——零业务依赖，不 import llm/loop/flow。
+`observability` 是 v2 的正式观测包：**Bootstrap + Record + Sink** 三件事 + 每请求 TraceID 默认生成器（`NewTraceID`），只依赖 kernel——零业务依赖，不 import llm/loop/flow。
 
 ## 三件事
 
