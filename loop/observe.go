@@ -5,7 +5,7 @@ import (
 	"github.com/Luo-root/pulse/observability"
 )
 
-// 桥事件名（观测记录事件名，<组件>.<事实> 点分约定）。
+// 观测记录事件名（<组件>.<事实> 点分约定）。
 const (
 	// EventToolFinished 是 after_tool_call 折叠出的观测记录事件名。
 	EventToolFinished = "loop.tool_finished"
@@ -45,19 +45,12 @@ func Observe(scope *kernel.Context, cfg observability.ObserveConfig) error {
 		return observability.ErrNilSink
 	}
 	if _, err := kernel.On(scope, EventAfterToolCall, func(after *AfterToolCall) {
-		status := StatusCompleted
-		switch {
-		case after.Rejected:
-			status = StatusRejected
-		case after.Err != nil:
-			status = StatusFailed
-		}
 		rec := observability.Record{
 			HostID:   cfg.HostID,
 			TraceID:  cfg.TraceID,
 			Source:   observability.SourceAdapter,
 			Event:    EventToolFinished,
-			Status:   status,
+			Status:   toolStatus(after),
 			Duration: after.Duration,
 			Err:      after.Err,
 		}
@@ -82,7 +75,8 @@ func Observe(scope *kernel.Context, cfg observability.ObserveConfig) error {
 	return nil
 }
 
-// toolStatus 是折叠判定的包内测试辅助：三态优先级（Rejected > Err > 完成）。
+// toolStatus 是工具结果的三态判定（Rejected 优先于 Err > 完成）——
+// 工具结果语义是本包知识，这里是其唯一事实源，Observe 折叠调用它。
 func toolStatus(after *AfterToolCall) string {
 	switch {
 	case after.Rejected:
