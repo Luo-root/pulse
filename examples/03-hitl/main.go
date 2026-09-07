@@ -263,6 +263,13 @@ func run() error {
 			return nil, err
 		}
 		defer reqScope.Dispose()
+		// 运行期观测：03 起复用 demoapp.Host.NewObserve 封装版（02 课
+		// 手写过三件装配件）。HITL 的 rejected 工具调用会以
+		// loop.tool_finished（status=rejected）进 Sink——被拒不算
+		// crash，在记录里可见。
+		if _, _, err := host.NewObserve(reqScope); err != nil {
+			return nil, err
+		}
 		// trust 跨轮传入：`a` 授予的白名单在 reqScope 销毁后仍生效。
 		trust, err = installHITL(reqScope, mode, flags.DenyTool, flags.AllowTool, toolHint, stdin, os.Stdout, trust)
 		if err != nil {
