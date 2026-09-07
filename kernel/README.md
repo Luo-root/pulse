@@ -38,12 +38,12 @@ The skeleton is a Context tree: every scope has an event bus, an effect stack, a
 ```mermaid
 flowchart TB
     subgraph tree[Context scope tree]
-        ROOT["Context root<br>bindings = global service repository<br>effects = LIFO effect stack<br>events = eventBus<br>fibers = plugin instances"]
-        CHILD["Context child scope<br>effects / events / fibers"]
+        ROOT["Context root (global service repository)"]
+        CHILD["Context child scope"]
     end
-    LOADER["Loader<br>factories / fibers (ID index) / entries"]
-    FIBER["Fiber inertial state machine<br>plugin / host / state / ctx"]
-    PLUGIN["Plugin<br>Inject + Apply"]
+    LOADER["Loader (entry reconcile)"]
+    FIBER["Fiber inertial state machine"]
+    PLUGIN["Plugin: Inject + Apply"]
     LOADER -- "mount: factory → Configure → Use" --> FIBER
     FIBER -.->|"host (mount layer)"| ROOT
     FIBER ==>|"ctx = private scope (where Apply runs)"| CHILD
