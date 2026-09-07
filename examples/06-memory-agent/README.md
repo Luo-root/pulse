@@ -52,7 +52,7 @@ active, _ := cand.Approve(ctx, p.ID)     // = Supersede：批准版新 ID、Conf
 
 ## 与生产的距离
 
-本课缺三块，在 07 课聚合：真实 LLM 提炼（Extractor 接你的模型与 prompt）、后台反思调度（`memory/reflection`，触发时机归宿主）、观测桥（Metrics 快照 → 你的监控栈）。
+本课缺三块，在 07 课聚合：真实 LLM 提炼（Extractor 接你的模型与 prompt）、后台反思调度（`memory/reflection`，触发时机归宿主）、观测适配装配（Metrics 快照 → 你的监控栈）。
 
 ## 运行
 
@@ -62,4 +62,4 @@ go run ./examples/06-memory-agent
 
 ## 下一课
 
-[07-production](../07-production/)：生产形态——MCP/Skills 多来源工具、观测桥、反思与指标面聚合。
+[07-production](../07-production/)：生产形态——MCP/Skills 多来源工具、观测适配装配、反思与指标面聚合。

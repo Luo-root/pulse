@@ -1,6 +1,6 @@
 # Pulse 示例：从入门到精通（8 课）
 
-8 课渐进式教程，每课**独立可跑**（`go run ./examples/<课>`）、配详解 README。课程按依赖递进：前 4 课是框架基础（kernel → 词汇表 → ReAct → 审批），5-6 课是记忆层（会话 → 长期记忆），第 7 课是声明式编排与生产集成。
+8 课渐进式教程，每课**独立可跑**（`go run ./examples/<课>`）、配详解 README。课程按依赖递进：前 4 课是框架基础（kernel → 词汇表 → ReAct → 审批），5-6 课是记忆层（会话 → 长期记忆），04 课是声明式编排、07 课是生产集成。
 
 > 学习路径建议按编号顺序；每课 README 开头列「本课依赖」，可跳读。
 
@@ -13,7 +13,7 @@
 | 04 | [`04-flow`](04-flow/) | 声明式与命令式编排：flow 节点图、槽位三态、YAML 装图 | `kernel/flow` `flow/yaml` | 02 |
 | 05 | [`05-memory-session`](05-memory-session/) | 会话真相与压缩：事件日志、fold 投影、JSONL 持久化、compaction | `memory/session` `memory/compaction` | 01 |
 | 06 | [`06-memory-agent`](06-memory-agent/) | 长期记忆全链路：store → index 召回 → candidate 提炼 → 审批 → assemble 注入 | `memory/*` 8 包 | 05 |
-| 07 | [`07-production`](07-production/) | 生产形态集成：MCP/Skills 多来源、观测桥、反思与指标面 | 全部 | 03 04 06 |
+| 07 | [`07-production`](07-production/) | 生产形态集成：MCP/Skills 多来源、观测适配装配、反思与指标面 | 全部 | 03 04 06 |
 
 ## 运行
 
@@ -40,13 +40,13 @@ go test ./examples/...
 04      + flow 节点图 / YAML 装图（编排两种形态）                        ← 可编排
 05      + session 事件日志 / fold / JSONL / compaction                 ← 记得住
 06      + store + index + candidate + assemble（长期记忆闭环）          ← 会积累
-07      + MCP / Skills 多来源 + 观测桥 + reflection 指标                ← 可上线
+07      + MCP / Skills 多来源 + 观测适配 + reflection 指标               ← 可上线
 ```
 
 ## 观测日志
 
 - **装配期**（各课共用）：`observability.Bootstrap` → `MemorySink` / `SlogSink`，字段见 [`observability/README_zh.md`](../observability/README_zh.md)。
-- **运行期**：观测桥把 llm/loop/flow 事实折进同一 Sink（`source=bridge`，必填 `trace_id`）——02 课手写 `reqBridge` 教学，03 课起复用 `demoapp.Bridge` 封装版。
+- **运行期**：各包观测适配（`llm.Observe` / `loop.Observe` / `flow.NewRecordObserver`）把 llm/loop/flow 事实折进同一 Sink（`source=bridge`，必填 `trace_id`）——02 课手写官方适配三件 + Collector 直写，03 课起复用 `demoapp.Host.NewObserve` 封装版。
 - 隐私边界：记录**元数据**（次数、字节长度、耗时、状态），不记录 prompt 内容、附件内容、密钥和思维链。
 
 ## 当前不做
@@ -56,6 +56,6 @@ go test ./examples/...
 
 ## 设计说明
 
-- `examples/internal/demoapp` 是课程私有的装配层（REPL 壳、`.env` 加载、封装版 Bridge/HITL），**库包本身无 internal**——此处不违反「库无 internal」约定。
-- 教学节奏：01–03 关键实现（装配链 / Bridge / HITL）在课内**手写展开**，demoapp 封装版是它们的对照原型；04 起复用封装版，每课 `main.go` 刻意保持「能读一遍」的长度，复杂度沉淀进 demoapp 或对应包。
+- `examples/internal/demoapp` 是课程私有的装配层（REPL 壳、`.env` 加载、封装版观测装配/HITL），**库包本身无 internal**——此处不违反「库无 internal」约定。
+- 教学节奏：01–03 关键实现（装配链 / 观测接入 / HITL）在课内**手写展开**，demoapp 封装版是它们的对照原型；04 起复用封装版，每课 `main.go` 刻意保持「能读一遍」的长度，复杂度沉淀进 demoapp 或对应包。
 - 遇到 API 疑问：每个正式包的 `README_zh.md` 是事实源，`doc.go` 是 godoc 入口。

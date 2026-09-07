@@ -1,6 +1,6 @@
 # 01-chat
 
-装配链与统一消息词汇表：在 [00-hello-kernel](../00-hello-kernel/) 的地基上引入 `llm.Registry`（命名模型实例、provider 适配器注册）与完整的多模态 Part 词汇表，并用 REPL 让「会话」首次出现。kernel 生命周期在 00 已验证；从本课起关键实现**亲手写一遍**（01 手写装配链、02 手写 Bridge、03 手写 HITL），之后各课复用 demoapp 封装版才是「已掌握」。
+装配链与统一消息词汇表：在 [00-hello-kernel](../00-hello-kernel/) 的地基上引入 `llm.Registry`（命名模型实例、provider 适配器注册）与完整的多模态 Part 词汇表，并用 REPL 让「会话」首次出现。kernel 生命周期在 00 已验证；从本课起关键实现**亲手写一遍**（01 手写装配链、02 手写观测接入、03 手写 HITL），之后各课复用 demoapp 封装版才是「已掌握」。
 
 ## 本课依赖
 
@@ -29,7 +29,7 @@
 
 demoapp 在本课只剩两样非主线便利：`.env` 自动加载（import 即生效）与 REPL 输入解析（`/image` `/file` 等命令不是本课主题）。02/03 起装配复用 `demoapp.Open` 封装版——那是你在这里亲手写过一遍的东西。
 
-本层**不创建**请求级 `Bridge` / `reqScope`：只验证装配与词汇表，直接 `model.Generate`。运行期 `source=bridge` 记录从 02-react 起才出现；这是刻意收窄，不是漏装。
+本层**不创建**请求级观测适配 / `reqScope`：只验证装配与词汇表，直接 `model.Generate`。运行期 `source=bridge` 记录从 02-react 起才出现；这是刻意收窄，不是漏装。
 
 ## 消息词汇表：一个输入模型，两种线格式
 
