@@ -214,7 +214,7 @@ func TestRebuildLosesNothing(t *testing.T) {
 }
 
 // TestSearchScoresDescending：Score = 余弦相似度，降序返回；未登记词
-//（零向量）相似度 0。
+// （零向量）相似度 0。
 func TestSearchScoresDescending(t *testing.T) {
 	ctx := t.Context()
 	s := store.NewMemoryStore()

@@ -155,7 +155,7 @@ func BenchmarkWar_EinoChain(b *testing.B) {
 }
 
 // BenchmarkWar_PulseFlowDAG T4 分支汇聚（1→2→AND join）：Pulse kernel/flow
-//（AND 槽位语义），每轮重建（冷启动口径）。
+// （AND 槽位语义），每轮重建（冷启动口径）。
 func BenchmarkWar_PulseFlowDAG(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()
@@ -183,7 +183,7 @@ func BenchmarkWar_EinoDAGGraph(b *testing.B) {
 }
 
 // BenchmarkWar_EinoDAG T4 分支汇聚（Eino 变体 b）：compose.Workflow
-//（AddLambdaNode + ToField 字段映射 AND 汇聚），每轮重建（冷启动口径）。
+// （AddLambdaNode + ToField 字段映射 AND 汇聚），每轮重建（冷启动口径）。
 func BenchmarkWar_EinoDAG(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()

@@ -2,7 +2,7 @@
 //
 // 运行：go run ./examples/00-hello-kernel
 // 本课刻意不经过 examples/internal/demoapp 的装配封装、不走 Registry
-//（那是 01 课的内容）：只用 kernel + llm + observability 三个包，把
+// （那是 01 课的内容）：只用 kernel + llm + observability 三个包，把
 // 「宿主作用域 → 插件装载 → 模型调用 → 观测 → 卸载还原」的最小闭环
 // 完整展开一遍。无需任何 API Key。
 package main
