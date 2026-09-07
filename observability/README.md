@@ -29,9 +29,20 @@ if _, err := kernel.Use(host, observability.Bootstrap("host-1", sink)); err != n
     panic(err)
 }
 
+// Per request: derive a request scope; observers are removed
+// automatically when the scope is disposed.
+reqScope, err := host.Derive()
+if err != nil {
+    panic(err)
+}
+defer reqScope.Dispose()
+
 // Per request: reusing cfg IS the request-level correlation (D3);
 // a new cfg is mandatory across requests.
-cfg := observability.ObserveConfig{Sink: sink, HostID: "host-1", TraceID: host.NewTraceID()}
+// The host calls NewTraceID once per request (the single generation
+// source); a fully custom scheme works too (e.g. the hostID-prefixed
+// format of demoapp.Host.NewTraceID).
+cfg := observability.ObserveConfig{Sink: sink, HostID: "host-1", TraceID: observability.NewTraceID()}
 c, err := observability.AttachCollector(reqScope, cfg) // direct-write service for business plugins
 err = llm.Observe(reqScope, cfg)                       // llm package adapter
 err = loop.Observe(reqScope, cfg)                      // loop package adapter

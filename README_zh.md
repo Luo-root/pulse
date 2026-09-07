@@ -38,7 +38,7 @@ v2 内核以可逆效应和依赖响应式为基座。核心重构已落地：�
 | [`kernel/flow`](kernel/flow/README_zh.md) | 数据就绪驱动的节点编排（槽位三态、Skip、E1 Observer） | `flow.New(ctx)` |
 | [`kernel/flow/yaml`](kernel/flow/yaml/README_zh.md) | E2 YAML 声明式装图（拓扑归属 A：Factory 只给 Run） | `flowyaml.Load` |
 | [`memory`](memory/README_zh.md) | P2 记忆与会话（9 子包）：session / compaction / store / assemble / selfedit / index / candidate / reflection | `memory/README_zh.md` 全局地图 |
-| [`observability`](observability/README_zh.md) | 正式观测包：Bootstrap + Record + Sink（只依赖 kernel） | `observability.Bootstrap()` |
+| [`observability`](observability/README_zh.md) | 正式观测包：Bootstrap + Record + Sink + NewTraceID（只依赖 kernel） | `observability.Bootstrap()` |
 | [`examples`](examples/README.md) | 渐进示例 00–07：kernel 地基 / 装配链+词汇表 / ReAct / HITL / flow 编排 / 会话记忆 / 长期记忆 / 生产集成 | `go run ./examples/00-hello-kernel` |
 | [`eval`](eval/README_zh.md) | 评测套件：工程能力 property test + 分层 benchmark + 跨框架内战对比 | `go test -race ./eval/` |
 

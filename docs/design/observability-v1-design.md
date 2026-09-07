@@ -32,7 +32,7 @@
 │   每请求：ObserveConfig{Sink,HostID,TraceID} +        │
 │   AttachCollector + llm/loop.Observe + flow 图挂      │
 │   NewRecordObserver；宿主业务 Observer 经 MultiObserver│
-│   组合；Host.NewTraceID 单一生成源注入（D3）           │
+│   组合；TraceID 宿主单一生成源注入（D3）               │
 └───────────────┬─────────────────────────────────────┘
                 │ 显式装配（可选注册：不调即零足迹）
 ┌───────────────▼─────────────────────────────────────┐
@@ -192,13 +192,13 @@ bridge 伴生装配层形态废除；折叠适配下沉至各事实归属包。�
 | llm | `Observe(scope, cfg)` + `EventGenerateFinished` | before_generate 只计时（waterfall 透传，唯一计时起点，D5 修订）；after_response → `llm.generate_finished`（Status=finish_reason，Duration=本次生成，Attrs=model/tokens_in/tokens_out/tokens_cached） |
 | loop | `Observe(scope, cfg)` + `EventToolFinished` / `EventTurnFinished` | after_tool_call → `loop.tool_finished`（三态判定 completed\|failed\|rejected 归本包，Duration/Err 透传，Attrs=tool）；turn_end → `loop.turn_finished`（Status=stopped_by，Attrs=steps；token 不重复记）；before_tool_call 不订阅（AfterToolCall 自带 Duration/Err，无观测增益，少一份与 HITL 审批链的顺序耦合） |
 | flow | `NewRecordObserver(cfg) (Observer, error)` + `EventNodeWaitFinished/RunFinished` | 节点 wait/run 分段计时两条，nodeID 走 flow.AttrNode 不占具名字段；单次图运行一个实例（nodeID 记账，异常路径残留随实例丢弃） |
-| observability | `ObserveConfig` / `Collector` / `CollectorKey` / `AttachCollector` | 基座服务：业务插件 `kernel.Get(scope, CollectorKey)` 直写，HostID/TraceID 自动携带 |
+| observability | `ObserveConfig` / `Collector` / `CollectorKey` / `AttachCollector` / `NewTraceID` | 基座服务：业务插件 `kernel.Get(scope, CollectorKey)` 直写，HostID/TraceID 自动携带 |
 
 事件名保持 `<组件>.<事实>` 点分；key 前缀 `llm./loop./flow./kernel./observability.` 为官方组件保留，业务插件用自己的包路径前缀（无注册机制，靠约定，与 OTel attribute 命名同理）。
 
 ### 9.2 装配语义
 
-- `ObserveConfig{Sink, HostID, TraceID}` 生命周期 = 请求：同一请求多适配复用同一值（共享 TraceID 即 D3 请求级关联）；跨请求必须新建。
+- `ObserveConfig{Sink, HostID, TraceID}` 生命周期 = 请求：同一请求多适配复用同一值（共享 TraceID 即 D3 请求级关联）；跨请求必须新建。TraceID 生成方案归宿主（单一生成源）；`observability.NewTraceID` 提供默认生成器（时间戳 + 随机段 + 进程内序号），demoapp 的 hostID 前缀格式是自带方案示例。
 - scope 必须与 Agent 的 `llm.WithEventScope` 相同：EmitLocal/WaterfallLocal 只本 scope 可见；观测适配**不能做成 kernel.Plugin**（插件 Apply 私有子 scope 听不到），故各包导出 `Observe(scope, cfg)` 装配函数，与 Bootstrap 挂法同构。
 - 各包重复调用 `Observe` = 双监听双记录，godoc 显式警告；nil scope / nil Sink 返回哨兵错误。
 - 宿主自定义事实走 `c.Write / c.WriteAttrs`（状态型直写，不带 Duration/Err——运行期耗时与失败语义由各包 Observe 折叠产生）。

@@ -26,8 +26,17 @@ if _, err := kernel.Use(host, observability.Bootstrap("host-1", sink)); err != n
     panic(err)
 }
 
+// 每请求：派生请求 scope，观测监听随 scope Dispose 自动摘除。
+reqScope, err := host.Derive()
+if err != nil {
+    panic(err)
+}
+defer reqScope.Dispose()
+
 // 每请求：cfg 复用即 D3 请求级关联；跨请求必须新建。
-cfg := observability.ObserveConfig{Sink: sink, HostID: "host-1", TraceID: host.NewTraceID()}
+// TraceID 由宿主每请求调用一次 NewTraceID 生成（单一生成源）；
+// 也可以完全自带方案（如 demoapp.Host.NewTraceID 的 hostID 前缀格式）。
+cfg := observability.ObserveConfig{Sink: sink, HostID: "host-1", TraceID: observability.NewTraceID()}
 c, err := observability.AttachCollector(reqScope, cfg) // 业务插件直写服务
 err = llm.Observe(reqScope, cfg)                       // llm 包适配
 err = loop.Observe(reqScope, cfg)                      // loop 包适配
