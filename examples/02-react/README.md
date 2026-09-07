@@ -40,7 +40,7 @@ Registry 带来两样 MemToolSet 没有的东西：**Risk/Source 元数据**（0
 ```go
 reqScope, _ := host.Ctx.Derive()          // 每轮独立子作用域
 defer reqScope.Dispose()
-cfg := observability.ObserveConfig{Sink: host.Sink, HostID: host.HostID(), TraceID: host.NewTraceID()}
+cfg := observability.ObserveConfig{Sink: host.Sink, HostID: host.HostID(), TraceID: observability.NewTraceID()}
 collector, _ := observability.AttachCollector(reqScope, cfg) // 业务直写面
 llm.Observe(reqScope, cfg)                // 官方 llm 适配：generate_finished
 loop.Observe(reqScope, cfg)               // 官方 loop 适配：tool/turn_finished
@@ -57,7 +57,7 @@ agent, _ := loop.NewAgent(host.Model,
 本课手写的观测接入（03 课起复用 `demoapp.Host.NewObserve` 封装版——那是你在这里亲手写过一遍的东西），五个设计决定各回答一个问题：
 
 1. **cfg 生命周期为什么 = 请求？** `ObserveConfig{Sink, HostID, TraceID}` 同一请求多适配复用同一值——共享 TraceID 正是 D3 请求级关联；跨请求必须新建（复用旧 cfg 会制造假关联）。
-2. **两层标识怎么分？** HostID 宿主稳定（装配期一次生成）；TraceID 每请求独立，且**只从宿主单一生成源拿**（本课用 `demoapp.Host.NewTraceID` 的 hostID 前缀格式，官方默认生成器 `observability.NewTraceID` 亦可）——适配层从不自造序号，跨系统对账才对得上。
+2. **两层标识怎么分？** HostID 宿主稳定（装配期一次生成）；TraceID 每请求独立，由官方默认生成器 `observability.NewTraceID()` 生成（时间戳 + 随机段 + 进程内序号）——适配层从不自造序号；跨宿主对账靠 HostID 字段分层（D3），TraceID 本身无契约语义。
 3. **为什么全都挂 reqScope？** `AttachCollector` / `llm.Observe` / `loop.Observe` 的监听走 Local 派发，与 Agent 的 `WithEventScope` 必须同 scope——挂错 scope 什么也听不到；同一 scope 重复调用 `Observe` = 双监听双记录（godoc 显式警告）。`demoapp.InstallAnthropicMaxTokensDefault(reqScope)` 同理：Anthropic 线格式 MaxTokens 必填（nil → ErrBadRequest），在请求 scope 上兜底注入——装配层默认值，不是库 API。
 4. **官方 Record 不扩字段，业务事实怎么进？** 运行期事实由官方适配折叠（token 用量进 `Attrs`，key 契约 `llm.model` 等）；**业务自定义事实走 Collector 直写**（D10 直写服务）：`collector.Write("react.summary", …)` 与官方记录走同一 Sink、自动携带 HostID/TraceID——不经事件总线，事件名遵守 `<组件>.<事实>` 点分约定，Sink 聚合时天然分组。
 5. **tool 三态谁判定？** `loop.Observe` 单一事实源：`completed` / `rejected` / `failed`（rejected 优先）——**rejected 是 HITL 的拒绝，不算 crash**，是独立状态（03 课接手）。

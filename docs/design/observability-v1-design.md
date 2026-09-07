@@ -198,7 +198,7 @@ bridge 伴生装配层形态废除；折叠适配下沉至各事实归属包。�
 
 ### 9.2 装配语义
 
-- `ObserveConfig{Sink, HostID, TraceID}` 生命周期 = 请求：同一请求多适配复用同一值（共享 TraceID 即 D3 请求级关联）；跨请求必须新建。TraceID 生成方案归宿主（单一生成源）；`observability.NewTraceID` 提供默认生成器（时间戳 + 随机段 + 进程内序号），demoapp 的 hostID 前缀格式是自带方案示例。
+- `ObserveConfig{Sink, HostID, TraceID}` 生命周期 = 请求：同一请求多适配复用同一值（共享 TraceID 即 D3 请求级关联）；跨请求必须新建。TraceID 生成方案归宿主（单一生成源）；`observability.NewTraceID` 提供默认生成器（时间戳 + 随机段 + 进程内序号），宿主也可完全自带方案（如 hostID 前缀 + 自增序号）。
 - scope 必须与 Agent 的 `llm.WithEventScope` 相同：EmitLocal/WaterfallLocal 只本 scope 可见；观测适配**不能做成 kernel.Plugin**（插件 Apply 私有子 scope 听不到），故各包导出 `Observe(scope, cfg)` 装配函数，与 Bootstrap 挂法同构。
 - 各包重复调用 `Observe` = 双监听双记录，godoc 显式警告；nil scope / nil Sink 返回哨兵错误。
 - 宿主自定义事实走 `c.Write / c.WriteAttrs`（状态型直写，不带 Duration/Err——运行期耗时与失败语义由各包 Observe 折叠产生）。

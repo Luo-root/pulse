@@ -30,7 +30,7 @@ res, _ := reflector.Reflect(ctx, surface) // 会话末由宿主调——默认�
 
 - **输出只到候选**：`ReflectionResult{Items, Report, InputChars, TruncatedChars}` 是审计原料；反思不自动晋升，Active 仍需宿主审批（人盖章）。
 - **指标面 = 三处快照**（D4 六项指标全貌）：`candidate.Metrics`（提炼率/批准率/撤销率/污染拒绝率）+ `reflection.Metrics`（token 成本 v1 = Runs/字符数）+ `index.Counted`（召回命中，06 课）。
-- **审计接法**：memory/* 不 import observability——快照由宿主桥进监控栈（`request.usage` 同先例）。
+- **审计接法**：memory/* 不 import observability——快照由宿主接进监控栈（`request.usage` 同先例）。
 
 ## 运行
 

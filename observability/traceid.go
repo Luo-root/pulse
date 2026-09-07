@@ -15,8 +15,8 @@ var traceSeq atomic.Uint64
 // 进程内序号。进程内并发唯一，跨进程靠随机段区分。
 //
 // D3 约定 TraceID 由宿主单一生成源注入：宿主每请求调用本函数一次
-// 即构成单一生成源；也可以完全自带方案（如 demoapp 的 hostID 前缀
-// 格式）。返回值无契约语义，消费方不要解析其结构。
+// 即构成单一生成源；也可以完全自带方案（宿主自有格式，如 hostID
+// 前缀 + 自增序号）。返回值无契约语义，消费方不要解析其结构。
 func NewTraceID() string {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
