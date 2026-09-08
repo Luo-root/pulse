@@ -44,7 +44,7 @@ cfg := observability.ObserveConfig{Sink: host.Sink, HostID: host.HostID(), Trace
 collector, _ := observability.AttachCollector(reqScope, cfg) // 业务直写面
 llm.Observe(reqScope, cfg)                // 官方 llm 适配：generate_finished
 loop.Observe(reqScope, cfg)               // 官方 loop 适配：tool/turn_finished
-agent, _ := loop.NewAgent(host.Model,
+agent, _ := loop.NewAgent(host.Model, "react",
     loop.WithToolSet(tools),
     loop.WithEventScope(reqScope),        // Local 派发：监听与 Agent 同 scope 才听得到
 )
@@ -62,7 +62,7 @@ agent, _ := loop.NewAgent(host.Model,
 4. **官方 Record 不扩字段，业务事实怎么进？** 运行期事实由官方适配折叠（token 用量进 `Attrs`，key 契约 `llm.model` 等）；**业务自定义事实走 Collector 直写**（D10 直写服务）：`collector.Write("react.summary", …)` 与官方记录走同一 Sink、自动携带 HostID/TraceID——不经事件总线，事件名遵守 `<组件>.<事实>` 点分约定，Sink 聚合时天然分组。
 5. **tool 三态谁判定？** `loop.Observe` 单一事实源：`completed` / `rejected` / `failed`（rejected 优先）——**rejected 是 HITL 的拒绝，不算 crash**，是独立状态（03 课接手）。
 
-`llm.Observe` 的 `before_generate` 只作计时起点（waterfall 透传，不改请求）；`after_response` 折成 `llm.generate_finished`（Status=finish_reason，Duration=本次生成）。
+`llm.Observe` 不订阅 `before_generate`——计时取 `after_response` 载荷携带的 `Started` 锚点（拦截包装在 waterfall 链后、inner 调用前记录，同 scope 并发 Generate 各自锚定）；`after_response` 折成 `llm.generate_finished`（Status=finish_reason，Duration=本次生成，实例身份 Declare id 折 `llm.instance`）。
 
 ## 多轮 history 归属
 

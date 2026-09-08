@@ -47,7 +47,7 @@ package flow // import "github.com/Luo-root/pulse/kernel/flow"
 var Summary = flow.NewKey[string]("summary")
 var Docs    = flow.NewKey[[]Doc]("docs")
 
-g := flow.New(ctx,
+g, _ := flow.New(ctx, "docgraph",
     flow.WithMaxRunning(0),       // <=0 = 无限（默认）
     flow.WithAspects(/* 全局 */), // 可选
 )
@@ -350,7 +350,7 @@ nodes:
       - { name: demo.context_docs, type: "[]Document" }
     provides: [{ name: demo.final_text, type: string }]
     timeout: 30s                           # 仅内建 Timeout
-observer: host                             # 文档提示位：Load **忽略**；观察者走 LoadOptions.Graph / WithObserver
+observer: host                             # 文档提示位：Load **忽略**；观察者走 LoadOptions.Graph / WithObserver；GraphID 必填
 ```
 
 `version`：缺省或 `1` 接受；其它值拒绝。`observer` 字段**不是开关**——解码保留以免未知键报错，装图不解释。

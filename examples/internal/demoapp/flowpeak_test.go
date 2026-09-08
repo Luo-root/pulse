@@ -16,11 +16,11 @@ func TestFlowPeakRemembersHistoricalMax(t *testing.T) {
 	var wg sync.WaitGroup
 	runOne := func(id string) {
 		defer wg.Done()
-		obs.OnNodeWaiting(id)
+		obs.OnNodeWaiting("g", id)
 		time.Sleep(20 * time.Millisecond)
-		obs.OnNodeRunning(id)
+		obs.OnNodeRunning("g", id)
 		time.Sleep(20 * time.Millisecond)
-		obs.OnNodeFinished(id, flow.NodeCompleted, nil)
+		obs.OnNodeFinished("g", id, flow.NodeCompleted, nil)
 	}
 	wg.Add(2)
 	go runOne("a")

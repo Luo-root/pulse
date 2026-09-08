@@ -123,7 +123,7 @@ func attachTrace(t *testing.T, scope *kernel.Context) *trace {
 
 func newTestAgent(t *testing.T, model llm.ChatModel, ts ToolSet, scope *kernel.Context) *Agent {
 	t.Helper()
-	a, err := NewAgent(model, WithToolSet(ts), WithEventScope(scope), WithSystemPrompt("you are a test"))
+	a, err := NewAgent(model, "test", WithToolSet(ts), WithEventScope(scope), WithSystemPrompt("you are a test"))
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestMaxStepsSafetyValve(t *testing.T) {
 		llm.RespToolCalls(llm.ToolCall{ID: "c", Name: "echo", Arguments: []byte(`{}`)}),
 	)
 	tools := &fakeTools{fn: func(call llm.ToolCall) (string, error) { return "tick", nil }}
-	a, err := NewAgent(model, WithToolSet(tools), WithEventScope(scope), WithMaxSteps(2))
+	a, err := NewAgent(model, "test", WithToolSet(tools), WithEventScope(scope), WithMaxSteps(2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,14 +402,14 @@ func TestMaxStepsSafetyValve(t *testing.T) {
 // MaxSteps 默认不限制；负值归一为不限制。
 func TestMaxStepsUnlimitedByDefault(t *testing.T) {
 	scope := kernel.New()
-	a, err := NewAgent(llm.NewScripted(llm.Resp("x")), WithMaxSteps(-5), WithEventScope(scope))
+	a, err := NewAgent(llm.NewScripted(llm.Resp("x")), "test", WithMaxSteps(-5), WithEventScope(scope))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a.maxSteps != 0 {
 		t.Fatalf("negative max steps must normalize to unlimited(0), got %d", a.maxSteps)
 	}
-	b, err := NewAgent(llm.NewScripted(llm.Resp("y")))
+	b, err := NewAgent(llm.NewScripted(llm.Resp("y")), "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -613,7 +613,7 @@ func TestMemToolSetBasics(t *testing.T) {
 	}
 
 	// 空参 Agent 必须报错。
-	if _, err := NewAgent(nil); err == nil {
+	if _, err := NewAgent(nil, "test"); err == nil {
 		t.Fatal("expected nil-model error")
 	}
 }

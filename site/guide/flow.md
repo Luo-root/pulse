@@ -5,7 +5,7 @@
 ## 三个核心类型
 
 ```go
-g := flow.New(ctx)
+g, _ := flow.New(ctx, "demo")        // Graph：图身份必填（观测按它归因）
 
 kIn := flow.NewKey[string]("in")     // Key：类型化槽位句柄
 kOut := flow.NewKey[string]("out")

@@ -129,7 +129,7 @@ This package **does not retry**. Upper layers back off or fail over based on Kin
 
 ## Observation Adapter
 
-`Observe(scope, cfg)` folds runtime facts into the observation envelope and writes them to the host Sink: after_response → `llm.generate_finished` (model name and token usage in Attrs, key contract in `llm/obs.go`); before_generate serves only as the timing origin (waterfall passthrough, request untouched). The scope must be the same one passed to `llm.WithEventScope`; calling it twice on one scope = duplicate listeners and records (godoc warning). See `observe.go` and `docs/design/observability-v1-design.md` §9.
+`Observe(scope, cfg)` folds runtime facts into the observation envelope and writes them to the host Sink: after_response → `llm.generate_finished` (model name, token usage and instance identity in Attrs, key contract in `llm/obs.go`); timing comes from the `Started` anchor carried by the event payload (recorded by the wrapper after the waterfall chain, before the inner call) — before_generate is not subscribed. The scope must be the same one passed to `llm.WithEventScope`; calling it twice on one scope = duplicate listeners and records (godoc warning). See `observe.go` and `docs/design/observability-v1-design.md` §9.
 
 ## Registry
 
@@ -158,7 +158,7 @@ In-package test gating uses `PULSE_OPENAI_API_KEY` / `PULSE_OPENAI_BASE_URL` / `
 Interception seams (no instance wrapping; dispatch goes through **Local**):
 
 - `pulse.llm.before_generate` (WaterfallLocal, `*GenerateRequest`): routing, default parameters, redaction, rate limiting
-- `pulse.llm.after_response` (EmitLocal, value-type `Response`): metering, auditing; observers cannot alter the caller's result
+- `pulse.llm.after_response` (EmitLocal, value-type `*ResponseEvent`: Response + Instance (the Declare id) + Started timing anchor): metering, auditing; observers cannot alter the caller's result
 
 Request-level scope injection (option A):
 
@@ -263,7 +263,7 @@ Positioning: provider-neutral vocabulary + Registry. Consumers see only `ChatMod
 | Symbol | What it does |
 |---|---|
 | `ServiceKey` | kernel service key `"pulse.llm"` |
-| `EventBeforeGenerate` / `EventAfterResponse` | waterfall `*GenerateRequest` / emit value `Response` |
+| `EventBeforeGenerate` / `EventAfterResponse` | waterfall `*GenerateRequest` / emit value `*ResponseEvent` |
 | `Config` | Provider / Model / BaseURL / APIKey / Options (**client-level keys only**: organization / project / timeout_seconds / max_retries / headers; unknown keys are ignored. Do not stuff request parameters such as top_k / service_tier into Options) |
 | `Factory` | `func(Config) (ChatModel, error)` |
 | `Registry` / `NewRegistry` | Factories + named instances. The construction Context is the Local fallback dispatch domain when there is no request scope |
@@ -271,7 +271,7 @@ Positioning: provider-neutral vocabulary + Registry. Consumers see only `ChatMod
 | `WithEventScope` / `EventScopeFrom` | Injects the request scope into `context.Context` for observed Local dispatch |
 | `Plugin` | Provides the Registry into a scope; `Close` on unload |
 | `RegisterProvider` | Registers a factory reversibly; overwriting the same name closes that provider's opened instances |
-| `Declare` | Declares a named instance; a repeated id replaces it and closes the old instance |
+| `Declare` | Declares a named instance (the id doubles as the observability instance identity, folded as `llm.instance`); a repeated id replaces it and closes the old instance |
 | `SetDefault` / `DefaultID` | The default instance id |
 | `Open` / `OpenDefault` | Opens or reuses a cached instance; undeclared / no factory → `ErrNoModel` |
 | `Drop` | Closes the instance and deletes the declaration; if it was the default, the default is cleared |

@@ -60,9 +60,12 @@ func buildDAG(deps dagDeps) (*flow.Graph, *string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	g := flow.New(context.Background(),
+	g, err := flow.New(context.Background(), "dag",
 		flow.WithObserver(flow.MultiObserver{obs, deps.peak.Observer()}),
 	)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	if err := g.Add(flow.NewNode("classify",
 		flow.Requires(UserText),

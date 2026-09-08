@@ -31,11 +31,11 @@ The v2 kernel is built on reversible effects and dependency-reactive loading. Th
 | [`llm`](llm/README.md) | Provider-neutral message vocabulary, request/stream events, error classification, model Registry | `llm.NewRegistry()` / `llm.ChatModel` |
 | [`llm/openai`](llm/openai/README.md) | OpenAI Chat Completions + Responses official SDK adapter | `openai.Register()` |
 | [`llm/anthropic`](llm/anthropic/README.md) | Anthropic Messages official SDK adapter | `anthropic.Register()` |
-| [`loop`](loop/README.md) | Stateless ReAct turn executor with tool calls and HITL decision events | `loop.NewAgent()` |
+| [`loop`](loop/README.md) | Stateless ReAct turn executor with tool calls and HITL decision events | `loop.NewAgent(model, name)` |
 | [`toolset`](toolset/README.md) | Reversible tool Registry (`pulse.tools`), `AsToolSet()` adapts to loop; builtins / mcp / lsp sub-packages | `toolset.Plugin()` / `Registry.Register` |
 | [`skills`](skills/README.md) | Agent Skills loader (agentskills.io; procedure packages, not Tools) | `skills.Open()` / `List`/`Load`/`ReadFile` |
 | [`textsplit`](textsplit/README.md) | Text chunking: size budget + separator priority + byte offsets | `textsplit.Split` |
-| [`kernel/flow`](kernel/flow/README.md) | Data-ready driven node orchestration (three slot states, Skip, E1 Observer) | `flow.New(ctx)` |
+| [`kernel/flow`](kernel/flow/README.md) | Data-ready driven node orchestration (three slot states, Skip, E1 Observer) | `flow.New(ctx, graphID)` |
 | [`kernel/flow/yaml`](kernel/flow/yaml/README.md) | E2 declarative YAML graph loading (topology home A: Factory only exposes Run) | `flowyaml.Load` |
 | [`memory`](memory/README.md) | P2 memory & sessions (9 sub-packages): session / compaction / store / assemble / selfedit / index / candidate / reflection | `memory/README.md` global map |
 | [`observability`](observability/README.md) | Official observability package: Bootstrap + Record + Sink + NewTraceID (depends only on kernel) | `observability.Bootstrap()` |
@@ -90,7 +90,7 @@ func main() {
 		return string(args), nil
 	})
 
-	agent, err := loop.NewAgent(model,
+	agent, err := loop.NewAgent(model, "assistant",
 		loop.WithToolSet(tools),
 		loop.WithSystemPrompt("You are a concise assistant."),
 		loop.WithEventScope(host),

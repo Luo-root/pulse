@@ -66,7 +66,7 @@ func runSources() error {
 		llm.Resp("三路演示结束：本地 toolset、MCP Source、Skills 短表/只读工具都已走过。"),
 	)
 
-	agent, err := loop.NewAgent(model,
+	agent, err := loop.NewAgent(model, "prod",
 		loop.WithToolSet(reg.AsToolSet()),
 		loop.WithSystemPrompt(buildSystem(metas)),
 		loop.WithEventScope(host),

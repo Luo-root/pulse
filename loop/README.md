@@ -35,7 +35,7 @@ err := tools.Register(llm.ToolDef{
     return string(args), nil
 })
 
-agent, err := loop.NewAgent(model,
+agent, err := loop.NewAgent(model, "react",
     loop.WithToolSet(tools),
     loop.WithSystemPrompt("你是助手"),
     loop.WithMaxSteps(0),          // 默认就是 0 = 不限制
@@ -141,7 +141,7 @@ Text deltas only travel through `onDelta`, not through these events.
 
 ## Observation Adapter
 
-`Observe(scope, cfg)` folds `after_tool_call` → `loop.tool_finished` (completed|failed|rejected triage owned by this package) and `turn_end` → `loop.turn_finished` (stopped_by + steps; tokens are not repeated — the llm per-call figure is authoritative). `before_tool_call` is deliberately not subscribed: AfterToolCall already carries Duration/Err, so subscribing gains nothing and adds one more ordering coupling to the HITL approval chain. The scope must be the same one passed to the Agent via `llm.WithEventScope`. See `observe.go` and design doc §9.
+`Observe(scope, cfg)` folds `after_tool_call` → `loop.tool_finished` (completed|failed|rejected triage owned by this package) and `turn_end` → `loop.turn_finished` (stopped_by + steps; tokens are not repeated — the llm per-call figure is authoritative; the Agent name travels with the payloads, folded as Attrs `loop.agent`). `before_tool_call` is deliberately not subscribed: AfterToolCall already carries Duration/Err, so subscribing gains nothing and adds one more ordering coupling to the HITL approval chain. The scope must be the same one passed to the Agent via `llm.WithEventScope`. See `observe.go` and design doc §9.
 
 ## Deliberately Pinned
 
@@ -160,7 +160,7 @@ Positioning: a stateless turn executor. Design: history lives with the caller, e
 |---|---|
 | `Agent` | Configuration + dependency references, immutable |
 | `Option` | `func(*Agent)` |
-| `NewAgent` | `model` is required; error otherwise |
+| `NewAgent` | `model` and `name` are required; error otherwise (`name` doubles as the observability instance identity, folded as `loop.agent`; no uniqueness constraint — same-named Agents on one scope attribute to the same key, distinct names are the host's job) |
 | `WithToolSet` / `WithSystemPrompt` / `WithMaxSteps` / `WithEventScope` | see the options table |
 | `(*Agent).Run` | `RunStream(ctx, nil, history, input...)` |
 | `(*Agent).RunStream` | `onDelta func(string)` may be nil; returns `(*Result, error)` |
@@ -185,8 +185,8 @@ Positioning: a stateless turn executor. Design: history lives with the caller, e
 | `EventStepStart` + `StepStart` | `Step` | reasoning-acting step counted from 1 |
 | `EventAfterModel` + `AfterModel` | `Response`, `Step` | includes Usage |
 | `EventBeforeToolCall` + `BeforeToolCall` | `Call`, `Rejected`, `RejectReason` | waterfall; modify Call or set Rejected to short-circuit |
-| `EventAfterToolCall` + `AfterToolCall` | `Call`, `Result`, `Duration`, `Err`, `Rejected` | Result shares the same source as the text sent back to the model |
-| `EventTurnEnd` + `TurnEnd` | `Final`, `Usage`, `Steps`, `StoppedBy` | exactly once on any exit |
+| `EventAfterToolCall` + `AfterToolCall` | `Call`, `Agent`, `Result`, `Duration`, `Err`, `Rejected` | Result shares the same source as the text sent back to the model |
+| `EventTurnEnd` + `TurnEnd` | `Final`, `Agent`, `Usage`, `Steps`, `StoppedBy` | exactly once on any exit |
 
 ## Out of Scope
 

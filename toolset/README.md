@@ -38,7 +38,7 @@ if err != nil {
     panic(err)
 }
 
-agent, err := loop.NewAgent(model,
+agent, err := loop.NewAgent(model, "react",
     loop.WithToolSet(reg.AsToolSet()),
     loop.WithEventScope(reqScope),
 )

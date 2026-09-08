@@ -16,17 +16,17 @@ type recordingObserver struct {
 	errs []error
 }
 
-func (r *recordingObserver) OnNodeWaiting(id string) {
+func (r *recordingObserver) OnNodeWaiting(graphID, id string) {
 	r.mu.Lock()
 	r.log = append(r.log, "W:"+id)
 	r.mu.Unlock()
 }
-func (r *recordingObserver) OnNodeRunning(id string) {
+func (r *recordingObserver) OnNodeRunning(graphID, id string) {
 	r.mu.Lock()
 	r.log = append(r.log, "R:"+id)
 	r.mu.Unlock()
 }
-func (r *recordingObserver) OnNodeFinished(id string, reason NodeFinishReason, err error) {
+func (r *recordingObserver) OnNodeFinished(graphID, id string, reason NodeFinishReason, err error) {
 	r.mu.Lock()
 	r.log = append(r.log, "F:"+id+":"+string(reason))
 	r.errs = append(r.errs, err)
@@ -54,7 +54,7 @@ func TestObserverLinearWaitRunFinished(t *testing.T) {
 	obs := &recordingObserver{}
 	in := NewKey[string]("obs.in")
 	out := NewKey[string]("obs.out")
-	g := New(context.Background(), WithObserver(obs))
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
 	if err := Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestObserverSkipHasFinishedNoRunning(t *testing.T) {
 	obs := &recordingObserver{}
 	a := NewKey[string]("obs.a")
 	b := NewKey[string]("obs.b")
-	g := New(context.Background(), WithObserver(obs))
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
 	if err := SkipSeed(g, a); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestObserverRetryEmitsOnce(t *testing.T) {
 	obs := &recordingObserver{}
 	out := NewKey[string]("obs.retry.out")
 	var attempts atomic.Int32
-	g := New(context.Background(), WithObserver(obs))
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
 	if err := g.Add(NewNode("flaky", nil, Provides(out), func(rc *RunCtx) error {
 		if attempts.Add(1) < 3 {
 			return errors.New("try again")
@@ -147,14 +147,14 @@ func TestObserverRetryEmitsOnce(t *testing.T) {
 
 func TestObserverPanicIsolated(t *testing.T) {
 	boom := ObserverFunc{
-		Waiting: func(string) { panic("observer boom") },
-		Running: func(string) {},
-		Finished: func(string, NodeFinishReason, error) {
+		Waiting: func(_, _ string) { panic("observer boom") },
+		Running: func(_, _ string) {},
+		Finished: func(_, _ string, _ NodeFinishReason, _ error) {
 			panic("finished boom")
 		},
 	}
 	out := NewKey[int]("obs.panic.out")
-	g := New(context.Background(), WithObserver(boom))
+	g := mustNew(t, context.Background(), "test", WithObserver(boom))
 	if err := g.Add(NewNode("ok", nil, Provides(out), func(rc *RunCtx) error {
 		return Set(rc, out, 1)
 	})); err != nil {
@@ -169,7 +169,7 @@ func TestObserverTimeoutFinishedFailedNoRunning(t *testing.T) {
 	obs := &recordingObserver{}
 	in := NewKey[string]("obs.to.in")
 	out := NewKey[string]("obs.to.out")
-	g := New(context.Background(), WithObserver(obs), WithAspects(Timeout(30*time.Millisecond)))
+	g := mustNew(t, context.Background(), "test", WithObserver(obs), WithAspects(Timeout(30*time.Millisecond)))
 	// 不 Seed in → WaitAll 阻塞直到超时
 	if err := g.Add(NewNode("blocked", Requires(in), Provides(out), func(rc *RunCtx) error {
 		t.Fatal("should not run")

@@ -33,7 +33,7 @@ err := tools.Register(llm.ToolDef{
     return string(args), nil
 })
 
-agent, err := loop.NewAgent(model,
+agent, err := loop.NewAgent(model, "react",
     loop.WithToolSet(tools),
     loop.WithSystemPrompt("你是助手"),
     loop.WithMaxSteps(0),          // 默认就是 0 = 不限制
@@ -139,7 +139,7 @@ _, _ = kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
 
 ## 观测适配
 
-`Observe(scope, cfg)` 折叠 `after_tool_call` → `loop.tool_finished`（completed|failed|rejected 三态判定归本包）与 `turn_end` → `loop.turn_finished`（stopped_by + steps；token 以 llm 单次口径为准不重复记）。`before_tool_call` 刻意不订阅：AfterToolCall 自带 Duration/Err，订阅无观测增益，少一份与 HITL 审批链的顺序耦合。scope 必须与 Agent 的 `llm.WithEventScope` 相同。详见 `observe.go` 与设计文档 §9。
+`Observe(scope, cfg)` 折叠 `after_tool_call` → `loop.tool_finished`（completed|failed|rejected 三态判定归本包）与 `turn_end` → `loop.turn_finished`（stopped_by + steps；token 以 llm 单次口径为准不重复记；Agent 名随载荷携带，折为 Attrs `loop.agent`）。`before_tool_call` 刻意不订阅：AfterToolCall 自带 Duration/Err，订阅无观测增益，少一份与 HITL 审批链的顺序耦合。scope 必须与 Agent 的 `llm.WithEventScope` 相同。详见 `observe.go` 与设计文档 §9。
 
 ## 有意钉死
 
@@ -158,7 +158,7 @@ _, _ = kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
 |---|---|
 | `Agent` | 配置+依赖引用，不可变 |
 | `Option` | `func(*Agent)` |
-| `NewAgent` | `model` 必填，否则 error |
+| `NewAgent` | `model` 与 `name` 必填，否则 error（`name` 兼作观测实例身份，折 `loop.agent`；name 不做唯一性约束，同名 Agent 并存时归因同键，可分性由宿主命名保证） |
 | `WithToolSet` / `WithSystemPrompt` / `WithMaxSteps` / `WithEventScope` | 见选项表 |
 | `(*Agent).Run` | `RunStream(ctx, nil, history, input...)` |
 | `(*Agent).RunStream` | `onDelta func(string)` 可 nil；返回 `(*Result, error)` |
@@ -183,8 +183,8 @@ _, _ = kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
 | `EventStepStart` + `StepStart` | `Step` | 从 1 计的推理-行动步 |
 | `EventAfterModel` + `AfterModel` | `Response`, `Step` | 含 Usage |
 | `EventBeforeToolCall` + `BeforeToolCall` | `Call`, `Rejected`, `RejectReason` | waterfall；改 Call 或置 Rejected 短路 |
-| `EventAfterToolCall` + `AfterToolCall` | `Call`, `Result`, `Duration`, `Err`, `Rejected` | Result 与回传模型文本同源 |
-| `EventTurnEnd` + `TurnEnd` | `Final`, `Usage`, `Steps`, `StoppedBy` | 任意退出恰好一次 |
+| `EventAfterToolCall` + `AfterToolCall` | `Call`, `Agent`, `Result`, `Duration`, `Err`, `Rejected` | Result 与回传模型文本同源 |
+| `EventTurnEnd` + `TurnEnd` | `Final`, `Agent`, `Usage`, `Steps`, `StoppedBy` | 任意退出恰好一次 |
 
 ## 不做
 

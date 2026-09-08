@@ -158,7 +158,7 @@ observed 包装的 ChatModel（消费方接口）
 - `pulse.llm.before_generate`（WaterfallLocal，载荷 `*GenerateRequest`）：可就地
   改写请求——路由、默认参数注入、脱敏、限流检查都在监听器里做
   （监听器应 `req.Clone()` 后改写再 next 委托，避免污染调用方）；
-- `pulse.llm.after_response`（EmitLocal，载荷值类型 `Response`）：计量、审计、
+- `pulse.llm.after_response`（EmitLocal，载荷 `*ResponseEvent`：Response + Instance（Declare 的 id）+ Started 计时锚点）：计量、审计、
   缓存观察——观察者拿到只读快照，改不了调用方的结果。
 
 请求级 Bridge / HITL 必须挂在同一 `reqScope`，否则听不到 Local 事件。

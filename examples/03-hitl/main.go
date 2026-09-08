@@ -275,7 +275,7 @@ func run() error {
 		if err != nil {
 			return nil, err
 		}
-		agent, err := loop.NewAgent(host.Model,
+		agent, err := loop.NewAgent(host.Model, "hitl",
 			loop.WithToolSet(tools),
 			loop.WithSystemPrompt("你是 Pulse 示例助手。需要事实时调用 lookup；删除类操作调用 delete_file。后续轮次必须结合对话历史回答。"),
 			loop.WithEventScope(reqScope),

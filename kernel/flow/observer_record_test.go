@@ -2,6 +2,7 @@ package flow
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func TestRecordObserverSegments(t *testing.T) {
 	}
 	in := NewKey[string]("obs.in")
 	out := NewKey[string]("obs.out")
-	g := New(context.Background(), WithObserver(obs))
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
 	if err := Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +83,7 @@ func TestRecordObserverSkip(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := NewKey[string]("obs.sa")
-	g := New(context.Background(), WithObserver(obs))
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
 	if err := SkipSeed(g, a); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +124,7 @@ func TestRecordObserverTwoNodeIdentities(t *testing.T) {
 	k1 := NewKey[string]("obs.c1")
 	k2 := NewKey[string]("obs.c2")
 	k3 := NewKey[string]("obs.c3")
-	g := New(context.Background(), WithObserver(obs))
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
 	if err := Seed(g, k1, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +176,7 @@ func TestRecordObserverCombinedWithHostObserver(t *testing.T) {
 	host := &recordingObserver{}
 	in := NewKey[string]("obs.cc.in")
 	out := NewKey[string]("obs.cc.out")
-	g := New(context.Background(), WithObserver(MultiObserver{obs, host}))
+	g := mustNew(t, context.Background(), "test", WithObserver(MultiObserver{obs, host}))
 	if err := Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -204,5 +205,66 @@ func TestRecordObserverCombinedWithHostObserver(t *testing.T) {
 func TestRecordObserverNilSink(t *testing.T) {
 	if _, err := NewRecordObserver(observability.ObserveConfig{TraceID: "t"}); err != observability.ErrNilSink {
 		t.Fatalf("nil sink err = %v", err)
+	}
+}
+
+// 归因锚（#144）：同 sink 并发双图——同名节点跨图复用，图 ID 折为
+// AttrGraph 区分归属；-race 下 RecordObserver 无共享竞态。
+func TestRecordObserverConcurrentGraphAttribution(t *testing.T) {
+	sink := &observability.MemorySink{}
+	obs, err := NewRecordObserver(testObsCfg(sink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := NewKey[string]("obs.g.in")
+	out := NewKey[string]("obs.g.out")
+
+	var wg sync.WaitGroup
+	for _, graphID := range []string{"ga", "gb"} {
+		g := mustNew(t, context.Background(), graphID, WithObserver(obs))
+		if err := Seed(g, in, "x"); err != nil {
+			t.Fatal(err)
+		}
+		if err := g.Add(NewNode("n", Requires(in), Provides(out), func(rc *RunCtx) error {
+			time.Sleep(time.Millisecond)
+			v, err := Get(rc, in)
+			if err != nil {
+				return err
+			}
+			return Set(rc, out, v)
+		})); err != nil {
+			t.Fatal(err)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := g.Run(); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	counts := map[string]int{}
+	for _, rec := range sink.Snapshot() {
+		if rec.Event != EventNodeRunFinished {
+			continue
+		}
+		gid, ok := observability.Get[string](rec.Attrs, AttrGraph)
+		if !ok {
+			t.Fatalf("record missing %s attr: %+v", AttrGraph, rec)
+		}
+		if v, ok := observability.Get[string](rec.Attrs, AttrNode); !ok || v != "n" {
+			t.Fatalf("node attr: %q %v", v, ok)
+		}
+		counts[gid]++
+	}
+	if counts["ga"] != 1 || counts["gb"] != 1 {
+		for i, rec := range sink.Snapshot() {
+			g, _ := observability.Get[string](rec.Attrs, AttrGraph)
+			n, _ := observability.Get[string](rec.Attrs, AttrNode)
+			t.Logf("rec[%d] event=%s graph=%q node=%q status=%s", i, rec.Event, g, n, rec.Status)
+		}
+		t.Fatalf("graph attribution = %v, want ga=1 gb=1", counts)
 	}
 }

@@ -49,7 +49,7 @@ func TestRegisterKeyTypeTag(t *testing.T) {
 func TestSeedByNameAssignable(t *testing.T) {
 	r := NewRegistry()
 	MustRegisterKey(r, NewKey[string]("demo.s"))
-	g := New(context.Background())
+	g := mustNew(t, context.Background(), "test")
 	if err := SeedByName(g, r, "demo.s", "string", "hi"); err != nil {
 		t.Fatal(err)
 	}

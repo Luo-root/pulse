@@ -67,7 +67,7 @@ var (
 )
 
 func main() {
-    g := flow.New(context.Background())
+    g, _ := flow.New(context.Background(), "demo")
 
     if err := g.Add(flow.NewNode(
         "prepare",
@@ -130,7 +130,7 @@ flow.NewNode(
 The external caller writes inputs before the run:
 
 ```go
-g := flow.New(ctx)
+g, _ := flow.New(ctx, "demo")
 if err := flow.Seed(g, Request, input); err != nil {
     return err
 }
@@ -234,7 +234,7 @@ join := flow.NewNode(
 By default there is no limit on how many nodes are actually inside the user `Run`. To cap run concurrency:
 
 ```go
-g := flow.New(ctx, flow.WithMaxRunning(4))
+g, _ := flow.New(ctx, "demo", flow.WithMaxRunning(4))
 ```
 
 In `WithMaxRunning(n)`, `n <= 0` means unlimited concurrency (the default). Waiting for `Requires` takes no slot; a slot is taken only once all inputs have arrived.
@@ -267,7 +267,7 @@ if err := g.Wait(); err != nil {
 `Aspect` is isomorphic to `kernel.Waterfall`: an aspect short-circuits everything after it by not calling `next`. Within a single `Around`, **concurrent/overlapping** calls to `next` are forbidden (`ErrNextCalledTwice`); **sequential repeated** calls are allowed (`Retry` needs this). Global aspects are installed via `flow.WithAspects`; node aspects are passed as trailing arguments to `flow.NewNode`. Global aspects sit on the outside, node aspects on the inside. E1 `Observer` lifecycle events are guarded by a per-node latch, so Waiting/Running still fire at most once.
 
 ```go
-g := flow.New(ctx,
+g, _ := flow.New(ctx, "demo",
     flow.WithAspects(loggingAspect),
 )
 
@@ -293,15 +293,15 @@ Built-in behavior and optional aspects:
 
 ## Lifecycle Observation (E1)
 
-`Observer` is flow's **own** typed observer, no-op by default. It does not go through `kernel.Emit`, nor write to `observability.Sink` — the official observability package knows nothing about flow; runtime record folding is handled by the official adapter `NewRecordObserver` (see below), and host business observers compose with it via `MultiObserver`.
+`Observer` is flow's **own** typed observer, no-op by default. It does not go through `kernel.Emit`, nor write to `observability.Sink` — the official observability package knows nothing about flow; runtime record folding is handled by the official adapter `NewRecordObserver` (see below), and host business observers compose with it via `MultiObserver`. All three callbacks take `graphID` as their first parameter — the graph identity from `New` — so host observers need no bookkeeping of their own. `graphID` carries no uniqueness constraint: graphs sharing one id (concurrently included) emit records under the same key — use distinct ids when they must be tellable apart.
 
 ```go
 obs := flow.ObserverFunc{
-    Waiting:  func(id string) { /* 进入 WaitAll 前 */ },
-    Running:  func(id string) { /* acquire 后、用户 Run 前 */ },
-    Finished: func(id string, reason flow.NodeFinishReason, err error) { /* skip 清理后 */ },
+    Waiting:  func(graphID, id string) { /* 进入 WaitAll 前 */ },
+    Running:  func(graphID, id string) { /* acquire 后、用户 Run 前 */ },
+    Finished: func(graphID, id string, reason flow.NodeFinishReason, err error) { /* skip 清理后 */ },
 }
-g := flow.New(ctx, flow.WithObserver(obs))
+g, _ := flow.New(ctx, "demo", flow.WithObserver(obs))
 ```
 
 | Event | When | Notes |
@@ -314,18 +314,18 @@ Contract highlights:
 
 - Waiting/Running/Finished fire at most once per node; multiple `Retry` attempts do not re-emit.
 - an observer panic **must not** become a node failure.
-- the official adapter emits the two Records `flow.node_wait_finished` / `flow.node_run_finished`, each carrying `Duration`; node identity goes in the `AttrNode` open segment (the official envelope is not extended). See `examples/04-flow` (the host's business peak-stat observer `FlowPeak` lives in `examples/internal/demoapp/flowpeak.go`; the 04-flow README is already tabulated).
+- the official adapter emits the two Records `flow.node_wait_finished` / `flow.node_run_finished`, each carrying `Duration`; graph and node identity go in the `AttrGraph` / `AttrNode` open segments (the official envelope is not extended). See `examples/04-flow` (the host's business peak-stat observer `FlowPeak` lives in `examples/internal/demoapp/flowpeak.go`; the 04-flow README is already tabulated).
 
 ### Observation Adapter: NewRecordObserver
 
-`NewRecordObserver(cfg)` returns a segment-timing observer that writes observation records: one each for wait-finished and run-finished (per-segment Duration, node ID in `AttrNode`, named fields untouched); a skipped node produces only one skipped wait record. One adapter instance per graph run (nodeID bookkeeping; leftovers from abnormal paths are dropped with the instance). Combine with host-owned observers via `MultiObserver`. A nil cfg.Sink returns a sentinel error. See `observer_record.go` and design doc §9.
+`NewRecordObserver(cfg)` returns a segment-timing observer that writes observation records: one each for wait-finished and run-finished (per-segment Duration, graph ID / node ID in `AttrGraph` / `AttrNode`, named fields untouched); a skipped node produces only one skipped wait record. One instance can be shared by concurrent graphs (graphID×nodeID bookkeeping; same-named nodes across graphs never cross-talk). Combine with host-owned observers via `MultiObserver`. A nil cfg.Sink returns a sentinel error. See `observer_record.go` and design doc §9.
 
 ## Declarative Graph Assembly (E2)
 
 **YAML only** graph assembly lives in the subpackage [`yaml`](yaml/README.md): `Load` / `SeedPlan`. Topology belongs to A — YAML must carry `id` / `uses` / `requires` / `provides`; `uses` maps to a Run factory on the `Registry`. No JSON parser will be added.
 
 - duration fields use the Go `ParseDuration` form: `30s`, `100ms` (do not write bare numbers whose seconds reading is ambiguous).
-- `observer:` is a documentation hint; `Load` **ignores** it; observers go through `LoadOptions.Graph` (e.g. `WithObserver`).
+- `observer:` is a documentation hint; `Load` **ignores** it; observers go through `LoadOptions.Graph` (e.g. `WithObserver`); `LoadOptions.GraphID` is required (graph identity, empty string is rejected).
 - `version` is omitted or `1`; other values are rejected.
 
 ### No Public Slot-Read API After the Graph Ends

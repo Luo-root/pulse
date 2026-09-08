@@ -46,7 +46,7 @@ func TestRequestScopedAgentsDoNotCrossTalk(t *testing.T) {
 		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "lookup", Arguments: json.RawMessage(`{}`)}),
 		llm.Resp("done"),
 	)
-	agentA, err := NewAgent(model, WithToolSet(tools), WithEventScope(scopeA))
+	agentA, err := NewAgent(model, "a", WithToolSet(tools), WithEventScope(scopeA))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,8 +110,8 @@ func TestRequestScopedHITLPoliciesDoNotCrossTalk(t *testing.T) {
 		llm.RespToolCalls(llm.ToolCall{ID: "b1", Name: "danger", Arguments: json.RawMessage(`{}`)}),
 		llm.Resp("b done"),
 	)
-	agentA, _ := NewAgent(modelA, WithToolSet(toolsA), WithEventScope(scopeA))
-	agentB, _ := NewAgent(modelB, WithToolSet(toolsB), WithEventScope(scopeB))
+	agentA, _ := NewAgent(modelA, "a", WithToolSet(toolsA), WithEventScope(scopeA))
+	agentB, _ := NewAgent(modelB, "b", WithToolSet(toolsB), WithEventScope(scopeB))
 
 	if _, err := agentA.Run(context.Background(), nil, llm.UserText("danger")); err != nil {
 		t.Fatal(err)
