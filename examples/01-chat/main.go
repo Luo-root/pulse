@@ -47,14 +47,14 @@ func loadDemoConfig() demoConfig {
 		return fallback
 	}
 	cfg := demoConfig{
-		Provider: getenv("PULSE_DEMO_PROVIDER", "openai"),
+		Provider: getenv("PULSE_DEMO_PROVIDER", openai.ProviderCompletions),
 		Model:    os.Getenv("PULSE_DEMO_MODEL"),
 		APIKey:   os.Getenv("PULSE_DEMO_API_KEY"),
 		BaseURL:  os.Getenv("PULSE_DEMO_BASE_URL"),
 	}
 	if cfg.APIKey == "" {
 		switch cfg.Provider {
-		case "anthropic":
+		case anthropic.ProviderAnthropic:
 			cfg.APIKey = getenv("ANTHROPIC_API_KEY", getenv("PULSE_ANTHROPIC_API_KEY", ""))
 			if cfg.BaseURL == "" {
 				cfg.BaseURL = os.Getenv("PULSE_ANTHROPIC_BASE_URL")
@@ -118,13 +118,13 @@ func run() error {
 	if cfg.Scripted {
 		// Scripted 也经 Registry 注册并打开：穿过 observed 包装，让
 		// before_generate / after_response 事件链对脚本路径同样成立。
-		if _, err := reg.RegisterProvider(host, "scripted", func(llm.Config) (llm.ChatModel, error) {
+		if _, err := reg.RegisterProvider(host, llm.ProviderScripted, func(llm.Config) (llm.ChatModel, error) {
 			return llm.NewScripted(llm.Resp("（脚本响应）装配链已手写展开；把 OPENAI_API_KEY 配进仓库根 .env 换真实模型。")), nil
 		}); err != nil {
 			host.Dispose()
 			return err
 		}
-		if err := reg.Declare("main", llm.Config{Provider: "scripted", Model: "scripted"}); err != nil {
+		if err := reg.Declare("main", llm.Config{Provider: llm.ProviderScripted, Model: "scripted"}); err != nil {
 			host.Dispose()
 			return err
 		}

@@ -68,12 +68,12 @@ func assemblePulseRegistry(host *kernel.Context, steps ...*llm.Response) (llm.Ch
 	if !ok {
 		return nil, nil, fmt.Errorf("war: pulse registry missing")
 	}
-	if _, err := reg.RegisterProvider(host, "scripted", func(llm.Config) (llm.ChatModel, error) {
+	if _, err := reg.RegisterProvider(host, llm.ProviderScripted, func(llm.Config) (llm.ChatModel, error) {
 		return llm.NewScripted(steps...), nil
 	}); err != nil {
 		return nil, nil, err
 	}
-	if err := reg.Declare("main", llm.Config{Provider: "scripted", Model: "scripted"}); err != nil {
+	if err := reg.Declare("main", llm.Config{Provider: llm.ProviderScripted, Model: "scripted"}); err != nil {
 		return nil, nil, err
 	}
 	model, err := reg.Open("main")

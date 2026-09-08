@@ -143,10 +143,10 @@ reg := llm.NewRegistry(ctx)
 _ = openai.Register(ctx, reg) // 一次登记两个 OpenAI 变体；可逆
 
 _ = reg.Declare("main", llm.Config{
-    Provider: "openai",          // 已 RegisterProvider 的名字
+    Provider: openai.ProviderCompletions, // registry key exported by the adapter
     Model:    "gpt-4o",
-    APIKey:   os.Getenv("OPENAI_API_KEY"), // 应用凭据用各家官方变量名
-    BaseURL:  "",                          // 空 = 官方端点；填网关地址即兼容服务
+    APIKey:   os.Getenv("OPENAI_API_KEY"), // app credentials use each provider's official variable names
+    BaseURL:  "",                          // empty = official endpoint; a gateway URL gives you a compatible service
 })
 model, err := reg.Open("main")
 ```

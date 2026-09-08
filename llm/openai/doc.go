@@ -12,9 +12,9 @@
 //
 //	reg := llm.NewRegistry(ctx)
 //	openai.Register(ctx, reg) // 登记两个 provider（各自是可逆效应）
-//	reg.Declare("main", llm.Config{Provider: "openai", Model: "gpt-4o",
-//	    APIKey: "sk-...", BaseURL: ""}) // BaseURL 留空用官方端点；
-//	                                    // 填网关地址即接 OpenAI 兼容服务
+//	reg.Declare("main", llm.Config{Provider: openai.ProviderCompletions,
+//	    Model: "gpt-4o", APIKey: "sk-...", BaseURL: ""}) // BaseURL 留空
+//	                                                    // 用官方端点；填网关地址即接 OpenAI 兼容服务
 //	model, err := reg.Open("main")
 //
 // # 两个变体的分工

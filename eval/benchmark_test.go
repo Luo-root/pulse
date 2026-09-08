@@ -72,12 +72,12 @@ func BenchmarkL1RegistryGenerate(b *testing.B) {
 	if !ok {
 		b.Fatal("registry missing")
 	}
-	if _, err := reg.RegisterProvider(host, "scripted", func(llm.Config) (llm.ChatModel, error) {
+	if _, err := reg.RegisterProvider(host, llm.ProviderScripted, func(llm.Config) (llm.ChatModel, error) {
 		return llm.NewScripted(llm.Resp("ok")), nil
 	}); err != nil {
 		b.Fatal(err)
 	}
-	if err := reg.Declare("main", llm.Config{Provider: "scripted", Model: "scripted"}); err != nil {
+	if err := reg.Declare("main", llm.Config{Provider: llm.ProviderScripted, Model: "scripted"}); err != nil {
 		b.Fatal(err)
 	}
 	model, err := reg.Open("main")
@@ -111,12 +111,12 @@ func BenchmarkL2AgentTextTurn(b *testing.B) {
 	if !ok {
 		b.Fatal("registry missing")
 	}
-	if _, err := reg.RegisterProvider(host, "scripted", func(llm.Config) (llm.ChatModel, error) {
+	if _, err := reg.RegisterProvider(host, llm.ProviderScripted, func(llm.Config) (llm.ChatModel, error) {
 		return llm.NewScripted(llm.Resp("ok")), nil
 	}); err != nil {
 		b.Fatal(err)
 	}
-	if err := reg.Declare("main", llm.Config{Provider: "scripted", Model: "scripted"}); err != nil {
+	if err := reg.Declare("main", llm.Config{Provider: llm.ProviderScripted, Model: "scripted"}); err != nil {
 		b.Fatal(err)
 	}
 	model, err := reg.Open("main")
@@ -212,12 +212,12 @@ func BenchmarkL3SessionBookkeeping(b *testing.B) {
 	if !ok {
 		b.Fatal("registry missing")
 	}
-	if _, err := reg.RegisterProvider(host, "scripted", func(llm.Config) (llm.ChatModel, error) {
+	if _, err := reg.RegisterProvider(host, llm.ProviderScripted, func(llm.Config) (llm.ChatModel, error) {
 		return llm.NewScripted(llm.Resp("ok")), nil
 	}); err != nil {
 		b.Fatal(err)
 	}
-	if err := reg.Declare("main", llm.Config{Provider: "scripted", Model: "scripted"}); err != nil {
+	if err := reg.Declare("main", llm.Config{Provider: llm.ProviderScripted, Model: "scripted"}); err != nil {
 		b.Fatal(err)
 	}
 	model, err := reg.Open("main")
