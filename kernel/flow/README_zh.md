@@ -291,7 +291,7 @@ node := flow.NewNode(
 
 ## 生命周期观察（E1）
 
-`Observer` 是 flow **自有** typed 观察者，默认 no-op。它不走 `kernel.Emit`，也不写 `observability.Sink`——正式观测包不认识 flow；装配层桥（如 `demoapp.FlowObserver`）订阅后再折成两条 Record。
+`Observer` 是 flow **自有** typed 观察者，默认 no-op。它不走 `kernel.Emit`，也不写 `observability.Sink`——正式观测包不认识 flow；运行期折记录由官方适配 `NewRecordObserver` 承担（见下节），宿主业务 Observer 经 `MultiObserver` 与之组合。
 
 ```go
 obs := flow.ObserverFunc{
@@ -312,7 +312,7 @@ g := flow.New(ctx, flow.WithObserver(obs))
 
 - 每节点 Waiting/Running/Finished 至多一次；`Retry` 多次 attempt 不重复打点。
 - observer panic **不得**变成节点失败。
-- 桥侧常见落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；节点身份放 `FiberName`（不扩官方信封）。见 `examples/04-flow`（记录定义在 `examples/internal/demoapp/bridge.go`，04-flow README 已表格化）。
+- 官方适配落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；节点身份走 `AttrNode` 开放段（不扩官方信封）。见 `examples/04-flow`（宿主业务峰值统计 `FlowPeak` 在 `examples/internal/demoapp/flowpeak.go`，04-flow README 已表格化）。
 
 ### 观测适配：NewRecordObserver
 
