@@ -6,7 +6,7 @@
 // P2 已落地，loop 不 import memory）、不做重试与 failover（上层编排
 // 职责，llm 包的错误分类是弹药）、不硬接任何模型或工具实现。
 //
-//	agent := loop.NewAgent(model, loop.WithToolSet(tools))
+//	agent, err := loop.NewAgent(model, "main", loop.WithToolSet(tools))
 //	res, err := agent.Run(ctx, history, llm.UserText("帮我查一下…"))
 //	// res.Final.Text()  → 最终回复
 //	// res.Messages      → 本回合新产生的消息（assistant/tool 交替）

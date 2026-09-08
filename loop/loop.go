@@ -93,6 +93,8 @@ func WithEventScope(scope *kernel.Context) Option {
 // NewAgent 创建回合执行器。model 与 name 必填：name 是实例身份，
 // 随 turn_end / after_tool_call 事件发出供观测区分同 scope 多 Agent
 // （观测 key 见 loop.AttrAgent）；工具集、提示词等经 Option 注入。
+// name 不做唯一性约束：同名 Agent 并存时事件归因同键，可分性由
+// 宿主命名保证。
 func NewAgent(model llm.ChatModel, name string, opts ...Option) (*Agent, error) {
 	if model == nil {
 		return nil, errors.New("loop: model is required")

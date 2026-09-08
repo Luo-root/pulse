@@ -291,7 +291,7 @@ node := flow.NewNode(
 
 ## 生命周期观察（E1）
 
-`Observer` 是 flow **自有** typed 观察者，默认 no-op。它不走 `kernel.Emit`，也不写 `observability.Sink`——正式观测包不认识 flow；运行期折记录由官方适配 `NewRecordObserver` 承担（见下节），宿主业务 Observer 经 `MultiObserver` 与之组合。三个回调首参 `graphID` 即 `New` 的图身份——宿主 Observer 无需自行登记图归属。
+`Observer` 是 flow **自有** typed 观察者，默认 no-op。它不走 `kernel.Emit`，也不写 `observability.Sink`——正式观测包不认识 flow；运行期折记录由官方适配 `NewRecordObserver` 承担（见下节），宿主业务 Observer 经 `MultiObserver` 与之组合。三个回调首参 `graphID` 即 `New` 的图身份——宿主 Observer 无需自行登记图归属。graphID 不做唯一性约束：同 id 的图并存（含并发）时记录同键，需要区分请用不同 id。
 
 ```go
 obs := flow.ObserverFunc{

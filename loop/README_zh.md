@@ -158,7 +158,7 @@ _, _ = kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
 |---|---|
 | `Agent` | 配置+依赖引用，不可变 |
 | `Option` | `func(*Agent)` |
-| `NewAgent` | `model` 与 `name` 必填，否则 error（`name` 兼作观测实例身份，折 `loop.agent`） |
+| `NewAgent` | `model` 与 `name` 必填，否则 error（`name` 兼作观测实例身份，折 `loop.agent`；name 不做唯一性约束，同名 Agent 并存时归因同键，可分性由宿主命名保证） |
 | `WithToolSet` / `WithSystemPrompt` / `WithMaxSteps` / `WithEventScope` | 见选项表 |
 | `(*Agent).Run` | `RunStream(ctx, nil, history, input...)` |
 | `(*Agent).RunStream` | `onDelta func(string)` 可 nil；返回 `(*Result, error)` |

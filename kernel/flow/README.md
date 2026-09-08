@@ -293,7 +293,7 @@ Built-in behavior and optional aspects:
 
 ## Lifecycle Observation (E1)
 
-`Observer` is flow's **own** typed observer, no-op by default. It does not go through `kernel.Emit`, nor write to `observability.Sink` — the official observability package knows nothing about flow; runtime record folding is handled by the official adapter `NewRecordObserver` (see below), and host business observers compose with it via `MultiObserver`. All three callbacks take `graphID` as their first parameter — the graph identity from `New` — so host observers need no bookkeeping of their own.
+`Observer` is flow's **own** typed observer, no-op by default. It does not go through `kernel.Emit`, nor write to `observability.Sink` — the official observability package knows nothing about flow; runtime record folding is handled by the official adapter `NewRecordObserver` (see below), and host business observers compose with it via `MultiObserver`. All three callbacks take `graphID` as their first parameter — the graph identity from `New` — so host observers need no bookkeeping of their own. `graphID` carries no uniqueness constraint: graphs sharing one id (concurrently included) emit records under the same key — use distinct ids when they must be tellable apart.
 
 ```go
 obs := flow.ObserverFunc{

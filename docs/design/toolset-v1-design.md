@@ -45,7 +45,8 @@ P1 措辞已在本 Accepted 文档 PR 同批修订 `plugin-kernel-v2.md`，避�
 │  Use(toolset.Plugin)                                         │
 │  装本地工具插件 / MCP 来源插件 /（可选）Skills 装载器           │
 │  reqScope: Bridge + HITL On(before_tool_call)                │
-│  loop.NewAgent(WithToolSet(registry.AsToolSet()), ...)       │
+│  loop.NewAgent(model, name,                                  │
+│      WithToolSet(registry.AsToolSet()), ...)                 │
 └───────────────┬───────────────────────────────┬──────────────┘
                 │                               │
 ┌───────────────▼──────────────┐   ┌────────────▼──────────────┐

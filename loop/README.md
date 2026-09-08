@@ -160,7 +160,7 @@ Positioning: a stateless turn executor. Design: history lives with the caller, e
 |---|---|
 | `Agent` | Configuration + dependency references, immutable |
 | `Option` | `func(*Agent)` |
-| `NewAgent` | `model` and `name` are required; error otherwise (`name` doubles as the observability instance identity, folded as `loop.agent`) |
+| `NewAgent` | `model` and `name` are required; error otherwise (`name` doubles as the observability instance identity, folded as `loop.agent`; no uniqueness constraint — same-named Agents on one scope attribute to the same key, distinct names are the host's job) |
 | `WithToolSet` / `WithSystemPrompt` / `WithMaxSteps` / `WithEventScope` | see the options table |
 | `(*Agent).Run` | `RunStream(ctx, nil, history, input...)` |
 | `(*Agent).RunStream` | `onDelta func(string)` may be nil; returns `(*Result, error)` |

@@ -50,7 +50,9 @@ func WithAspects(as ...Aspect) Option {
 }
 
 // New 构造空图。graphID 是图身份（必填，空串报错）：观测记录靠它
-// 区分「运行的是哪张图」。ctx 取消会打断所有等待。
+// 区分「运行的是哪张图」。graphID 不做唯一性约束：同 id 的图并存
+// （含并发）时观测记录同键，需要区分请用不同 id。ctx 取消会打断
+// 所有等待。
 func New(ctx context.Context, graphID string, opts ...Option) (*Graph, error) {
 	if graphID == "" {
 		return nil, errors.New("flow: graph id is required (observability instance identity)")

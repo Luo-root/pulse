@@ -23,7 +23,7 @@
 | D8 | 观测 key 契约由**事实归属包**定义（`llm.AttrModel`、`loop.AttrTool`、`flow.AttrNode`），桥执行折叠 | observability 聚合适配各包维度 | 字段语义的知识留在归属包——observability 只做信封与出口，不成为所有包观测字段的汇聚点；key 约定 `<组件>.<字段>` 点分，各包独立 key 空间 |
 | D9 | 桥正式化为伴生包 `observability/bridge`（允许 import llm/loop/flow） | 留在 demoapp 手写（60 行 + 三个 hack） | 装配层桥是所有宿主的公共需求，不是示例私有物；demoapp 改为官方包消费者。分层边界不变：本体不 import 业务组件，「认识业务组件」的桥单独成包 |
 | D10 | Collector 服务化：`bridge.CollectorKey` 进请求 scope，业务插件 `kernel.Get` 直写 | 业务观测走 kernel 事件总线 | 直写不带总线开销与类型面膨胀；HostID/TraceID 自动携带（#125 Web 地基入口形态：kernel+observability 以 Web 框架地基为方向） |
-| D11 | 实例身份随事实发出：llm 事件载荷带 `Instance`（Declare 的 id）、loop 载荷带 `Agent`（NewAgent 的 name）、flow Observer 回调带 `graphID`（New 的 graphID）；三家 id 构造期必填，折叠进 Attrs `llm.instance` / `loop.agent` / `flow.graph` | ① 宿主运行期靠 Fiber 名/包装层约定区分实例；② 观测侧在构造时刻登记 id→身份映射表 | TraceID 只分「哪一次」不分「哪个实例/哪张图」，多实例共享 scope 是常态（多 Agent 协作、A/B 模型、多图编排复用同名节点）；身份随事实发出与 D8 key 归属同构——两处写同名必然漂移；yaml 装图走 `LoadOptions.GraphID` |
+| D11 | 实例身份随事实发出：llm 事件载荷带 `Instance`（Declare 的 id）、loop 载荷带 `Agent`（NewAgent 的 name）、flow Observer 回调带 `graphID`（New 的 graphID）；三家 id 构造期必填，折叠进 Attrs `llm.instance` / `loop.agent` / `flow.graph`；唯一性差异：llm id 是 Registry 唯一键（重复 Declare 替换并关旧实例），loop/flow 的 name/graphID 是纯标签无唯一性，同名并存归因同键、可分性由宿主命名保证 | ① 宿主运行期靠 Fiber 名/包装层约定区分实例；② 观测侧在构造时刻登记 id→身份映射表 | TraceID 只分「哪一次」不分「哪个实例/哪张图」，多实例共享 scope 是常态（多 Agent 协作、A/B 模型、多图编排复用同名节点）；身份随事实发出与 D8 key 归属同构——两处写同名必然漂移；yaml 装图走 `LoadOptions.GraphID` |
 
 ## 2. 分层与归属
 
@@ -200,7 +200,7 @@ bridge 伴生装配层形态废除；折叠适配下沉至各事实归属包。�
 ### 9.2 装配语义
 
 - `ObserveConfig{Sink, HostID, TraceID}` 生命周期 = 请求：同一请求多适配复用同一值（共享 TraceID 即 D3 请求级关联）；跨请求必须新建。TraceID 生成方案归宿主（单一生成源）；`observability.NewTraceID` 提供默认生成器（时间戳 + 随机段 + 进程内序号），宿主也可完全自带方案（如 hostID 前缀 + 自增序号）。
-- 实例身份三家构造期必填：llm `Declare` id（`Open(id)` 结构性必填）、loop `NewAgent(model, name, ...)`、flow `New(ctx, graphID, ...)`（yaml 走 `LoadOptions.GraphID`）；身份随事实发出（llm 载荷 `Instance` / loop 载荷 `Agent` / flow 回调 `graphID`），折叠进 `llm.instance` / `loop.agent` / `flow.graph`（D11）。
+- 实例身份三家构造期必填：llm `Declare` id（`Open(id)` 结构性必填）、loop `NewAgent(model, name, ...)`、flow `New(ctx, graphID, ...)`（yaml 走 `LoadOptions.GraphID`）；身份随事实发出（llm 载荷 `Instance` / loop 载荷 `Agent` / flow 回调 `graphID`），折叠进 `llm.instance` / `loop.agent` / `flow.graph`（D11）。唯一性差异：llm id 为 Registry 唯一键（重复 Declare 替换并关旧实例）；loop/flow 的 name/graphID 为纯标签无唯一性，同名并存时归因同键。
 - scope 必须与 Agent 的 `llm.WithEventScope` 相同：EmitLocal/WaterfallLocal 只本 scope 可见；观测适配**不能做成 kernel.Plugin**（插件 Apply 私有子 scope 听不到），故各包导出 `Observe(scope, cfg)` 装配函数，与 Bootstrap 挂法同构。
 - 各包重复调用 `Observe` = 双监听双记录，godoc 显式警告；nil scope / nil Sink 返回哨兵错误。
 - 宿主自定义事实走 `c.Write / c.WriteAttrs`（状态型直写，不带 Duration/Err——运行期耗时与失败语义由各包 Observe 折叠产生）。
