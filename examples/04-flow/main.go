@@ -47,7 +47,8 @@ func run() error {
 
 	var history []*llm.Message
 	return demoapp.Loop(os.Stdin, os.Stdout, func(msg *llm.Message) ([]*llm.Message, error) {
-		// 每轮独立 reqScope + Bridge + Agent（与 02/03 同模式）。
+		// 每轮独立 reqScope + 观测装配 + Agent（02 手写过三件装配件，
+		// 03 起复用封装版）。
 		reqScope, err := host.Ctx.Derive()
 		if err != nil {
 			return nil, err
@@ -78,7 +79,7 @@ func run() error {
 		dagRes, dagDur, err := runDAG(msg.Text(), dagDeps{
 			local: local, web: web,
 			sink: host.Sink, peak: &demoapp.FlowPeak{},
-			host: host.HostID(), trace: host.NewTraceID(),
+			host: host.HostID(), trace: observability.NewTraceID(),
 		})
 		if err != nil {
 			return nil, err

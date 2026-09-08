@@ -35,7 +35,7 @@ defer reqScope.Dispose()
 
 // 每请求：cfg 复用即 D3 请求级关联；跨请求必须新建。
 // TraceID 由宿主每请求调用一次 NewTraceID 生成（单一生成源）；
-// 也可以完全自带方案（如 demoapp.Host.NewTraceID 的 hostID 前缀格式）。
+// 也可以完全自带方案（宿主自有格式，如 hostID 前缀 + 自增序号）。
 cfg := observability.ObserveConfig{Sink: sink, HostID: "host-1", TraceID: observability.NewTraceID()}
 c, err := observability.AttachCollector(reqScope, cfg) // 业务插件直写服务
 err = llm.Observe(reqScope, cfg)                       // llm 包适配

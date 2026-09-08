@@ -64,9 +64,9 @@ func reflectionDemo() error {
 	rm := reflector.Metrics()
 	fmt.Println("指标面（三处快照 = D4 六项指标全貌；率值计算归宿主）：")
 	fmt.Printf("  candidate.Metrics  = %+v\n", cm)
-	fmt.Printf("  reflection.Metrics = %+v（token 成本 v1 = Runs/字符数；真实 usage 归宿主桥）\n", rm)
+	fmt.Printf("  reflection.Metrics = %+v（token 成本 v1 = Runs/字符数；真实 usage 归宿主装配层）\n", rm)
 	fmt.Println("  index.Counted      = Searches/Hits（召回命中；本课未接向量索引，见 06 课）")
-	fmt.Println("审计接法：ReflectionResult 与各 Metrics 快照由宿主桥进 observability/监控栈")
+	fmt.Println("审计接法：ReflectionResult 与各 Metrics 快照由宿主接进 observability/监控栈")
 	fmt.Println("（memory/* 不 import observability——旁路由装配层做，request.usage 同先例）。")
 	return nil
 }

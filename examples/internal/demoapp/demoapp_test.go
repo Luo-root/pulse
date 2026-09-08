@@ -3,7 +3,6 @@ package demoapp
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -69,8 +68,8 @@ func TestHostCloseReclaimsServices(t *testing.T) {
 	}
 }
 
-// D3 两层标识：同宿主 hostID 稳定；每次请求 trace_id 独立且不同，
-// 并携带宿主前缀便于日志聚合分组。
+// D3 两层标识：同宿主 hostID 稳定；每次请求 trace_id 独立——由
+// NewObserve 内部的 observability.NewTraceID 生成，demoapp 不再自带。
 func TestHostAndTraceIDSeparation(t *testing.T) {
 	h, err := Open(Flags{Scripted: true})
 	if err != nil {
@@ -78,19 +77,34 @@ func TestHostAndTraceIDSeparation(t *testing.T) {
 	}
 	defer h.Close()
 
-	t1 := h.NewTraceID()
-	t2 := h.NewTraceID()
 	hostID := h.HostID()
-	if t1 == t2 {
-		t.Fatalf("trace ids must differ per request: %q", t1)
+	scopeA, err := h.Ctx.Derive()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.HasPrefix(t1, hostID) {
-		t.Fatalf("trace id %q should carry host prefix %q", t1, hostID)
+	defer scopeA.Dispose()
+	cfgA, _, err := h.NewObserve(scopeA)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// 同宿主跨 NewTraceID 调用 hostID 必须稳定。
+	// 同宿主跨请求 hostID 必须稳定。
 	if h.HostID() != hostID {
 		t.Fatalf("host id drifted: %q -> %q", hostID, h.HostID())
 	}
+
+	scopeB, err := h.Ctx.Derive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scopeB.Dispose()
+	cfgB, _, err := h.NewObserve(scopeB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfgA.TraceID == cfgB.TraceID {
+		t.Fatal("two request observes must have different trace IDs")
+	}
+
 	h2, err := Open(Flags{Scripted: true})
 	if err != nil {
 		t.Fatal(err)
@@ -101,10 +115,11 @@ func TestHostAndTraceIDSeparation(t *testing.T) {
 	}
 }
 
-// 桥运行期事实写入统一 Sink：generate_finished 同时携带 HostID 与桥的
-// 请求级 TraceID（桥创建时生成；host 前缀保证日志聚合可分组）。
+// 运行期事实写入统一 Sink：generate_finished 同时携带 HostID 与
+// NewObserve 装配的请求级 TraceID（cfg 创建时由 observability.NewTraceID
+// 生成，同请求全部记录共享）。
 func TestObserveWritesRuntimeRecords(t *testing.T) {
-	h, err := Open(Flags{Scripted: true}, llm.Resp("bridge ok"))
+	h, err := Open(Flags{Scripted: true}, llm.Resp("observe ok"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,9 +161,6 @@ func TestObserveWritesRuntimeRecords(t *testing.T) {
 		}
 		if rec.Status == "" {
 			t.Fatal("status should be set")
-		}
-		if !strings.HasPrefix(rec.TraceID, rec.HostID) {
-			t.Fatalf("trace %q should carry host prefix %q", rec.TraceID, rec.HostID)
 		}
 	}
 	if !found {

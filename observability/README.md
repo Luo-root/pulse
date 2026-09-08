@@ -40,8 +40,8 @@ defer reqScope.Dispose()
 // Per request: reusing cfg IS the request-level correlation (D3);
 // a new cfg is mandatory across requests.
 // The host calls NewTraceID once per request (the single generation
-// source); a fully custom scheme works too (e.g. the hostID-prefixed
-// format of demoapp.Host.NewTraceID).
+// source); a fully custom scheme works too (host-owned formats, e.g.
+// a hostID prefix plus a per-request sequence).
 cfg := observability.ObserveConfig{Sink: sink, HostID: "host-1", TraceID: observability.NewTraceID()}
 c, err := observability.AttachCollector(reqScope, cfg) // direct-write service for business plugins
 err = llm.Observe(reqScope, cfg)                       // llm package adapter

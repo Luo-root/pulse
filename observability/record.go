@@ -1,19 +1,3 @@
-// Package observability 是 pulse v2 的正式观测包：SpringBoot 式装配
-// 日志的最小实现。
-//
-// 分层纪律（方案 A）：本包只 import kernel，绝不 import llm/loop/flow。
-// 它只认识两样东西——kernel 发出的装配期事实（typed 事件），以及
-// 下游的 Sink 出口。运行期业务事件（token 计数、HITL 结果、节点耗时）
-// 由伴生装配层 observability/bridge 订阅 llm/loop 公开事件后折进
-// Record 信封写同一 Sink——认识业务组件的适配器单独成包，依赖方向
-// 不变、无环（见 observability-v1-design.md §2 / §9）。
-//
-// 接入姿态（v1 仅一种）：
-//
-//	host := kernel.New()
-//	// 必须最先 Use：完整装载轨迹的前提（kernel 事件不回放）
-//	if _, err := kernel.Use(host, observability.Bootstrap("host-1", sink)); err != nil { ... }
-//	// 此后其它插件正常 Use，每次状态迁移都会进入 Sink
 package observability
 
 import (
@@ -25,7 +9,7 @@ import (
 )
 
 // Source 标识记录来源层。正式包只会产生 kernel 来源；其余来源由
-// 装配层桥产生，本包不校验枚举。
+// 各包观测适配与宿主直写产生，本包不校验枚举。
 type Source string
 
 const (
@@ -37,8 +21,8 @@ const (
 	SourceAdapter Source = "bridge"
 )
 
-// Event 名称常量。仅列正式包自己产出的事件；桥的事件名自定义，
-// 建议保持 <组件>.<事实> 的点分约定以便日志聚合分组。
+// Event 名称常量。仅列正式包自己产出的事件；适配层与业务插件的
+// 事件名自定义，建议保持 <组件>.<事实> 的点分约定以便日志聚合分组。
 const (
 	EventFiberState   = "pulse.kernel.fiber_state"
 	EventLoaderAction = "pulse.kernel.loader_action"
@@ -55,13 +39,13 @@ const (
 //
 // 字段填充规则：
 //   - kernel 装配记录（Bootstrap 产生）：TraceID/Duration/Attrs 为零值
-//   - 桥记录（observability/bridge 产生）：填 TraceID/Duration/Status/
-//     Attrs（key 契约见 llm/loop/flow 各包的 Attr* 常量，如
-//     llm.model、loop.tool、flow.node）；不要再扩本结构
+//   - 适配记录（各包 Observe / Collector 直写产生）：填
+//     TraceID/Duration/Status/Attrs（key 契约见 llm/loop/flow 各包的
+//     Attr* 常量，如 llm.model、loop.tool、flow.node）；不要再扩本结构
 type Record struct {
 	Time    time.Time
 	HostID  string
-	TraceID string // 装配期为空；运行期桥必填
+	TraceID string // 装配期为空；运行期适配必填
 	Source  Source
 	Event   string
 
@@ -74,7 +58,7 @@ type Record struct {
 	// Err 非 nil 表示该记录关联一次失败。
 	Err error
 
-	// ---- 以下为装配期专用字段，桥记录留零值 ----
+	// ---- 以下为装配期专用字段，适配记录留零值 ----
 
 	FiberName  string // fiber_state: 实例诊断名
 	From, To   string // fiber_state: 状态名（FiberState.String()）
@@ -82,7 +66,7 @@ type Record struct {
 	EntryID    string // loader_action: 条目 ID
 	PluginName string // loader_action: plugin 注册名
 
-	// Attrs 是产生方自定义的标量 kv（运行期桥与业务插件使用，
+	// Attrs 是产生方自定义的标量 kv（运行期适配与业务插件使用，
 	// 经 Set/Get 写读）。出口实现应按 key 排序输出以获得确定性。
 	// 引用语义见 Sink 接口契约：产出方 Write 后不再修改，Sink 只读。
 	Attrs Attrs

@@ -84,7 +84,7 @@ answer ─ prompt = 检索查询 + 检索上下文 + 用户原始 Parts
 
 ## 时间统计怎么读
 
-`WithObserver(bridge.FlowObserver(host.Peak))` 装观测；E1 三段事件驱动两条桥记录：
+`WithObserver(flow.MultiObserver{recordObs, host.Peak.Observer()})` 装观测（`recordObs` = `flow.NewRecordObserver(obsCfg)` 折计时记录；`FlowPeak` 是宿主业务 Observer，只统计存活峰值）；E1 三段事件驱动两条记录：
 
 | 记录 | Duration 含义 |
 |---|---|
