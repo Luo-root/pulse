@@ -36,6 +36,11 @@ type Config struct {
 	Options map[string]any `json:"options,omitempty" yaml:"options,omitempty"`
 }
 
+// ProviderScripted 是 Scripted 模型（NewScripted）的惯用登记键：llm
+// 不注册它——宿主自行 RegisterProvider(ProviderScripted, …) 后，即可
+// 以该名 Declare（examples 与 eval 均为此用法）。
+const ProviderScripted = "scripted"
+
 // Factory 由配置构造模型实例。每个 adapter 提供一个工厂。
 type Factory func(cfg Config) (ChatModel, error)
 

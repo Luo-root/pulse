@@ -109,7 +109,7 @@ func firstNonEmpty(values ...string) string {
 
 // LoadFlagsFromEnv 从环境变量填充默认配置。没有 API Key 时自动走 ScriptedModel。
 func LoadFlagsFromEnv() Flags {
-	provider := getenv("PULSE_DEMO_PROVIDER", "openai")
+	provider := getenv("PULSE_DEMO_PROVIDER", openai.ProviderCompletions)
 	f := Flags{
 		Provider:  provider,
 		Model:     os.Getenv("PULSE_DEMO_MODEL"),
@@ -121,7 +121,7 @@ func LoadFlagsFromEnv() Flags {
 	}
 	if f.APIKey == "" {
 		switch f.Provider {
-		case "anthropic":
+		case anthropic.ProviderAnthropic:
 			f.APIKey = firstNonEmpty(os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("PULSE_ANTHROPIC_API_KEY"))
 			if f.BaseURL == "" {
 				f.BaseURL = os.Getenv("PULSE_ANTHROPIC_BASE_URL")
@@ -190,13 +190,13 @@ func Open(flags Flags, scripted ...*llm.Response) (*Host, error) {
 		// 经 Registry 注册并打开：脚本模型同样穿过 observed 包装，
 		// 使 before_generate / after_response（及其上的桥事件）对脚本
 		// 路径也成立，而不是绕开整个观测链。
-		if _, err := reg.RegisterProvider(host, "scripted", func(llm.Config) (llm.ChatModel, error) {
+		if _, err := reg.RegisterProvider(host, llm.ProviderScripted, func(llm.Config) (llm.ChatModel, error) {
 			return llm.NewScripted(scripted...), nil
 		}); err != nil {
 			host.Dispose()
 			return nil, err
 		}
-		if err := reg.Declare("main", llm.Config{Provider: "scripted", Model: "scripted"}); err != nil {
+		if err := reg.Declare("main", llm.Config{Provider: llm.ProviderScripted, Model: "scripted"}); err != nil {
 			host.Dispose()
 			return nil, err
 		}
