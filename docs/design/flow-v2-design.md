@@ -176,7 +176,7 @@ type Aspect interface {
 > 实现状态：**已落地**（`WithObserver` + `runNode` 埋点 + demoapp 桥两条 Record）；规格拍板见下。
 > 拍板补充（2026-08-27/28）：派发载体 = **flow 自有 typed observer**；与正式 `observability/` 的关系见下。
 
-**当时缺口（已解决）**：E1 开工前，切面只有一个 `Around(rc, next)`，包住「等待 + 执行」整段，桥只能记 total（旧事件名 `flow.node_finished`），并拒绝伪造 wait/run。现已由 `WithObserver` + 桥两条 Record（`flow.node_wait_finished` / `flow.node_run_finished`，`FiberName`=nodeID）落地；下文保留分层与契约，不再用现在时描述旧缺口。
+**当时缺口（已解决）**：E1 开工前，切面只有一个 `Around(rc, next)`，包住「等待 + 执行」整段，桥只能记 total（旧事件名 `flow.node_finished`），并拒绝伪造 wait/run。现已由 `WithObserver` + 两条 Record（`flow.node_wait_finished` / `flow.node_run_finished`）落地——折叠由 flow 官方适配 `flow.NewRecordObserver` 承担（#130），下文保留分层与契约，不再用现在时描述旧缺口。
 
 #### 与 observability 的分层（钉死）
 
@@ -204,6 +204,8 @@ observability/
 | `observability/` | kernel 装配事件 + 通用信封/出口 | llm / loop / **flow** |
 
 一句话：**observer 是 flow 的扩展 seam；observability 仍是通用信封；桥是唯一把二者接上的地方。** 对齐 [observability-v1-design.md](observability-v1-design.md) D1。
+
+> 修订（#127/#130/#132，2026-09）：原「装配层桥」层已废除——`demoapp.Bridge` 删除，wait/run 两条 Record 的折叠下沉为 flow 官方适配 `flow.NewRecordObserver`（`source=bridge` 字面值保留兼容），宿主业务 Observer（如 demoapp 的 FlowPeak）经 `flow.MultiObserver` 与之组合。分层与契约不变，变化只在「谁折叠」：从示例私有桥改为 flow 包自带适配；demoapp 回归纯示例装配层，不承担框架折叠职责。
 
 #### 派发载体（钉死）
 

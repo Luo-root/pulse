@@ -222,11 +222,11 @@ func MCPSourcePlugin(cfg MCPConfig) kernel.Plugin
 - 禁止在宿主全树 `Waterfall` 上挂请求级审批（串扰）；
 - toolset 注册生命周期挂装配/来源 scope，**不要**挂到单次 reqScope（否则每轮重建注册）。
 
-### 3.6 observability 桥
+### 3.6 observability 适配
 
-继续由 `demoapp.Bridge`（或未来宿主桥）订阅 `EventAfterToolCall` → `loop.tool_finished` Record。
+运行期 `loop.tool_finished` Record 由 `loop.Observe` 折叠（#130 起下沉至 loop 包；原设计的 demoapp.Bridge / 宿主桥订阅方案已随 #127/#132 废除，demoapp 不再承担折叠职责）。
 
-本版允许桥用 **slog 附加键**输出 `tool` / `source`（若策略层注入），**不**给 `observability.Record` 增加 Attributes map，也**不**让 observability import toolset。
+本版立场不变：适配层可用 **slog 附加键**输出 `tool` / `source`（若策略层注入），**不**给 `observability.Record` 增加 Attributes map（#125 已以泛型 `Attrs` 开放段落地该诉求的类型部分），也**不**让 observability import toolset。
 
 `before_tool_call` 的拒绝结果已体现在 `AfterToolCall.Rejected`，无需强制双记；若宿主要审批等待时长，自行在 HITL 插件打点，不进官方信封。
 

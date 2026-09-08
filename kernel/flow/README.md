@@ -293,7 +293,7 @@ Built-in behavior and optional aspects:
 
 ## Lifecycle Observation (E1)
 
-`Observer` is flow's **own** typed observer, no-op by default. It does not go through `kernel.Emit`, nor write to `observability.Sink` — the official observability package knows nothing about flow; an assembly-layer bridge (e.g. `demoapp.FlowObserver`) subscribes and then folds events into two Records.
+`Observer` is flow's **own** typed observer, no-op by default. It does not go through `kernel.Emit`, nor write to `observability.Sink` — the official observability package knows nothing about flow; runtime record folding is handled by the official adapter `NewRecordObserver` (see below), and host business observers compose with it via `MultiObserver`.
 
 ```go
 obs := flow.ObserverFunc{
@@ -314,7 +314,7 @@ Contract highlights:
 
 - Waiting/Running/Finished fire at most once per node; multiple `Retry` attempts do not re-emit.
 - an observer panic **must not** become a node failure.
-- the usual bridge implementation: the two Records `flow.node_wait_finished` / `flow.node_run_finished`, each carrying `Duration`; node identity goes in `FiberName` (the official envelope is not extended). See `examples/04-flow` (record definitions in `examples/internal/demoapp/bridge.go`; the 04-flow README is already tabulated).
+- the official adapter emits the two Records `flow.node_wait_finished` / `flow.node_run_finished`, each carrying `Duration`; node identity goes in the `AttrNode` open segment (the official envelope is not extended). See `examples/04-flow` (the host's business peak-stat observer `FlowPeak` lives in `examples/internal/demoapp/flowpeak.go`; the 04-flow README is already tabulated).
 
 ### Observation Adapter: NewRecordObserver
 
