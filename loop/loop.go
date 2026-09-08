@@ -46,7 +46,12 @@ type Result struct {
 // Agent 是无状态的回合执行器：实例只是配置与依赖引用（不可变，
 // 无锁），并发 Run 共享同一实例是安全的——下游依赖（ChatModel、
 // ToolSet、事件作用域）需自行保证并发安全。
+//
+// id 是实例身份（NewAgent 的 name，必填）：随 turn_end /
+// after_tool_call 事件载荷发出，供观测折叠区分同 scope 多 Agent
+// （观测 key 见 loop.AttrAgent）。
 type Agent struct {
+	id       string
 	model    llm.ChatModel
 	tools    ToolSet
 	system   string
@@ -85,12 +90,17 @@ func WithEventScope(scope *kernel.Context) Option {
 	return func(a *Agent) { a.scope = scope }
 }
 
-// NewAgent 创建回合执行器。model 必填；工具集、提示词等经 Option 注入。
-func NewAgent(model llm.ChatModel, opts ...Option) (*Agent, error) {
+// NewAgent 创建回合执行器。model 与 name 必填：name 是实例身份，
+// 随 turn_end / after_tool_call 事件发出供观测区分同 scope 多 Agent
+// （观测 key 见 loop.AttrAgent）；工具集、提示词等经 Option 注入。
+func NewAgent(model llm.ChatModel, name string, opts ...Option) (*Agent, error) {
 	if model == nil {
 		return nil, errors.New("loop: model is required")
 	}
-	a := &Agent{model: model, maxSteps: 0}
+	if name == "" {
+		return nil, errors.New("loop: agent name is required (observability instance identity)")
+	}
+	a := &Agent{id: name, model: model, maxSteps: 0}
 	for _, opt := range opts {
 		opt(a)
 	}
@@ -154,7 +164,7 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 			res.StoppedBy = StopError
 		}
 		emit(a.scope, EventTurnEnd, TurnEnd{
-			Final: res.Final, Usage: res.Usage, Steps: res.Steps, StoppedBy: res.StoppedBy,
+			Agent: a.id, Final: res.Final, Usage: res.Usage, Steps: res.Steps, StoppedBy: res.StoppedBy,
 		})
 	}()
 
@@ -229,7 +239,7 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 				}
 				text := "tool call rejected: " + reason
 				emit(a.scope, EventAfterToolCall, AfterToolCall{
-					Call: effective, Result: text, Rejected: true, Duration: time.Since(start),
+					Agent: a.id, Call: effective, Result: text, Rejected: true, Duration: time.Since(start),
 				})
 				msgs = append(msgs, toolResultMsg(effective.ID, text, true))
 				produced = append(produced, msgs[len(msgs)-1])
@@ -242,7 +252,7 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 				text = "tool error: " + execErr.Error()
 			}
 			emit(a.scope, EventAfterToolCall, AfterToolCall{
-				Call: effective, Result: text, Duration: time.Since(start), Err: execErr,
+				Agent: a.id, Call: effective, Result: text, Duration: time.Since(start), Err: execErr,
 			})
 			msgs = append(msgs, toolResultMsg(effective.ID, text, execErr != nil))
 			produced = append(produced, msgs[len(msgs)-1])

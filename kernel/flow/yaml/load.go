@@ -105,9 +105,11 @@ func (p *SeedPlan) Apply(g *flow.Graph, resolve func(SeedFrom) (any, error)) err
 	return nil
 }
 
-// LoadOptions 装图选项。
+// LoadOptions 装图选项。GraphID 必填（图身份，空串 Load 报错）——
+// 观测记录靠它区分「运行的是哪张图」。
 type LoadOptions struct {
 	Context context.Context
+	GraphID string
 	Graph   []flow.Option
 }
 
@@ -126,13 +128,19 @@ func Load(data []byte, reg *flow.Registry, opts LoadOptions) (*flow.Graph, *Seed
 	if len(doc.Nodes) == 0 {
 		return nil, nil, fmt.Errorf("flow/yaml: document has no nodes")
 	}
+	if opts.GraphID == "" {
+		return nil, nil, fmt.Errorf("flow/yaml: graph id is required (LoadOptions.GraphID, observability instance identity)")
+	}
 	_ = doc.Observer // 明确忽略；宿主用 LoadOptions.Graph 挂 Observer
 
 	ctx := opts.Context
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	g := flow.New(ctx, opts.Graph...)
+	g, err := flow.New(ctx, opts.GraphID, opts.Graph...)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	for i, n := range doc.Nodes {
 		if n.ID == "" {

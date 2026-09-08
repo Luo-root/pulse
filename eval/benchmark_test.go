@@ -128,7 +128,7 @@ func BenchmarkL2AgentTextTurn(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer scope.Dispose()
-	agent, err := loop.NewAgent(model, loop.WithEventScope(scope))
+	agent, err := loop.NewAgent(model, "bench", loop.WithEventScope(scope))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func BenchmarkL2AgentToolRound(b *testing.B) {
 			llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "lookup", Arguments: json.RawMessage(`{}`)}),
 			llm.Resp("done"),
 		)
-		agent, err := loop.NewAgent(model, loop.WithToolSet(tools), loop.WithEventScope(scope))
+		agent, err := loop.NewAgent(model, "bench", loop.WithToolSet(tools), loop.WithEventScope(scope))
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -229,7 +229,7 @@ func BenchmarkL3SessionBookkeeping(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer scope.Dispose()
-	agent, err := loop.NewAgent(model, loop.WithEventScope(scope))
+	agent, err := loop.NewAgent(model, "bench", loop.WithEventScope(scope))
 	if err != nil {
 		b.Fatal(err)
 	}

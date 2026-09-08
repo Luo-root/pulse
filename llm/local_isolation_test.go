@@ -38,10 +38,10 @@ func TestLLMEventsStayInRequestScope(t *testing.T) {
 	defer scopeB.Dispose()
 
 	var aN, bN atomic.Int32
-	if _, err := kernel.On(scopeA, EventAfterResponse, func(*Response) { aN.Add(1) }); err != nil {
+	if _, err := kernel.On(scopeA, EventAfterResponse, func(*ResponseEvent) { aN.Add(1) }); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := kernel.On(scopeB, EventAfterResponse, func(*Response) { bN.Add(1) }); err != nil {
+	if _, err := kernel.On(scopeB, EventAfterResponse, func(*ResponseEvent) { bN.Add(1) }); err != nil {
 		t.Fatal(err)
 	}
 

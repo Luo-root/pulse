@@ -58,7 +58,7 @@ func run() error {
 		if err != nil {
 			return nil, err
 		}
-		agent, err := loop.NewAgent(host.Model,
+		agent, err := loop.NewAgent(host.Model, "main",
 			loop.WithSystemPrompt("用检索上下文和对话历史回答。没有文档时也要基于用户输入作答。"),
 			loop.WithEventScope(reqScope),
 		)

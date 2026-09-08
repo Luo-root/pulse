@@ -9,7 +9,12 @@ import (
 )
 
 // Graph 是一次运行的世界：节点集合 + 数据槽 + 首错 + 取消。
+//
+// id 是图身份（New 的 graphID，必填）：不同业务用不同图组装（node
+// 可跨图复用），Observer 回调随事实携带它，供观测折叠区分「运行的
+// 是哪张图」（观测 key 见 flow.AttrGraph）。
 type Graph struct {
+	id     string
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -44,13 +49,18 @@ func WithAspects(as ...Aspect) Option {
 	return func(g *Graph) { g.aspects = append(g.aspects, as...) }
 }
 
-// New 构造空图。ctx 取消会打断所有等待。
-func New(ctx context.Context, opts ...Option) *Graph {
+// New 构造空图。graphID 是图身份（必填，空串报错）：观测记录靠它
+// 区分「运行的是哪张图」。ctx 取消会打断所有等待。
+func New(ctx context.Context, graphID string, opts ...Option) (*Graph, error) {
+	if graphID == "" {
+		return nil, errors.New("flow: graph id is required (observability instance identity)")
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	c, cancel := context.WithCancel(ctx)
 	g := &Graph{
+		id:       graphID,
 		ctx:      c,
 		cancel:   cancel,
 		slots:    make(map[string]*slot),
@@ -62,8 +72,11 @@ func New(ctx context.Context, opts ...Option) *Graph {
 	if g.maxRun > 0 {
 		g.sem = make(chan struct{}, g.maxRun)
 	}
-	return g
+	return g, nil
 }
+
+// ID 返回图身份（New 的 graphID）。
+func (g *Graph) ID() string { return g.id }
 
 // Add 登记节点。图启动后拒绝。
 func (g *Graph) Add(n *Node) error {
@@ -256,12 +269,12 @@ func (g *Graph) runNode(n *Node) {
 	var waited, ran atomic.Bool
 	emitWaiting := func() {
 		if waited.CompareAndSwap(false, true) {
-			g.notify(func(o Observer) { o.OnNodeWaiting(n.id) })
+			g.notify(func(o Observer) { o.OnNodeWaiting(g.id, n.id) })
 		}
 	}
 	emitRunning := func() {
 		if ran.CompareAndSwap(false, true) {
-			g.notify(func(o Observer) { o.OnNodeRunning(n.id) })
+			g.notify(func(o Observer) { o.OnNodeRunning(g.id, n.id) })
 		}
 	}
 
@@ -293,17 +306,17 @@ func (g *Graph) runNode(n *Node) {
 	err := chain(rc)
 	if isSkipped(err) {
 		g.skipAllOrUnwritten(n, rc, true)
-		g.notify(func(o Observer) { o.OnNodeFinished(n.id, NodeSkipped, err) })
+		g.notify(func(o Observer) { o.OnNodeFinished(g.id, n.id, NodeSkipped, err) })
 		return
 	}
 	if err != nil {
 		g.fail(err)
 		g.skipAllOrUnwritten(n, rc, true)
-		g.notify(func(o Observer) { o.OnNodeFinished(n.id, finishReason(err), err) })
+		g.notify(func(o Observer) { o.OnNodeFinished(g.id, n.id, finishReason(err), err) })
 		return
 	}
 	g.skipAllOrUnwritten(n, rc, false)
-	g.notify(func(o Observer) { o.OnNodeFinished(n.id, NodeCompleted, nil) })
+	g.notify(func(o Observer) { o.OnNodeFinished(g.id, n.id, NodeCompleted, nil) })
 }
 
 func (g *Graph) skipAllOrUnwritten(n *Node, rc *RunCtx, allIfNoneWritten bool) {

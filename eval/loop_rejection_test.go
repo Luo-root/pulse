@@ -89,7 +89,7 @@ func TestPropertyToolRejectionSemantics(t *testing.T) {
 			host.Dispose()
 			t.Fatal(r.failf("iter=%d: install listener: %v", iter, err))
 		}
-		agent, err := loop.NewAgent(model,
+		agent, err := loop.NewAgent(model, "rejection",
 			loop.WithToolSet(tools),
 			loop.WithEventScope(scope),
 		)

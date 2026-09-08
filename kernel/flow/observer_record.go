@@ -18,12 +18,16 @@ const (
 
 // NewRecordObserver 返回写 observability.Record 的节点分段计时观察者：
 // 等待完成与执行完成各一条记录（Duration 分别为等待段/执行段耗时），
-// nodeID 进 Attrs（AttrNode 契约），不占用 Record 的装配专用具名字段；
-// Status 为 running（等待段）或 finish reason（执行段）。跳过节点只有
-// 一条 skipped 等待记录，无运行记录。
+// graphID 与 nodeID 进 Attrs（AttrGraph / AttrNode 契约），不占用
+// Record 的装配专用具名字段；Status 为 running（等待段）或 finish
+// reason（执行段）。跳过节点只有一条 skipped 等待记录，无运行记录。
 //
-// 单次图运行使用一个适配器实例：内部按 nodeID 记账，节点异常路径
-// （Finished 未达，如图被取消）的残留条目随实例丢弃，实例复用会残留。
+// graphID 由图随回调发出（New 的 graphID）——多图复用同一 Observer
+// 实现时归因不漂移。
+//
+// 单实例可复用于多图并发：内部按（graphID, nodeID）记账，同名节点
+// 跨图互不串扰。同图同节点的残留条目（Finished 未达，如进程退出）
+// 会影响该键的下一次记账，长期复用建议按图运行周期换实例。
 // 挂载：WithObserver(NewRecordObserver(cfg))；与宿主自有 Observer 经
 // MultiObserver 组合。观察者 panic / error 不升格为节点失败（notify
 // 已吞，只读 seam 契约）。cfg.Sink 为 nil 返回哨兵错误。
@@ -31,6 +35,7 @@ func NewRecordObserver(cfg observability.ObserveConfig) (Observer, error) {
 	if cfg.Sink == nil {
 		return nil, observability.ErrNilSink
 	}
+	type nodeKey struct{ graph, node string }
 	type nodeState struct {
 		waitStart time.Time
 		runStart  time.Time
@@ -38,9 +43,9 @@ func NewRecordObserver(cfg observability.ObserveConfig) (Observer, error) {
 		waitDone  bool
 	}
 	var mu sync.Mutex
-	states := make(map[string]*nodeState)
+	states := make(map[nodeKey]*nodeState)
 
-	seg := func(nodeID, event, status string, d time.Duration, err error) {
+	seg := func(graphID, nodeID, event, status string, d time.Duration, err error) {
 		rec := observability.Record{
 			HostID:   cfg.HostID,
 			TraceID:  cfg.TraceID,
@@ -50,22 +55,24 @@ func NewRecordObserver(cfg observability.ObserveConfig) (Observer, error) {
 			Duration: d,
 			Err:      err,
 		}
+		observability.Set(&rec.Attrs, AttrGraph, graphID)
 		observability.Set(&rec.Attrs, AttrNode, nodeID)
 		cfg.Sink.Write(rec)
 	}
 
 	return ObserverFunc{
-		Waiting: func(nodeID string) {
+		Waiting: func(graphID, nodeID string) {
 			mu.Lock()
-			states[nodeID] = &nodeState{waitStart: time.Now()}
+			states[nodeKey{graphID, nodeID}] = &nodeState{waitStart: time.Now()}
 			mu.Unlock()
 		},
-		Running: func(nodeID string) {
+		Running: func(graphID, nodeID string) {
 			mu.Lock()
-			st := states[nodeID]
+			k := nodeKey{graphID, nodeID}
+			st := states[k]
 			if st == nil {
 				st = &nodeState{waitStart: time.Now()}
-				states[nodeID] = st
+				states[k] = st
 			}
 			if st.waitDone {
 				mu.Unlock()
@@ -76,23 +83,24 @@ func NewRecordObserver(cfg observability.ObserveConfig) (Observer, error) {
 			st.ran = true
 			st.runStart = time.Now()
 			mu.Unlock()
-			seg(nodeID, EventNodeWaitFinished, "running", d, nil)
+			seg(graphID, nodeID, EventNodeWaitFinished, "running", d, nil)
 		},
-		Finished: func(nodeID string, reason NodeFinishReason, err error) {
+		Finished: func(graphID, nodeID string, reason NodeFinishReason, err error) {
 			mu.Lock()
-			st := states[nodeID]
-			delete(states, nodeID)
+			k := nodeKey{graphID, nodeID}
+			st := states[k]
+			delete(states, k)
 			mu.Unlock()
 			if st == nil {
 				return
 			}
 			// 未进入执行（skip / 直接失败）：只补等待段。
 			if !st.waitDone {
-				seg(nodeID, EventNodeWaitFinished, string(reason), time.Since(st.waitStart), err)
+				seg(graphID, nodeID, EventNodeWaitFinished, string(reason), time.Since(st.waitStart), err)
 				return
 			}
 			if st.ran {
-				seg(nodeID, EventNodeRunFinished, string(reason), time.Since(st.runStart), err)
+				seg(graphID, nodeID, EventNodeRunFinished, string(reason), time.Since(st.runStart), err)
 			}
 		},
 	}, nil

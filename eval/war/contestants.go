@@ -42,7 +42,7 @@ func runPulseTextRound(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	agent, err := loop.NewAgent(model, loop.WithEventScope(scope))
+	agent, err := loop.NewAgent(model, "war", loop.WithEventScope(scope))
 	if err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func runPulseToolRound(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	agent, err := loop.NewAgent(model, loop.WithToolSet(tools), loop.WithEventScope(scope))
+	agent, err := loop.NewAgent(model, "war", loop.WithToolSet(tools), loop.WithEventScope(scope))
 	if err != nil {
 		return err
 	}
@@ -249,7 +249,10 @@ func assistantToolCall(id, name, args string) *schema.Message {
 // sink（Requires 终端 key、不 Provides，闭包写出终端值）——与 T4 join
 // 同一模式，Graph 无 Run 后公开读槽（flow README 声明的契约权宜）。
 func runPulseFlowChain(ctx context.Context) (string, error) {
-	g := flow.New(ctx)
+	g, err := flow.New(ctx, "t3-chain")
+	if err != nil {
+		return "", err
+	}
 	kIn := flow.NewKey[string]("in")
 	k1 := flow.NewKey[string]("m1")
 	k2 := flow.NewKey[string]("m2")
@@ -308,7 +311,10 @@ func runEinoChain(ctx context.Context) (string, error) {
 // → AND 汇聚节点 → 拼接输出）。终端结果经 join 闭包写出——Graph 没有
 // Run 后的公开读槽，这是 flow README 声明的契约权宜（非输出惯例）。
 func runPulseFlowDAG(ctx context.Context) (string, error) {
-	g := flow.New(ctx)
+	g, err := flow.New(ctx, "t4-dag")
+	if err != nil {
+		return "", err
+	}
 	kIn := flow.NewKey[string]("in")
 	kA := flow.NewKey[string]("a")
 	kB := flow.NewKey[string]("b")

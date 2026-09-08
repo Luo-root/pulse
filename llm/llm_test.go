@@ -112,7 +112,7 @@ func TestInterceptionEvents(t *testing.T) {
 		})
 
 	var seen atomic.Int32
-	unsub, _ := kernel.On(ctx, EventAfterResponse, func(r *Response) { seen.Add(1) })
+	unsub, _ := kernel.On(ctx, EventAfterResponse, func(*ResponseEvent) { seen.Add(1) })
 
 	model, err := reg.OpenDefault()
 	if err != nil {
@@ -474,7 +474,7 @@ func TestInterceptionStream(t *testing.T) {
 			return next(req)
 		})
 	var after atomic.Int32
-	_, _ = kernel.On(ctx, EventAfterResponse, func(r *Response) { after.Add(1) })
+	_, _ = kernel.On(ctx, EventAfterResponse, func(*ResponseEvent) { after.Add(1) })
 
 	model, err := reg.OpenDefault()
 	if err != nil {

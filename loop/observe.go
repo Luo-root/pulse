@@ -23,8 +23,8 @@ const (
 
 // Observe 把 loop 运行期事实的观测折叠挂到宿主传入的 scope：监听
 // 自身 after_tool_call 与 turn_end，折成 Record 写 cfg.Sink——
-// HostID/TraceID 取自 cfg，工具名与步数进 Attrs（key 契约见本包
-// AttrTool / AttrSteps）。
+// HostID/TraceID 取自 cfg，Agent 身份、工具名与步数进 Attrs（key
+// 契约见本包 AttrAgent / AttrTool / AttrSteps）。
 //
 // scope 必须与 Agent 的 llm.WithEventScope 相同（Local 派发只本 scope
 // 可见）。cfg.Sink 为 nil 返回哨兵错误。同一 scope 重复调用 = 双监听
@@ -54,6 +54,7 @@ func Observe(scope *kernel.Context, cfg observability.ObserveConfig) error {
 			Duration: after.Duration,
 			Err:      after.Err,
 		}
+		observability.Set(&rec.Attrs, AttrAgent, after.Agent)
 		observability.Set(&rec.Attrs, AttrTool, after.Call.Name)
 		cfg.Sink.Write(rec)
 	}); err != nil {
@@ -67,6 +68,7 @@ func Observe(scope *kernel.Context, cfg observability.ObserveConfig) error {
 			Event:   EventTurnFinished,
 			Status:  string(end.StoppedBy),
 		}
+		observability.Set(&rec.Attrs, AttrAgent, end.Agent)
 		observability.Set(&rec.Attrs, AttrSteps, int64(end.Steps))
 		cfg.Sink.Write(rec)
 	}); err != nil {

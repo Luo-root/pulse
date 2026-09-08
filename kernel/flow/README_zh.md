@@ -65,7 +65,7 @@ var (
 )
 
 func main() {
-    g := flow.New(context.Background())
+    g, _ := flow.New(context.Background(), "demo")
 
     if err := g.Add(flow.NewNode(
         "prepare",
@@ -128,7 +128,7 @@ flow.NewNode(
 外部调用方在运行前写入输入：
 
 ```go
-g := flow.New(ctx)
+g, _ := flow.New(ctx, "demo")
 if err := flow.Seed(g, Request, input); err != nil {
     return err
 }
@@ -232,7 +232,7 @@ join := flow.NewNode(
 默认情况下，真正进入用户 `Run` 的节点数不受限制。若要限制运行并发：
 
 ```go
-g := flow.New(ctx, flow.WithMaxRunning(4))
+g, _ := flow.New(ctx, "demo", flow.WithMaxRunning(4))
 ```
 
 `WithMaxRunning(n)` 中 `n <= 0` 表示无限并发（默认）。等待 `Requires` 时不占名额；全部输入到达后才占一个名额。
@@ -265,7 +265,7 @@ if err := g.Wait(); err != nil {
 `Aspect` 与 `kernel.Waterfall` 同构：切面不调用 `next` 即可短路后续执行。每次 `Around` 内禁止**并发/重叠**调用 `next`（返回 `ErrNextCalledTwice`）；允许**顺序多次**（`Retry` 需要）。全局切面通过 `flow.WithAspects` 安装；节点切面作为 `flow.NewNode` 的末尾参数传入。全局切面在外层、节点切面在内层。E1 `Observer` 生命周期事件由每节点门闩保证 Waiting/Running 仍至多一次。
 
 ```go
-g := flow.New(ctx,
+g, _ := flow.New(ctx, "demo",
     flow.WithAspects(loggingAspect),
 )
 
@@ -291,15 +291,15 @@ node := flow.NewNode(
 
 ## 生命周期观察（E1）
 
-`Observer` 是 flow **自有** typed 观察者，默认 no-op。它不走 `kernel.Emit`，也不写 `observability.Sink`——正式观测包不认识 flow；运行期折记录由官方适配 `NewRecordObserver` 承担（见下节），宿主业务 Observer 经 `MultiObserver` 与之组合。
+`Observer` 是 flow **自有** typed 观察者，默认 no-op。它不走 `kernel.Emit`，也不写 `observability.Sink`——正式观测包不认识 flow；运行期折记录由官方适配 `NewRecordObserver` 承担（见下节），宿主业务 Observer 经 `MultiObserver` 与之组合。三个回调首参 `graphID` 即 `New` 的图身份——宿主 Observer 无需自行登记图归属。
 
 ```go
 obs := flow.ObserverFunc{
-    Waiting:  func(id string) { /* 进入 WaitAll 前 */ },
-    Running:  func(id string) { /* acquire 后、用户 Run 前 */ },
-    Finished: func(id string, reason flow.NodeFinishReason, err error) { /* skip 清理后 */ },
+    Waiting:  func(graphID, id string) { /* 进入 WaitAll 前 */ },
+    Running:  func(graphID, id string) { /* acquire 后、用户 Run 前 */ },
+    Finished: func(graphID, id string, reason flow.NodeFinishReason, err error) { /* skip 清理后 */ },
 }
-g := flow.New(ctx, flow.WithObserver(obs))
+g, _ := flow.New(ctx, "demo", flow.WithObserver(obs))
 ```
 
 | 事件 | 何时 | 备注 |
@@ -312,18 +312,18 @@ g := flow.New(ctx, flow.WithObserver(obs))
 
 - 每节点 Waiting/Running/Finished 至多一次；`Retry` 多次 attempt 不重复打点。
 - observer panic **不得**变成节点失败。
-- 官方适配落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；节点身份走 `AttrNode` 开放段（不扩官方信封）。见 `examples/04-flow`（宿主业务峰值统计 `FlowPeak` 在 `examples/internal/demoapp/flowpeak.go`，04-flow README 已表格化）。
+- 官方适配落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；图身份与节点身份走 `AttrGraph` / `AttrNode` 开放段（不扩官方信封）。见 `examples/04-flow`（宿主业务峰值统计 `FlowPeak` 在 `examples/internal/demoapp/flowpeak.go`，04-flow README 已表格化）。
 
 ### 观测适配：NewRecordObserver
 
-`NewRecordObserver(cfg)` 返回写观测信封的分段计时观察者：等待完成与执行完成各一条记录（Duration 分段，nodeID 走 `AttrNode`，不占具名字段），跳过节点只有一条 skipped 等待记录。单次图运行一个实例（nodeID 记账，异常路径残留随实例丢弃）；与宿主自有 Observer 经 `MultiObserver` 组合。cfg.Sink 为 nil 返回哨兵错误。详见 `observer_record.go` 与设计文档 §9。
+`NewRecordObserver(cfg)` 返回写观测信封的分段计时观察者：等待完成与执行完成各一条记录（Duration 分段，graphID/nodeID 走 `AttrGraph`/`AttrNode`，不占具名字段），跳过节点只有一条 skipped 等待记录。单实例可复用于多图并发（graphID×nodeID 记账，同名节点跨图不串扰）；与宿主自有 Observer 经 `MultiObserver` 组合。cfg.Sink 为 nil 返回哨兵错误。详见 `observer_record.go` 与设计文档 §9。
 
 ## 声明式装图（E2）
 
 **YAML only** 装图在子包 [`yaml`](yaml/README_zh.md)：`Load` / `SeedPlan`。拓扑归属 A——YAML 必填 `id` / `uses` / `requires` / `provides`；`uses` 对应 `Registry` 上的 Run 工厂。不补 JSON 解析器。
 
 - duration 字段用 Go `ParseDuration` 形态：`30s`、`100ms`（不要写裸数字当秒的歧义形式）。
-- `observer:` 文档提示位，`Load` **忽略**；观察者走 `LoadOptions.Graph`（如 `WithObserver`）。
+- `observer:` 文档提示位，`Load` **忽略**；观察者走 `LoadOptions.Graph`（如 `WithObserver`）；`LoadOptions.GraphID` 必填（图身份，空串报错）。
 - `version` 缺省或 `1`；其它值拒绝。
 
 ### 图结束后没有公开读槽 API

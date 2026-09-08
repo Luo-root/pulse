@@ -72,7 +72,7 @@ func newTestHost(t *testing.T) *demoapp.Host {
 
 func mustAgent(t *testing.T, model llm.ChatModel) *loop.Agent {
 	t.Helper()
-	a, err := loop.NewAgent(model)
+	a, err := loop.NewAgent(model, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestYAMLIsomorphicFactAndChitchat(t *testing.T) {
 
 			yamlFinal := new(string)
 			reg, strTag, docTag := prepareYAMLReg(t, local, web, yamlFinal)
-			g, plan, err := flowyaml.Load([]byte(yamlDoc(strTag, docTag, tc.in)), reg, flowyaml.LoadOptions{})
+			g, plan, err := flowyaml.Load([]byte(yamlDoc(strTag, docTag, tc.in)), reg, flowyaml.LoadOptions{GraphID: "dag"})
 			if err != nil {
 				t.Fatal(err)
 			}

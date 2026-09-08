@@ -17,12 +17,13 @@
 | D2 | kernel 发 typed 结构体事件，观测侧 `On` 订阅 | `Collector.Emit(string, map[string]any)` 字符串总线 | 第二套事件总线 + 无类型逃生舱：拼错静默丢、隐私边界靠约定不靠编译器；与词汇表侧否决 `map[string]any` 的既有立场同构 |
 | D3 | trace 拆 host_id / trace_id 两层 | 全部共用一个 trace_id | 装配期没有用户请求；强行共用制造假关联 |
 | D4 | 横幅 = 订阅后状态快照 | 靠事件流累积出横幅 | kernel 事件不回放；后装 Bootstrap 会错过历史。快照保证任意时刻正确 |
-| D5 | observability 本体观察只用 `On`/`Emit` | 在 before_generate 等 Waterfall 上挂计量 | 观测是旁路观察者，进 around 链就有短路真实流程的风险（原型 bug，正式版修正）。**修订（#127）**：`after_response` 不携带耗时，Waterfall 回调是唯一可行的计时起点——恒 `next` 且不改参的观察者不改变 Waterfall 语义（短路风险来自改参/吞调用，不来自「进入链」本身）。计量起点例外主体 = `llm.Observe`（事实归属包自身）；observability 本体禁令不变 |
+| D5 | observability 本体观察只用 `On`/`Emit` | 在 before_generate 等 Waterfall 上挂计量 | 观测是旁路观察者，进 around 链就有短路真实流程的风险（原型 bug，正式版修正）。**修订（#127）**：`after_response` 不携带耗时，Waterfall 回调是唯一可行的计时起点——恒 `next` 且不改参的观察者不改变 Waterfall 语义（短路风险来自改参/吞调用，不来自「进入链」本身）。计量起点例外主体 = `llm.Observe`（事实归属包自身）；observability 本体禁令不变。**修订（#144）**：`after_response` 载荷携带 `Started` 锚点（包装在 waterfall 链后、inner 调用前记录），`llm.Observe` 折叠取 `time.Since(Started)`，不再订阅 before_generate——例外取消，D5 主体恢复原样 |
 | D6 | Fiber 对外只出值类型快照 | `Fibers() []*Fiber` 活指针枚举 | 外部可调 Close、可触内部锁；settleLoop 并发改 state 下是指针竞态 |
 | D7 | Record 加 `Attrs` 开放段：标量 kv，值域经泛型 `Set/Get` 锁死（~string/~int64/~float64/~bool） | ① 继续加运行期具名字段；② `map[string]any` 逃生舱 | ① 具名字段让信封随包增长，每加一类观测就改信封；② map 逃生舱静默吞未知键、与词汇表侧立场同构。Attrs 把「开放」与「任意对象」切开：Message 切片/附件/思维链在类型上进不来（隐私边界的类型部分），key 自述意图 + Sink 侧 redact 兜住蓄意标量注入 |
 | D8 | 观测 key 契约由**事实归属包**定义（`llm.AttrModel`、`loop.AttrTool`、`flow.AttrNode`），桥执行折叠 | observability 聚合适配各包维度 | 字段语义的知识留在归属包——observability 只做信封与出口，不成为所有包观测字段的汇聚点；key 约定 `<组件>.<字段>` 点分，各包独立 key 空间 |
 | D9 | 桥正式化为伴生包 `observability/bridge`（允许 import llm/loop/flow） | 留在 demoapp 手写（60 行 + 三个 hack） | 装配层桥是所有宿主的公共需求，不是示例私有物；demoapp 改为官方包消费者。分层边界不变：本体不 import 业务组件，「认识业务组件」的桥单独成包 |
 | D10 | Collector 服务化：`bridge.CollectorKey` 进请求 scope，业务插件 `kernel.Get` 直写 | 业务观测走 kernel 事件总线 | 直写不带总线开销与类型面膨胀；HostID/TraceID 自动携带（#125 Web 地基入口形态：kernel+observability 以 Web 框架地基为方向） |
+| D11 | 实例身份随事实发出：llm 事件载荷带 `Instance`（Declare 的 id）、loop 载荷带 `Agent`（NewAgent 的 name）、flow Observer 回调带 `graphID`（New 的 graphID）；三家 id 构造期必填，折叠进 Attrs `llm.instance` / `loop.agent` / `flow.graph` | ① 宿主运行期靠 Fiber 名/包装层约定区分实例；② 观测侧在构造时刻登记 id→身份映射表 | TraceID 只分「哪一次」不分「哪个实例/哪张图」，多实例共享 scope 是常态（多 Agent 协作、A/B 模型、多图编排复用同名节点）；身份随事实发出与 D8 key 归属同构——两处写同名必然漂移；yaml 装图走 `LoadOptions.GraphID` |
 
 ## 2. 分层与归属
 
@@ -163,7 +164,7 @@ LoaderAction 对照 Reconcile 三阶段实际分支：removed→unmount、Name/C
 
 ## 7. 明确不做
 
-otel/prometheus 导出器 · 采样与动态级别 · Web UI · 正式包内业务事件订阅 · 在 observability 本包订阅 flow NodeWaiting/Running/Finished（E1 归属 flow.Observer，本包不认识业务 seam）· Diagnostic 接口与组件发现（v2）· 本体侧 Waterfall 计量旁路（D5：本体观察只用 On/Emit；计量起点例外主体 = llm.Observe，见 §1 D5 修订与 §9）· prompt/附件/密钥/思维链内容记录。
+otel/prometheus 导出器 · 采样与动态级别 · Web UI · 正式包内业务事件订阅 · 在 observability 本包订阅 flow NodeWaiting/Running/Finished（E1 归属 flow.Observer，本包不认识业务 seam）· Diagnostic 接口与组件发现（v2）· 本体侧 Waterfall 计量旁路（D5：本体观察只用 On/Emit；#144 起计量起点例外取消，llm 改 Started 载荷锚点，见 §1 D5）· prompt/附件/密钥/思维链内容记录。
 
 **「Record map 逃生舱」条款的精确化决议（Issue #125，2026-09）**：本条「不做」指 D2 意义上的**无类型 any 逃生舱**——`map[string]any` 字符串分发，未知键静默吞、跨 provider/出口行为漂移。#125 引入的 `Attrs` 不是该意义上的逃生舱：值域被泛型标量约束锁死（`~string|~int64|~float64|~bool`），payload 结构（Message 切片/附件/思维链）在类型上进不来，开放面经 `Set/Get` 单一入口。本票即对该条款的重开与收窄记录；「无 map[string]any」四个字仍然成立。
 
@@ -179,7 +180,7 @@ otel/prometheus 导出器 · 采样与动态级别 · Web UI · 正式包内业�
 6. examples 回归 + trace_id 桥内四层贯通
 7. race 下并发收敛不丢事件
 8. Attrs 表面测试：Set/Get 四类标量往返、命名标量（~int64 等）兼容、类型不符 ok=false、MarshalJSON 按序、SlogSink attrs 段排序且位于具名字段之后
-9. bridge 全链路（#125）：scripted agent 工具回合记录序列与 attrs 逐条断言；双 scope TraceID 隔离 + Dispose 摘除；HITL 中立（before_tool_call 监听恰一次、拒绝路径记 rejected）；Collector 直写自动携带标识；FlowObserver wait/run 分段（Duration>0）、skip 单条等待、双节点 nodeID 隔离
+9. bridge 全链路（#125）：scripted agent 工具回合记录序列与 attrs 逐条断言；双 scope TraceID 隔离 + Dispose 摘除；HITL 中立（before_tool_call 监听恰一次、拒绝路径记 rejected）；Collector 直写自动携带标识；FlowObserver wait/run 分段（Duration>0）、skip 单条等待、双节点 nodeID 隔离、三家归因锚（llm 同 scope 并发双实例 / loop 并发双 Agent / flow 并发双图，#144）
 
 ## 9. 观测适配下沉（Issue #127，2026-09）
 
@@ -189,9 +190,9 @@ bridge 伴生装配层形态废除；折叠适配下沉至各事实归属包。�
 
 | 包 | 导出 | 折叠 |
 |---|---|---|
-| llm | `Observe(scope, cfg)` + `EventGenerateFinished` | before_generate 只计时（waterfall 透传，唯一计时起点，D5 修订）；after_response → `llm.generate_finished`（Status=finish_reason，Duration=本次生成，Attrs=model/tokens_in/tokens_out/tokens_cached） |
-| loop | `Observe(scope, cfg)` + `EventToolFinished` / `EventTurnFinished` | after_tool_call → `loop.tool_finished`（三态判定 completed\|failed\|rejected 归本包，Duration/Err 透传，Attrs=tool）；turn_end → `loop.turn_finished`（Status=stopped_by，Attrs=steps；token 不重复记）；before_tool_call 不订阅（AfterToolCall 自带 Duration/Err，无观测增益，少一份与 HITL 审批链的顺序耦合） |
-| flow | `NewRecordObserver(cfg) (Observer, error)` + `EventNodeWaitFinished/RunFinished` | 节点 wait/run 分段计时两条，nodeID 走 flow.AttrNode 不占具名字段；单次图运行一个实例（nodeID 记账，异常路径残留随实例丢弃） |
+| llm | `Observe(scope, cfg)` + `EventGenerateFinished` | 不订阅 before_generate（#144 起计时改 `Started` 载荷锚点，D5 例外取消）；after_response → `llm.generate_finished`（Status=finish_reason，Duration=本次生成，Attrs=model/instance/tokens_in/tokens_out/tokens_cached） |
+| loop | `Observe(scope, cfg)` + `EventToolFinished` / `EventTurnFinished` | after_tool_call → `loop.tool_finished`（三态判定 completed\|failed\|rejected 归本包，Duration/Err 透传，Attrs=tool/agent）；turn_end → `loop.turn_finished`（Status=stopped_by，Attrs=steps/agent；token 不重复记）；before_tool_call 不订阅（AfterToolCall 自带 Duration/Err，无观测增益，少一份与 HITL 审批链的顺序耦合） |
+| flow | `NewRecordObserver(cfg) (Observer, error)` + `EventNodeWaitFinished/RunFinished` | 节点 wait/run 分段计时两条，graphID/nodeID 走 flow.AttrGraph/flow.AttrNode 不占具名字段；单实例可复用多图并发（graphID×nodeID 记账，同名节点跨图不串扰） |
 | observability | `ObserveConfig` / `Collector` / `CollectorKey` / `AttachCollector` / `NewTraceID` | 基座服务：业务插件 `kernel.Get(scope, CollectorKey)` 直写，HostID/TraceID 自动携带 |
 
 事件名保持 `<组件>.<事实>` 点分；key 前缀 `llm./loop./flow./kernel./observability.` 为官方组件保留，业务插件用自己的包路径前缀（无注册机制，靠约定，与 OTel attribute 命名同理）。
@@ -199,6 +200,7 @@ bridge 伴生装配层形态废除；折叠适配下沉至各事实归属包。�
 ### 9.2 装配语义
 
 - `ObserveConfig{Sink, HostID, TraceID}` 生命周期 = 请求：同一请求多适配复用同一值（共享 TraceID 即 D3 请求级关联）；跨请求必须新建。TraceID 生成方案归宿主（单一生成源）；`observability.NewTraceID` 提供默认生成器（时间戳 + 随机段 + 进程内序号），宿主也可完全自带方案（如 hostID 前缀 + 自增序号）。
+- 实例身份三家构造期必填：llm `Declare` id（`Open(id)` 结构性必填）、loop `NewAgent(model, name, ...)`、flow `New(ctx, graphID, ...)`（yaml 走 `LoadOptions.GraphID`）；身份随事实发出（llm 载荷 `Instance` / loop 载荷 `Agent` / flow 回调 `graphID`），折叠进 `llm.instance` / `loop.agent` / `flow.graph`（D11）。
 - scope 必须与 Agent 的 `llm.WithEventScope` 相同：EmitLocal/WaterfallLocal 只本 scope 可见；观测适配**不能做成 kernel.Plugin**（插件 Apply 私有子 scope 听不到），故各包导出 `Observe(scope, cfg)` 装配函数，与 Bootstrap 挂法同构。
 - 各包重复调用 `Observe` = 双监听双记录，godoc 显式警告；nil scope / nil Sink 返回哨兵错误。
 - 宿主自定义事实走 `c.Write / c.WriteAttrs`（状态型直写，不带 Duration/Err——运行期耗时与失败语义由各包 Observe 折叠产生）。
@@ -216,7 +218,7 @@ bridge 伴生装配层形态废除；折叠适配下沉至各事实归属包。�
 ### 9.4 测试锚分布
 
 - observability：Collector 注册/直写/撤除/覆盖（`collector_test.go`）+ Attrs/Sink/并发扇出。
-- llm：折叠/透传/可选注册/隔离摘除/校验五锚（`observe_test.go`）。
-- loop：折叠/失败/HITL 中立三重/可选注册/隔离摘除/校验六锚（`observe_test.go`）。
-- flow：分段/skip/双节点/MultiObserver 组合/校验五锚（`observer_record_test.go`）。
+- llm：折叠/透传/可选注册/隔离摘除/校验五锚 + 同 scope 并发双实例归因（`observe_test.go`）。
+- loop：折叠/失败/HITL 中立三重/可选注册/隔离摘除/校验六锚 + 并发双 Agent 归因（`observe_test.go`）。
+- flow：分段/skip/双节点/MultiObserver 组合/校验五锚 + 并发双图归因（`observer_record_test.go`）。
 - demoapp：全链路双 TraceID 隔离（`TestRequestObservesDoNotCrossTalk`，唯一同时装配三包的位置）。

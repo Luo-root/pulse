@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -42,7 +43,7 @@ func TestObserveFoldsToolAndTurn(t *testing.T) {
 		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "lookup", Arguments: json.RawMessage(`{}`)}),
 		llm.Resp("done"),
 	)
-	agent, err := NewAgent(model, WithToolSet(newTestToolSet(nil, false)), WithEventScope(scope))
+	agent, err := NewAgent(model, "test", WithToolSet(newTestToolSet(nil, false)), WithEventScope(scope))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,7 @@ func TestObserveToolFailure(t *testing.T) {
 		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "lookup", Arguments: json.RawMessage(`{}`)}),
 		llm.Resp("recovered"),
 	)
-	agent, err := NewAgent(model, WithToolSet(newTestToolSet(nil, true)), WithEventScope(scope))
+	agent, err := NewAgent(model, "test", WithToolSet(newTestToolSet(nil, true)), WithEventScope(scope))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func TestObserveHITLNeutral(t *testing.T) {
 		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "lookup", Arguments: json.RawMessage(`{}`)}),
 		llm.Resp("ok"),
 	)
-	agent, err := NewAgent(model, WithToolSet(newTestToolSet(ran, false)), WithEventScope(scope))
+	agent, err := NewAgent(model, "test", WithToolSet(newTestToolSet(ran, false)), WithEventScope(scope))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +191,7 @@ func TestObserveOptional(t *testing.T) {
 	sink := &observability.MemorySink{}
 
 	model := llm.NewScripted(llm.Resp("silent"))
-	agent, err := NewAgent(model, WithEventScope(scope))
+	agent, err := NewAgent(model, "test", WithEventScope(scope))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +220,7 @@ func TestObserveIsolationAndDispose(t *testing.T) {
 	if err := Observe(scopeA, observability.ObserveConfig{Sink: sink, HostID: "h", TraceID: "tr-a"}); err != nil {
 		t.Fatal(err)
 	}
-	agentA, err := NewAgent(llm.NewScripted(llm.Resp("a")), WithEventScope(scopeA))
+	agentA, err := NewAgent(llm.NewScripted(llm.Resp("a")), "a", WithEventScope(scopeA))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +238,7 @@ func TestObserveIsolationAndDispose(t *testing.T) {
 	if err := Observe(scopeB, observability.ObserveConfig{Sink: sink, HostID: "h", TraceID: "tr-b"}); err != nil {
 		t.Fatal(err)
 	}
-	agentB, err := NewAgent(llm.NewScripted(llm.Resp("b")), WithEventScope(scopeB))
+	agentB, err := NewAgent(llm.NewScripted(llm.Resp("b")), "b", WithEventScope(scopeB))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,5 +262,51 @@ func TestObserveValidation(t *testing.T) {
 	}
 	if err := Observe(scope, observability.ObserveConfig{TraceID: "t"}); err != observability.ErrNilSink {
 		t.Fatalf("nil sink err = %v", err)
+	}
+}
+
+// 归因锚（#144）：同 scope 并发双 Agent——turn_finished 的 Agent
+// 名折为 AttrAgent，两实例记录互不串扰；-race 下无共享竞态。
+func TestObserveConcurrentAgentAttribution(t *testing.T) {
+	scope := kernel.New()
+	t.Cleanup(scope.Dispose)
+	sink := &observability.MemorySink{}
+	if err := Observe(scope, observability.ObserveConfig{Sink: sink, HostID: "h", TraceID: "tr-multi"}); err != nil {
+		t.Fatal(err)
+	}
+
+	const perAgent = 4
+	var wg sync.WaitGroup
+	for _, name := range []string{"a", "b"} {
+		agent, err := NewAgent(llm.NewScripted(llm.Resp("done")), name, WithEventScope(scope))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perAgent; i++ {
+				if _, err := agent.Run(context.Background(), nil, llm.UserText("hi")); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	counts := map[string]int{}
+	for _, rec := range sink.Snapshot() {
+		if rec.Event != EventTurnFinished {
+			continue
+		}
+		v, ok := observability.Get[string](rec.Attrs, AttrAgent)
+		if !ok {
+			t.Fatalf("turn_finished missing %s attr: %+v", AttrAgent, rec)
+		}
+		counts[v]++
+	}
+	if counts["a"] != perAgent || counts["b"] != perAgent {
+		t.Fatalf("agent attribution = %v, want a=%d b=%d", counts, perAgent, perAgent)
 	}
 }

@@ -61,7 +61,7 @@ func main() {
 		return string(args), nil
 	})
 
-	agent, err := loop.NewAgent(model,
+	agent, err := loop.NewAgent(model, "assistant",
 		loop.WithToolSet(tools),
 		loop.WithSystemPrompt("You are a concise assistant."),
 		loop.WithEventScope(host),

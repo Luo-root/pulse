@@ -254,7 +254,7 @@ func TestAsToolSetThroughAgent(t *testing.T) {
 		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "lookup", Arguments: json.RawMessage(`{"q":"pulse"}`)}),
 		llm.Resp("ok"),
 	)
-	agent, err := loop.NewAgent(model, loop.WithToolSet(reg.AsToolSet()), loop.WithEventScope(host))
+	agent, err := loop.NewAgent(model, "test", loop.WithToolSet(reg.AsToolSet()), loop.WithEventScope(host))
 	if err != nil {
 		t.Fatal(err)
 	}

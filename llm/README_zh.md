@@ -128,7 +128,7 @@ type Error struct {
 
 ## 观测适配
 
-`Observe(scope, cfg)` 把运行期事实折叠进观测信封写宿主 Sink：after_response → `llm.generate_finished`（模型名与 token 用量进 Attrs，key 契约见 `llm/obs.go`）；before_generate 只作计时起点（waterfall 透传，不改请求）。scope 必须与 `llm.WithEventScope` 相同；同一 scope 重复调用 = 双监听双记录（godoc 警告）。详见 `observe.go` 与 `docs/design/observability-v1-design.md` §9。
+`Observe(scope, cfg)` 把运行期事实折叠进观测信封写宿主 Sink：after_response → `llm.generate_finished`（模型名、token 用量与实例身份进 Attrs，key 契约见 `llm/obs.go`）；计时取事件载荷携带的 `Started` 锚点（拦截包装在 waterfall 链后、inner 调用前记录），不订阅 before_generate。scope 必须与 `llm.WithEventScope` 相同；同一 scope 重复调用 = 双监听双记录（godoc 警告）。详见 `observe.go` 与 `docs/design/observability-v1-design.md` §9。
 
 ## 注册中心
 
@@ -157,7 +157,7 @@ model, err := reg.Open("main")
 拦截 seam（不包裹实例；派发走 **Local**）：
 
 - `pulse.llm.before_generate`（WaterfallLocal，`*GenerateRequest`）：路由、默认参数、脱敏、限流
-- `pulse.llm.after_response`（EmitLocal，值类型 `Response`）：计量、审计；观察者改不了调用方结果
+- `pulse.llm.after_response`（EmitLocal，值类型 `*ResponseEvent`：Response + Instance（Declare 的 id）+ Started 计时锚点）：计量、审计；观察者改不了调用方结果
 
 请求级 scope 注入（选项 A）：
 
@@ -262,7 +262,7 @@ TTS（Completions）：`req.Audio = &llm.AudioOutput{Voice: "alloy", Format: "wa
 | 符号 | 做什么 |
 |---|---|
 | `ServiceKey` | kernel 服务键 `"pulse.llm"` |
-| `EventBeforeGenerate` / `EventAfterResponse` | waterfall `*GenerateRequest` / emit 值 `Response` |
+| `EventBeforeGenerate` / `EventAfterResponse` | waterfall `*GenerateRequest` / emit 值 `*ResponseEvent` |
 | `Config` | Provider / Model / BaseURL / APIKey / Options（**仅客户端键**：organization / project / timeout_seconds / max_retries / headers；未知键忽略。禁止把 top_k / service_tier 等请求参数塞进 Options） |
 | `Factory` | `func(Config) (ChatModel, error)` |
 | `Registry` / `NewRegistry` | 工厂 + 命名实例。构造 Context 是无请求 scope 时的 Local 回退派发域 |
@@ -270,7 +270,7 @@ TTS（Completions）：`req.Audio = &llm.AudioOutput{Voice: "alloy", Format: "wa
 | `WithEventScope` / `EventScopeFrom` | 把请求 scope 注入 `context.Context`，供 observed Local 派发 |
 | `Plugin` | 把 Registry Provide 到作用域；卸载时 `Close` |
 | `RegisterProvider` | 可逆登记工厂；同名覆盖关闭该 provider 已开实例 |
-| `Declare` | 声明命名实例；重复同 id 替换并关旧实例 |
+| `Declare` | 声明命名实例（id 兼作观测实例身份，折 `llm.instance`）；重复同 id 替换并关旧实例 |
 | `SetDefault` / `DefaultID` | 默认实例 id |
 | `Open` / `OpenDefault` | 打开或复用缓存；未声明 / 无工厂 → `ErrNoModel` |
 | `Drop` | 关实例并删声明；若是 default 则清空 default |

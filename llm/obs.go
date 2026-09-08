@@ -9,6 +9,9 @@ package llm
 const (
 	// AttrModel 是产生响应的模型标识（取自 Response.Model）。
 	AttrModel = "llm.model"
+	// AttrInstance 是产生响应的命名实例 ID（Declare 的 id，经 Open
+	// 拦截包装随事件携带）。同一宿主多实例共用同一 scope 时区分来源。
+	AttrInstance = "llm.instance"
 	// AttrTokensIn 是输入 token 数（after_response 为单次口径）。
 	AttrTokensIn = "llm.tokens_in"
 	// AttrTokensOut 是输出 token 数（after_response 为单次口径）。

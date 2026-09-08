@@ -108,7 +108,7 @@ func run() error {
 			return nil, err
 		}
 
-		agent, err := loop.NewAgent(host.Model,
+		agent, err := loop.NewAgent(host.Model, "react",
 			loop.WithToolSet(tools),
 			loop.WithSystemPrompt("你是 Pulse 示例助手。需要事实时调用 lookup 工具。"),
 			loop.WithEventScope(reqScope),

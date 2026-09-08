@@ -51,6 +51,7 @@ type BeforeToolCall struct {
 
 // AfterToolCall 是工具执行完成的事件载荷。
 type AfterToolCall struct {
+	Agent    string // 产生本事件的 Agent 名（NewAgent 的 name，必填）
 	Call     llm.ToolCall
 	Result   string // 回传给模型的文本（失败时为错误说明）
 	Duration time.Duration
@@ -60,6 +61,7 @@ type AfterToolCall struct {
 
 // TurnEnd 是回合结束的事件载荷。
 type TurnEnd struct {
+	Agent     string         // 产生本事件的 Agent 名（NewAgent 的 name，必填）
 	Final     *llm.Message   // 最后一条 assistant 消息
 	Usage     llm.TokenUsage // 全回合用量累计
 	Steps     int            // 实际执行的步数
@@ -72,6 +74,9 @@ type TurnEnd struct {
 //
 // key 约定 <组件>.<字段> 点分，各组件独立 key 空间互不冲突。
 const (
+	// AttrAgent 是产生事件的 Agent 名（NewAgent 的 name；同 scope
+	// 多 Agent 时区分来源）。
+	AttrAgent = "loop.agent"
 	// AttrTool 是被执行工具的注册名（after_tool_call）。
 	AttrTool = "loop.tool"
 	// AttrSteps 是回合实际执行的步数（turn_end）。

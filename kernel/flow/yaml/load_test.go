@@ -69,7 +69,7 @@ nodes:
     provides: [{ name: demo.final_text, type: string }]
 `)
 
-	g, plan, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{Context: context.Background()})
+	g, plan, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{GraphID: "test", Context: context.Background()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ nodes:
     requires: [{ name: demo.q, type: int }]
     provides: []
 `)
-	_, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{})
+	_, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{GraphID: "test"})
 	if err == nil || !strings.Contains(err.Error(), "type") {
 		t.Fatalf("want type error, got %v", err)
 	}
@@ -109,7 +109,7 @@ nodes:
     requires: []
     provides: []
 `)
-	_, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{})
+	_, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{GraphID: "test"})
 	if err == nil || !strings.Contains(err.Error(), "uses") {
 		t.Fatalf("want uses error, got %v", err)
 	}
@@ -124,7 +124,7 @@ nodes:
     requires: []
     provides: []
 `)
-	_, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{})
+	_, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{GraphID: "test"})
 	if err == nil || !strings.Contains(err.Error(), "unknown factory") {
 		t.Fatalf("want unknown factory, got %v", err)
 	}
@@ -147,7 +147,7 @@ nodes:
     timeout: 2s
     retry: { attempts: 2, delay: 1ms }
 `)
-	g, plan, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{})
+	g, plan, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{GraphID: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ nodes:
     requires: [{ name: demo.a, type: string }]
     provides: []
 `)
-	g, plan, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{})
+	g, plan, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{GraphID: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ nodes:
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	g, plan, err := flowyaml.LoadFile(path, reg, flowyaml.LoadOptions{})
+	g, plan, err := flowyaml.LoadFile(path, reg, flowyaml.LoadOptions{GraphID: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ nodes:
 		t.Fatal(err)
 	}
 
-	_, _, err = flowyaml.Load([]byte("version: 99\nnodes: [{id: n, uses: ok, requires: [], provides: []}]"), reg, flowyaml.LoadOptions{})
+	_, _, err = flowyaml.Load([]byte("version: 99\nnodes: [{id: n, uses: ok, requires: [], provides: []}]"), reg, flowyaml.LoadOptions{GraphID: "test"})
 	if err == nil || !strings.Contains(err.Error(), "version") {
 		t.Fatalf("want version error, got %v", err)
 	}
@@ -252,7 +252,7 @@ nodes:
     provides: [{ name: demo.out, type: string }]
     timeout: 30ms
 `)
-	g, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{})
+	g, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{GraphID: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,8 +283,23 @@ nodes:
     requires: []
     provides: [{ name: demo.dup, type: string }]
 `)
-	_, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{})
+	_, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{GraphID: "test"})
 	if err == nil {
 		t.Fatal("want Add duplicate source error")
+	}
+}
+
+func TestLoadGraphIDRequired(t *testing.T) {
+	reg := flow.NewRegistry()
+	doc := []byte(`
+nodes:
+  - id: n
+    uses: missing
+    requires: []
+    provides: []
+`)
+	_, _, err := flowyaml.Load(doc, reg, flowyaml.LoadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "graph id is required") {
+		t.Fatalf("want graph id required error, got %v", err)
 	}
 }

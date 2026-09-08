@@ -302,7 +302,7 @@ func TestAsToolSetConsumedByAgent(t *testing.T) {
 		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "lookup", Arguments: json.RawMessage(`{"topic":"pulse"}`)}),
 		llm.Resp("done"),
 	)
-	agent, err := loop.NewAgent(model,
+	agent, err := loop.NewAgent(model, "test",
 		loop.WithToolSet(r.AsToolSet()),
 		loop.WithEventScope(host),
 		loop.WithSystemPrompt("test"),

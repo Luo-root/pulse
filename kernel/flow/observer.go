@@ -10,52 +10,58 @@ const (
 	NodeCanceled  NodeFinishReason = "canceled"
 )
 
-// 观测 attrs key 契约（归属 flow 层）：桥折叠 flow 节点生命周期为
-// observability.Record 时使用。
+// 观测 attrs key 契约（归属 flow 层）：官方适配 NewRecordObserver 折
+// 叠节点分段记录时使用。
 //
 // key 约定 <组件>.<字段> 点分，各组件独立 key 空间互不冲突。
 const (
 	// AttrNode 是产生生命周期事件的节点 ID。
 	AttrNode = "flow.node"
+	// AttrGraph 是产生生命周期事件的图 ID（New 的 graphID）：不同业务
+	// 用不同图组装（node 可跨图复用），多图共用 scope 时区分所属图。
+	AttrGraph = "flow.graph"
 )
 
 // Observer 观察单次 Graph 运行里每个节点的生命周期。
 // 默认无观察者（no-op）。实现必须并发安全：每个节点在独立 goroutine
 // 里回调。panic / error 不得升格为节点失败（由 Graph 吞掉）。
 //
+// graphID 是图身份（New 的 graphID，必填）：随每次回调发出，实现侧
+// 无需从构造参数另行携带——多图复用同一 Observer 实现时归因不漂移。
+//
 // 每节点次数契约（E1）：Waiting ≤ 1、Running ≤ 1、Finished = 1。
 // Retry 多次 attempt 不会重复打 Waiting/Running。
 type Observer interface {
-	OnNodeWaiting(nodeID string)
-	OnNodeRunning(nodeID string)
-	OnNodeFinished(nodeID string, reason NodeFinishReason, err error)
+	OnNodeWaiting(graphID, nodeID string)
+	OnNodeRunning(graphID, nodeID string)
+	OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error)
 }
 
 // ObserverFunc 把三个回调收成一个结构，便于测试与桥装配。
 type ObserverFunc struct {
-	Waiting  func(nodeID string)
-	Running  func(nodeID string)
-	Finished func(nodeID string, reason NodeFinishReason, err error)
+	Waiting  func(graphID, nodeID string)
+	Running  func(graphID, nodeID string)
+	Finished func(graphID, nodeID string, reason NodeFinishReason, err error)
 }
 
 // OnNodeWaiting 实现 Observer。
-func (o ObserverFunc) OnNodeWaiting(nodeID string) {
+func (o ObserverFunc) OnNodeWaiting(graphID, nodeID string) {
 	if o.Waiting != nil {
-		o.Waiting(nodeID)
+		o.Waiting(graphID, nodeID)
 	}
 }
 
 // OnNodeRunning 实现 Observer。
-func (o ObserverFunc) OnNodeRunning(nodeID string) {
+func (o ObserverFunc) OnNodeRunning(graphID, nodeID string) {
 	if o.Running != nil {
-		o.Running(nodeID)
+		o.Running(graphID, nodeID)
 	}
 }
 
 // OnNodeFinished 实现 Observer。
-func (o ObserverFunc) OnNodeFinished(nodeID string, reason NodeFinishReason, err error) {
+func (o ObserverFunc) OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error) {
 	if o.Finished != nil {
-		o.Finished(nodeID, reason, err)
+		o.Finished(graphID, nodeID, reason, err)
 	}
 }
 
@@ -63,28 +69,28 @@ func (o ObserverFunc) OnNodeFinished(nodeID string, reason NodeFinishReason, err
 type MultiObserver []Observer
 
 // OnNodeWaiting 实现 Observer。
-func (m MultiObserver) OnNodeWaiting(nodeID string) {
+func (m MultiObserver) OnNodeWaiting(graphID, nodeID string) {
 	for _, o := range m {
 		if o != nil {
-			o.OnNodeWaiting(nodeID)
+			o.OnNodeWaiting(graphID, nodeID)
 		}
 	}
 }
 
 // OnNodeRunning 实现 Observer。
-func (m MultiObserver) OnNodeRunning(nodeID string) {
+func (m MultiObserver) OnNodeRunning(graphID, nodeID string) {
 	for _, o := range m {
 		if o != nil {
-			o.OnNodeRunning(nodeID)
+			o.OnNodeRunning(graphID, nodeID)
 		}
 	}
 }
 
 // OnNodeFinished 实现 Observer。
-func (m MultiObserver) OnNodeFinished(nodeID string, reason NodeFinishReason, err error) {
+func (m MultiObserver) OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error) {
 	for _, o := range m {
 		if o != nil {
-			o.OnNodeFinished(nodeID, reason, err)
+			o.OnNodeFinished(graphID, nodeID, reason, err)
 		}
 	}
 }

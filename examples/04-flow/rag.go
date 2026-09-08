@@ -30,9 +30,12 @@ func runRAGGraph(host *demoapp.Host, agent *loop.Agent, retriever Retriever, his
 	if err != nil {
 		return nil, 0, err
 	}
-	g := flow.New(context.Background(),
+	g, err := flow.New(context.Background(), "rag",
 		flow.WithObserver(flow.MultiObserver{obs, host.Peak.Observer()}),
 	)
+	if err != nil {
+		return nil, 0, err
+	}
 	if err := flow.Seed(g, RagUserInput, user); err != nil {
 		return nil, 0, err
 	}

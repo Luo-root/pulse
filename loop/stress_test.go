@@ -28,7 +28,7 @@ func TestStressLongRun500Steps(t *testing.T) {
 		ticks.Add(1)
 		return "t", nil
 	}}
-	a, err := NewAgent(model, WithToolSet(tools), WithEventScope(scope), WithMaxSteps(500))
+	a, err := NewAgent(model, "stress", WithToolSet(tools), WithEventScope(scope), WithMaxSteps(500))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestStressConcurrentRuns(t *testing.T) {
 	scope := kernel.New()
 	model := llm.NewScripted(llm.Resp("ok"))
 	tools := &fakeTools{fn: func(call llm.ToolCall) (string, error) { return "r", nil }}
-	a, err := NewAgent(model, WithToolSet(tools), WithEventScope(scope))
+	a, err := NewAgent(model, "stress", WithToolSet(tools), WithEventScope(scope))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestStressConcurrentRuns(t *testing.T) {
 func TestStressEventFloodTraceCount(t *testing.T) {
 	scope := kernel.New()
 	model := llm.NewScripted(llm.Resp("done"))
-	a, err := NewAgent(model, WithEventScope(scope), WithSystemPrompt("s"))
+	a, err := NewAgent(model, "stress", WithEventScope(scope), WithSystemPrompt("s"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestStressLoopGoroutineLeak(t *testing.T) {
 	scope := kernel.New()
 	model := llm.NewScripted(llm.Resp("x"))
 	tools := &fakeTools{fn: func(call llm.ToolCall) (string, error) { return "", nil }}
-	a, err := NewAgent(model, WithToolSet(tools), WithEventScope(scope), WithMaxSteps(2))
+	a, err := NewAgent(model, "stress", WithToolSet(tools), WithEventScope(scope), WithMaxSteps(2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestStressRejectHalfPolicy(t *testing.T) {
 		llm.RespToolCalls(llm.ToolCall{ID: "c", Name: "echo", Arguments: []byte(`{}`)}),
 	)
 	tools := &fakeTools{fn: func(call llm.ToolCall) (string, error) { return "ran", nil }}
-	a, err := NewAgent(model, WithToolSet(tools), WithEventScope(scope), WithMaxSteps(40))
+	a, err := NewAgent(model, "stress", WithToolSet(tools), WithEventScope(scope), WithMaxSteps(40))
 	if err != nil {
 		t.Fatal(err)
 	}

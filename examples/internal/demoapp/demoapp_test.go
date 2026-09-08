@@ -225,7 +225,7 @@ func TestRequestObservesDoNotCrossTalk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agentA, err := loop.NewAgent(model, loop.WithToolSet(tools), loop.WithEventScope(scopeA))
+	agentA, err := loop.NewAgent(model, "iso-a", loop.WithToolSet(tools), loop.WithEventScope(scopeA))
 	if err != nil {
 		t.Fatal(err)
 	}

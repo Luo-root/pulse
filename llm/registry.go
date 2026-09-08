@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/Luo-root/pulse/kernel"
 )
@@ -22,8 +23,19 @@ var ServiceKey = kernel.NewServiceKey[*Registry]("pulse.llm")
 //	  调用方的结果——与 before_generate 的指针改写语义形成对照。
 var (
 	EventBeforeGenerate = kernel.NewEventKey[*GenerateRequest]("pulse.llm.before_generate")
-	EventAfterResponse  = kernel.NewEventKey[Response]("pulse.llm.after_response")
+	EventAfterResponse  = kernel.NewEventKey[ResponseEvent]("pulse.llm.after_response")
 )
+
+// ResponseEvent 是 EventAfterResponse 的事件载荷：拦截包装在模型调用
+// 入口（waterfall 链之后、inner 调用之前）记录 Started，随响应一并
+// 发出。Instance 是 Declare 的实例 ID——同 scope 多实例共用时区分
+// 来源；Started 供观测折叠计算 Duration（同 scope 并发 Generate 各自
+// 携带锚点，互不串扰）。
+type ResponseEvent struct {
+	Response Response
+	Instance string
+	Started  time.Time
+}
 
 // Config 是一个命名模型实例的声明。
 type Config struct {
@@ -236,7 +248,7 @@ func (r *Registry) Open(id string) (ChatModel, error) {
 		return nil, NewError(ErrUnknown, cfg.Provider, 0, err, "build model %q", id)
 	}
 
-	wrapped := &observed{inner: m, reg: r}
+	wrapped := &observed{inner: m, reg: r, id: id}
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -313,10 +325,13 @@ func closeModel(m ChatModel) {
 	}
 }
 
-// observed 是拦截包装：所有调用经过 before/after 事件。
+// observed 是拦截包装：所有调用经过 before/after 事件。id 是 Declare
+// 的实例 ID（Open 时传入），随 after_response 事件发出供观测折叠
+// 区分同 scope 多实例。
 type observed struct {
 	inner ChatModel
 	reg   *Registry
+	id    string
 }
 
 // eventScope 解析本次调用的派发作用域：
@@ -334,11 +349,12 @@ func (o *observed) eventScope(ctx context.Context) *kernel.Context {
 func (o *observed) Generate(ctx context.Context, req *GenerateRequest) (*Response, error) {
 	scope := o.eventScope(ctx)
 	req = kernel.WaterfallLocal(scope, EventBeforeGenerate, req)
+	started := time.Now()
 	resp, err := o.inner.Generate(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	kernel.EmitLocal(scope, EventAfterResponse, *resp)
+	kernel.EmitLocal(scope, EventAfterResponse, ResponseEvent{Response: *resp, Instance: o.id, Started: started})
 	return resp, nil
 }
 
@@ -350,13 +366,14 @@ func (o *observed) Stream(ctx context.Context, req *GenerateRequest) (<-chan Str
 		return nil, err
 	}
 	out := make(chan StreamEvent, 8)
+	started := time.Now()
 	go func() {
 		defer close(out)
 		for ev := range src {
 			out <- ev
 			if ev.Kind == EventDone {
 				if ev.Response != nil {
-					kernel.EmitLocal(scope, EventAfterResponse, *ev.Response)
+					kernel.EmitLocal(scope, EventAfterResponse, ResponseEvent{Response: *ev.Response, Instance: o.id, Started: started})
 				}
 				return
 			}

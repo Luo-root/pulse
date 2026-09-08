@@ -2,6 +2,7 @@ package llm_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -199,5 +200,73 @@ func TestObserveValidation(t *testing.T) {
 	}
 	if err := llm.Observe(scope, observability.ObserveConfig{TraceID: "t"}); err != observability.ErrNilSink {
 		t.Fatalf("nil sink err = %v", err)
+	}
+}
+
+// 归因锚（#144）：同 scope 并发双实例——两条 Declare 各自 Open，
+// 记录以 llm.instance 区分归属；Started 锚点随事件携带，并发下
+// Duration 仍各自 >0（无共享闭包计时）。
+func TestObserveConcurrentInstanceAttribution(t *testing.T) {
+	scope := kernel.New()
+	t.Cleanup(scope.Dispose)
+	sink := &observability.MemorySink{}
+	if err := llm.Observe(scope, observability.ObserveConfig{Sink: sink, HostID: "h", TraceID: "tr-multi"}); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := llm.NewRegistry(scope)
+	if _, err := reg.RegisterProvider(scope, "mock", func(llm.Config) (llm.ChatModel, error) {
+		return slowModel{llm.NewScripted(respWithUsage("done"))}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a", "b"} {
+		if err := reg.Declare(id, llm.Config{Provider: "mock"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open := func(id string) llm.ChatModel {
+		t.Helper()
+		m, err := reg.Open(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	const perInstance = 8
+	var wg sync.WaitGroup
+	for _, id := range []string{"a", "b"} {
+		m := open(id)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perInstance; i++ {
+				if _, err := m.Generate(llm.WithEventScope(context.Background(), scope), llm.NewRequest(llm.UserText("q"))); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	recs := sink.Snapshot()
+	if len(recs) != 2*perInstance {
+		t.Fatalf("records = %d, want %d", len(recs), 2*perInstance)
+	}
+	counts := map[string]int{}
+	for _, rec := range recs {
+		if rec.Event != llm.EventGenerateFinished || rec.Duration <= 0 {
+			t.Fatalf("event/duration wrong: %+v", rec)
+		}
+		v, ok := observability.Get[string](rec.Attrs, llm.AttrInstance)
+		if !ok {
+			t.Fatalf("record missing %s attr: %+v", llm.AttrInstance, rec)
+		}
+		counts[v]++
+	}
+	if counts["a"] != perInstance || counts["b"] != perInstance {
+		t.Fatalf("instance attribution = %v, want a=%d b=%d", counts, perInstance, perInstance)
 	}
 }

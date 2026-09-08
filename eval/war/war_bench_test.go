@@ -41,7 +41,7 @@ func BenchmarkWar_PulseTextRoundReused(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	agent, err := loop.NewAgent(model, loop.WithEventScope(scope))
+	agent, err := loop.NewAgent(model, "war", loop.WithEventScope(scope))
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -48,7 +48,7 @@ func TestThreeSourcesDefinitionsAndRound(t *testing.T) {
 		),
 		llm.Resp("done"),
 	)
-	agent, err := loop.NewAgent(model,
+	agent, err := loop.NewAgent(model, "test",
 		loop.WithToolSet(demo.Reg.AsToolSet()),
 		loop.WithSystemPrompt(buildSystem(demo.Metas)),
 		loop.WithEventScope(host),

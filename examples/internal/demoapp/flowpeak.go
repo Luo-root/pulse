@@ -24,8 +24,8 @@ func (p *FlowPeak) Peak() int32 { return p.peak.Load() }
 // 与官方 flow.NewRecordObserver 组合使用。
 func (p *FlowPeak) Observer() flow.Observer {
 	return flow.ObserverFunc{
-		Waiting:  func(string) { p.enter() },
-		Finished: func(string, flow.NodeFinishReason, error) { p.leave() },
+		Waiting:  func(graphID, nodeID string) { p.enter() },
+		Finished: func(graphID, nodeID string, reason flow.NodeFinishReason, err error) { p.leave() },
 	}
 }
 

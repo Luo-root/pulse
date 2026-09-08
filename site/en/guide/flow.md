@@ -5,7 +5,7 @@
 ## Three core types
 
 ```go
-g := flow.New(ctx)
+g, _ := flow.New(ctx, "demo")        // Graph: graph id required (observability attribution)
 
 kIn := flow.NewKey[string]("in")     // Key: typed slot handle
 kOut := flow.NewKey[string]("out")

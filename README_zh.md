@@ -31,11 +31,11 @@ v2 内核以可逆效应和依赖响应式为基座。核心重构已落地：�
 | [`llm`](llm/README_zh.md) | provider 中立的消息词汇表、请求/流事件、错误分类、模型注册中心 | `llm.NewRegistry()` / `llm.ChatModel` |
 | [`llm/openai`](llm/openai/README_zh.md) | OpenAI Chat Completions + Responses 官方 SDK 适配器 | `openai.Register()` |
 | [`llm/anthropic`](llm/anthropic/README_zh.md) | Anthropic Messages 官方 SDK 适配器 | `anthropic.Register()` |
-| [`loop`](loop/README_zh.md) | 无状态 ReAct 回合执行器，工具调用与 HITL 决策事件 | `loop.NewAgent()` |
+| [`loop`](loop/README_zh.md) | 无状态 ReAct 回合执行器，工具调用与 HITL 决策事件 | `loop.NewAgent(model, name)` |
 | [`toolset`](toolset/README_zh.md) | 可逆工具注册中心（`pulse.tools`），`AsToolSet()` 适配 loop；builtins / mcp / lsp 子包 | `toolset.Plugin()` / `Registry.Register` |
 | [`skills`](skills/README_zh.md) | Agent Skills 装载器（agentskills.io；规程包，非 Tool） | `skills.Open()` / `List`/`Load`/`ReadFile` |
 | [`textsplit`](textsplit/README_zh.md) | 文本分块：尺寸预算 + 分隔符优先级 + 字节 offset | `textsplit.Split` |
-| [`kernel/flow`](kernel/flow/README_zh.md) | 数据就绪驱动的节点编排（槽位三态、Skip、E1 Observer） | `flow.New(ctx)` |
+| [`kernel/flow`](kernel/flow/README_zh.md) | 数据就绪驱动的节点编排（槽位三态、Skip、E1 Observer） | `flow.New(ctx, graphID)` |
 | [`kernel/flow/yaml`](kernel/flow/yaml/README_zh.md) | E2 YAML 声明式装图（拓扑归属 A：Factory 只给 Run） | `flowyaml.Load` |
 | [`memory`](memory/README_zh.md) | P2 记忆与会话（9 子包）：session / compaction / store / assemble / selfedit / index / candidate / reflection | `memory/README_zh.md` 全局地图 |
 | [`observability`](observability/README_zh.md) | 正式观测包：Bootstrap + Record + Sink + NewTraceID（只依赖 kernel） | `observability.Bootstrap()` |
@@ -90,7 +90,7 @@ func main() {
         return string(args), nil
     })
 
-    agent, err := loop.NewAgent(model,
+    agent, err := loop.NewAgent(model, "assistant",
         loop.WithToolSet(tools),
         loop.WithSystemPrompt("你是一个简洁的助手。"),
         loop.WithEventScope(host),
