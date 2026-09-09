@@ -168,13 +168,15 @@ func (t *jobTable) reapDoneLocked() {
 }
 
 // launch 启动后台命令：生命周期不绑请求 ctx（WithoutCancel），绑 kernel dispose。
-func (t *jobTable) launch(ctx context.Context, command, cwd string) (*job, error) {
+// env 由调用方（exec 的 childEnv）统一构造——白名单语义与前台的 exec 一致。
+func (t *jobTable) launch(ctx context.Context, command, cwd string, env []string) (*job, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	cmd := buildShellCommand(runCtx, command)
 	cmd.Dir = cwd
+	cmd.Env = env
 	setupBackgroundProcess(cmd)
 
 	t.mu.Lock()

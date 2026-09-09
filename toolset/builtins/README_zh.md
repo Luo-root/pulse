@@ -29,7 +29,7 @@ defer dispose()
 | `ls`/`glob`/`grep` | **先收集并稳定排序再切页**；超限 trailer 带 `after` 游标 |
 | `edit`/`write`(覆盖) | **同进程须先 `read`**；mtime 更新则 stale 拒绝；`edit` 默认唯一匹配 |
 | `apply_patch` | 多文件 Add/Update/Delete（V4A 文本协议）；**先 verify 再写**：全部 hunk 过（上下文锚点、read-before-write、WriteRoots）才落盘，一败全不写。Update/Delete 同样须先 `read`；CRLF 归一还原；NUL 拒绝；`*** End Patch` 后残留内容报错；Add 无法表达空文件（至少一行）。不做 `*** Move to:` rename、fuzzy 匹配、二进制 patch |
-| `exec` | **Windows = PowerShell**；Unix = `sh -c`；timeout + 输出头尾截断；RiskDangerous。`background:true` 起长命令 job：立即返回 `job_id`，不受 timeout、不随请求取消 |
+| `exec` | **Windows = PowerShell**；Unix = `sh -c`；timeout + 输出头尾截断；**env 白名单**（默认仅继承平台必需键，`ExecEnv` 追加键名、`ExecEnvInheritAll` 显式恢复全量——宿主 secret 不在列表内就不进子进程）；RiskDangerous。`background:true` 起长命令 job：立即返回 `job_id`，不受 timeout、不随请求取消 |
 | `job_output` | 按**全局字节偏移**读 job 增量合流输出 + status（`running`/`exited exit_code=N`/`killed`）；环形缓冲（`MaxExecBytes`）超限丢头并回报 `dropped`；超限 trailer `pass offset=N` 续读 |
 | `job_kill` | 整树杀：Windows `taskkill /T /F`，Unix 进程组 SIGKILL；等进程真正退出才返回；已退出的 job 报错。**dispose / scope Dispose 都杀全部活 job**（独立 Effect，宿主忘显式 dispose 也兜底）；`MaxJobs`（默认 16）限并发；done job 超 `2*MaxJobs` 按创建序淘汰最旧。`background` 与 `timeout_seconds` 同给时 timeout 被忽略 |
 | `web_fetch` | http(s) GET → 抽文本 → 按行 `offset`/`limit`（默认 limit=`ReadLimit`）；超 `MaxLineRunes` 的行截断加 `…`（与 `read` 同口径）。超限 trailer `pass offset=N`；每次续读再 GET。拦 file/ftp/data、NUL 二进制、云 metadata；**Dial 时**对实际解析 IP 再检一次（防 redirect / DNS rebinding），连已检 IP 而非主机名。私网默认允许（`BlockPrivate` 才拒）。不是渲染后的浏览器 DOM |
@@ -38,6 +38,14 @@ defer dispose()
 | `glob`/`grep` | P0 **不**应用 `.gitignore`（显式）；非法正则返回 error |
 | Source | `builtins.<name>`；`Register` 返回的 `dispose()` 可逆 |
 
+## 三层边界（约束的归属，#157）
+
+| 层 | 内容 | 归属 |
+|---|---|---|
+| 边界内自由 | `read`/`ls`/`glob`/`grep` 受 `Root`+`ForbidRead`；`edit`/`write`/`apply_patch` 受 `WriteRoots`；`exec` cwd 钉死 `Root` 子目录 + timeout + 输出截断 + **env 白名单** | 本包（已有） |
+| 越界审批 | 工作区外或高危操作走人审：写前 diff 卡片给 `before_tool_call` 监听器（decision events） | seam 在本包（`PreviewFn` 已登记）；默认接线归 host 装配层 |
+| 命令逃逸面 | **`exec` 里 shell 命令的文件访问不受 confineRead 管**——cwd 约束 ≠ 命令访问约束（`cat /etc/passwd` 在白名单 env 下照样可读全盘） | 宿主部署层：OS 级隔离（容器 / sandbox runtime）——本包不假装约束住，也不做降低实用性的死墙（对齐 Codex/Claude Code「边界内自由 + 越界审批 + OS 兜底」模型） |
+
 ## 刻意不做
 
 - **写前 diff 进 HITL**：`edit`/`write`/`exec` 登记 `PreviewFn`（只读盘）；卡片给 `before_tool_call` 监听器，不进 tool result。见 Issue [#56](https://github.com/Luo-root/pulse/issues/56)
@@ -45,7 +53,7 @@ defer dispose()
 - LSP → [`toolset/lsp`](../lsp/README_zh.md)（独立可选包）
 - job 无列表工具（模型记 id）；stdout/stderr 分流；输出落盘持久化；跨进程 / 跨重启 job
 - 真浏览器渲染（chromedp）；`web_fetch` 只抽 HTTP 正文
-- OS 级 sandbox（bwrap / Seatbelt）
+- OS 级 sandbox（bwrap / Seatbelt）——见「三层边界」：工具级约束管 builtins 自身工具，命令逃逸面归宿主部署层
 - 改 examples（示例统一另规划）
 - Skill 自动变 Tool
 - 第二套执行事件总线

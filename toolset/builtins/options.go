@@ -63,6 +63,15 @@ type Options struct {
 	MaxExecBytes int
 	// MaxJobs 限制同时运行的后台 job 数（exec background）。默认 16。
 	MaxJobs int
+	// ExecEnv 是 exec / 后台 job 子进程的**追加继承键名**（白名单之外）。
+	// 白名单模式（默认）下子进程只继承 defaultChildEnvKeys + 本列表列出的
+	// 键，值一律取自宿主当前环境——宿主 secret 不在列表内就不进子进程。
+	// 键名为纯键名（不含 =），空串与含 = 的条目被忽略。
+	ExecEnv []string
+	// ExecEnvInheritAll 为 true 时子进程继承宿主全量环境变量（恢复 v0.2.0
+	// 之前的行为）。显式开关：全量继承会把宿主 secret 暴露给模型驱动的
+	// 命令，宿主应仅在受信环境开启。
+	ExecEnvInheritAll bool
 }
 
 func (o Options) withDefaults() (Options, error) {
