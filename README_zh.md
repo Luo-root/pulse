@@ -55,6 +55,14 @@ Pulse 按 0.x 的 SemVer 惯例发布：
 | [`examples`](examples/README.md) | 渐进示例 00–07：kernel 地基 / 装配链+词汇表 / ReAct / HITL / flow 编排 / 会话记忆 / 长期记忆 / 生产集成 | `go run ./examples/00-hello-kernel` |
 | [`eval`](eval/README_zh.md) | 评测套件：工程能力 property test + 分层 benchmark + 跨框架内战对比 | `go test -race ./eval/` |
 
+## 三问心智模型
+
+三个问题覆盖新用户需要知道的大部分内容：
+
+1. **模型 / 工具怎么接起来？** 当前：`kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)`（下面的快速上手会走一遍）。把这一串收敛为一次 `host.New(Options)` 的宿主装配包是下一个大件。
+2. **一次 turn 怎么跑？** `agent.Run(ctx, input)` 执行一个无状态 ReAct 回合：模型 ↔ 工具循环直到模型停。历史累积、重试/failover、会话持久化都归调用方——`loop` 刻意一样都不拥有。
+3. **状态存在哪？** 按生命周期分三个 store：会话事件在事件日志（`memory/session`）、长期事实在 item store（`memory/store`）、服务实例在 kernel 服务仓库。其余一切无状态、可替换。
+
 ## 快速上手：模型 + ReAct 工具回合
 
 以下示例演示当前 v2 的最短链路。请用环境变量提供 API Key，避免写入代码。

@@ -2,6 +2,14 @@
 
 Pulse v2 的底座是一个**插件内核**：对环境的所有修改都注册为可逆 Effect，服务依赖变化驱动装载 / 卸载。理解五个概念就能读懂全部包的设计。
 
+## 三问心智模型
+
+三个问题覆盖新用户需要知道的大部分内容：
+
+1. **模型 / 工具怎么接起来？** 当前：`kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)`（[快速上手](./quickstart.md)会走一遍）。把这一串收敛为一次 `host.New(Options)` 的宿主装配包是下一个大件。
+2. **一次 turn 怎么跑？** `agent.Run(ctx, input)` 执行一个无状态 ReAct 回合：模型 ↔ 工具循环直到模型停。历史累积、重试/failover、会话持久化都归调用方——`loop` 刻意一样都不拥有。
+3. **状态存在哪？** 按生命周期分三个 store：会话事件在事件日志（`memory/session`）、长期事实在 item store（`memory/store`）、服务实例在 kernel 服务仓库。其余一切无状态、可替换。
+
 ## kernel.Context 五件套
 
 | 概念 | 一句话 | 关键性质 |

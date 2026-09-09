@@ -55,6 +55,14 @@ Pulse ships under the 0.x SemVer convention. From **v0.2.0**:
 | [`examples`](examples/README.md) | Progressive lessons 00–07: kernel ground / assembly + vocabulary / ReAct / HITL / flow / session memory / long-term memory / production | `go run ./examples/00-hello-kernel` |
 | [`eval`](eval/README.md) | Evaluation suite: engineering-capability property tests + layered benchmarks + cross-framework comparison suite (`eval/war`) | `go test -race ./eval/` |
 
+## The three-question mental model
+
+Three questions answer most of what a new user needs:
+
+1. **How do models / tools get wired?** Today: `kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)` (walk through it in the Quick Start below). A host assembly package that collapses this into one `host.New(Options)` call is the next major piece.
+2. **How does one turn run?** `agent.Run(ctx, input)` executes one stateless ReAct round: model ↔ tools until the model stops. History accumulation, retry/failover, and session persistence are owned by the caller — `loop` deliberately owns none of them.
+3. **Where does state live?** Three stores, by lifetime: conversation events in the session log (`memory/session`), long-term facts in the item store (`memory/store`), service instances in the kernel's service repository. Everything else is stateless and replaceable.
+
 ## Quick Start: Model + ReAct Tool Round
 
 The shortest v2 path. Provide the API key via environment variables; never hard-code credentials.

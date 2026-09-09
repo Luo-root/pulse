@@ -2,6 +2,14 @@
 
 Pulse v2's foundation is a **plugin kernel**: every modification to the environment is registered as a reversible Effect, and service-dependency changes drive loading/unloading. Five concepts explain every package's design.
 
+## The three-question mental model
+
+Three questions answer most of what a new user needs:
+
+1. **How do models / tools get wired?** Today: `kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)` (walked through in the [quickstart](./quickstart.md)). A host assembly package that collapses this into one `host.New(Options)` call is the next major piece.
+2. **How does one turn run?** `agent.Run(ctx, input)` executes one stateless ReAct round: model ↔ tools until the model stops. History accumulation, retry/failover, and session persistence are owned by the caller — `loop` deliberately owns none of them.
+3. **Where does state live?** Three stores, by lifetime: conversation events in the session log (`memory/session`), long-term facts in the item store (`memory/store`), service instances in the kernel's service repository. Everything else is stateless and replaceable.
+
 ## kernel.Context five-piece
 
 | Concept | One line | Key property |
