@@ -3,7 +3,7 @@
 # memory/store
 
 The P2-C long-term memory canonical store: Put/Get/Search/Supersede/Revoke of `MemoryItem`.
-Package docs (godoc) in `doc.go`; design source of truth [docs/design/memory-layer-research-and-v2-design.md](../../docs/design/memory-layer-research-and-v2-design.md) §6.5/§10/§13.1; implementation ticket #76 (C1). SQLite + FTS landed in C2, the Context Assembler in C3.
+Package docs (godoc) in `doc.go`; design source of truth [docs/design/memory-layer-research-and-v2-design.md](../../docs/design/memory-layer-research-and-v2-design.md) §6.5/§10/§13.1/§7.4; implementation ticket #76 (C1). SQLite + FTS landed in C2, the Context Assembler in C3, export/import in #152.
 
 ## Interface surface
 
@@ -53,6 +53,20 @@ Active/Pending ──Revoke──▶ Revoked（终态；reason 走 store 审计�
 - Ordering = UpdatedAt descending + ID tiebreak (stable, independent of Confidence — values nobody writes do not participate in ranking); `Limit` is a hard cap (keyset pagination is a C2 decision).
 - No hits returns an empty slice, **never fabricated**.
 
+## Export and import (migration fidelity)
+
+```go
+items, err := store.ExportItems(ctx, src, store.MemoryQuery{Namespace: ns}) // IncludeInactive forced
+report, err := store.ImportItems(ctx, dst, items)
+// report.Imported / report.Skipped / report.Conflicts []store.Conflict
+```
+
+- `ExportItems` exports everything: **`IncludeInactive` is forced** — Superseded/Revoked are part of the state machine too; dropping them means dropping the supersede chain and revocation history.
+- The target store supports import only by implementing the optional `ImportStore` interface (`PutImport`); both official implementations (memory/SQLite) do. If unsupported it returns `ErrImportUnsupported`, **never a silent downgrade** — an item's bi-temporal domain (KnownAt/CreatedAt/UpdatedAt) and Revision being reset is a "successful migration" worse than failure.
+- Idempotent three-way branch: per-item Get probe — missing → PutImport; present with identical content → Skipped; present with different content → Conflict (first writer wins, no overwrite). A per-item validation failure (validate still runs) lands in Conflicts and the batch continues.
+- **Taint is preserved as-is**: import must not launder trust levels or bypass the promotion gate.
+- Typical scenarios: dev → production migration, memory distribution, cold backups. Not done: namespace remapping, supersede-chain rebuilding (§7.4).
+
 ## Error quick reference
 
 | Sentinel | Meaning |
@@ -62,6 +76,7 @@ Active/Pending ──Revoke──▶ Revoked（终态；reason 走 store 审计�
 | `ErrInvalidItem` / `ErrInvalidQuery` | item validation failed (shape/provenance/confidence) / illegal Search conditions |
 | `ErrSupersedeRevoked` / `ErrSupersedeSelf` | Superseding a Revoked item (terminal) / next.ID equals oldID |
 | `ErrRevokeSuperseded` / `ErrStatusTransition` | Revoking a Superseded item / a Put update attempting to change Status |
+| `ErrImportUnsupported` | the target store does not implement ImportStore (no silent downgrade fallback) |
 
 ## Tests
 

@@ -54,7 +54,15 @@
 // JSONL 为明文：文件即密钥面、路径宿主拥有；`blob:` URL 前缀为本包
 // 保留。行为细节见本包 README_zh.md。
 //
+// # 导出与导入（迁移保真）
+//
+// ExportSession 写 header 行 + 信封行的单文件流（与 JSONL 会话文件同构，
+// blob 内联自包含）；ImportSession 全量校验（seq 连续 / 注册表分级 /
+// tool 配对 / 未闭合拒绝）后经 CreateSeeded 重建。目标 store 需实现可选
+// 接口 Seeder；不支持返回 ErrSeedUnsupported——绝不静默重编号 Seq
+// （checkpoint / SourceRefs / SeedLength 的溯源都依赖 Seq 原值）。
+//
 // 设计全貌（数据契约 §6 / 接口边界 §7 / 压缩与恢复 §9 / 分票 §12）见
 // docs/design/memory-layer-research-and-v2-design.md；实现票 #68（A1）、
-// #70（A2）。
+// #70（A2）、#152（导出/导入）。
 package session

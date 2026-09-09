@@ -3,7 +3,7 @@
 # memory/session
 
 The P2 memory layer's session event log: the append-only log is the single source of truth and `Surface() []*llm.Message` is only a projection.
-Package docs (godoc) in `doc.go`; design source of truth [docs/design/memory-layer-research-and-v2-design.md](../../docs/design/memory-layer-research-and-v2-design.md) §6/§7/§9; implementation tickets #68 (A1), #70 (A2), #73 (P2-B Replace fold).
+Package docs (godoc) in `doc.go`; design source of truth [docs/design/memory-layer-research-and-v2-design.md](../../docs/design/memory-layer-research-and-v2-design.md) §6/§7/§7.4/§9; implementation tickets #68 (A1), #70 (A2), #73 (P2-B Replace fold), #152 (export/import).
 
 ## Interface surface
 
@@ -41,6 +41,21 @@ reg := sess.Registry()                          // 事件 codec 环境（FoldTra
 
 JSONL on-disk layout: `{root}/{sessionID}/header.json` + `events.jsonl` (one envelope per line) + `blobs/{sha256}` (inline byte overflow above 32KiB, content-addressed dedup, sha self-verification, missing blob = load error) + `lock`. **JSONL is plaintext: the file is the secret surface, paths are host-owned.** The `blob:` URL prefix is reserved by this package; host-provided `blob:` URLs must switch schemes.
 
+## Export and import (migration fidelity)
+
+Single-file migration: `ExportSession` writes the whole session as a header line + envelope-line stream — **isomorphic to the JSONL session file (no new format)**, with blobs inlined and self-contained (no `blob:` refs appear in the stream); `ImportSession` validates everything (continuous seq, event types classified via the registry, tool call/result pairing, unclosed rejected) and rebuilds through the store's `CreateSeeded`, header as-is (SessionID unchanged).
+
+```go
+var stream bytes.Buffer
+err := session.ExportSession(ctx, src, &stream)
+dst, err := session.ImportSession(ctx, dstStore, &stream)
+```
+
+- The target store must implement the **optional `Seeder` interface** (`CreateSeeded(ctx, header, envs)`: faithful rebuild using each envelope's own Seq). Both official implementations (memory/JSONL) support it.
+- If unsupported, it returns `ErrSeedUnsupported` — **never silently renumbering Seq**: the provenance in checkpoint.Replaced, SourceRefs.Seq and SeedLength all depends on the original Seq values.
+- Content-addressed idempotence: repeated import/re-export of the same session is byte-identical (blobs rebuilt by sha256).
+- Typical scenarios: backups, debug handoff, cross-workspace forking, audit archival. Not done: format downgrades, incremental sync, cross-store seq rewriting (§7.4).
+
 ## Event classification and adjudication
 
 Each `EventType` binds payload validation and classification in the `Registry`; the adjudication table (§6.3 review verdict):
@@ -65,6 +80,7 @@ Ignorable ≠ optional to record: `request.header` must still be emitted by the 
 | `ErrCorruptLog` | persisted log corrupt (mid-file bad line, seq chain break, blob checksum mismatch) |
 | `ErrForkSplitToolGroup` / `ErrForkBadAt` | Fork splits a tool group in the middle / the cut point is out of range |
 | `ErrFormatVersion` | header version incompatible (only 1 and 2 accepted, no migration guessing) |
+| `ErrSeedUnsupported` | the import target store does not implement Seeder (no silent renumbering fallback) |
 | `ErrSessionClosed` / `ErrInvalidSessionID` / `ErrCursorStale` / `ErrDeleted` | write after Close / invalid ID (must match `[A-Za-z0-9_-]{1,128}`) / stale List cursor / write to a deleted session |
 
 ## Tests
