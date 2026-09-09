@@ -125,31 +125,66 @@ func New(opt Options) (*Host, error) {
 
 // Agent 构造一个接入会话栈的 agent。每个 Agent 拥有独立会话；Session
 // 为 nil 的宿主构造的 agent 也是无会话回合。
-func (h *Host) Agent(ctx context.Context, opt AgentOptions) (*Agent, error) {
-	model, err := h.models.Open(opt.Model)
-	if err != nil {
-		return nil, fmt.Errorf("host: open model %q: %w", opt.Model, err)
+// NewAgent 是 agent 的**最泛化构造**：全参数注入——model 可以是任意
+// llm.ChatModel 来源（Registry 产出、stub、宿主自定义），ToolSet / Session
+// 显式传入（nil = 无工具 / 无会话持久化），不依赖宿主的默认装配。宿主
+// 在这里只提供生命周期容器与三向接线。
+func (h *Host) NewAgent(ctx context.Context, opt AgentOptions) (*Agent, error) {
+	if opt.Model == nil {
+		return nil, fmt.Errorf("host: model is required (inject any llm.ChatModel)")
 	}
 	var loopOpts []loop.Option
 	if opt.System != "" {
 		loopOpts = append(loopOpts, loop.WithSystemPrompt(opt.System))
 	}
-	if h.tools != nil {
-		loopOpts = append(loopOpts, loop.WithToolSet(h.tools.AsToolSet()))
+	if opt.ToolSet != nil {
+		loopOpts = append(loopOpts, loop.WithToolSet(opt.ToolSet))
 	}
-	agent, err := loop.NewAgent(model, opt.Name, loopOpts...)
+	agent, err := loop.NewAgent(opt.Model, opt.Name, loopOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("host: new agent: %w", err)
 	}
-	a := &Agent{agent: agent, model: opt.Model, system: opt.System, tools: h.tools}
+	return &Agent{agent: agent, sess: opt.Session, toolSet: opt.ToolSet, modelName: opt.ModelName, system: opt.System}, nil
+}
+
+// DefaultAgentOptions 是便捷实例化参数：模型按声明名从宿主 Registry 解析，
+// 工具与会话取宿主默认装配（Options.Tools / Options.Session 的产物）。
+type DefaultAgentOptions struct {
+	// Name 是 agent 标识（观测里进 agent 属性）。
+	Name string
+	// Model 是 Options.Models 里声明过的模型名。
+	Model string
+	// System 是系统提示词；空 = 无。
+	System string
+}
+
+// DefaultAgent 是基于 NewAgent 的**便捷封装**：模型经宿主 Registry 按名
+// 解析、工具集取宿主 Tools 的聚合视图、会话在宿主 SessionStack 上新建。
+// 需要非默认来源（stub 模型、专用工具集、外部会话）时直接用 NewAgent。
+func (h *Host) DefaultAgent(ctx context.Context, opt DefaultAgentOptions) (*Agent, error) {
+	model, err := h.models.Open(opt.Model)
+	if err != nil {
+		return nil, fmt.Errorf("host: open model %q: %w", opt.Model, err)
+	}
+	var toolSet loop.ToolSet
+	if h.tools != nil {
+		toolSet = h.tools.AsToolSet()
+	}
+	var sess session.Session
 	if h.session != nil {
-		sess, err := h.session.Create(ctx, session.SessionHeader{})
+		sess, err = h.session.Create(ctx, session.SessionHeader{})
 		if err != nil {
 			return nil, fmt.Errorf("host: create session: %w", err)
 		}
-		a.sess = sess
 	}
-	return a, nil
+	return h.NewAgent(ctx, AgentOptions{
+		Name:      opt.Name,
+		Model:     model,
+		ToolSet:   toolSet,
+		Session:   sess,
+		System:    opt.System,
+		ModelName: opt.Model,
+	})
 }
 
 // Kernel 暴露 kernel 宿主——进阶装配（请求级 scope、事件订阅、自定义
@@ -168,31 +203,38 @@ func (h *Host) SessionStack() *memory.SessionStack { return h.session }
 // Close 释放宿主（kernel Dispose：已装载插件的 Effect 逆序还原）。
 func (h *Host) Close() { h.ctx.Dispose() }
 
-// AgentOptions 是 agent 构造参数。
+// AgentOptions 是 agent 的**全参数注入**形态（NewAgent 用）。
 type AgentOptions struct {
 	// Name 是 agent 标识（观测里进 agent 属性）。
 	Name string
-	// Model 是 Options.Models 里声明过的模型名。
-	Model string
+	// Model 是任意 llm.ChatModel 来源（Registry 产出 / stub / 宿主自定义）。
+	Model llm.ChatModel
+	// ModelName 是模型的显示名（request.header 审计的 Model 字段；便捷
+	// 方法填声明名）。空 = header.Model 为空串。
+	ModelName string
+	// ToolSet 是本 agent 的工具集；nil = 无工具（纯对话回合）。
+	ToolSet loop.ToolSet
+	// Session 是本 agent 的会话（三向接线目标）；nil = 无会话持久化。
+	Session session.Session
 	// System 是系统提示词；空 = 无。
 	System string
 }
 
 // Agent 是 loop.Agent 的薄包装：拥有会话 ↔ loop 的三向接线。Run 每次
-// 执行一个无状态 ReAct 回合，接线在 Host 构造的会话上完成：
+// 执行一个无状态 ReAct 回合，接线在构造时注入的会话上完成：
 //
 //  1. 回合前：session.Surface() 折影为 history 传给 loop；
 //  2. 回合前：request.header（system / 工具声明 / model）审计落盘；
 //  3. 回合后：本回合输入与产出消息（user / assistant / tool.result）
 //     逐条落盘——下一轮 Surface 即含完整历史。
 //
-// 无会话宿主构造的 Agent 退化为纯透传（history 由调用方经 RunHistory）。
+// 无会话注入的 Agent 退化为纯透传（history 由调用方经 RunHistory）。
 type Agent struct {
-	agent  *loop.Agent
-	sess   session.Session
-	model  string
-	system string
-	tools  *toolset.Registry
+	agent     *loop.Agent
+	sess      session.Session
+	toolSet   loop.ToolSet
+	modelName string
+	system    string
 }
 
 // Run 执行一个回合。input 是本回合的用户输入（user 消息；多条时按序）。
@@ -238,12 +280,12 @@ func (a *Agent) appendTurn(ctx context.Context, input []*llm.Message, res *loop.
 		sysPtr = &sys
 	}
 	var defs []llm.ToolDef
-	if a.tools != nil {
-		defs = a.tools.AsToolSet().Definitions()
+	if a.toolSet != nil {
+		defs = a.toolSet.Definitions()
 	}
 	if _, err := a.sess.Append(ctx, session.EventDraft{
 		Type: session.EventRequestHeader,
-		Data: mustJSON(session.RequestHeaderPayload{System: sysPtr, ToolDefs: defs, Model: a.model}),
+		Data: mustJSON(session.RequestHeaderPayload{System: sysPtr, ToolDefs: defs, Model: a.modelName}),
 	}); err != nil {
 		return err
 	}

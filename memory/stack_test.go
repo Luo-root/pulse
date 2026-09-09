@@ -28,12 +28,11 @@ func assembleInput(ns []string, query string) assemble.AssembleInput {
 	}
 }
 
-func TestSessionStackMemory(t *testing.T) {
+// TestSessionStackInjected：最泛化构造——注入任意 SessionStore（含宿主
+// 自定义实现）必须开箱可用。
+func TestSessionStackInjected(t *testing.T) {
 	ctx := context.Background()
-	ss, err := NewSessionStack(SessionOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ss := NewSessionStack(session.NewMemoryStore())
 	sess, err := ss.Create(ctx, session.SessionHeader{})
 	if err != nil {
 		t.Fatal(err)
@@ -52,30 +51,31 @@ func TestSessionStackMemory(t *testing.T) {
 	if len(surface) != 1 || surface[0].Role != llm.RoleUser || surface[0].Parts[0].Text != "hello" {
 		t.Fatalf("surface = %+v", surface)
 	}
-	// Store() 暴露完整接口面（List 可用）。
 	if _, _, err := ss.Store().List(ctx, session.SessionFilter{}); err != nil {
 		t.Fatalf("store list: %v", err)
 	}
 }
 
-func TestSessionStackJSONL(t *testing.T) {
+// TestSessionStackConvenience：便捷封装——内存 / JSONL 两套默认。
+func TestSessionStackConvenience(t *testing.T) {
 	ctx := context.Background()
+
+	mem := NewMemorySessionStack()
+	if _, err := mem.Create(ctx, session.SessionHeader{}); err != nil {
+		t.Fatal(err)
+	}
+
 	dir := t.TempDir()
-	ss, err := NewSessionStack(SessionOptions{Dir: dir})
+	js, err := NewJSONLSessionStack(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := ss.Create(ctx, session.SessionHeader{})
+	sess, err := js.Create(ctx, session.SessionHeader{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	id := sess.Header().SessionID
-	if id == "" {
-		t.Fatal("session id must be assigned")
-	}
-
-	// 重开验证落盘（JSONL store 的 live 会话表按 id 去重，直接 Open 同 id）。
-	sess2, err := ss.Open(ctx, id)
+	sess2, err := js.Open(ctx, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,13 +92,14 @@ func TestSessionStackJSONL(t *testing.T) {
 	}
 }
 
-func TestItemStackAssemble(t *testing.T) {
+// TestItemStackInjected：条目栈最泛化构造——注入 store + meter + budget。
+func TestItemStackInjected(t *testing.T) {
 	ctx := context.Background()
-	st := NewItemStack(ItemOptions{})
+	ns := store.MemoryScope{TenantID: "t1"}.Namespace()
+	st := NewItemStack(store.NewMemoryStore(), nil, assemble.Budget{})
 	if st.Store == nil || st.Assembler == nil {
 		t.Fatal("stack must wire store and assembler")
 	}
-	ns := store.MemoryScope{TenantID: "t1"}.Namespace()
 	if _, err := st.Store.Put(ctx, store.MemoryItem{
 		ID: "d1", Namespace: ns, Kind: store.KindProfile, Content: "Use PostgreSQL for audit logs",
 		Status: store.StatusActive, Confidence: 1.0, Taint: store.TaintTrusted,
@@ -121,5 +122,13 @@ func TestItemStackAssemble(t *testing.T) {
 	}(), "\n")
 	if !strings.Contains(joined, "PostgreSQL") {
 		t.Fatalf("assembled context should recall the stored item, got:\n%s", joined)
+	}
+}
+
+// TestItemStackConvenience：条目栈便捷封装。
+func TestItemStackConvenience(t *testing.T) {
+	st := NewMemoryItemStack(assemble.Budget{})
+	if st.Store == nil || st.Assembler == nil {
+		t.Fatal("convenience stack must be wired")
 	}
 }

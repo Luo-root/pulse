@@ -8,21 +8,23 @@ Each sub-package has its own `README_zh.md` / `README.md` pair (interface surfac
 
 ## Root-level assembly facade (two-layer assembly · layer one)
 
-`stack.go` provides in-package base assembly — recommended defaults composed from the sub-packages' public APIs, so **the memory layer is usable on its own** (cross-package wiring belongs to the host assembly layer; this facade never imports loop/toolset):
+`stack.go` provides in-package base assembly, with the **most general construction = full injection** (any SessionStore / MemoryStore implementation — host-custom persistence implements the interface and injects directly, zero facade changes) and **convenience wrappers = recommended defaults on top**. The memory layer is usable on its own (cross-package wiring belongs to the host assembly layer; this facade never imports loop/toolset):
 
 ```go
-// Session stack: empty Dir = in-memory store; non-empty = JSONL on disk (blob overflow + file lock).
-ss, err := memory.NewSessionStack(memory.SessionOptions{Dir: "data/sessions"})
-sess, err := ss.Create(ctx, session.SessionHeader{})   // / ss.Open(ctx, id)
-_ = ss.Store()                                          // full surface (export/import/list)
+// Session stack: inject any SessionStore; conveniences give memory / JSONL defaults.
+ss := memory.NewSessionStack(myCustomStore)          // most general
+ss = memory.NewMemorySessionStack()                  // convenience: in-memory
+ss, err := memory.NewJSONLSessionStack("data/sessions") // convenience: JSONL on disk
+sess, err := ss.Create(ctx, session.SessionHeader{}) // / ss.Open(ctx, id)
+_ = ss.Store()                                       // full surface (export/import/list/recovery policy)
 
-// Item stack: store + assembler wired in construction order; index/candidate are
-// opt-ins (their seams have no default implementation).
-stk := memory.NewItemStack(memory.ItemOptions{Budget: assemble.Budget{...}})
+// Item stack: inject store + meter + budget.
+stk := memory.NewItemStack(myStore, myMeter, assemble.Budget{...})
+stk = memory.NewMemoryItemStack(assemble.Budget{...}) // convenience: in-memory
 ac, err := stk.Assemble(ctx, assemble.AssembleInput{...})
 ```
 
-Compaction is functional orchestration (`compaction.Compact`); when to trigger it is the host's call — every component defaults to off and is wired on demand.
+Compaction is functional orchestration (`compaction.Compact`); when to trigger it is the host's call — every component defaults to off and is wired on demand. index/candidate are opt-ins (their seams have no default implementation; the host brings its own).
 
 ## What problem does this layer solve
 

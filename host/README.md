@@ -10,20 +10,40 @@ Package docs (godoc) in the `host.go` package comment; design ticket [#156](http
 h, err := host.New(host.Options{
     Providers: []host.Provider{host.Provider(openai.Register)}, // signature matches Register; convert directly
     Models:    map[string]llm.Config{"main": {Provider: openai.ProviderCompletions, Model: "gpt-4o-mini", APIKey: os.Getenv("OPENAI_API_KEY")}},
-    Tools:     []host.ToolSource{func(c *kernel.Context, reg *toolset.Registry) error {
-        _, err := builtins.Register(c, reg, builtins.Options{Root: workspace})
-        return err
-    }},
-    Session: ss, // from memory.NewSessionStack; nil = purely stateless rounds
+    Tools: []host.ToolSource{
+        func(c *kernel.Context, reg *toolset.Registry) error {
+            _, err := builtins.Register(c, reg, builtins.Options{Root: workspace})
+            return err
+        },
+        host.SkillTools(loader), // skill catalog/loading tools (list_skills + load_skill, read-only)
+    },
+    Session: ss, // memory.NewMemorySessionStack() / NewJSONLSessionStack(dir)
     Observe: host.ObserveConfig{HostID: "my-app", Sink: mySink}, // nil Sink = no observability
 })
 defer h.Close()
 
-a, err := h.Agent(ctx, host.AgentOptions{Name: "main", Model: "main", System: "..."})
+a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main", System: "..."})
 res, err := a.Run(ctx, llm.User(llm.Text("user input")))
 ```
 
 The quick start drops from ~60 lines to ~15; the return of the "framework" title is gated on this package landing.
+
+## Base constructor + convenience wrappers (the unified assembly layering)
+
+`NewAgent` is the **most general construction**: everything injected — the model can come from any `llm.ChatModel` source (Registry output, stubs, host-custom), ToolSet / Session are explicit, and nothing depends on the host's default assembly:
+
+```go
+a, err := h.NewAgent(ctx, host.AgentOptions{
+    Name:      "worker",
+    Model:     myCustomModel,       // any ChatModel source
+    ModelName: "my-model",          // request.header audit name
+    ToolSet:   myToolSet,           // nil = no tools
+    Session:   mySession,           // nil = no session persistence
+    System:    "...",
+})
+```
+
+`DefaultAgent` is the **convenience wrapper over NewAgent**: the model is resolved by declared name from the host Registry, the tool set is the host Tools aggregate view, and the session is created on the host SessionStack — three parameters cover 90% of cases; non-default sources use NewAgent with zero special cases. memory / toolset share the same shape: the memory facade has `NewSessionStack(store)` as the general form with `NewMemorySessionStack()` / `NewJSONLSessionStack(dir)` as conveniences; toolset has `Registry.Register` as the general form with `builtins.Register` / `host.SkillTools` as conveniences.
 
 ## The three-way wiring in host.Agent
 
@@ -38,7 +58,7 @@ An Agent built on a session-less host degrades to a pure passthrough; the `RunHi
 ## Zero new abstractions
 
 - `host.Provider` = `func(*kernel.Context, *llm.Registry) error` — `openai.Register` / `anthropic.Register` convert directly;
-- `host.ToolSource` = `func(*kernel.Context, *toolset.Registry) error` — wrap `builtins.Register` (and its Options) in a closure;
+- `host.ToolSource` = `func(*kernel.Context, *toolset.Registry) error` — wrap `builtins.Register` (and its Options) in a closure; `host.SkillTools(loader)` is also a ToolSource (the skill catalog/loading read-only pair);
 - Advanced assembly (request-scoped contexts, event subscriptions, custom services) goes through `h.Kernel()` / `h.Models()` / `h.Tools()` with each package's native semantics — host hides nothing.
 
 ## Safe defaults
