@@ -557,3 +557,21 @@ func mapConstraintErr(err error) error {
 	}
 	return err
 }
+
+// PutImport 实现 ImportStore：item 携带的时间域与 Revision 原样写入
+// （INSERT 路径直接落 item 字段，不做 store 分配）；校验链与 Put 同一套
+// （fail closed）；已存在同 ID 拒绝（导入方先探测，防静默覆盖）。
+func (s *SQLiteStore) PutImport(ctx context.Context, item MemoryItem) (MemoryItem, error) {
+	if err := item.validate(); err != nil {
+		return MemoryItem{}, err
+	}
+	if _, err := s.Get(ctx, item.Namespace, item.ID); err == nil {
+		return MemoryItem{}, fmt.Errorf("%w: id %s", ErrItemExists, item.ID)
+	} else if !errors.Is(err, ErrItemNotFound) {
+		return MemoryItem{}, err
+	}
+	if err := s.writeItem(ctx, item, 0, time.Now().UTC()); err != nil {
+		return MemoryItem{}, err
+	}
+	return s.Get(ctx, item.Namespace, item.ID)
+}

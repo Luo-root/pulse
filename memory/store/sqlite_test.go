@@ -347,3 +347,81 @@ func TestSQLiteASCIIFoldParity(t *testing.T) {
 		t.Fatalf("non-ASCII fold must not happen: %d hits, want 0（口径：折叠仅 ASCII）", len(hits))
 	}
 }
+
+// TestSQLitePutImport：SQLite 版保真导入往返——ExportItems 全状态导出 →
+// ImportItems 写入第二个库，双时态时间域/Revision/Status/Taint 原样保留；
+// 重复导入幂等 Skipped；直接 PutImport 已存在 ID → ErrItemExists。
+func TestSQLitePutImport(t *testing.T) {
+	ctx := t.Context()
+	src := newSQLiteStore(t)
+	ns := sqliteItem("d1", "").Namespace
+	if _, err := src.Put(ctx, sqliteItem("d1", "live policy"), PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	d2 := sqliteItem("d2", "from feed")
+	d2.Taint = TaintUntrustedExt
+	d2.Confidence = 0.4
+	d2.SourceRefs = []SourceRef{{Type: SourceExternal, Ref: "rss-2026-09"}}
+	if _, err := src.Put(ctx, d2, PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.Revoke(ctx, "d2", "rot"); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := ExportItems(ctx, src, MemoryQuery{Namespace: ns})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 强制 IncludeInactive：Revoked 的 d2 必须导出。
+	if len(items) != 2 {
+		t.Fatalf("exported %d items, want 2", len(items))
+	}
+	byID := map[string]MemoryItem{}
+	for _, it := range items {
+		byID[it.ID] = it
+	}
+	if byID["d2"].Status != StatusRevoked {
+		t.Fatalf("inactive state lost: d2=%s", byID["d2"].Status)
+	}
+
+	dst := newSQLiteStore(t)
+	report, err := ImportItems(ctx, dst, items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Imported != 2 || report.Skipped != 0 || len(report.Conflicts) != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	for _, want := range items {
+		got, err := dst.Get(ctx, want.Namespace, want.ID)
+		if err != nil {
+			t.Fatalf("get %s: %v", want.ID, err)
+		}
+		if !itemEqual(got, want) {
+			t.Fatalf("item %s not faithful:\n got %+v\nwant %+v", want.ID, got, want)
+		}
+		if !got.KnownAt.Equal(want.KnownAt) || !got.CreatedAt.Equal(want.CreatedAt) || got.Revision != want.Revision {
+			t.Fatalf("item %s time domain/revision reset: got %v/%v/%d want %v/%v/%d",
+				want.ID, got.KnownAt, got.CreatedAt, got.Revision, want.KnownAt, want.CreatedAt, want.Revision)
+		}
+	}
+	got2, err := dst.Get(ctx, ns, "d2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.Status != StatusRevoked || got2.Taint != TaintUntrustedExt {
+		t.Fatalf("revoked/untrusted not preserved: %+v", got2)
+	}
+
+	again, err := ImportItems(ctx, dst, items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Imported != 0 || again.Skipped != 2 || len(again.Conflicts) != 0 {
+		t.Fatalf("re-import report = %+v, want all skipped", again)
+	}
+	if _, err := dst.PutImport(ctx, items[0]); !errors.Is(err, ErrItemExists) {
+		t.Fatalf("PutImport existing = %v, want ErrItemExists", err)
+	}
+}
