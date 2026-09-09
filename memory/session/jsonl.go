@@ -83,6 +83,7 @@ type JSONLStore struct {
 	pageSize  int
 	lockStale time.Duration
 	open      map[string]*jsonlSession
+	recover   RecoverPolicy // 冷恢复策略；默认 RecoverSyntheticInterrupted
 }
 
 // jsonlSession 是 Session 的 JSONL 实现：内存态复用 memSession（同一把
@@ -93,6 +94,9 @@ type jsonlSession struct {
 	f       *os.File
 	store   *JSONLStore
 	release func() // 文件锁释放；Close 后置 nil（幂等）
+	// pending 非 nil = ExposePending 模式下的未决现场（Resolve* 裁决；
+	// 全部解决后置 nil）。默认模式恒 nil（未决在 Open 时已合成闭环）。
+	pending *incompleteState
 }
 
 func (s *jsonlSession) blobsDir() string { return filepath.Join(s.dir, "blobs") }
@@ -268,18 +272,28 @@ func (s *JSONLStore) loadOpened(dir string, release func()) (*jsonlSession, erro
 	for _, env := range envs {
 		sess.appendEnvelopeLocked(env)
 	}
-	// 冷恢复（与 A1 同口径）：扫描未闭合现场，合成事件真实写回日志。
+	// 冷恢复：扫描未闭合现场，按策略裁决（默认合成 interrupted 闭环
+	// 真实写回日志；ExposePending 挂到句柄由宿主裁决；Reject 拒绝 Open）。
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	st, err := scanIncomplete(sess.events, s.reg)
 	if err != nil {
 		return fail(err) // 未知 required 等 fail closed：拒绝 Open
 	}
+	if s.recover == RecoverReject && pendingIncomplete(st) {
+		return fail(fmt.Errorf("session: %w (open turn=%v open step=%v pending tool calls=%d)",
+			ErrPendingEvents, st.openTurn, st.openStep, len(st.pendingCalls)))
+	}
 	f, err := os.OpenFile(eventsPath, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fail(fmt.Errorf("session: open events.jsonl for append: %w", err))
 	}
 	sess.f = f
+	if s.recover == RecoverExposePending {
+		pending := st
+		sess.pending = &pending
+		return sess, nil
+	}
 	for _, draft := range synthDrafts(st) {
 		if _, err := sess.appendSyntheticLocked(draft); err != nil {
 			f.Close()
@@ -287,6 +301,12 @@ func (s *JSONLStore) loadOpened(dir string, release func()) (*jsonlSession, erro
 		}
 	}
 	return sess, nil
+}
+
+// pendingIncomplete 报告未决现场是否非空（有悬空 turn/step 或缺 result
+// 的 ToolCall）。
+func pendingIncomplete(st incompleteState) bool {
+	return st.openTurn || st.openStep || len(st.pendingCalls) > 0
 }
 
 // List 实现 SessionStore：扫描各会话的 header.json，CreatedAt 降序 +
@@ -350,6 +370,12 @@ func (s *JSONLStore) Delete(ctx context.Context, id string) error {
 func (s *jsonlSession) Append(ctx context.Context, draft EventDraft) (EventEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.appendLocked(draft)
+}
+
+// appendLocked 是 Append 的锁内主体——恢复裁决（#158 ResolvePending）
+// 复用同一条校验与落盘路径，调用方持有 s.mu。
+func (s *jsonlSession) appendLocked(draft EventDraft) (EventEnvelope, error) {
 	ignorable, err := s.prepareAppend(draft)
 	if err != nil {
 		return EventEnvelope{}, err

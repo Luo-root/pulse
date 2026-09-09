@@ -27,6 +27,7 @@ reg := sess.Registry()                          // 事件 codec 环境（FoldTra
 
 - `Seq`/`Time` are assigned by the store; `Append` is **not idempotent** — after a Flush failure, do not replay the same batch of events verbatim.
 - `Open` is cold recovery (there is no separate Recover method): unclosed turn/step and unpaired ToolCall get synthesized closure events that are **genuinely written back to the log** before folding; live sessions are never cold-patched; recovery is idempotent.
+- **Recovery policy is selectable (#158)**: `NewJSONLStore(dir, WithRecoverPolicy(p))` — `RecoverSyntheticInterrupted` (default; the behavior above, unchanged); `RecoverExposePending` (**no synthesis** — the pending state hangs off the session handle: `Pending()` reports ToolCalls missing results and dangling step/turn, and the host adjudicates via `ResolvePending` (supply the real result / close explicitly) or `ResolveAsInterrupted` (one-shot default synthesis) — the tier for HITL wait-point recovery; while pending, Surface keeps projecting the mid-flight state); `RecoverReject` (any pending state rejects Open with `ErrPendingEvents`). The Resolve methods, like `Close`, are JSONL extensions used via type assertion; adjudication writes go through the same validation chain as Append.
 - The JSONL implementation additionally provides `Close() error` (use via type assertion): releases the file lock and handle; idempotent.
 
 ## The two backends

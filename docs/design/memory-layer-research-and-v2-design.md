@@ -632,6 +632,8 @@ score = w_semantic * semantic_similarity
 - 对物理写入撕裂只丢弃无法验证的最终碎片，不能回退更早的合法事件；
 - live session 不做“冷恢复修补”，避免并发写入被误判为崩溃。
 
+**恢复策略参数化（#158）**：合成 interrupted 闭环是**默认档**而非唯一档。`WithRecoverPolicy` 三档——`RecoverSyntheticInterrupted`（默认，上述行为不变）；`RecoverExposePending`（不合成，未决现场挂会话句柄由宿主裁决：补真实结果 / 显式闭合 / 一键走默认合成——进程在 HITL 等待批准时挂掉的场景由此回到「等待点」而不是作废；未决期间 Surface 照常投影运行中间态）；`RecoverReject`（存在未决即拒绝 Open）。与 checkpoint 叙事的边界：本仓库的立场是**事件日志即 checkpoint 的存储层**（全部已发生事实已在日志），恢复策略只是「未决」处理权的归属选择——归属宿主（ExposePending）或归属框架默认（合成闭环），不存在从零造 checkpoint 的问题。
+
 ---
 
 ## 10. 长期记忆写入策略
