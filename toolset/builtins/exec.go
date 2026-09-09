@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -13,6 +14,63 @@ import (
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/toolset"
 )
+
+// defaultChildEnvKeys 是 exec / 后台 job 子进程的默认继承白名单：常见命令
+// 运行必需的平台键（产品参数，不是行业标准）。宿主用 Options.ExecEnv 追加，
+// 用 Options.ExecEnvInheritAll 显式恢复全量继承。
+var defaultChildEnvKeys = []string{
+	"PATH",
+	"HOME",
+	"USER",
+	"USERNAME",
+	"LANG",
+	"LC_ALL",
+	"TMPDIR",
+	"TEMP",
+	"TMP",
+	// Windows 常用键（go / git 等工具链依赖）。
+	"SYSTEMROOT",
+	"SYSTEMDRIVE",
+	"COMSPEC",
+	"PATHEXT",
+	"APPDATA",
+	"LOCALAPPDATA",
+	"PROGRAMFILES",
+	"PROGRAMFILES(X86)",
+}
+
+// environ 是 os.Environ 的包级别名（测试注入点）。
+var environ = os.Environ
+
+// childEnv 构造子进程环境。白名单模式（默认）：只继承
+// defaultChildEnvKeys + Options.ExecEnv 列出的键，值取自宿主当前环境；
+// 返回值恒非 nil（白名单一个键都不命中时是空环境，绝不静默退回继承
+// 全量）。ExecEnvInheritAll 时返回 nil——os/exec 的 nil Env 语义即继承
+// 全量。exec 是命令逃逸口（shell 命令的文件访问不受 confineRead 管），
+// 默认白名单保证宿主 secret 不随环境泄漏进模型驱动的命令。
+func childEnv(opt Options) []string {
+	if opt.ExecEnvInheritAll {
+		return nil
+	}
+	allow := make(map[string]struct{}, len(defaultChildEnvKeys)+len(opt.ExecEnv))
+	for _, k := range defaultChildEnvKeys {
+		allow[k] = struct{}{}
+	}
+	for _, k := range opt.ExecEnv {
+		if k == "" || strings.Contains(k, "=") {
+			continue
+		}
+		allow[k] = struct{}{}
+	}
+	env := []string{}
+	for _, kv := range environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if _, ok := allow[k]; ok {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
 
 func (e *env) regExec() toolset.Registration {
 	return toolset.Registration{
@@ -114,7 +172,7 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 		return "", err
 	}
 	if p.Background {
-		j, err := e.jobs.launch(ctx, p.Command, cwd)
+		j, err := e.jobs.launch(ctx, p.Command, cwd, childEnv(e.opt))
 		if err != nil {
 			return "", err
 		}
@@ -127,6 +185,7 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 
 	cmd := buildShellCommand(runCtx, p.Command)
 	cmd.Dir = cwd
+	cmd.Env = childEnv(e.opt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

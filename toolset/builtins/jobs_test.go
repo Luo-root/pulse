@@ -45,7 +45,7 @@ func TestJobTableMaxRunning(t *testing.T) {
 	tb := newJobTable(1, 100)
 	fake := &job{id: "j0", waitCh: make(chan struct{})}
 	tb.jobs[fake.id] = fake
-	_, err := tb.launch(nil, "echo hi", ".")
+	_, err := tb.launch(nil, "echo hi", ".", nil)
 	if err == nil || !strings.Contains(err.Error(), "too many running background jobs") {
 		t.Fatalf("err=%v", err)
 	}
