@@ -6,6 +6,24 @@ The P2 "memory & session" layer (design source of truth: [docs/design/memory-lay
 
 Each sub-package has its own `README_zh.md` / `README.md` pair (interface surface / semantics / error quick reference) and `doc.go` (godoc) — this document is the **global view**: problem inventory, end-to-end data flow, the complete dependency graph, cross-package invariants, and assembly bridge points. Read this first to build the map before diving into any sub-package.
 
+## Root-level assembly facade (two-layer assembly · layer one)
+
+`stack.go` provides in-package base assembly — recommended defaults composed from the sub-packages' public APIs, so **the memory layer is usable on its own** (cross-package wiring belongs to the host assembly layer; this facade never imports loop/toolset):
+
+```go
+// Session stack: empty Dir = in-memory store; non-empty = JSONL on disk (blob overflow + file lock).
+ss, err := memory.NewSessionStack(memory.SessionOptions{Dir: "data/sessions"})
+sess, err := ss.Create(ctx, session.SessionHeader{})   // / ss.Open(ctx, id)
+_ = ss.Store()                                          // full surface (export/import/list)
+
+// Item stack: store + assembler wired in construction order; index/candidate are
+// opt-ins (their seams have no default implementation).
+stk := memory.NewItemStack(memory.ItemOptions{Budget: assemble.Budget{...}})
+ac, err := stk.Assemble(ctx, assemble.AssembleInput{...})
+```
+
+Compaction is functional orchestration (`compaction.Compact`); when to trigger it is the host's call — every component defaults to off and is wired on demand.
+
 ## What problem does this layer solve
 
 Agent memory is not a "vector database + conversation history" component; it is five kinds of data that are independent of each other and cooperate through a unified projection (design doc §0):
