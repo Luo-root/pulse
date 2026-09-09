@@ -518,22 +518,28 @@ type ContextAssembler interface {
 
 ### 8.1 输入顺序与预算
 
-建议将模型请求拆成稳定前缀与动态尾部：
+将模型请求拆成稳定前缀与动态尾部。**修订（2026-09-09，#146）**：顺序以 `memory/assemble` 落地实现为准——检索记忆在 surface 之后的**最尾部**；本节原稿把检索画在动态区中间（当前用户消息之前），照图实现会得出 cache 不友好的组装（检索块插在上轮回复与本轮消息之间，下一轮本轮消息位置移位、无法复用前缀，每轮额外损失一个 turn block）：
 
 ```text
-[Stable Prefix]
+[Stable Prefix]                                ← 整 session 冻结（§8.3）
   system policy / agent persona
   workspace instructions / selected skill headers
   frozen profile + stable project facts (small fixed budget)
 
-[Dynamic Context]
+[Dynamic Tail]                                 ← 主链只增不减；每轮新增都落在前缀之外
   compaction checkpoint + recent session surface
-  active goal / todo / approval state
-  retrieved episodic and long-term memory (ranked, cited)
-  retrieved external knowledge
-  current user message
-  tool results (only legal pairing sequence)
+    （append-only；含本轮用户消息与 tool results——合法配对序列；
+      组装器原样保留，裁切权归 §9.1 / §9.2）
+  active goal / todo / approval state（宿主层内容，组装器不感知）
+  retrieved episodic and long-term memory
+    （**最尾部**：按 Query 每请求动态召回，ranked + cited，预算内 top-k，
+      不进 session 日志。放尾部的原因：检索内容逐轮变化，只有贴在
+      最尾才不会打断 surface 的前缀缓存；代价是这块每轮全价计费，
+      RetrievedTokens 预算是真实成本参数，不是调优细节）
+  injected（用户显式要求本轮立即生效的记忆，追加在最后）
 ```
+
+Cache 语义（provider prefix cache 按逐 token 前缀匹配）：请求 N+1 可复用的恰是「稳定前缀 + 上一轮为止的 surface」；检索块 / injected / 本轮增量是 uncached 部分，占比随会话变长**下降**。改写已发送中段（§9.2 prune）与改写前缀（§8.3 RefreshStable）是仅有的两类主动失效事件，与 provider TTL 自然逐出（§14）共同决定实测命中率。
 
 预算必须按类配置，而不是只给一个“最大 messages”：
 
@@ -570,6 +576,9 @@ score = w_semantic * semantic_similarity
 - **Stable Memory / Profile**：默认在下个 session 或显式 refresh 后进入稳定前缀，保障 cache。
 - **检索型 memory**：可按 request 动态召回；其动态成本受预算控制。
 - 用户或系统可以要求“本轮立即应用某条记忆”，此时将它作为明确 session injected context 追加，而不是修改已缓存系统前缀。
+- **记忆写入不触碰稳定前缀**（**#146 订正，可从 snapshot.go 逐行印证**）：快照无失效钩子，命中即不查 store——会话中途新增/修订的 Profile/Decision 立即可经检索路径召回，但要进稳定前缀必须等下个 session 或显式 `RefreshStable`。记忆写得太频繁不会打穿前缀缓存。
+- **会话中途的记忆更新优先走 injected 追加**（尾部注入，前缀缓存不破）；`RefreshStable` 是会话边界/显式操作——在缓存热窗口内 refresh = 全量 flush；隔了 provider TTL 窗口再 refresh 的真实代价 ≈ 冷启动 prefill（缓存早已自然逐出）。
+- **检索块不持久化**：第 N 轮召回的记忆不出现在第 N+1 轮请求里，模型对它的引用只留在自己的回答文本中。这是 RAG 标准取舍；需要跨轮稳定可见的事实应晋升为 stable / injected，而不是依赖召回。
 
 ---
 
@@ -597,6 +606,7 @@ score = w_semantic * semantic_similarity
 - append 一个替代 result surface 节点并保留原 result 的 source ref；
 - 原日志完整保存，UI 可展开原文；
 - 不能只按字符截断 JSON / UTF-8 / 多模态块；按 content block 和 rune/grapheme 安全裁剪。
+- **cache 代价（#146 落档）**：prune 经 Surface Replace 改写**历史中段**（`compact.go` `PruneResults` 现行为：扫描会话中所有超预算 result 节点）。前缀缓存逐 token 匹配，第 k 条消息被改写 = 该请求起后续全部 uncached——长会话首次 prune 接近全量 flush，且恰好发生在 surface 最大、缓存价值最高的时刻。现状为**已知代价**（budget 合规优先）；是否收紧 prune 范围（仅上次请求后新增窗口 / 与压缩合并执行）以 §13.2 命中率指标为决策输入，属 P2-B 行为变更、另行开票。
 
 ### 9.3 崩溃恢复：必须吐出合法 surface
 
@@ -763,6 +773,7 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 | 上下文 | token 预算命中率、压缩收益、上下文溢出重试成功率 |
 | 记忆 | precision（被采纳/未被纠正）、supersede/revoke 比例、候选批准率 |
 | 检索 | MRR/Recall@K、关键词与语义 query 分组表现、引用可用率 |
+| 缓存 | provider 前缀命中率（`Usage.CachedInputTokens` 实测，#144 实例归因面直接可用）；**必须按「距上次请求间隔」切片**——区分组装层失效（prune/RefreshStable）与 TTL 自然逐出，混在一个数里无法归因 |
 | 安全 | 跨 scope 泄漏数、secret/taint 阻断率、未溯源 active item 数 |
 | 成本 | 每 session memory token、后台提炼 token、索引延迟 |
 
@@ -789,6 +800,8 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 | plugin 新事件被静默忽略 | 恢复语义错误 | codec registry + unknown required fail closed |
 | 多 agent 共写同一记忆 | 互相污染、覆盖 | namespace、writer policy、CAS/revision、共享 store 显式配置 |
 | 外部内容 prompt injection 晋升记忆 | 长期污染 | taint propagation + promotion gate |
+| prune 改写已发送历史中段 | 从改写点起前缀缓存全失效（隐性全量 flush），长会话首次 prune 代价最大 | 已知代价现状接受（budget 合规优先，§9.2）；§13.2 命中率指标为是否收紧 prune 范围提供决策输入 |
+| provider 缓存 TTL 逐出 | 请求间隔 > TTL（HITL 等待、休眠）后前缀缓存必失，实测命中率被非组装因素拉低 | 命中率按请求间隔切片归因（§13.2）；组装层不做 TTL 补偿——TTL 越短，会话边界 RefreshStable 的真实代价越接近零 |
 
 ---
 
@@ -834,6 +847,7 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 15. **（评审定案）P2-A 单写者锁**；CAS/revision 留给 P2-C MemoryItem；session 可 Delete（不是 item 状态机）。
 16. **（评审定案）敏感 detector 默认关**，显式装配；启用后警告/待审优先于拒绝。
 17. **（评审定案）SQLite 钉 CGO-free**（P2-C）；P2-A 拆 A1（in-memory 语义）/A2（JSONL+blobs）两票。
+18. **（2026-09-09 订正，#146）模型可见主链只增不减**：组装顺序 = 稳定前缀 → surface 尾部 → 检索记忆 → injected（检索/injected 贴最尾、不持久化）；主动失效事件仅两类——compaction（显式事务、可摊销）与 prune 改写中段（已知代价）；实测命中率必须按请求间隔归因 TTL。
 
 ---
 
