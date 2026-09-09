@@ -25,7 +25,10 @@ func scriptedProvider(model *llm.ScriptedModel) Provider {
 
 func newTestHost(t *testing.T, model *llm.ScriptedModel, opt func(*Options)) *Host {
 	t.Helper()
+	k := kernel.New()
+	t.Cleanup(k.Dispose) // kernel 归调用方所有：生命周期随测试清理
 	o := Options{
+		Kernel:    k,
 		Providers: []Provider{scriptedProvider(model)},
 		Models:    map[string]llm.Config{"stub": {Provider: "stub", Model: "test-model"}},
 	}
@@ -36,7 +39,6 @@ func newTestHost(t *testing.T, model *llm.ScriptedModel, opt func(*Options)) *Ho
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(h.Close)
 	return h
 }
 
@@ -79,7 +81,9 @@ func TestHostNewAgentFullyInjected(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 宿主不声明任何模型/工具——NewAgent 全注入照样可用。
-	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) { *o = Options{} })
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models, o.Tools = nil, nil, nil
+	})
 	a, err := h.NewAgent(ctx, AgentOptions{
 		Name:      "injected",
 		Model:     model,

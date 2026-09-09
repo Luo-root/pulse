@@ -52,6 +52,11 @@ type ObserveConfig struct {
 // 用 kernel 原生语义。所有外部副作用（模型网络、工具执行、落盘）都是
 // 显式 opt-in——不传就没有。
 type Options struct {
+	// Kernel 是挂载宿主组件的 kernel 根。**必填**，host 不私建内核——
+	// 应用的其他插件（UI、审批、任务队列…）Use 到同一个 kernel 上即可
+	// 与 host 组件共享服务仓库与事件总线。生命周期归所有者：Dispose
+	// 由调用方负责。
+	Kernel *kernel.Context
 	// Providers 注册模型供应商适配器（先于 Models 声明执行）。
 	Providers []Provider
 	// Models 声明模型路由：名字 → 配置（Provider 字段须已在 Providers 里注册）。
@@ -65,8 +70,10 @@ type Options struct {
 	Observe ObserveConfig
 }
 
-// Host 是装配好的宿主：kernel 宿主 + 模型 Registry + 工具 Registry +
-// 可选会话栈。并发安全由各组件自有锁保证；Host 本身无状态可复用。
+// Host 是装配好的宿主：模型 Registry + 工具 Registry + 可选会话栈，全部
+// 挂在**调用方注入的 kernel** 上——应用的其他插件（UI、审批、任务队列…）
+// 与 host 组件共享同一个服务仓库与事件总线，互相可见、可订阅。kernel 的
+// 生命周期归其所有者（Dispose 归调用方）；Host 自身无状态可复用。
 type Host struct {
 	ctx     *kernel.Context
 	models  *llm.Registry
@@ -74,11 +81,18 @@ type Host struct {
 	session *memory.SessionStack
 }
 
-// New 装配宿主。执行顺序：观测 → 供应商 → 模型声明 → 工具来源；
-// 任一步失败即整体失败（已注册部分随 kernel Dispose 逆序撤除——
-// 可逆效应语义）。
+// New 装配宿主：把观测、供应商、模型声明、工具来源挂到**注入的 kernel**
+// 上。Kernel 必填——host 不私建内核，否则外部插件与 host 组件互相不可见。
+//
+// 失败语义：host 不拥有 kernel，任一步失败只返回 error、**不做** Dispose
+// 兜底；已成功挂载的组件留在 kernel 上，随调用方的 kernel.Dispose() 统一
+// 逆序回收（可逆效应语义由 kernel 保证）。失败通常是配置错误——丢弃本次
+// 装配修正后重来即可。
 func New(opt Options) (*Host, error) {
-	c := kernel.New()
+	c := opt.Kernel
+	if c == nil {
+		return nil, fmt.Errorf("host: kernel is required (inject the shared kernel root; host does not own it)")
+	}
 	h := &Host{ctx: c}
 	if opt.Observe.Sink != nil {
 		id := opt.Observe.HostID
@@ -86,7 +100,6 @@ func New(opt Options) (*Host, error) {
 			id = "pulse-host"
 		}
 		if _, err := kernel.Use(c, observability.Bootstrap(id, opt.Observe.Sink)); err != nil {
-			c.Dispose()
 			return nil, fmt.Errorf("host: observability: %w", err)
 		}
 	}
@@ -96,13 +109,11 @@ func New(opt Options) (*Host, error) {
 			continue
 		}
 		if err := p(c, reg); err != nil {
-			c.Dispose()
 			return nil, fmt.Errorf("host: provider[%d]: %w", i, err)
 		}
 	}
 	for name, cfg := range opt.Models {
 		if err := reg.Declare(name, cfg); err != nil {
-			c.Dispose()
 			return nil, fmt.Errorf("host: declare %q: %w", name, err)
 		}
 	}
@@ -114,7 +125,6 @@ func New(opt Options) (*Host, error) {
 			continue
 		}
 		if err := src(c, tr); err != nil {
-			c.Dispose()
 			return nil, fmt.Errorf("host: tool source[%d]: %w", i, err)
 		}
 	}
@@ -200,8 +210,8 @@ func (h *Host) Tools() *toolset.Registry { return h.tools }
 // SessionStack 返回宿主接的会话栈；未接返回 nil。
 func (h *Host) SessionStack() *memory.SessionStack { return h.session }
 
-// Close 释放宿主（kernel Dispose：已装载插件的 Effect 逆序还原）。
-func (h *Host) Close() { h.ctx.Dispose() }
+// Host 没有 Close：kernel 归调用方所有，生命周期由其 Dispose 负责
+// （已装载插件的 Effect届时逆序还原）。
 
 // AgentOptions 是 agent 的**全参数注入**形态（NewAgent 用）。
 type AgentOptions struct {

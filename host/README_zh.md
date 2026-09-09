@@ -7,7 +7,11 @@
 ## 上手
 
 ```go
+k := kernel.New() // kernel 归应用所有：你的插件（UI、审批、队列…）也 Use 到这里
+defer k.Dispose()
+
 h, err := host.New(host.Options{
+    Kernel: k, // 必填：host 组件挂到这个共享内核上，与你的插件互相可见
     Providers: []host.Provider{host.Provider(openai.Register)}, // 签名对齐 Register，直接转换
     Models:    map[string]llm.Config{"main": {Provider: openai.ProviderCompletions, Model: "gpt-4o-mini", APIKey: os.Getenv("OPENAI_API_KEY")}},
     Tools: []host.ToolSource{
@@ -20,7 +24,6 @@ h, err := host.New(host.Options{
     Session: ss, // memory.NewMemorySessionStack() / NewJSONLSessionStack(dir)
     Observe: host.ObserveConfig{HostID: "my-app", Sink: mySink}, // Sink nil = 不装观测
 })
-defer h.Close()
 
 a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main", System: "..."})
 res, err := a.Run(ctx, llm.User(llm.Text("用户输入")))
@@ -63,8 +66,9 @@ a, err := h.NewAgent(ctx, host.AgentOptions{
 
 ## 安全默认
 
+- **kernel 注入制**：host 不私建内核——`Options.Kernel` 必填，应用的其他插件 Use 到同一个 kernel 即可与 host 组件共享服务仓库与事件总线；kernel 生命周期归调用方（Dispose 归你），Host 没有 Close；
 - 模型/工具/观测/会话全部显式 opt-in：不传就没有；
-- `New` 失败即整体失败，已注册部分随 `kernel` Dispose 逆序撤除（可逆效应语义）；
+- host.New 失败只返回 error、不做 Dispose 兜底：已挂载组件留在 kernel 上随调用方 Dispose 统一回收（失败通常是配置错误，修正后重来即可）；
 - 会话落盘是明文（JSONL 文件即密钥面），路径宿主拥有。
 
 ## 测试

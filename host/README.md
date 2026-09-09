@@ -7,7 +7,11 @@ Package docs (godoc) in the `host.go` package comment; design ticket [#156](http
 ## Getting started
 
 ```go
+k := kernel.New() // the kernel is app-owned: your plugins (UI, approval, queues…) Use the same root
+defer k.Dispose()
+
 h, err := host.New(host.Options{
+    Kernel: k, // required: host components mount on this shared kernel, visible to your plugins
     Providers: []host.Provider{host.Provider(openai.Register)}, // signature matches Register; convert directly
     Models:    map[string]llm.Config{"main": {Provider: openai.ProviderCompletions, Model: "gpt-4o-mini", APIKey: os.Getenv("OPENAI_API_KEY")}},
     Tools: []host.ToolSource{
@@ -20,7 +24,6 @@ h, err := host.New(host.Options{
     Session: ss, // memory.NewMemorySessionStack() / NewJSONLSessionStack(dir)
     Observe: host.ObserveConfig{HostID: "my-app", Sink: mySink}, // nil Sink = no observability
 })
-defer h.Close()
 
 a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main", System: "..."})
 res, err := a.Run(ctx, llm.User(llm.Text("user input")))
@@ -63,8 +66,9 @@ An Agent built on a session-less host degrades to a pure passthrough; the `RunHi
 
 ## Safe defaults
 
+- **Kernel injection**: host never builds its own kernel — `Options.Kernel` is required, and your plugins Use the same kernel to share the service repository and event bus with host components; the kernel's lifecycle belongs to the caller (Dispose is yours) and Host has no Close;
 - Models / tools / observability / sessions are all explicit opt-in: not passed means not there;
-- A `New` failure fails the whole assembly; already-registered parts are unwound in reverse by the kernel Dispose (reversible-effect semantics);
+- A `New` failure only returns an error with no Dispose backstop: already-mounted components stay on the kernel and are unwound by the caller's Dispose (failures are usually config errors — fix and re-assemble);
 - Session persistence is plaintext (a JSONL file is the secret surface), paths are host-owned.
 
 ## Tests
