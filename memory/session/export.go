@@ -163,6 +163,8 @@ func ImportSession(ctx context.Context, store SessionStore, r io.Reader) (Sessio
 
 // CreateSeeded 实现 Seeder（内存版）：复用 appendEnvelopeLocked 的完整
 // 信封写入路径（Seq 由调用方定）；存在性/版本闸门与 Create 同口径。
+// 先查后写：常见撞车（重复导入同 ID）在写信封前 fail-fast；写入时双
+// 检查兜 TOCTOU 窗口（分两段加锁，不与 memSession 方法形成锁序嵌套）。
 func (s *memStore) CreateSeeded(ctx context.Context, header SessionHeader, envs []EventEnvelope) (Session, error) {
 	header, err := normalizeImportHeader(header)
 	if err != nil {
@@ -170,6 +172,12 @@ func (s *memStore) CreateSeeded(ctx context.Context, header SessionHeader, envs 
 	}
 	if err := validateSeedEnvs(s.reg, envs); err != nil {
 		return nil, err
+	}
+	s.mu.Lock()
+	exists := s.sessions[header.SessionID] != nil
+	s.mu.Unlock()
+	if exists {
+		return nil, fmt.Errorf("%w: id %s", ErrSessionExists, header.SessionID)
 	}
 	sess := newMemSession(header, s.reg, s)
 	sess.mu.Lock()

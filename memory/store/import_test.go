@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -233,5 +234,57 @@ func TestImportUnsupported(t *testing.T) {
 	_, err := ImportItems(ctx, noImportStore{}, []MemoryItem{it})
 	if !errors.Is(err, ErrImportUnsupported) {
 		t.Fatalf("err = %v, want ErrImportUnsupported", err)
+	}
+}
+
+// TestItemEqualSameInstant：同一时刻不同时区表示必须判等（SameInstant
+// 语义）——JSON 字节比较会把 +08:00 与 Z 写成不同字节，字段级 + Equal
+// 才是幂等口径的锚定判例（修前 json.Marshal 实现此处为红）。
+func TestItemEqualSameInstant(t *testing.T) {
+	base := itemOf("d1", []string{"tenant:a"}, "same")
+	local := time.Date(2026, 9, 9, 12, 0, 0, 123456789, time.FixedZone("CST", 8*3600))
+	utc := local.UTC()
+	a, b := base, base
+	a.KnownAt, a.CreatedAt, a.UpdatedAt = local, local, local
+	b.KnownAt, b.CreatedAt, b.UpdatedAt = utc, utc, utc
+	if !itemEqual(a, b) {
+		t.Fatal("same-instant different-location times must compare equal (SameInstant)")
+	}
+	// 反向判例：内容不同必须判不等；Structured nil/字面 null 同一归一。
+	c := b
+	c.Content = "different"
+	if itemEqual(b, c) {
+		t.Fatal("different content must not compare equal")
+	}
+	d, e := base, base
+	d.Structured = nil
+	e.Structured = json.RawMessage("null")
+	if !itemEqual(d, e) {
+		t.Fatal("Structured nil and literal null must compare equal (marshal-parity)")
+	}
+}
+
+// TestImportSameInstantSkipped：目标已有同内容 item（Put 分配本地时区
+// 表示），导入其时间域 UTC 化的导出副本——同一时刻不得误报 Conflict，
+// 应 Skipped。
+func TestImportSameInstantSkipped(t *testing.T) {
+	ctx := context.Background()
+	dst := NewMemoryStore()
+	ns := []string{"tenant:a"}
+	if _, err := dst.Put(ctx, itemOf("d1", ns, "same"), PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := dst.Get(ctx, ns, "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := stored // 同一内容的导出副本，时间域转 UTC 表示（JSON 往返形态）
+	alias.KnownAt, alias.CreatedAt, alias.UpdatedAt = stored.KnownAt.UTC(), stored.CreatedAt.UTC(), stored.UpdatedAt.UTC()
+	report, err := ImportItems(ctx, dst, []MemoryItem{alias})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Skipped != 1 || report.Imported != 0 || len(report.Conflicts) != 0 {
+		t.Fatalf("same-instant alias must be Skipped, report = %+v", report)
 	}
 }

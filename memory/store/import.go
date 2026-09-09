@@ -13,10 +13,13 @@ package store
 // Taint 原样保留：导出导入不得绕过 promotion gate 洗白信任级。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"time"
 )
 
 // ErrImportUnsupported：目标 store 未实现 ImportStore——保真导入不可用。
@@ -101,18 +104,47 @@ func ImportItems(ctx context.Context, ms MemoryStore, items []MemoryItem) (Impor
 	return report, nil
 }
 
-// itemEqual 判定内容一致（幂等重跑口径）：经 JSON 规范化比较——time.Time
-// 的 monotonic 时钟与时区表示差异不参与（SameInstant 语义）。
+// itemEqual 判定内容一致（幂等重跑口径）：字段级比较，三个 time 字段用
+// Equal()——同一时刻的本地时区表示（手动 Put 分配）与 UTC 表示（JSON
+// 往返）视为一致（SameInstant 语义），不误报 Conflict；Structured 做
+// 空/null 归一后按字节比较（json.Marshal 对 nil/空/null 同样归一为 null，
+// 口径不变）；Namespace/SourceRefs 按切片逐元素相等。
 func itemEqual(a, b MemoryItem) bool {
-	ab, err := json.Marshal(a)
-	if err != nil {
+	if a.ID != b.ID || a.Kind != b.Kind || a.Content != b.Content ||
+		a.Status != b.Status || a.Confidence != b.Confidence || a.Taint != b.Taint {
 		return false
 	}
-	bb, err := json.Marshal(b)
-	if err != nil {
+	if !slices.Equal(a.Namespace, b.Namespace) || !slices.Equal(a.SourceRefs, b.SourceRefs) {
 		return false
 	}
-	return string(ab) == string(bb)
+	if a.Revision != b.Revision || !structuredEqual(a.Structured, b.Structured) {
+		return false
+	}
+	return a.ValidFrom.Equal(b.ValidFrom) && timePtrEqual(a.ValidUntil, b.ValidUntil) &&
+		a.KnownAt.Equal(b.KnownAt) && a.CreatedAt.Equal(b.CreatedAt) && a.UpdatedAt.Equal(b.UpdatedAt)
+}
+
+// structuredEqual 比较 Structured：TrimSpace 后把字面 null 归一为空——
+// json.Marshal 对 nil / 空切片 / 字面 null 都产出 null，字段级比较保持
+// 同一归一口径；其余按字节相等。
+func structuredEqual(a, b json.RawMessage) bool {
+	a, b = bytes.TrimSpace(a), bytes.TrimSpace(b)
+	if string(a) == "null" {
+		a = nil
+	}
+	if string(b) == "null" {
+		b = nil
+	}
+	return bytes.Equal(a, b)
+}
+
+// timePtrEqual 双指针 SameInstant 比较：都 nil 视为相等，都非 nil 用
+// Equal（单侧 nil 不等）。
+func timePtrEqual(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
 
 // PutImport 实现 ImportStore（内存版）：item 携带的时间域与 Revision
