@@ -41,6 +41,17 @@
 //
 // 使用细节（backend 对比、状态机、错误速查表）见 README_zh.md。
 //
+// # 导出与导入（迁移保真）
+//
+// ExportItems 全量导出（强制 IncludeInactive：Superseded/Revoked 也是
+// 状态机的一部分）；ImportItems 逐条 Get 探测——不存在走 PutImport
+// （可选接口 ImportStore：item 携带的双时态时间域与 Revision 原样入库，
+// validate 照跑）、内容一致 Skipped、不同记 Conflict（先到先得）。taint
+// 原样保留（导入不洗白信任级）；未实现 ImportStore 返回
+// ErrImportUnsupported，不做静默降级——时间域被重置的「迁移成功」比
+// 失败更糟。
+//
 // 设计全貌见 docs/design/memory-layer-research-and-v2-design.md §6.5/
-// §10/§13.1；实现票 #76（C1）、C2（SQLite+FTS）、C3（Assembler）。
+// §10/§13.1/§7.4；实现票 #76（C1）、C2（SQLite+FTS）、C3（Assembler）、
+// #152（导出/导入）。
 package store

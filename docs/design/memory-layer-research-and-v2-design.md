@@ -512,6 +512,16 @@ type ContextAssembler interface {
 - memory item 写入符合 namespace、taint 和来源要求；
 - 无权限的 scope 永不参与 `Search` 和 `Assemble`。
 
+### 7.4 导出与导入：迁移保真（#152）
+
+两条独立的官方迁移路径，共同原则是**保真优先于静默降级**：后端不支持时返回哨兵错误，绝不做「看起来成功」的有损迁移。
+
+**会话侧（`memory/session`）**：`ExportSession` 把会话写成 header 行 + 信封行的单文件流——与 JSONL 会话文件同构（零新格式），blob 内联自包含（不出现 `blob:` 引用）；`ImportSession` 逐行校验（seq 连续、类型注册表分级、tool call/result 配对、未闭合拒绝）后经 `CreateSeeded` 重建。目标 store 实现可选接口 `Seeder` 才支持导入；未实现返回 `ErrSeedUnsupported` 而不是静默重编号 Seq——checkpoint.Replaced、SourceRefs.Seq、SeedLength 都指向 Seq，重编号等于丢溯源。典型场景：备份、调试交付、跨 workspace 分叉、审计归档。
+
+**item 侧（`memory/store`）**：`ExportItems` 全量导出（强制 IncludeInactive——Superseded/Revoked 也是状态机的一部分）；`ImportItems` 逐条 Get 探测：不存在 → `PutImport`（可选接口 `ImportStore`，item 携带的 KnownAt/CreatedAt/UpdatedAt/Revision/Status/Taint 原样入库，validate 校验链照跑）、已存在且内容一致 → Skipped、已存在且不同 → Conflict（先到先得，不覆盖）。taint 原样保留：导入不得洗白信任级、绕过 promotion gate。未实现 `ImportStore` 返回 `ErrImportUnsupported`——双时态字段被重置的「迁移成功」比失败更糟。典型场景：开发期 → 生产搬迁、记忆库分发、冷备。
+
+**明确不做**：格式降级、增量同步、跨 store 的 seq/引用重写（SourceRefs 保持溯源注记语义）、namespace 重映射、Supersede 链重建（无反向链接字段，出界）。宿主需要这些能力时在导出产物之上自行实现。
+
 ---
 
 ## 8. Context Assembly：把“记住”变成可控请求

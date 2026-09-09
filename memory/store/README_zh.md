@@ -1,7 +1,7 @@
 # memory/store
 
 P2-C 的长期记忆 canonical store：`MemoryItem` 的 Put/Get/Search/Supersede/Revoke。
-包文档（godoc）见 `doc.go`；设计事实源 [docs/design/memory-layer-research-and-v2-design.md](../../docs/design/memory-layer-research-and-v2-design.md) §6.5/§10/§13.1；实现票 #76（C1）。SQLite + FTS 在 C2，Context Assembler 在 C3。
+包文档（godoc）见 `doc.go`；设计事实源 [docs/design/memory-layer-research-and-v2-design.md](../../docs/design/memory-layer-research-and-v2-design.md) §6.5/§10/§13.1/§7.4；实现票 #76（C1）。SQLite + FTS 在 C2，Context Assembler 在 C3，导出/导入在 #152。
 
 ## 接口面
 
@@ -51,6 +51,20 @@ Active/Pending ──Revoke──▶ Revoked（终态；reason 走 store 审计�
 - 排序 = UpdatedAt 降序 + ID tiebreak（稳定，不依赖 Confidence——没人写的值不参与排序）；`Limit` 是硬上限（超页场景 C2 定 keyset）。
 - 未命中返回空切片，**不伪造**。
 
+## 导出与导入（迁移保真）
+
+```go
+items, err := store.ExportItems(ctx, src, store.MemoryQuery{Namespace: ns}) // 强制 IncludeInactive
+report, err := store.ImportItems(ctx, dst, items)
+// report.Imported / report.Skipped / report.Conflicts []store.Conflict
+```
+
+- `ExportItems` 全量导出：**强制 `IncludeInactive`**——Superseded/Revoked 也是状态机的一部分，丢掉它们等于丢掉替代链与撤销历史。
+- 目标 store 实现可选接口 `ImportStore`（`PutImport`）才支持导入；两个官方实现（内存/SQLite）都支持。未实现返回 `ErrImportUnsupported`，**不做静默降级**——item 携带的双时态时间域（KnownAt/CreatedAt/UpdatedAt）与 Revision 被重置的「迁移成功」比失败更糟。
+- 幂等三分支：逐条 Get 探测——不存在 → PutImport；已存在且内容一致 → Skipped；已存在且不同 → Conflict（先到先得，不覆盖）。单条校验失败（validate 照跑）记入 Conflicts 继续，不中断整单。
+- **taint 原样保留**：导入不得洗白信任级、绕过 promotion gate。
+- 典型场景：开发期 → 生产搬迁、记忆库分发、冷备。不做：namespace 重映射、Supersede 链重建（§7.4）。
+
 ## 错误速查
 
 | 哨兵 | 语义 |
@@ -60,6 +74,7 @@ Active/Pending ──Revoke──▶ Revoked（终态；reason 走 store 审计�
 | `ErrInvalidItem` / `ErrInvalidQuery` | item 校验失败（形状/来源/置信度）/ Search 条件非法 |
 | `ErrSupersedeRevoked` / `ErrSupersedeSelf` | 对 Revoked item Supersede（终态）/ next.ID 与 oldID 相同 |
 | `ErrRevokeSuperseded` / `ErrStatusTransition` | 对 Superseded item Revoke / Put 更新试图改 Status |
+| `ErrImportUnsupported` | 目标 store 未实现 ImportStore（不做静默降级） |
 
 ## 测试
 

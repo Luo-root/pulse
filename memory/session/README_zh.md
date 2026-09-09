@@ -1,7 +1,7 @@
 # memory/session
 
 P2 记忆层的会话事件日志：append-only 日志是唯一真相，`Surface() []*llm.Message` 只是投影。
-包文档（godoc）见 `doc.go`；设计事实源 [docs/design/memory-layer-research-and-v2-design.md](../../docs/design/memory-layer-research-and-v2-design.md) §6/§7/§9；实现票 #68（A1）、#70（A2）、#73（P2-B Replace fold）。
+包文档（godoc）见 `doc.go`；设计事实源 [docs/design/memory-layer-research-and-v2-design.md](../../docs/design/memory-layer-research-and-v2-design.md) §6/§7/§7.4/§9；实现票 #68（A1）、#70（A2）、#73（P2-B Replace fold）、#152（导出/导入）。
 
 ## 接口面
 
@@ -39,6 +39,21 @@ reg := sess.Registry()                          // 事件 codec 环境（FoldTra
 
 JSONL 落盘布局：`{root}/{sessionID}/header.json` + `events.jsonl`（每行一条信封）+ `blobs/{sha256}`（>32KiB 内联字节溢出，内容寻址去重、sha 自校验、缺失即加载错误）+ `lock`。**JSONL 为明文：文件即密钥面、路径宿主拥有。** `blob:` URL 前缀为本包保留，宿主自带 `blob:` URL 需换 scheme。
 
+## 导出与导入（迁移保真）
+
+单文件迁移：`ExportSession` 把整个会话写成 header 行 + 信封行的流——**与 JSONL 会话文件同构（零新格式）**，blob 内联自包含（流中不出现 `blob:` 引用）；`ImportSession` 全量校验（seq 连续、类型经注册表分级、tool call/result 配对、未闭合拒绝）后经 store 的 `CreateSeeded` 重建，header 原样（SessionID 不变）。
+
+```go
+var stream bytes.Buffer
+err := session.ExportSession(ctx, src, &stream)
+dst, err := session.ImportSession(ctx, dstStore, &stream)
+```
+
+- 目标 store 必须实现**可选接口 `Seeder`**（`CreateSeeded(ctx, header, envs)`：按信封自带 Seq 保真重建）。两个官方实现（内存/JSONL）都支持。
+- 不支持时返回 `ErrSeedUnsupported`，**绝不静默重编号 Seq**——checkpoint.Replaced、SourceRefs.Seq、SeedLength 的溯源都依赖 Seq 原值。
+- 内容寻址幂等：同一会话重复导入/重导出字节级一致（blob 按 sha256 重建）。
+- 典型场景：备份、调试交付、跨 workspace 分叉、审计归档。不做：格式降级、增量同步、跨 store seq 重写（§7.4）。
+
 ## 事件分级与裁决
 
 每个 `EventType` 在 `Registry` 绑定 payload 校验与分级；裁决表（§6.3 评审定案）：
@@ -63,6 +78,7 @@ Ignorable ≠ 可以不记：`request.header` 仍必须由写入方发（system 
 | `ErrCorruptLog` | 持久日志损坏（中部坏行、seq 断链、blob checksum 不符） |
 | `ErrForkSplitToolGroup` / `ErrForkBadAt` | Fork 切在 tool 组中间 / 切点越界 |
 | `ErrFormatVersion` | header 版本不兼容（只认 1 与 2，不猜测迁移） |
+| `ErrSeedUnsupported` | 导入目标 store 未实现 Seeder（不做静默重编号降级） |
 | `ErrSessionClosed` / `ErrInvalidSessionID` / `ErrCursorStale` / `ErrDeleted` | Close 后写入 / ID 非法（须匹配 `[A-Za-z0-9_-]{1,128}`）/ List 游标失效 / 已删除会话写入 |
 
 ## 测试
