@@ -2,7 +2,7 @@
 
 # kernel
 
-The plugin kernel of pulse v2: the foundation where everything is a plugin.
+The plugin kernel of pulse v2: reversible effects, dependency-reactive fiber loading, and a typed service repository.
 
 This package brings [cordiverse/paper](https://github.com/cordiverse/paper)'s *A Programming Paradigm for Spatiotemporal Composability* to Go: **unload reverts the effect** (time) + **dependency-reactive loading** (space). It is not a verbatim port of Cordis. For the full trade-offs, see [`docs/design/plugin-kernel-v2.md`](../docs/design/plugin-kernel-v2.md).
 

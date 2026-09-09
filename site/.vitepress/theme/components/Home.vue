@@ -7,10 +7,10 @@ const isZh = computed(() => lang.value.startsWith('zh'))
 
 const copy = {
   zh: {
-    badge: 'v0.1.1 预览 · 开源 MIT',
+    badge: 'v0.2.0 · 开源 MIT',
     heroTitle: '一切皆插件，',
     heroTitleAccent: '卸载即还原',
-    tagline: 'Pulse 是一个 Go AI Agent 框架——以可逆效应与依赖响应式为基座的插件内核。模型、工具、编排、记忆、观测全部插件化组合，v2 核心已发布预览。',
+    tagline: 'Pulse 是一个 Go AI agent 运行时内核——以可逆效应与依赖响应式装载为基座的插件内核。模型、工具、编排、记忆、观测作为内核上的能力租户组合，v2 核心 v0.2.0 已发布。',
     ctaStart: '快速开始',
     ctaPackages: '包文档',
     ctaGithub: 'GitHub',
@@ -27,19 +27,19 @@ const copy = {
     startEyebrow: '开始使用',
     startTitle: '两条路进入 Pulse',
     start1Title: '安装',
-    start1Desc: '需要 Go 1.25+。一行命令引入框架，用环境变量提供模型 API Key。',
+    start1Desc: '需要 Go 1.25+。一行命令引入运行时，用环境变量提供模型 API Key。',
     start2Title: '跑通第一课',
     start2Desc: '8 课渐进示例从内核地基走到生产集成；缺 API Key 时自动走脚本模型，课程不依赖真实凭据。',
     ctaTitle: '在开源、可逆、可组合的基座上构建 Agent',
-    ctaDesc: 'v0.1.1 预览已发布——双基座观测栈、27 个包的双语文档、8 课渐进示例与跨框架评测数字全部就绪。',
-    ctaRelease: 'v0.1.1 Release',
+    ctaDesc: 'v0.2.0 已发布——freeze 契约生效（breaking 只随 minor）、会话与长期记忆官方导出/导入、双基座观测栈与 27 个包的双语文档全部就绪。',
+    ctaRelease: 'v0.2.0 Release',
     ctaEval: '评测数字',
   },
   en: {
-    badge: 'v0.1.1 Preview · Open Source MIT',
+    badge: 'v0.2.0 · Open Source MIT',
     heroTitle: 'Everything is a plugin, ',
     heroTitleAccent: 'unload to restore',
-    tagline: 'Pulse is a Go AI Agent framework — a plugin kernel grounded in reversible effects and dependency-reactive loading. Models, tools, orchestration, memory, observability: all pluggable, shipping as a v2 preview.',
+    tagline: 'Pulse is a Go agent runtime core — a plugin kernel grounded in reversible effects and dependency-reactive service loading. Models, tools, orchestration, memory, observability compose as tenants on the kernel, shipping as v0.2.0.',
     ctaStart: 'Quick start',
     ctaPackages: 'Package docs',
     ctaGithub: 'GitHub',
@@ -56,12 +56,12 @@ const copy = {
     startEyebrow: 'Get started',
     startTitle: 'Two ways into Pulse',
     start1Title: 'Install',
-    start1Desc: 'Requires Go 1.25+. One command brings in the framework; provide the model API key via environment variables.',
+    start1Desc: 'Requires Go 1.25+. One command brings in the runtime; provide the model API key via environment variables.',
     start2Title: 'Run the first lesson',
     start2Desc: 'Eight progressive lessons walk from kernel ground to production; without an API key they fall back to scripted models — no real credentials needed.',
     ctaTitle: 'Build agents on a reversible, composable foundation',
-    ctaDesc: 'v0.1.1 preview is out — a dual-foundation observability stack, bilingual docs for 27 packages, eight progressive lessons, and cross-framework benchmark numbers, all ready.',
-    ctaRelease: 'v0.1.1 Release',
+    ctaDesc: 'v0.2.0 is out — the freeze contract is in effect (breaking changes ride minor releases only), official session & memory export/import, a dual-foundation observability stack, and bilingual docs for 27 packages.',
+    ctaRelease: 'v0.2.0 Release',
     ctaEval: 'Benchmarks',
   },
 }
@@ -153,7 +153,7 @@ const icons = {
         <p class="cta-desc">{{ t.ctaDesc }}</p>
         <div class="actions center">
           <a class="btn btn-primary" href="https://github.com/Luo-root/pulse" target="_blank" rel="noopener">{{ t.ctaGithub }}</a>
-          <a class="btn btn-ghost" href="https://github.com/Luo-root/pulse/releases/tag/v0.1.1" target="_blank" rel="noopener">{{ t.ctaRelease }}</a>
+          <a class="btn btn-ghost" href="https://github.com/Luo-root/pulse/releases/tag/v0.2.0" target="_blank" rel="noopener">{{ t.ctaRelease }}</a>
           <a class="btn btn-ghost" href="/pulse/eval">{{ t.ctaEval }}</a>
         </div>
       </div>

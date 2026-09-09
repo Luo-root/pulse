@@ -7,21 +7,34 @@
 </div>
 
 <div align="center">
-  <h3>Go AI Agent 框架——一切皆插件，卸载即还原。</h3>
+  <h3>Go AI agent 运行时内核——可逆副作用，依赖响应式装载。</h3>
 </div>
 
 <div align="center">
   <a href="https://go.dev/"><img alt="Go 1.25.0" src="https://img.shields.io/badge/Go-1.25.0-blue.svg" /></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg" /></a>
-  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.1.1"><img alt="Release v0.1.1 preview" src="https://img.shields.io/badge/release-v0.1.1--preview-2563eb.svg" /></a>
+  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.2.0"><img alt="Release v0.2.0" src="https://img.shields.io/badge/release-v0.2.0-2563eb.svg" /></a>
   <a href="https://luo-root.github.io/pulse/"><img alt="Docs: English | 中文" src="https://img.shields.io/badge/docs-English%20%7C%20%E4%B8%AD%E6%96%87-2563eb.svg" /></a>
 </div>
 
 <br />
 
-**Pulse** 是一个 Go AI Agent 框架，v2 内核以预览版（v0.1.1）发布。
+**Pulse** 是一个围绕插件内核构建的 Go AI agent 运行时，v2 内核已以 v0.2.0 发布。
 
-v2 内核以可逆效应和依赖响应式为基座。核心重构已落地：插件内核、provider 中立模型层、无状态 ReAct 回合执行器、工具与 Skills 体系、记忆层（会话、压缩、长期存储、上下文装配）、双基座观测栈（信封 + 各包折叠适配 + Collector 直写服务），以及声明式 flow 编排。v1 的 Agent、旧模型适配器、DAG、记忆、HITL 与遥测实现已彻底移除，不保留兼容层；预览期间 API 仍可能调整。
+v2 内核以可逆效应和依赖响应式为基座。核心重构已落地：插件内核、provider 中立模型层、无状态 ReAct 回合执行器、工具与 Skills 体系、记忆层（会话、压缩、长期存储、上下文装配）、双基座观测栈（信封 + 各包折叠适配 + Collector 直写服务），以及声明式 flow 编排。v1 的 Agent、旧模型适配器、DAG、记忆、HITL 与遥测实现已彻底移除，不保留兼容层。
+
+## 发布与兼容性（v0.2.0 起）
+
+Pulse 按 0.x 的 SemVer 惯例发布：
+
+- **breaking 只随 minor 发布**——patch 内永不破坏；每次 breaking 在 Release notes 顶部显式列出。
+- **冻结契约**（改动需走 minor 并在 notes 说明）：
+  - `llm` 请求词汇表契约：不支持的参数 → `ErrBadRequest`，绝不静默丢弃；
+  - `kernel/flow` slot 契约：`pending` / `ready` / `skipped`，skip 是到达而非失败，节点错误取消整图；
+  - kernel 插件生命周期语义：同名覆盖撤旧不还原、事件监听即 Effect、代际提交；
+  - 会话事件流格式（header v1/v2）；
+  - `MemoryStore` / `SessionStore` 五方法集与可选能力接口的哨兵错误语义（`Seeder` / `ImportStore`）。
+- 不再有第二次整体重写：不会出现 v1→v2 式的无兼容路径整树删除。
 
 ## 当前可用能力
 

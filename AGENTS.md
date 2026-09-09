@@ -2,7 +2,7 @@
 
 ## What this is
 
-Go library (`github.com/Luo-root/pulse`) — an AI Agent framework; the v2 core has landed and ships as the v0.1.1 preview. The v2 core is `kernel/` (plugin kernel + `kernel/flow` dataflow), `llm/` (provider-neutral model vocabulary + adapters), `loop/` (stateless ReAct turn executor), `toolset/` (reversible tool registry adapting to `loop.ToolSet`) and `skills/` (Agent Skills loader per agentskills.io). The entire v1 `components/` tree has been removed. `pulse.go` at root is a stub (`package pulse`); it is not an entrypoint.
+Go library (`github.com/Luo-root/pulse`) — a Go AI agent runtime built around a plugin kernel; the v2 core ships as v0.2.0. The v2 core is `kernel/` (plugin kernel + `kernel/flow` dataflow), `llm/` (provider-neutral model vocabulary + adapters), `loop/` (stateless ReAct turn executor), `toolset/` (reversible tool registry adapting to `loop.ToolSet`) and `skills/` (Agent Skills loader per agentskills.io). The entire v1 `components/` tree has been removed. `pulse.go` at root is a stub (`package pulse`); it is not an entrypoint.
 
 ## Build & test
 
@@ -45,4 +45,5 @@ examples/                   # 00–07 渐进示例（8 课：kernel→chat→rea
 - **Chinese comments and doc** are the norm; preserve them when editing.
 - **v2 vocabulary contract**: `llm.GenerateRequest` only carries cross-provider stable fields; when a provider wire format has no counterpart, the adapter returns `ErrBadRequest` — never silently drop parameters and never add `map[string]any` escape hatches on the request vocabulary. `llm.Config.Options` is **client-level only** (org / timeout / headers / retries), not a request-parameter escape hatch.
 - **flow contract**: slots are pending | ready | skipped; skip is arrival, not failure; node error cancels the graph and is never rewritten as skip. Declarative graphs are **YAML only** (`kernel/flow/yaml`).
+- **Freeze contract (v0.2.0+)**: 0.x SemVer — breaking only with minor, never in patch; every breaking change is listed at the top of Release notes. Frozen contracts: llm vocabulary (unsupported → ErrBadRequest), flow slots, kernel lifecycle semantics, session stream format (v1/v2), MemoryStore/SessionStore method sets + optional-capability sentinel errors (Seeder/ImportStore). No second v1→v2-style tree removal.
 - **Secrets**: never commit `.env`, API keys or tokens. Live tests are env-gated.

@@ -7,21 +7,34 @@
 </div>
 
 <div align="center">
-  <h3>Go AI Agent framework — everything is a plugin, unload to restore.</h3>
+  <h3>Go agent runtime core — reversible effects, reactive service loading.</h3>
 </div>
 
 <div align="center">
   <a href="https://go.dev/"><img alt="Go 1.25.0" src="https://img.shields.io/badge/Go-1.25.0-blue.svg" /></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg" /></a>
-  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.1.1"><img alt="Release v0.1.1 preview" src="https://img.shields.io/badge/release-v0.1.1--preview-2563eb.svg" /></a>
+  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.2.0"><img alt="Release v0.2.0" src="https://img.shields.io/badge/release-v0.2.0-2563eb.svg" /></a>
   <a href="https://luo-root.github.io/pulse/"><img alt="Docs: English | 中文" src="https://img.shields.io/badge/docs-English%20%7C%20%E4%B8%AD%E6%96%87-2563eb.svg" /></a>
 </div>
 
 <br />
 
-**Pulse** is a Go AI Agent framework, shipping its v2 core as a preview (v0.1.1).
+**Pulse** is a Go agent runtime built around a plugin kernel, shipping its v2 core as v0.2.0.
 
 The v2 kernel is built on reversible effects and dependency-reactive loading. The core rewrite has landed: a plugin kernel, a provider-neutral model layer, a stateless ReAct turn executor, the tool & skills system, the memory layer (sessions, compaction, long-term store, assembly), a dual-foundation observability stack (envelope + per-package folding adapters with a direct-write Collector), and declarative flow orchestration. The v1 Agent, legacy model adapters, DAG, memory, HITL, and telemetry implementations were removed entirely with no compatibility layer; APIs may still adjust during the preview window.
+
+## Release & Compatibility
+
+Pulse ships under the 0.x SemVer convention. From **v0.2.0**:
+
+- **Breaking changes ride minor releases only** — a patch release never breaks. Every breaking change is listed at the top of its Release notes.
+- **Frozen contracts** (a change to any of these requires a minor release and a Release-notes entry):
+  - the `llm` request vocabulary contract: unsupported parameter → `ErrBadRequest`, never silently dropped;
+  - the `kernel/flow` slot contract: `pending` / `ready` / `skipped`, skip is arrival rather than failure, node errors cancel the graph;
+  - kernel plugin lifecycle semantics: same-name supersede without restore, event listeners are Effects, generational commits;
+  - the session event stream format (header v1/v2);
+  - the `MemoryStore` / `SessionStore` method sets and the sentinel-error semantics of optional capability interfaces (`Seeder`, `ImportStore`).
+- No second full rewrite: there will be no v1→v2-style tree removal without a compatibility path.
 
 ## Current Capabilities
 
