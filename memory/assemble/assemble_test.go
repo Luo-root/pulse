@@ -205,7 +205,7 @@ func TestBudgetDiagnostics(t *testing.T) {
 	// surface 原样保留（不裁切）。
 	for i, m := range surface {
 		if ac.Messages[ac.StablePrefixLen+i] != m {
-			t.Fatal("surface tail must be intact（裁切归 compaction/prune）")
+			t.Fatal("surface tail must be intact（裁切归 compaction）")
 		}
 	}
 	// 检索 top-k 收缩：预算内至少一条。

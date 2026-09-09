@@ -1,6 +1,6 @@
 # memory/compaction
 
-P2-B 压缩层：token meter、§9.1 八步压缩事务、§9.2 tool result deterministic pruning。
+P2-B 压缩层：token meter、§9.1 八步压缩事务。
 核心不变式——**压缩是事务不是删除**：raw log 只增不减，`checkpoint.Replaced` 记录被替代窗口的完整 source refs，失败留审计。设计事实源 §9；实现票 #73。
 
 ## 接入
@@ -46,7 +46,7 @@ rep, err := compaction.Compact(ctx, sess, compaction.Options{
 
 ## ValidateReplace：「不新增孤儿」口径
 
-Replace 的 pairing 校验是**「不新增破坏」而非「窗口内自成整组」**——§9.2 pruning 替代单个 result 节点时 call 在窗口外，但替代节点保留同 ToolCallID，配对仍成立（合法）。四条规则：
+Replace 的 pairing 校验是**「不新增破坏」而非「窗口内自成整组」**——被保留的 call/result 其配对对象已在窗口外时，只要 replacement 不产生新孤儿就仍合法。四条规则：
 
 1. 保留的 call 其 result 落入被删窗口且 replacement 不保留该 ID → 拒（call 悬空）
 2. 保留的 result 其 call 落入被删窗口且 replacement 不提供 → 拒（result 孤儿）
@@ -55,14 +55,9 @@ Replace 的 pairing 校验是**「不新增破坏」而非「窗口内自成整�
 
 编排预检与 session 的 fold 重放复核同一口径（fail closed）。
 
-## §9.2 Tool Result Pruning
+## §9.2 Tool Result Pruning（已移除，#150）
 
-```go
-n, checkpoints, err := compaction.PruneResults(ctx, sess, compaction.PruneOptions{})
-// 默认 Max 4000 / Head 2400 / Tail 800 rune；head + marker + tail，rune 安全不劈 UTF-8
-```
-
-超预算的 tool result 节点逐个 checkpoint Replace（窗口 = 单节点）；结构化字段（ToolCallID/IsError）保留；**原文完整保存在 raw log**（UI 可展开）。确定性操作，幂等。
+确定性单节点裁剪 API（`PruneResults`）已于 2026-09-09 **移除**：#148 缓存命中结构评测显示同位置对照下 compaction 计费严格更低（15-30 轮 3212 vs 5077，命中 0.1× / 未命中 1.0× 价模型），其差异化卖点（无 LLM / 低破坏 / 即时）均被既有压缩路径覆盖（`DeterministicSummarizer`、raw log 溯源），且零生产接线。超预算 tool result 的收缩统一走 §9.1 compaction 窗口（整组移动）。
 
 ## 测试
 

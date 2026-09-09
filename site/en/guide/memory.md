@@ -7,7 +7,7 @@
 | Sub-package | Responsibility | Phase |
 |---|---|---|
 | `memory/session` | Session core: event envelopes, codec registry, surface fold, JSONL store + blobs + file lock | P2-A |
-| `memory/compaction` | Token metering + §9.1 eight-step transactional compaction + pruning | P2-B |
+| `memory/compaction` | Token metering + §9.1 eight-step transactional compaction | P2-B |
 | `memory/store` | Long-term store: namespace isolation + Supersede/Revoke + CAS; SQLite/FTS5 backend (build-tag isolated) | P2-C |
 | `memory/assemble` | Context Assembler: per-class budgets + stable snapshot + citation templates + hybrid ranking | P2-C3 |
 | `memory/selfedit` | Self-edit memory tools (put/supersede/revoke), explicit opt-in | P2-C4 |

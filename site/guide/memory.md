@@ -7,7 +7,7 @@
 | 子包 | 职责 | 阶段 |
 |---|---|---|
 | `memory/session` | 会话核心：事件信封、codec registry、surface fold、JSONL store + blobs + 文件锁 | P2-A |
-| `memory/compaction` | Token 计量 + §9.1 八步事务压缩 + pruning | P2-B |
+| `memory/compaction` | Token 计量 + §9.1 八步事务压缩 | P2-B |
 | `memory/store` | 长期记忆存储：namespace 隔离 + Supersede/Revoke + CAS；SQLite/FTS5 后端（build tag 隔离） | P2-C |
 | `memory/assemble` | Context Assembler：按类预算 + stable snapshot + 引用模板 + 混合融合排序 | P2-C3 |
 | `memory/selfedit` | self-edit 记忆工具组（put/supersede/revoke），显式 opt-in | P2-C4 |

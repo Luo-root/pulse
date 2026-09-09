@@ -249,63 +249,6 @@ func TestMeterAndPressure(t *testing.T) {
 	}
 }
 
-// TestPruneResults：超预算 result 裁剪为 head+marker+tail；原 result 事件
-// 保留在 raw log；checkpoint Replace 只替代该节点。
-func TestPruneResults(t *testing.T) {
-	sess, _ := session.NewMemoryStore().Create(t.Context(), session.SessionHeader{})
-	ctx := t.Context()
-	if _, err := sess.Append(ctx, draftUser(t, "run it")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sess.Append(ctx, draftAssistant(t, llm.Call(llm.ToolCall{ID: "c1"}))); err != nil {
-		t.Fatal(err)
-	}
-	huge := strings.Repeat("x", 5000)
-	if _, err := sess.Append(ctx, draftToolResult(t, "c1", huge)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sess.Append(ctx, draftAssistant(t, llm.Text("ok"))); err != nil {
-		t.Fatal(err)
-	}
-
-	n, checkpoints, err := PruneResults(ctx, sess, PruneOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 || len(checkpoints) != 1 {
-		t.Fatalf("pruned = %d checkpoints = %v, want 1", n, checkpoints)
-	}
-	surface, _ := sess.Surface(ctx)
-	pruned := surface[2].Parts[0].ToolResultValue
-	if pruned == nil {
-		t.Fatal("node 2 missing")
-	}
-	text := pruned.Content[0].Text
-	if len([]rune(text)) >= 5000 {
-		t.Fatal("text not pruned")
-	}
-	if !strings.Contains(text, "pruned") || !strings.HasPrefix(text, "xxx") || !strings.HasSuffix(text, "xxx") {
-		t.Fatalf("pruned text lacks head/marker/tail: %q", text[:60])
-	}
-	// 原 result 事件保留在 raw log。
-	events, _ := sess.Events(ctx, 0)
-	var rawFound bool
-	for _, ev := range events {
-		if ev.Type == session.EventToolResult && strings.Contains(string(ev.Data), strings.Repeat("x", 100)) {
-			rawFound = true
-		}
-	}
-	if !rawFound {
-		t.Fatal("raw result event must be kept（原日志完整保存）")
-	}
-	// 未超预算的节点不动。
-	if n2, _, _ := PruneResults(ctx, sess, PruneOptions{}); n2 != 0 {
-		t.Fatalf("second pass pruned %d nodes, want 0（幂等）", n2)
-	}
-}
-
-// TestJSONLCompactPersists：JSONL 上压缩——checkpoint roundtrip、header
-// 版本持久化、重开 surface 一致。
 func TestJSONLCompactPersists(t *testing.T) {
 	store, err := session.NewJSONLStore(t.TempDir())
 	if err != nil {

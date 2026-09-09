@@ -24,7 +24,7 @@ Design doc §1.1 lists six problems that must be covered: precise recovery and d
 
 1. **event-sourced**: the append-only log is the single source of truth and `Surface()` is only a projection; projections can be replaced or rebuilt, original events are never modified or deleted.
 2. **model-visible means logged**: everything shown to the model (including closure events synthesized during crash recovery) must be genuinely written back to the log — any divergence between projection and log is a bug.
-3. **compaction is a transaction, not deletion**: compaction/pruning only appends + surface replace, `Replaced` records the full provenance of the replaced window, and failures leave an audit trail instead of pretending completion.
+3. **compaction is a transaction, not deletion**: compaction only appends + surface replace, `Replaced` records the full provenance of the replaced window, and failures leave an audit trail instead of pretending completion.
 4. **memory management authority rests with the host pipeline + approval (HITL)**: automatic memory only writes candidates (Pending); promotion to Active requires the approver's stamp; model self-editing goes through explicit opt-in tools + `before_tool_call` approval. There is no "fully automatic memory".
 
 ## End-to-end data flow (the lifecycle of one memory)
@@ -44,7 +44,6 @@ loop.Run ⇄ 装配层桥 ⇄ session.Append(事件)          ← 每轮消息/�
 
 【治理期——长会话】
 compaction.Pressure ─▶ Compact（§9.1 八步事务）       ← surface 治理，raw log 只增不减
-                  └─▶ PruneResults（§9.2）            ← 超长 tool result head+marker+tail
 
 【提炼期——会话末/每 N 轮，宿主触发】
 reflection.Reflect（预算截断）─▶ candidate.Extract ─▶ Pending 入库（双归一去重；检索不可见）
@@ -68,7 +67,7 @@ The safety difference between the two write channels is deliberate: **automatic 
 | Package | Ticket/Phase | One-line responsibility | Required seam (host-injected) | Default state |
 |---|---|---|---|---|
 | [`session`](session/README.md) | #68/#70/#73 (A1+A2+B) | append-only event log + fold projection + cold recovery; two backends, memory/JSONL | none (Registry allows event extension) | infrastructure, no switch |
-| [`compaction`](compaction/README.md) | #73 (B) | token meter + §9.1 eight-step compaction transaction + §9.2 tool result pruning | `Engine` (LLM/Deterministic) | manual entry point, no automatic trigger |
+| [`compaction`](compaction/README.md) | #73 (B) | token meter + §9.1 eight-step compaction transaction | `Engine` (LLM/Deterministic) | manual entry point, no automatic trigger |
 | [`store`](store/README.md) | #76/#78 (C1+C2) | MemoryItem canonical store: namespace isolation + Supersede/Revoke state machine + SQLite/FTS5 | none | memory version works out of the box; SQLite enabled via DSN |
 | [`assemble`](assemble/README.md) | #80/#88 (C3+D2) | context assembly: per-class budgets + stable prefix caching + §8.2 hybrid fusion ranking + citation templates | `TokenCounter` (nil estimates), `Semantic` (optional vector path) | nil seam = keyword-only still works |
 | [`selfedit`](selfedit/README.md) | #82 (C4) | self-edit memory tool group (put/supersede/revoke), model-visible write path | `OriginFn`, `toolset.Registry` | **explicit opt-in registration** |

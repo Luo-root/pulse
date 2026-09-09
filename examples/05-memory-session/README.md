@@ -53,7 +53,7 @@ compaction.Compact(ctx, sess, compaction.Options{
 ## 会话层小结（与后续课程的接口）
 
 - history 的正确形态 = `session` 的事件日志 + `Surface()` 投影——05 之后各课的「history」都从它来。
-- tool result 超长的裁剪（head+marker+tail、原文完整保留）是 `compaction.PruneResults`，本课未演示，见 [compaction README](../../memory/compaction/README_zh.md)。
+- tool result 超长时走 compaction 窗口收缩（§9.1 整组移动、原文完整保留在 raw log；原 §9.2 单节点 pruning 已于 #150 移除），本课未演示，见 [compaction README](../../memory/compaction/README_zh.md)。
 - Fork / 跨 scope 检索隔离等进阶语义见 [session README](../../memory/session/README_zh.md)。
 
 ## 运行

@@ -5,7 +5,7 @@
 //
 //   - 预算按类配置（§8.1）：稳定记忆小固定预算（超限省略并记诊断——
 //     不静默丢）、检索记忆动态预算（超限降 top-k）、surface 尾部保留
-//     完整合法尾部（超限只诊断不裁切——裁切归 compaction/prune）；
+//     完整合法尾部（超限只诊断不裁切——裁切归 compaction）；
 //   - 预算可解释：每次组装的省略/降级都落在 Diagnostics 里；
 //   - stable snapshot policy（§8.3）：frozen profile 默认缓存（同
 //     namespace 复用，保 cache），RefreshStable 显式重建；

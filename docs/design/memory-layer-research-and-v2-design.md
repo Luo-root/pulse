@@ -496,7 +496,7 @@ type ContextAssembler interface {
 - `memory-persistence-sqlite`：本地单机默认。
 - `memory-store-sqlite`：长期 item canonical store + FTS。
 - `memory-index-vector`：可选 embedding 索引 provider。
-- `memory-compaction-basic`：基于 token meter 的 summary/prune。
+- `memory-compaction-basic`：基于 token meter 的 summary/prune（prune 部分后经 #150 移除，见 §9.2）。
 - `memory-extraction-basic`：候选抽取、去重、待审。
 - `memory-context-assembler`：默认预算与排序策略。
 
@@ -539,7 +539,7 @@ type ContextAssembler interface {
   injected（用户显式要求本轮立即生效的记忆，追加在最后）
 ```
 
-Cache 语义（provider prefix cache 按逐 token 前缀匹配）：请求 N+1 可复用的恰是「稳定前缀 + 上一轮为止的 surface」；检索块 / injected / 本轮增量是 uncached 部分，占比随会话变长**下降**。改写已发送中段（§9.2 prune）与改写前缀（§8.3 RefreshStable）是仅有的两类主动失效事件，与 provider TTL 自然逐出（§14）共同决定实测命中率。
+Cache 语义（provider prefix cache 按逐 token 前缀匹配）：请求 N+1 可复用的恰是「稳定前缀 + 上一轮为止的 surface」；检索块 / injected / 本轮增量是 uncached 部分，占比随会话变长**下降**。改写前缀（§8.3 RefreshStable）与 compaction（§9.1，显式事务、可摊销）是仅有的两类主动失效事件，与 provider TTL 自然逐出（§14）共同决定实测命中率。
 
 预算必须按类配置，而不是只给一个“最大 messages”：
 
@@ -547,7 +547,7 @@ Cache 语义（provider prefix cache 按逐 token 前缀匹配）：请求 N+1 �
 |---|---|---|
 | 系统/策略 | 固定上限，超限启动失败或拒绝加载 | 不静默裁切 |
 | Stable Memory | 小固定预算，按优先级/最新 revision | 明确省略并记录诊断 |
-| 最近 surface | 保留完整合法尾部 | 优先 compaction / tool prune |
+| 最近 surface | 保留完整合法尾部 | 优先 compaction（§9.1） |
 | Episodic / 检索 | 动态预算，hybrid rank | 降低 top-k |
 | 工具结果 | 单项和总量上限 | 结构化裁剪，并保留原始日志 |
 
@@ -597,16 +597,9 @@ score = w_semantic * semantic_similarity
 
 发生崩溃时：原始事件不删除；未闭合 compaction 视作失败尝试，恢复时不假装已完成。
 
-### 9.2 Tool Result Pruning
+### 9.2 Tool Result Pruning（已移除，2026-09-09 #150）
 
-工具输出经常远大于自然语言：
-
-- 对超过单项预算的 result 使用 deterministic head + marker + tail；
-- 保留结构化字段、exit code、文件路径、错误摘要；
-- append 一个替代 result surface 节点并保留原 result 的 source ref；
-- 原日志完整保存，UI 可展开原文；
-- 不能只按字符截断 JSON / UTF-8 / 多模态块；按 content block 和 rune/grapheme 安全裁剪。
-- **cache 代价（#146 落档）**：prune 经 Surface Replace 改写**历史中段**（`compact.go` `PruneResults` 现行为：扫描会话中所有超预算 result 节点）。前缀缓存逐 token 匹配，第 k 条消息被改写 = 该请求起后续全部 uncached——长会话首次 prune 接近全量 flush，且恰好发生在 surface 最大、缓存价值最高的时刻。现状为**已知代价**（budget 合规优先）；是否收紧 prune 范围（仅上次请求后新增窗口 / 与压缩合并执行）以 §13.2 命中率指标为决策输入，属 P2-B 行为变更、另行开票。
+原设计的 tool result deterministic pruning（head+marker+tail 单节点 Surface Replace）经 #148 结构评测否决移除：同位置对照下 compaction 计费严格更低（15-30 轮 3212 vs 5077，命中 0.1× / 未命中 1.0× 价模型），差异化卖点不成立（无 LLM 路径已有 `DeterministicSummarizer`、原文两者都完整保留 raw log、确定性压缩同样即时），且 API 零生产接线。超预算 tool result 的收缩统一走 §9.1 compaction 窗口（整组移动，§9.3 配对校验不破）。随之收敛：上下文收缩唯一路径 = §9.1；主动失效事件只剩 compaction 与 RefreshStable（§8.3）。
 
 ### 9.3 崩溃恢复：必须吐出合法 surface
 
@@ -719,7 +712,7 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 - token meter 抽象；
 - `CompactionEngine` seam 和 basic summary backend；
 - replace-based surface compaction；
-- tool result deterministic pruning；
+- tool result deterministic pruning（#150 移除，见 §9.2）；
 - 手动 compact、压力 compact、overflow retry；
 - 压缩前可选 memory flush hook。
 
@@ -773,7 +766,7 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 | 上下文 | token 预算命中率、压缩收益、上下文溢出重试成功率 |
 | 记忆 | precision（被采纳/未被纠正）、supersede/revoke 比例、候选批准率 |
 | 检索 | MRR/Recall@K、关键词与语义 query 分组表现、引用可用率 |
-| 缓存 | provider 前缀命中率（`Usage.CachedInputTokens` 实测，#144 实例归因面直接可用）；**必须按「距上次请求间隔」切片**——区分组装层失效（prune/RefreshStable）与 TTL 自然逐出，混在一个数里无法归因 |
+| 缓存 | provider 前缀命中率（`Usage.CachedInputTokens` 实测，#144 实例归因面直接可用）；**必须按「距上次请求间隔」切片**——区分组装层失效（compaction/RefreshStable）与 TTL 自然逐出，混在一个数里无法归因 |
 | 安全 | 跨 scope 泄漏数、secret/taint 阻断率、未溯源 active item 数 |
 | 成本 | 每 session memory token、后台提炼 token、索引延迟 |
 
@@ -800,7 +793,6 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 | plugin 新事件被静默忽略 | 恢复语义错误 | codec registry + unknown required fail closed |
 | 多 agent 共写同一记忆 | 互相污染、覆盖 | namespace、writer policy、CAS/revision、共享 store 显式配置 |
 | 外部内容 prompt injection 晋升记忆 | 长期污染 | taint propagation + promotion gate |
-| prune 改写已发送历史中段 | 从改写点起前缀缓存全失效（隐性全量 flush），长会话首次 prune 代价最大 | 已知代价现状接受（budget 合规优先，§9.2）；§13.2 命中率指标为是否收紧 prune 范围提供决策输入 |
 | provider 缓存 TTL 逐出 | 请求间隔 > TTL（HITL 等待、休眠）后前缀缓存必失，实测命中率被非组装因素拉低 | 命中率按请求间隔切片归因（§13.2）；组装层不做 TTL 补偿——TTL 越短，会话边界 RefreshStable 的真实代价越接近零 |
 
 ---
@@ -847,7 +839,8 @@ human transcript 投影**不在 P2-A**（避免与 surface 抢语义，另票）
 15. **（评审定案）P2-A 单写者锁**；CAS/revision 留给 P2-C MemoryItem；session 可 Delete（不是 item 状态机）。
 16. **（评审定案）敏感 detector 默认关**，显式装配；启用后警告/待审优先于拒绝。
 17. **（评审定案）SQLite 钉 CGO-free**（P2-C）；P2-A 拆 A1（in-memory 语义）/A2（JSONL+blobs）两票。
-18. **（2026-09-09 订正，#146）模型可见主链只增不减**：组装顺序 = 稳定前缀 → surface 尾部 → 检索记忆 → injected（检索/injected 贴最尾、不持久化）；主动失效事件仅两类——compaction（显式事务、可摊销）与 prune 改写中段（已知代价）；实测命中率必须按请求间隔归因 TTL。
+18. **（2026-09-09 订正，#146）模型可见主链只增不减**：组装顺序 = 稳定前缀 → surface 尾部 → 检索记忆 → injected（检索/injected 贴最尾、不持久化）；主动失效事件仅两类——compaction（显式事务、可摊销）与 RefreshStable（会话边界）；实测命中率必须按请求间隔归因 TTL。
+19. **（2026-09-09 决策，#150）移除 tool result pruning**：#148 结构评测显示同位置对照 compaction 计费严格更低（3212 vs 5077）+ API 零接线；超预算 result 收缩统一走 §9.1 compaction 窗口，上下文收缩唯一化。
 
 ---
 

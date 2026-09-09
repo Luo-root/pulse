@@ -1,5 +1,4 @@
-// Package compaction 是 P2-B 的压缩层：token meter、§9.1 八步压缩事务
-// 编排、§9.2 tool result deterministic pruning。
+// Package compaction 是 P2-B 的压缩层：token meter、§9.1 八步压缩事务编排。
 //
 // # 定位与不变式
 //
