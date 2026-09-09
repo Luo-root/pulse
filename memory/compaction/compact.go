@@ -151,57 +151,6 @@ func Compact(ctx context.Context, sess session.Session, opts Options) (Report, e
 	}, nil
 }
 
-// PruneResults 对会话中所有超预算的 tool result 节点做 §9.2 deterministic
-// pruning：每个节点一次独立 checkpoint Replace（窗口 = 单节点，替代节点
-// 为 head+marker+tail 形态，Replaced 记录原 result 的 source seq）。原
-// result 事件完整保留在 raw log。确定性操作，无 summarize 步骤。
-// 返回发生裁剪的节点数与其 checkpoint seq 列表。
-func PruneResults(ctx context.Context, sess session.Session, opts PruneOptions) (int, []uint64, error) {
-	events, err := sess.Events(ctx, 0)
-	if err != nil {
-		return 0, nil, err
-	}
-	msgs, sources, err := session.FoldTrace(events, sess.Registry())
-	if err != nil {
-		return 0, nil, err
-	}
-	// 先收集再替换：Replace 会改变后续节点的下标，按从后往前的顺序执行
-	// 保证每次窗口坐标仍有效（Replace 窗口 [i,i] 替换为 1 条，长度不变）。
-	oversized := OversizedToolNodes(msgs, opts)
-	var checkpoints []uint64
-	for _, idx := range oversized {
-		pruned, changed := PruneResult(msgs[idx], opts)
-		if !changed {
-			continue
-		}
-		// 单节点窗口：call 在窗口外（idx-1 的 assistant），替代节点保留
-		// 同 ToolCallID → 配对仍成立（ValidateReplace 的「不新增孤儿」口径）。
-		replacement := []*llm.Message{pruned}
-		if err := session.ValidateReplace(msgs[:idx], msgs[idx:idx+1], replacement, msgs[idx+1:]); err != nil {
-			return len(checkpoints), checkpoints, fmt.Errorf("prune node %d: %w", idx, err)
-		}
-		src := sources[idx : idx+1]
-		env, err := sess.Append(ctx, session.EventDraft{
-			Type: session.EventCompactionCheckpoint,
-			Data: mustJSON(session.CompactionCheckpointPayload{
-				Messages: []llm.Message{*pruned},
-				Replaced: cloneSeqs(src),
-			}),
-			Surface: &session.SurfaceIntent{
-				Op:      session.SurfaceReplace,
-				Start:   idx,
-				End:     idx,
-				Sources: cloneSeqs(src),
-			},
-		})
-		if err != nil {
-			return len(checkpoints), checkpoints, fmt.Errorf("prune node %d: %w", idx, err)
-		}
-		checkpoints = append(checkpoints, env.Seq)
-	}
-	return len(checkpoints), checkpoints, nil
-}
-
 func newID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

@@ -119,9 +119,9 @@ func FoldTrace(events []EventEnvelope, reg *Registry) ([]*llm.Message, []uint64,
 // （§9.3：assistant 的 tool_call 与后续 tool_result 必须成对——OpenAI /
 // Anthropic 都拒绝孤儿请求）。
 //
-// 语义是「不新增破坏」而非「窗口内自成整组」：§9.2 的 pruning 替代单个
-// result 节点时其 call 在窗口外，但替代节点保留同 ToolCallID，配对仍然
-// 成立——合法。四条规则（集合口径，ID 唯一）：
+// 语义是「不新增破坏」而非「窗口内自成整组」：被保留的 call/result
+// 其配对对象已在窗口外时，只要 replacement 不产生新孤儿就仍合法。
+// 四条规则（集合口径，ID 唯一）：
 //
 //  1. 保留的 call（在 before/after）其 result 落入被删窗口且 replacement
 //     不保留该 ID → 违规（call 悬空）；

@@ -2,7 +2,7 @@
 
 # memory/compaction
 
-The P2-B compaction layer: token meter, §9.1 eight-step compaction transaction, §9.2 deterministic tool result pruning.
+The P2-B compaction layer: token meter and the §9.1 eight-step compaction transaction.
 Core invariant — **compaction is a transaction, not deletion**: the raw log only grows and never shrinks, `checkpoint.Replaced` records the complete source refs of the replaced window, and failures leave an audit trail. Design source of truth §9; implementation ticket #73.
 
 ## Integration
@@ -48,7 +48,7 @@ Failure semantics: Summarize fails → started persisted, no checkpoint, ended n
 
 ## ValidateReplace: the "no new orphans" rule
 
-Replace's pairing validation is **"no new breakage", not "the window must be self-contained"** — when §9.2 pruning replaces a single result node whose call lies outside the window, the replacement node keeps the same ToolCallID, so the pairing still holds (legal). The four rules:
+Replace's pairing validation is **"no new breakage", not "the window must be self-contained"** — a kept call or result whose partner already lies outside the window stays legal as long as the replacement does not orphan it. The four rules:
 
 1. A kept call whose result falls into the deleted window while the replacement does not keep that ID → reject (dangling call)
 2. A kept result whose call falls into the deleted window while the replacement does not provide one → reject (orphaned result)
@@ -57,14 +57,9 @@ Replace's pairing validation is **"no new breakage", not "the window must be sel
 
 The orchestration pre-check and session's fold-replay re-check share the same rule (fail closed).
 
-## §9.2 Tool result pruning
+## §9.2 Tool result pruning (removed, #150)
 
-```go
-n, checkpoints, err := compaction.PruneResults(ctx, sess, compaction.PruneOptions{})
-// 默认 Max 4000 / Head 2400 / Tail 800 rune；head + marker + tail，rune 安全不劈 UTF-8
-```
-
-Over-budget tool result nodes are checkpoint-Replaced one by one (window = a single node); structured fields (ToolCallID/IsError) are preserved; **the original text stays complete in the raw log** (the UI can expand it). A deterministic operation, idempotent.
+The deterministic single-node pruning API (`PruneResults`) was **removed** (2026-09-09): the #148 cache-hit evaluation showed compaction strictly dominates it on the same region (billed 3212 vs 5077, hit×0.1 + miss×1.0 over turns 15-30), its differentiators (no-LLM / low-destructive / instant) are all covered by the existing compaction path (`DeterministicSummarizer`, raw-log provenance), and it had zero production wiring. Oversized tool results are shrunk through a §9.1 compaction window (whole-group move).
 
 ## Tests
 

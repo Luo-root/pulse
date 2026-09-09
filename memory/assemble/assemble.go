@@ -29,7 +29,7 @@ type Budget struct {
 	// RetrievedTokens 是检索型记忆的动态预算；超限降 top-k 并记诊断。
 	RetrievedTokens int
 	// MaxSurfaceTail 是 surface 尾部节点数检查：超限**只诊断不裁切**
-	// （裁切归 compaction §9.1 / prune §9.2，本包不破坏合法尾部）。
+	// （裁切归 compaction §9.1，本包不破坏合法尾部）。
 	MaxSurfaceTail int
 }
 
@@ -144,7 +144,7 @@ func (a *DefaultAssembler) Assemble(ctx context.Context, in AssembleInput) (Asse
 		diags = append(diags, Diagnostic{
 			Region:  "surface-tail",
 			Dropped: len(in.Surface) - a.Budget.MaxSurfaceTail,
-			Reason:  "surface exceeds MaxSurfaceTail; kept intact (compaction/prune owns trimming)",
+			Reason:  "surface exceeds MaxSurfaceTail; kept intact (compaction owns trimming)",
 		})
 	}
 

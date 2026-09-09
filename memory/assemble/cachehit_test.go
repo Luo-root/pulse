@@ -9,8 +9,9 @@ package assemble_test
 //	① 基线（只增不减）：命中率随会话变长上升、趋于高位；
 //	② 中途 RefreshStable（改写前缀）：该轮塌陷、后续恢复；
 //	③ 中途 compaction（事务压缩）：该轮塌陷、恢复；
-//	④ prune vs compaction vs 不动：同位置超预算 tool result 的对照，
-//	  含 15→30 轮计费总量（简化价模型：命中 0.1×，未命中 1.0×）。
+//	④ compaction vs 不动：同位置超大 tool result 的对照（原 prune 臂随
+//	  #150 移除，三方对照数据存档于 #148 评审记录），含 15→30 轮计费总量
+//	  （简化价模型：命中 0.1×，未命中 1.0×）。
 //
 // 全部确定性、无网络；数字是「组装结构本身」的命中上界形状，外生因素
 // （provider TTL、真实 tokenizer 差异）不在本评测口径内。
@@ -320,7 +321,7 @@ func TestCacheHitCompactionRecovery(t *testing.T) {
 	}
 }
 
-// ---- 场景 ④：prune vs compaction vs 不动 ----
+// ---- 场景 ④：compaction vs 不动 ----
 
 // oversizedTurn3 埋第 3 轮：user → assistant(call) → 30k 字符 result → assistant。
 func (s *cacheSim) oversizedTurn3() {
@@ -384,21 +385,13 @@ func runThrough(t *testing.T, withOversized bool, op func(s *cacheSim)) (rows []
 	return rows, billed
 }
 
-func TestCacheHitPruneVersusCompaction(t *testing.T) {
+func TestCacheHitCompactionVersusBaseline(t *testing.T) {
 	ctx := context.Background()
 
-	// A：不动（超预算 result 留在前缀里，每轮吃 cached 价）。
+	// A：不动（超大 result 留在前缀里，每轮吃 cached 价——长期累计并非免费）。
 	rowsA, billedA := runThrough(t, true, nil)
 
-	// B：第 15 轮前 prune（改写历史中段 → 从该点起一次全量 miss）。
-	rowsB, billedB := runThrough(t, true, func(s *cacheSim) {
-		n, _, err := compaction.PruneResults(ctx, s.sess, compaction.PruneOptions{})
-		if err != nil || n == 0 {
-			t.Fatalf("prune: n=%d err=%v", n, err)
-		}
-	})
-
-	// C：第 15 轮前 compaction 窗口 [0,7]（覆盖同一个超预算 result 所在轮，
+	// C：第 15 轮前 compaction 窗口 [0,7]（覆盖超大 result 所在轮，
 	//   窗口端点落在 assistant 消息上，不切 tool 组）。
 	rowsC, billedC := runThrough(t, true, func(s *cacheSim) {
 		w := [2]int{0, 7}
@@ -410,19 +403,15 @@ func TestCacheHitPruneVersusCompaction(t *testing.T) {
 		}
 	})
 
-	t.Logf("hit@15:  baseline=%.3f  prune=%.3f  compact=%.3f", rowsA[0].rate, rowsB[0].rate, rowsC[0].rate)
-	t.Logf("hit@30:  baseline=%.3f  prune=%.3f  compact=%.3f",
-		rowsA[len(rowsA)-1].rate, rowsB[len(rowsB)-1].rate, rowsC[len(rowsC)-1].rate)
-	t.Logf("billed 15-30 (hit*%.1f + miss*%.1f):  baseline=%.0f  prune=%.0f  compact=%.0f",
-		cachePrice, fullPrice, billedA, billedB, billedC)
+	t.Logf("hit@15:  baseline=%.3f  compact=%.3f", rowsA[0].rate, rowsC[0].rate)
+	t.Logf("hit@30:  baseline=%.3f  compact=%.3f", rowsA[len(rowsA)-1].rate, rowsC[len(rowsC)-1].rate)
+	t.Logf("billed 15-30 (hit*%.1f + miss*%.1f):  baseline=%.0f  compact=%.0f",
+		cachePrice, fullPrice, billedA, billedC)
 
-	if rowsB[0].rate >= rowsA[0].rate {
-		t.Fatalf("prune must break cache vs baseline: prune=%.3f baseline=%.3f", rowsB[0].rate, rowsA[0].rate)
-	}
 	if rowsC[0].rate >= rowsA[0].rate {
 		t.Fatalf("compaction must break cache vs baseline: compact=%.3f baseline=%.3f", rowsC[0].rate, rowsA[0].rate)
 	}
-	if billedC > billedB {
-		t.Fatalf("compaction covering the same region should not bill more than prune: compact=%.0f prune=%.0f", billedC, billedB)
+	if billedC >= billedA {
+		t.Fatalf("compaction should bill less than keeping the oversized result: compact=%.0f baseline=%.0f", billedC, billedA)
 	}
 }

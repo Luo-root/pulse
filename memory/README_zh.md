@@ -22,7 +22,7 @@ Agent 记忆不是一个「向量数据库 + 对话历史」组件，而是五�
 
 1. **event-sourced**：append-only 日志是唯一真相，`Surface()` 只是投影；投影可以替换、重建，原始事件永不删改。
 2. **model-visible means logged**：凡给模型看的（包括崩溃恢复时合成的闭合事件）必须真实写回日志——投影与日志不一致即为 bug。
-3. **压缩是事务不是删除**：压缩/pruning 只追加 + surface replace，`Replaced` 记录被替代窗口的完整溯源，失败留审计不假装完成。
+3. **压缩是事务不是删除**：压缩只追加 + surface replace，`Replaced` 记录被替代窗口的完整溯源，失败留审计不假装完成。
 4. **记忆管理权在宿主管线 + 审批（HITL）**：自动记忆只写候选（Pending），审批人盖章才晋升 Active；模型自编辑走显式 opt-in 工具 + `before_tool_call` 审批。没有「全自动记忆」。
 
 ## 全链路数据流（一条记忆的生命周期）
@@ -42,7 +42,6 @@ loop.Run ⇄ 装配层桥 ⇄ session.Append(事件)          ← 每轮消息/�
 
 【治理期——长会话】
 compaction.Pressure ─▶ Compact（§9.1 八步事务）       ← surface 治理，raw log 只增不减
-                  └─▶ PruneResults（§9.2）            ← 超长 tool result head+marker+tail
 
 【提炼期——会话末/每 N 轮，宿主触发】
 reflection.Reflect（预算截断）─▶ candidate.Extract ─▶ Pending 入库（双归一去重；检索不可见）
@@ -66,7 +65,7 @@ store 写入后 ─▶ index.Upsert（异步队列；Supersede/Revoke 后 Remove
 | 包 | 票/阶段 | 职责一句话 | 必填 seam（宿主注入） | 默认状态 |
 |---|---|---|---|---|
 | [`session`](session/README_zh.md) | #68/#70/#73（A1+A2+B） | append-only 事件日志 + fold 投影 + 冷恢复；内存/JSONL 两 backend | 无（Registry 可扩展事件） | 基础设施，无开关 |
-| [`compaction`](compaction/README_zh.md) | #73（B） | token meter + §9.1 八步压缩事务 + §9.2 tool result pruning | `Engine`（LLM/Deterministic） | 手动入口，无自动触发 |
+| [`compaction`](compaction/README_zh.md) | #73（B） | token meter + §9.1 八步压缩事务 | `Engine`（LLM/Deterministic） | 手动入口，无自动触发 |
 | [`store`](store/README_zh.md) | #76/#78（C1+C2） | MemoryItem canonical store：namespace 隔离 + Supersede/Revoke 状态机 + SQLite/FTS5 | 无 | 内存版即用；SQLite 按 DSN 启用 |
 | [`assemble`](assemble/README_zh.md) | #80/#88（C3+D2） | 上下文装配：按类预算 + 稳定前缀缓存 + §8.2 hybrid 融合排序 + 引用模板 | `TokenCounter`（nil 估算）、`Semantic`（可选向量路） | nil seam = keyword-only 可用 |
 | [`selfedit`](selfedit/README_zh.md) | #82（C4） | self-edit 记忆工具组（put/supersede/revoke），模型可见写路径 | `OriginFn`、`toolset.Registry` | **显式 opt-in 注册** |
