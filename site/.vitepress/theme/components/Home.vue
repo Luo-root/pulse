@@ -140,7 +140,7 @@ const icons = {
           <div class="card start-card">
             <span class="card-title">{{ t.start2Title }}</span>
             <span class="card-desc">{{ t.start2Desc }}</span>
-            <code class="code"><span class="dollar">$ </span>go run ./examples/00-hello-kernel</code>
+            <code class="code"><span class="dollar">$ </span>go run .</code>
           </div>
         </div>
       </div>

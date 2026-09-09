@@ -15,7 +15,7 @@ Agent 接收对话历史与本轮输入，驱动「模型 ↔ 工具」直到模
 | 硬接某家模型或某套工具 | 只依赖 `llm.ChatModel` 与 `ToolSet` |
 | 填齐请求采样/限长字段 | Agent 组请求主要带 Messages/Tools；Temperature / **MaxTokens** 等由调用方经 `before_generate` 或显式 `GenerateRequest` 补齐 |
 
-**和 Anthropic 的缝**：Messages 线格式 **MaxTokens 必填**（`nil` → `ErrBadRequest`）。本包不填、也不设魔法默认。装配层（如 `examples/internal/demoapp`）可用 `before_generate` 仅在空值时注入默认——这是宿主示范，不是给 Agent 加完整请求 Option 面。
+**和 Anthropic 的缝**：Messages 线格式 **MaxTokens 必填**（`nil` → `ErrBadRequest`）。本包不填、也不设魔法默认。装配层可用 `before_generate` 仅在空值时注入默认——这是宿主示范，不是给 Agent 加完整请求 Option 面。
 
 Agent 是库对象，不是插件。`WithEventScope(nil)`（默认）零派发、零内核足迹。
 

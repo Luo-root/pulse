@@ -312,7 +312,7 @@ g, _ := flow.New(ctx, "demo", flow.WithObserver(obs))
 
 - 每节点 Waiting/Running/Finished 至多一次；`Retry` 多次 attempt 不重复打点。
 - observer panic **不得**变成节点失败。
-- 官方适配落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；图身份与节点身份走 `AttrGraph` / `AttrNode` 开放段（不扩官方信封）。见 `examples/04-flow`（宿主业务峰值统计 `FlowPeak` 在 `examples/internal/demoapp/flowpeak.go`，04-flow README 已表格化）。
+- 官方适配落地：`flow.node_wait_finished` / `flow.node_run_finished` 两条 Record，各用 `Duration`；图身份与节点身份走 `AttrGraph` / `AttrNode` 开放段（不扩官方信封）。
 
 ### 观测适配：NewRecordObserver
 
@@ -328,7 +328,7 @@ g, _ := flow.New(ctx, "demo", flow.WithObserver(obs))
 
 ### 图结束后没有公开读槽 API
 
-`Graph` 没有 Run 后的公开 `Get`。叶子若不能双 Provide 同一输出 Key（单生产者），又不能靠 AND 汇聚两条 Final（Skip 会级联吃掉汇聚节点），示例层可用闭包写出终端结果——这是**契约权宜**，不是「输出都走闭包」的惯例。详见 [`examples/04-flow/README.md`](../../examples/04-flow/README.md)「闭包写 Final」三条约束。
+`Graph` 没有 Run 后的公开 `Get`。叶子若不能双 Provide 同一输出 Key（单生产者），又不能靠 AND 汇聚两条 Final（Skip 会级联吃掉汇聚节点），示例层可用闭包写出终端结果——这是**契约权宜**，不是「输出都走闭包」的惯例（三条约束：单生产者 Key、两条 Final 不经 AND 汇聚、闭包只写终端 Key 一次）。
 
 ## 声明期校验
 

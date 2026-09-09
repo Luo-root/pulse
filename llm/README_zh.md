@@ -168,7 +168,7 @@ ctx = llm.WithEventScope(ctx, reqScope) // loop 在调模型前会做这一步
 
 与 loop 分工：本包 token 级；loop 决策级（审批、轨迹）。请求级观测适配必须挂在同一 `reqScope`，否则听不到 Local 事件。
 
-**和 loop 组请求的缝**：`loop.Agent` 组装的 `GenerateRequest` 主要带 Messages/Tools，**不填** Temperature / MaxTokens 等。Anthropic Messages 的 `MaxTokens` **必填**（`nil` → `ErrBadRequest`）。调用 Anthropic 时必须由装配层 `before_generate` 或显式请求补上；examples/demoapp 把默认挂在 `Registry.EventScope()`（01-chat 回退路径）和每请求 `reqScope`（02/03）上——不是给 Agent 加完整请求 Option 面，也不是挂 host 根。
+**和 loop 组请求的缝**：`loop.Agent` 组装的 `GenerateRequest` 主要带 Messages/Tools，**不填** Temperature / MaxTokens 等。Anthropic Messages 的 `MaxTokens` **必填**（`nil` → `ErrBadRequest`）。调用 Anthropic 时必须由装配层 `before_generate` 或显式请求补上；装配层把默认挂在 `Registry.EventScope()`（进程级回退）和/或每请求 scope 上——不是给 Agent 加完整请求 Option 面，也不是挂 host 根。
 
 也可用 `llm.Plugin()` 把 Registry Provide 到所在作用域，卸载时 `Close` 全部实例。
 
