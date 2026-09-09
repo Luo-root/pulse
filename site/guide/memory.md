@@ -36,7 +36,7 @@
 
 ## 压缩（compaction）
 
-`CharMeter` 计量 → 达阈值触发 §9.1 八步事务：started → 摘要 → checkpoint 写入（FormatVersion 抬升）→ ended。checkpoint 的 fold Role 是 `user`（不伪装 system），pruning 按「不新增孤儿」四规则校验——预检与 fold 重放同口径。
+`CharMeter` 计量 → 达阈值触发 §9.1 八步事务：started → 摘要 → checkpoint 写入（FormatVersion 抬升）→ ended。checkpoint 的 fold Role 是 `user`（不伪装 system），Replace 按「不新增孤儿」四规则校验——预检与 fold 重放同口径。
 
 ## 上下文装配（assemble）
 

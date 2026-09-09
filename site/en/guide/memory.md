@@ -36,7 +36,7 @@ A session is an event-sourced log: an append-only `EventEnvelope` stream + type-
 
 ## Compaction
 
-`CharMeter` meters → threshold triggers the §9.1 eight-step transaction: started → summary → checkpoint write (FormatVersion bump) → ended. Checkpoint fold Role is `user` (never disguised as system), and pruning validates by the "no new orphans" four rules — pre-check and fold replay share the same accounting.
+`CharMeter` meters → threshold triggers the §9.1 eight-step transaction: started → summary → checkpoint write (FormatVersion bump) → ended. Checkpoint fold Role is `user` (never disguised as system), and Replace validates by the "no new orphans" four rules — pre-check and fold replay share the same accounting.
 
 ## Context assembly
 
