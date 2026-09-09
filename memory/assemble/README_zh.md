@@ -53,7 +53,7 @@ a.Semantic = func(ctx context.Context, ns []string, q string, k int) ([]store.Me
 [injected] 本轮立即应用（无预算约束，紧贴当前消息）
 ```
 
-- **预算按类**（§8.1 不是只给一个 max messages）：超限**省略并记 Diagnostics**，不静默丢；surface 超限**只诊断不裁切**（裁切归 compaction §9.1 / prune §9.2）。
+- **预算按类**（§8.1 不是只给一个 max messages）：超限**省略并记 Diagnostics**，不静默丢；surface 超限**只诊断不裁切**（裁切归 compaction §9.1）。
 - **stable snapshot（§8.3）**：同 namespace 二次组装命中缓存（不重查 store）；`RefreshStable` 显式重建；per-namespace 隔离；重建失败退回旧快照并记诊断。
 - **引用模板**：每条注入记忆形如 `[memory:<kind> <id> (source: session s9#12)] <content>`——SourceRefs 可读化，模型不当无条件事实。
 

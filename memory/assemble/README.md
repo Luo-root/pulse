@@ -55,7 +55,7 @@ a.Semantic = func(ctx context.Context, ns []string, q string, k int) ([]store.Me
 [injected] 本轮立即应用（无预算约束，紧贴当前消息）
 ```
 
-- **Budgets are per class** (§8.1 is not a single max-messages): over-budget items are **omitted and recorded in Diagnostics**, never silently dropped; an over-budget surface is **diagnosed but not truncated** (truncation belongs to compaction §9.1 / prune §9.2).
+- **Budgets are per class** (§8.1 is not a single max-messages): over-budget items are **omitted and recorded in Diagnostics**, never silently dropped; an over-budget surface is **diagnosed but not truncated** (truncation belongs to compaction §9.1).
 - **Stable snapshot (§8.3)**: a second assembly for the same namespace hits the cache (no re-query of the store); `RefreshStable` rebuilds explicitly; per-namespace isolation; a failed rebuild falls back to the old snapshot and records a diagnostic.
 - **Citation template**: every injected memory looks like `[memory:<kind> <id> (source: session s9#12)] <content>` — SourceRefs made readable, so the model does not treat them as unconditional facts.
 

@@ -251,7 +251,7 @@ flowchart TB
 
 - 每个模型可见节点都必须能定位到 canonical event；
 - 任何 `tool/result` 在进入模型 surface 时必须保留与 `tool/call` 的合法配对语义；
-- 所有压缩/裁剪都是追加事件和 projection rewrite，不能原地改写 raw log；
+- 所有压缩与 surface 重写都是追加事件和 projection rewrite，不能原地改写 raw log；
 - UI 状态、审批记录、请求 header、token 用量、hook 运行记录默认 log-only；
 - 只有经过 Context Assembler 选择的内容进入 LLM 请求，不能将“存了什么”与“模型看到了什么”等同。
 
@@ -529,7 +529,7 @@ type ContextAssembler interface {
 [Dynamic Tail]                                 ← 主链只增不减；每轮新增都落在前缀之外
   compaction checkpoint + recent session surface
     （append-only；含本轮用户消息与 tool results——合法配对序列；
-      组装器原样保留，裁切权归 §9.1 / §9.2）
+      组装器原样保留，裁切权归 §9.1）
   active goal / todo / approval state（宿主层内容，组装器不感知）
   retrieved episodic and long-term memory
     （**最尾部**：按 Query 每请求动态召回，ranked + cited，预算内 top-k，
@@ -549,7 +549,7 @@ Cache 语义（provider prefix cache 按逐 token 前缀匹配）：请求 N+1 �
 | Stable Memory | 小固定预算，按优先级/最新 revision | 明确省略并记录诊断 |
 | 最近 surface | 保留完整合法尾部 | 优先 compaction（§9.1） |
 | Episodic / 检索 | 动态预算，hybrid rank | 降低 top-k |
-| 工具结果 | 单项和总量上限 | 结构化裁剪，并保留原始日志 |
+| 工具结果 | 单项和总量上限 | 优先 compaction 窗口收缩（§9.1），原始日志保留 |
 
 ### 8.2 检索排序
 
@@ -582,7 +582,7 @@ score = w_semantic * semantic_similarity
 
 ---
 
-## 9. 压缩、裁剪与恢复策略
+## 9. 压缩与恢复策略
 
 ### 9.1 压缩事务
 
