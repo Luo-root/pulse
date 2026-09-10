@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Luo-root/pulse/llm"
 )
 
 // JSONL 落盘布局（设计 §12 P2-A2）：
@@ -290,8 +292,10 @@ func (s *JSONLStore) loadOpened(dir string, release func()) (*jsonlSession, erro
 	}
 	sess.f = f
 	if s.recover == RecoverExposePending {
-		pending := st
-		sess.pending = &pending
+		if pendingIncomplete(st) {
+			pending := st
+			sess.pending = &pending
+		}
 		return sess, nil
 	}
 	for _, draft := range synthDrafts(st) {
@@ -307,6 +311,20 @@ func (s *JSONLStore) loadOpened(dir string, release func()) (*jsonlSession, erro
 // 的 ToolCall）。
 func pendingIncomplete(st incompleteState) bool {
 	return st.openTurn || st.openStep || len(st.pendingCalls) > 0
+}
+
+// Surface 覆写：ExposePending 模式下存在未决时拒绝投影——未决 surface
+// （unpaired PartToolCall）喂给模型是坏请求（厂商 API 400）；「运行中间
+// 态合法」是给宿主看的，不是给模型看的。裁决依据用 Pending() 快照；
+// 裁决完成后本方法恢复透传。
+func (s *jsonlSession) Surface(ctx context.Context) ([]*llm.Message, error) {
+	s.mu.Lock()
+	blocked := s.pending != nil && pendingIncomplete(*s.pending)
+	s.mu.Unlock()
+	if blocked {
+		return nil, fmt.Errorf("session: %w: resolve pending events before using the surface (see Pending)", ErrPendingEvents)
+	}
+	return s.memSession.Surface(ctx)
 }
 
 // List 实现 SessionStore：扫描各会话的 header.json，CreatedAt 降序 +

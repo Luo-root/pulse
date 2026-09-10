@@ -123,13 +123,14 @@ func TestRecoverExposePending(t *testing.T) {
 		t.Fatalf("pending lifecycle = %+v", p)
 	}
 
-	// 未决期间 Surface 照常投影（运行中间态语义）。
+	// 未决期间 Surface 拒绝投影（unpaired tool call 喂给模型是坏请求）；
+	// 裁决依据用 Pending() 快照。
 	surface, err := sess.Surface(ctx)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrPendingEvents) {
+		t.Fatalf("pending surface err = %v, want ErrPendingEvents", err)
 	}
-	if len(surface) != 2 || surface[1].Parts[0].Kind != llm.PartToolCall {
-		t.Fatalf("mid-flight surface = %+v", surface)
+	if surface != nil {
+		t.Fatal("pending surface must be nil")
 	}
 
 	// 裁决不存在的项 → ErrPendingEvents。
@@ -141,7 +142,7 @@ func TestRecoverExposePending(t *testing.T) {
 		t.Fatalf("unknown resolve err = %v", err)
 	}
 
-	// 补真实结果（模拟宿主重发/人工补齐）→ 未决减一。
+	// 补真实结果（模拟宿主重发/人工补齐）→ 未决减一，Surface 恢复可用。
 	if err := js.ResolvePending(ctx, ResolvePendingOption{
 		ToolCallID: "c1",
 		Result:     &ToolResultPayload{ToolCallID: "c1", Text: "pong:ping"},
@@ -153,6 +154,10 @@ func TestRecoverExposePending(t *testing.T) {
 	}
 	if !js.Pending().HasOpenStep {
 		t.Fatal("step must still be open after tool resolution")
+	}
+	// step/turn 仍悬空 → Surface 仍拒绝（turn 事件族未闭合）。
+	if _, err := sess.Surface(ctx); !errors.Is(err, ErrPendingEvents) {
+		t.Fatalf("surface with open step/turn err = %v", err)
 	}
 
 	// 显式闭合 step/turn。
@@ -191,7 +196,13 @@ func TestRecoverExposePending(t *testing.T) {
 	// user + assistant(tool call) + 补写的 tool result；turn/step 事件是
 	// log-only，不进 surface。
 	if len(surface2) != 3 {
-		t.Fatalf("surface after reopen = %d messages, want 3", len(surface2))
+		var roles []string
+		for _, m := range surface2 {
+			for _, p := range m.Parts {
+				roles = append(roles, string(m.Role)+":"+string(p.Kind)+":"+p.Text)
+			}
+		}
+		t.Fatalf("surface after reopen = %d messages (%v), want 3", len(surface2), roles)
 	}
 }
 
