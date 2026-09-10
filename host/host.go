@@ -407,18 +407,28 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 		return nil, fmt.Errorf("host: new agent: %w", err)
 	}
 
-	// 落盘监听以 panic 上报 append 失败（fail closed：中断回合，日志停
-	// 在与真实一致处），这里转回 error——宿主拿到的是错误不是崩溃。
+	// 落盘监听以 panic 上报失败（fail closed：中断回合，日志停在与真实
+	// 一致处），这里只把落盘失败转回 error——其余 panic（模型适配器、
+	// onDelta、其他监听器）原样重抛，不吞不标。
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				res, err = nil, fmt.Errorf("host: session append: %v", r)
+				af, ok := r.(appendFail)
+				if !ok {
+					panic(r)
+				}
+				res, err = nil, fmt.Errorf("host: session append: %w", af.err)
 			}
 		}()
 		res, err = la.RunStream(ctx, nil, history, input...)
 	}()
 	return res, err // error 路径 res 可能非 nil（canceled/error 的部分产出；日志已由 turn_end 监听闭合）
 }
+
+// appendFail 是落盘失败的私有 panic 载荷：recorder 的 append / Flush 失败
+// 以 panic(appendFail) 上报（fail closed），run 的 recover 只认这个类型；
+// 其他 panic 不是落盘问题，原样上抛。
+type appendFail struct{ err error }
 
 // turnRecorder 把 loop 回合事件同步落盘成 session 事件——官方路径上的
 // model-visible means logged 接线。监听挂在请求 scope 上，随 scope 销毁
@@ -489,6 +499,12 @@ func (r *turnRecorder) mount(scope *kernel.Context) error {
 		// 先于工具执行与 HITL 审批落盘：进程死在等待批准时，日志已含
 		// tool_call——ExposePending 裁决的官方来源。
 		r.appendMessage(session.EventMessageAssistant, p.Response.Message)
+		// HITL 检查点：assistant（含 tool_call）落盘后立即 Flush——
+		// JSONL 的 Append 只 write 不 fsync，崩溃只保证 Flush 点之前；
+		// 掉电/强杀时裁决现场必须在磁盘上。只在这一点刷，不逐条刷。
+		if err := r.sess.Flush(r.ctx); err != nil {
+			panic(appendFail{err: err})
+		}
 	}); err != nil {
 		return err
 	}
@@ -522,14 +538,14 @@ func (r *turnRecorder) mount(scope *kernel.Context) error {
 	return nil
 }
 
-// append 落盘一条事件。失败即 panic（fail closed，见类型注释）。
+// append 落盘一条事件。失败即 panic(appendFail)（fail closed，见类型注释）。
 func (r *turnRecorder) append(t session.EventType, payload any, surface *session.SurfaceIntent) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		panic(fmt.Errorf("marshal %s payload: %w", t, err))
+		panic(appendFail{err: fmt.Errorf("marshal %s payload: %w", t, err)})
 	}
 	if _, err := r.sess.Append(r.ctx, session.EventDraft{Type: t, Data: data, Surface: surface}); err != nil {
-		panic(err)
+		panic(appendFail{err: err})
 	}
 }
 

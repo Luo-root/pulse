@@ -56,7 +56,7 @@ a, err := h.NewAgent(host.AgentOptions{
 
 `host.Agent` 在有会话的宿主上，每个 `Run` 完成：
 
-1. **回合前**：`session.Surface()` 折影为 history 传给 loop——调用方不再自己维护历史；未决会话（`RecoverExposePending` 档）在此拒绝，经 `session.Recoverable` 裁决后再跑；
+1. **回合前**：`session.Surface()` 折影为 history 传给 loop——调用方不再自己维护历史；未决会话（`RecoverExposePending` 档）在此拒绝，经 `session.Recoverable` 裁决后再跑。恢复策略经通用构造接入：`memory.NewSessionStack(session.NewJSONLStore(dir, session.WithRecoverPolicy(...)))`——`memory.NewJSONLSessionStack(dir)` 便捷封装不接策略；
 2. **回合中**：按 loop 事件**同步**落盘——`turn.started` → `request.header` → 输入消息 → `step.started` → assistant（**先于**工具执行与 HITL 审批）→ `tool.result` → `step.ended` → `turn.ended`。model-visible means logged：模型可见的每一步在发生时即已入日志，进程死在任意执行点（工具执行中、审批等待中、模型调用失败），日志都停在真实现场——冷恢复（#158）的官方来源就是这条路径；
 3. **回合级 scope**：每回合从宿主 kernel 派生独立请求 scope（观测桥 / ToolGate / ScopeHook 都挂它），用毕即毁——loop/llm 是 Local 派发，同宿主多 Agent 互不串扰。
 

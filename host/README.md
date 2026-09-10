@@ -56,7 +56,7 @@ a, err := h.NewAgent(host.AgentOptions{
 
 On a session-equipped host, every `Run` performs:
 
-1. **Before the round**: `session.Surface()` folds into the history passed to loop — callers no longer maintain history themselves; a pending session (`RecoverExposePending`) is rejected here — resolve via `session.Recoverable` first;
+1. **Before the round**: `session.Surface()` folds into the history passed to loop — callers no longer maintain history themselves; a pending session (`RecoverExposePending`) is rejected here — resolve via `session.Recoverable` first. The recovery policy plugs in through the general constructor: `memory.NewSessionStack(session.NewJSONLStore(dir, session.WithRecoverPolicy(...)))` — the `memory.NewJSONLSessionStack(dir)` convenience does not take a policy;
 2. **During the round**: records are appended **synchronously** on loop events — `turn.started` → `request.header` → input messages → `step.started` → assistant (**before** tool execution and HITL approval) → `tool.result` → `step.ended` → `turn.ended`. Model-visible means logged: every model-visible fact is in the log the moment it happens; if the process dies at any execution point (mid-tool, awaiting approval, model failure), the log stops at the real scene — this path is the official source of cold recovery (#158);
 3. **Per-round scope**: each Run derives an isolated request scope from the host kernel (the observability bridge / ToolGate / ScopeHook all mount there), disposed when the round ends — loop/llm dispatch is Local, so agents on the same host never crosstalk.
 

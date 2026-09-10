@@ -312,6 +312,57 @@ func TestHostToolCallLoggedBeforeExecution(t *testing.T) {
 	}
 }
 
+// flushCountingSession 统计 Flush 调用：HITL 检查点验收用。
+type flushCountingSession struct {
+	session.Session
+	flushes int
+}
+
+func (s *flushCountingSession) Flush(ctx context.Context) error {
+	s.flushes++
+	return s.Session.Flush(ctx)
+}
+
+// TestHostHITLCheckpointFlush：assistant 落盘后立即 Flush（HITL 检查点）
+// ——每次 after_model 一次，其余事件不刷；进程死在审批等待时裁决现场
+// 必须已在磁盘上（JSONL 的 Append 只 write 不 fsync）。
+func TestHostHITLCheckpointFlush(t *testing.T) {
+	ctx := context.Background()
+	model := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{}`)}),
+		llm.Resp("done"),
+	)
+	h := newTestHost(t, model, func(o *Options) {
+		o.Tools = []ToolSource{func(c *kernel.Context, reg *toolset.Registry) error {
+			_, err := reg.Register(c, toolset.Registration{
+				Def:    llm.ToolDef{Name: "echo", Parameters: json.RawMessage(`{"type":"object"}`)},
+				Fn:     func(ctx context.Context, args json.RawMessage) (string, error) { return "pong", nil },
+				Source: "test.echo",
+				Risk:   toolset.RiskReadonly,
+			})
+			return err
+		}}
+	})
+	stack := memory.NewMemorySessionStack()
+	sess, err := stack.Create(ctx, session.SessionHeader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := &flushCountingSession{Session: sess}
+	a, err := h.NewAgent(AgentOptions{
+		Name: "ckpt", ModelName: "stub", Model: model, ToolSet: h.Tools().AsToolSet(), Session: fc,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, llm.User(llm.Text("ping"))); err != nil {
+		t.Fatal(err)
+	}
+	if fc.flushes != 2 {
+		t.Fatalf("flushes = %d, want 2 (one per after_model HITL checkpoint)", fc.flushes)
+	}
+}
+
 // stepFailModel 是错误路径测试模型：按序回放 steps，耗尽后以 err 失败。
 type stepFailModel struct {
 	steps []*llm.Response
