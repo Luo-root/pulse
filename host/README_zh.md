@@ -57,7 +57,7 @@ a, err := h.NewAgent(host.AgentOptions{
 `host.Agent` 在有会话的宿主上，每个 `Run` 完成：
 
 1. **回合前**：`session.Surface()` 折影为 history 传给 loop——调用方不再自己维护历史；未决会话（`RecoverExposePending` 档）在此拒绝，经 `session.Recoverable` 裁决后再跑。恢复策略经通用构造接入：`memory.NewSessionStack(session.NewJSONLStore(dir, session.WithRecoverPolicy(...)))`——`memory.NewJSONLSessionStack(dir)` 便捷封装不接策略；
-2. **回合中**：按 loop 事件**同步**落盘——`turn.started` → `request.header` → 输入消息 → `step.started` → assistant（**先于**工具执行与 HITL 审批）→ `tool.result` → `step.ended` → `turn.ended`。model-visible means logged：模型可见的每一步在发生时即已入日志，进程死在任意执行点（工具执行中、审批等待中、模型调用失败），日志都停在真实现场——冷恢复（#158）的官方来源就是这条路径；
+2. **回合中**：按 loop 事件**同步**落盘——`turn.started` → `request.header` → 输入消息 → `step.started` → assistant（**先于**工具执行与 HITL 审批）→ **`Flush`（HITL 检查点）** → `tool.result` → `step.ended` → `turn.ended`。JSONL 的 `Append` 只 write 不 fsync，崩溃只保证 Flush 点之前——`after_model` 落盘 assistant 后立刻刷一次，掉电/强杀时裁决现场（unpaired tool_call）已在磁盘上；只此一点刷，不逐条刷。model-visible means logged：模型可见的每一步在发生时即已入日志，进程死在任意执行点（工具执行中、审批等待中、模型调用失败），日志都停在真实现场——冷恢复（#158）的官方来源就是这条路径；
 3. **回合级 scope**：每回合从宿主 kernel 派生独立请求 scope（观测桥 / ToolGate / ScopeHook 都挂它），用毕即毁——loop/llm 是 Local 派发，同宿主多 Agent 互不串扰。
 
 error / cancel 路径同样落盘：loop 的 `turn_end` 无论何种方式结束都会发出，已发生的产出与输入保留在日志里，闭合事件记 `interrupted`——副作用已经出去了，就不能当没发生。
@@ -77,9 +77,9 @@ error / cancel 路径同样落盘：loop 的 `turn_end` 无论何种方式结束
 - **kernel 注入制**：host 不私建内核——`Options.Kernel` 必填，应用的其他插件 Use 到同一个 kernel 即可与 host 组件共享服务仓库与事件总线；kernel 生命周期归调用方（Dispose 归你），Host 没有 Close；
 - 模型/工具/观测/会话全部显式 opt-in：不传就没有；
 - host.New 失败只返回 error、不做 Dispose 兜底：已挂载组件留在 kernel 上随调用方 Dispose 统一回收（失败通常是配置错误，修正后重来即可）；
-- 落盘 fail closed：回合内任何 append 失败中断回合并报错（日志停在与真实一致处，重开由冷恢复合成闭合）；输入只接受 user 消息，其余角色构造期/回合前显式拒绝；
+- 落盘 fail closed：回合内任何 append 失败中断回合并报错，其余 panic（模型适配器 / onDelta / 其他监听器）原样重抛不吞（`appendFail` 私有载荷识别）；日志停在与真实一致处，重开由冷恢复合成闭合；输入只接受 user 消息，其余角色构造期/回合前显式拒绝；
 - 会话落盘是明文（JSONL 文件即密钥面），路径宿主拥有。
 
 ## 测试
 
-`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID，各有验收测试。
+`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID，各有验收测试。
