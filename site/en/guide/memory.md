@@ -29,7 +29,7 @@
 A session is an event-sourced log: an append-only `EventEnvelope` stream + type-registered codecs + a fold projection. Key semantics:
 
 - A complete line (with `\n`) = successful append; torn lines are rebuilt on cold recovery;
-- Open performs cold recovery: synthesized events are written back to the log, keeping replay consistent;
+- Open performs cold recovery: synthesized events are written back to the log, keeping replay consistent; the recovery policy has three tiers (`WithRecoverPolicy`) — the default synthesizes interrupted closures; `RecoverExposePending` **skips synthesis** and hangs the pending scene (ToolCalls missing results + dangling step/turn) off the session handle for the host to adjudicate (`Pending()` / `ResolvePending` / `ResolveAsInterrupted`, reached via a `sess.(session.Recoverable)` assertion) — **while pending, `Surface()` refuses to project** (`ErrPendingEvents`); resolve first, then continue the turn. `RecoverReject` rejects Open on any pending state;
 - Pairing keys = `PartToolCall` on the assistant message (tool calls pair with results);
 - Single writer: in-process lock + file lock `O_EXCL` (staleness via mtime, Flush doubles as heartbeat);
 - Payloads >32KiB spill to blob storage with sha self-verification.

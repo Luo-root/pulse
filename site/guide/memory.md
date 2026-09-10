@@ -29,7 +29,7 @@
 会话是事件溯源日志：append-only 的 `EventEnvelope` 流 + 按类型注册的 codec + fold 投影。关键语义：
 
 - 完整行（含 `\n`）= 成功 append；撕裂行在冷恢复时重建；
-- Open 即冷恢复：合成事件写回 log，保证重放一致；
+- Open 即冷恢复：合成事件写回 log，保证重放一致；恢复策略三档（`WithRecoverPolicy`）——默认档合成 interrupted 闭环；`RecoverExposePending` **不合成**，未决现场（缺 result 的 ToolCall + 悬空 step/turn）挂会话句柄由宿主裁决（`Pending()` / `ResolvePending` / `ResolveAsInterrupted`，经 `sess.(session.Recoverable)` 断言取用）——**未决期间 `Surface()` 拒绝投影**（`ErrPendingEvents`），裁决完成后再继续回合；`RecoverReject` 存在未决即拒绝 Open；
 - 配对主键 = assistant 消息上的 `PartToolCall`（工具调用与结果配对）；
 - 单写者：进程内锁 + 文件锁 `O_EXCL`（stale 检测看 mtime，Flush 兼作心跳）；
 - 大载荷（>32KiB）溢出到 blob 存储，带 sha 自校验。
