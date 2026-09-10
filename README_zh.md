@@ -193,7 +193,7 @@ go build ./...
 go test ./...
 
 # v2 核心回归（无真实 API）
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./host/ ./observability/
 
 # eval property tests（主 module；固定种子，约 10s）
 go test -race -count=1 ./eval/

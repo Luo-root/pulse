@@ -193,7 +193,7 @@ go build ./...
 go test ./...
 
 # v2 core regression (no real API)
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./host/ ./observability/
 
 # eval property tests (main module; fixed seeds, ~10s)
 go test -race -count=1 ./eval/
