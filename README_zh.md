@@ -50,7 +50,8 @@ Pulse 按 0.x 的 SemVer 惯例发布：
 | [`textsplit`](textsplit/README_zh.md) | 文本分块：尺寸预算 + 分隔符优先级 + 字节 offset | `textsplit.Split` |
 | [`kernel/flow`](kernel/flow/README_zh.md) | 数据就绪驱动的节点编排（槽位三态、Skip、E1 Observer） | `flow.New(ctx, graphID)` |
 | [`kernel/flow/yaml`](kernel/flow/yaml/README_zh.md) | E2 YAML 声明式装图（拓扑归属 A：Factory 只给 Run） | `flowyaml.Load` |
-| [`memory`](memory/README_zh.md) | P2 记忆与会话（9 子包）：session / compaction / store / assemble / selfedit / index / candidate / reflection | `memory/README_zh.md` 全局地图 |
+| [`memory`](memory/README_zh.md) | P2 记忆与会话（9 子包 + 根级装配门面）：session / compaction / store / assemble / selfedit / index / candidate / reflection | `memory/README_zh.md` 全局地图 |
+| [`host`](host/README_zh.md) | 两层装配第二层：跨包缝（kernel 注入 + 会话↔loop 事件驱动落盘 + 观测/工具闸门） | `host.New(host.Options{...})` |
 | [`observability`](observability/README_zh.md) | 正式观测包：Bootstrap + Record + Sink + NewTraceID（只依赖 kernel） | `observability.Bootstrap()` |
 | [`eval`](eval/README_zh.md) | 评测套件：工程能力 property test + 分层 benchmark + 跨框架内战对比 | `go test -race ./eval/` |
 
@@ -58,7 +59,7 @@ Pulse 按 0.x 的 SemVer 惯例发布：
 
 三个问题覆盖新用户需要知道的大部分内容：
 
-1. **模型 / 工具怎么接起来？** 当前：`kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)`（下面的快速上手会走一遍）。把这一串收敛为一次 `host.New(Options)` 的宿主装配包是下一个大件。
+1. **模型 / 工具怎么接起来？** 当前：`kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)`（下面的快速上手会走一遍）。这条链现已收敛为一次 `host.New(Options)` 装配（[`host`](host/README_zh.md) 包）；下面的快速上手仍逐步展示手工装配。
 2. **一次 turn 怎么跑？** `agent.Run(ctx, input)` 执行一个无状态 ReAct 回合：模型 ↔ 工具循环直到模型停。历史累积、重试/failover、会话持久化都归调用方——`loop` 刻意一样都不拥有。
 3. **状态存在哪？** 按生命周期分三个 store：会话事件在事件日志（`memory/session`）、长期事实在 item store（`memory/store`）、服务实例在 kernel 服务仓库。其余一切无状态、可替换。
 
@@ -217,6 +218,7 @@ toolset/                   可逆工具注册（builtins / mcp / lsp 子包）
 skills/                    Agent Skills 装载器（agentskills.io）
 textsplit/                 文本分块（index/openai 与长文本模块共用）
 memory/                    P2 记忆与会话（session / compaction / store / assemble / selfedit / index / candidate / reflection）
+host/                      两层装配第二层：跨包缝（kernel 注入 + 会话↔loop 事件驱动落盘）
 observability/             v2 正式观测包（Bootstrap / Record / Sink）
 eval/                      评测套件：property test + 分层 benchmark + 内战对比
 docs/design/               架构设计与迁移文档（Accepted）

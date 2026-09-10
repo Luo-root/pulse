@@ -34,8 +34,6 @@ textsplit/                  # 独立文本分块：尺寸预算+分隔符优先�
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1 / memory-layer-v1
 eval/                      # 评测：分层基准（#102）+ property tests + eval/war 跨框架对比（独立 go.mod，Issue #103）
                            # 未列出的 memory-layer 草稿不存在；P2 记忆层事实源是 memory-layer-research-and-v2-design.md（含 §17 补遗）
-  internal/demoapp/         # 示例私有装配层（库包本身无 internal/；此处不违反「库无 internal」）
-  skills/                   # 示例 Skill 材料（历史私有 frontmatter 键会被装载器忽略）
 ```
 
 ## Key conventions

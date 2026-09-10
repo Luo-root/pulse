@@ -29,7 +29,7 @@
 
 ```text
 ┌─────────────────────────────────────────────────────┐
-│ 宿主（examples/internal/demoapp / 业务宿主）          │
+│ 宿主（官方实现 host/ / 业务宿主）          │
 │   每请求：ObserveConfig{Sink,HostID,TraceID} +        │
 │   AttachCollector + llm/loop.Observe + flow 图挂      │
 │   NewRecordObserver；宿主业务 Observer 经 MultiObserver│

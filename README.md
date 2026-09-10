@@ -50,7 +50,8 @@ Pulse ships under the 0.x SemVer convention. From **v0.2.0**:
 | [`textsplit`](textsplit/README.md) | Text chunking: size budget + separator priority + byte offsets | `textsplit.Split` |
 | [`kernel/flow`](kernel/flow/README.md) | Data-ready driven node orchestration (three slot states, Skip, E1 Observer) | `flow.New(ctx, graphID)` |
 | [`kernel/flow/yaml`](kernel/flow/yaml/README.md) | E2 declarative YAML graph loading (topology home A: Factory only exposes Run) | `flowyaml.Load` |
-| [`memory`](memory/README.md) | P2 memory & sessions (9 sub-packages): session / compaction / store / assemble / selfedit / index / candidate / reflection | `memory/README.md` global map |
+| [`memory`](memory/README.md) | P2 memory & sessions (9 sub-packages + root-level assembly facade): session / compaction / store / assemble / selfedit / index / candidate / reflection | `memory/README.md` global map |
+| [`host`](host/README.md) | Layer two of the two-layer assembly: cross-package seams (kernel injection + session↔loop event-driven persistence + observability / tool gate) | `host.New(host.Options{...})` |
 | [`observability`](observability/README.md) | Official observability package: Bootstrap + Record + Sink + NewTraceID (depends only on kernel) | `observability.Bootstrap()` |
 | [`eval`](eval/README.md) | Evaluation suite: engineering-capability property tests + layered benchmarks + cross-framework comparison suite (`eval/war`) | `go test -race ./eval/` |
 
@@ -58,7 +59,7 @@ Pulse ships under the 0.x SemVer convention. From **v0.2.0**:
 
 Three questions answer most of what a new user needs:
 
-1. **How do models / tools get wired?** Today: `kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)` (walk through it in the Quick Start below). A host assembly package that collapses this into one `host.New(Options)` call is the next major piece.
+1. **How do models / tools get wired?** Today: `kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)` (walk through it in the Quick Start below). That chain now collapses into one `host.New(Options)` call (the [`host`](host/README.md) package); the Quick Start below still shows manual assembly step by step.
 2. **How does one turn run?** `agent.Run(ctx, input)` executes one stateless ReAct round: model ↔ tools until the model stops. History accumulation, retry/failover, and session persistence are owned by the caller — `loop` deliberately owns none of them.
 3. **Where does state live?** Three stores, by lifetime: conversation events in the session log (`memory/session`), long-term facts in the item store (`memory/store`), service instances in the kernel's service repository. Everything else is stateless and replaceable.
 
@@ -217,6 +218,7 @@ toolset/                   reversible tool registry (builtins / mcp / lsp sub-pa
 skills/                    Agent Skills loader (agentskills.io)
 textsplit/                 text chunking (shared by index/openai and future long-text modules)
 memory/                    P2 memory & sessions (session / compaction / store / assemble / selfedit / index / candidate / reflection)
+host/                      two-layer assembly, layer two: cross-package seams (kernel injection + session↔loop event-driven persistence)
 observability/             v2 official observability package (Bootstrap / Record / Sink)
 eval/                      evaluation suite: property tests + layered benchmarks + cross-framework comparison suite (`eval/war`)
 docs/design/               architecture & migration docs (Accepted)

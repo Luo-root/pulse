@@ -459,7 +459,7 @@ type SessionFilter struct {
 
 - `Session` / `SessionStore` 的 `Surface()` 直接产出 `[]*llm.Message`——不再发明第二套 model-visible 消息类型，接线不经过翻译层。
 - Store 接口吃 `context.Context` 做取消，**不把 `*kernel.Context` 焊进 Store**——它是存储，不是插件树；Provide 它的 Plugin 才碰 kernel。
-- `memory/session` 只提供 **Header / Append / Events / Surface / Fork / Flush / Open（即冷恢复）**——**没有独立 Recover 方法**：`Open` 非 live 打开时补闭合事件（写回 log，见 §9.3）再 fold；**不订阅 kernel/loop 事件**。loop → session 的映射（把 `turn_start`/`after_tool_call` 等 EmitLocal 事件折成 EventDraft）是**装配层职责**（形态同各包 Observe 装配函数；原参照 demoapp/bridge.go 已随 #127/#132 废除），走接线票，不进 P2-A。
+- `memory/session` 只提供 **Header / Append / Events / Surface / Fork / Flush / Open（即冷恢复）**——**没有独立 Recover 方法**：`Open` 非 live 打开时补闭合事件（写回 log，见 §9.3）再 fold；**不订阅 kernel/loop 事件**。loop → session 的映射（把 `turn_start`/`after_tool_call` 等 EmitLocal 事件折成 EventDraft）是**装配层职责**（形态同各包 Observe 装配函数；原参照 demoapp/bridge.go 已随 #127/#132 废除），走接线票，不进 P2-A。**修订（#156/#164，2026-09）**：该接线已落地为 `host/` 装配包——`turnRecorder` 按 loop 事件同步落盘（turn/step 生命周期、`request.header`、assistant 先于工具执行与 HITL 审批、error 路径闭合），见 host README。
 - **恢复写回 log**：合成的 `IsError` result、`turn.ended(interrupted)` 必须真实 `Append` 进日志（「model-visible means logged」+「每个 surface 节点可定位 canonical event」），不能只在 `Surface()` 里凭空捏消息。
 - **单写者**：P2-A 同一 Session 同一时刻一个 writer（进程内锁 + 文件锁兜底）；CAS/revision 是 P2-C MemoryItem 的事，session 不做。
 - `Append` 非幂等：宿主 Flush 失败后**不要原样重放同一批事件**（重新 Append 会产生双份）。
