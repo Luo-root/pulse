@@ -219,6 +219,216 @@ func TestRecoverReject(t *testing.T) {
 	}
 }
 
+// buildBrokenLogMulti 构造带 N 个未决调用的「进程死」日志（同一 assistant
+// 消息发出多个 tool call，全部无 result；step/turn 悬空）。
+func buildBrokenLogMulti(t *testing.T, ids ...string) (dir string, id string) {
+	t.Helper()
+	ctx := context.Background()
+	dir = t.TempDir()
+	st, err := NewJSONLStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := st.Create(ctx, SessionHeader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id = sess.Header().SessionID
+	var calls []llm.ToolCall
+	var parts []llm.Part
+	for _, cid := range ids {
+		calls = append(calls, llm.ToolCall{ID: cid, Name: "echo", Arguments: json.RawMessage(`{}`)})
+	}
+	for _, c := range calls {
+		parts = append(parts, llm.Call(c))
+	}
+	drafts := []EventDraft{
+		{Type: EventTurnStarted, Data: mustJSON(LifecyclePayload{ID: "turn-1"})},
+		{Type: EventStepStarted, Data: mustJSON(LifecyclePayload{ID: "step-1"})},
+		{Type: EventMessageUser, Data: mustJSON(MessagePayload{Parts: []llm.Part{llm.Text("run the tools")}}), Surface: &SurfaceIntent{Op: SurfaceAppend}},
+		{Type: EventMessageAssistant, Data: mustJSON(MessagePayload{Parts: parts}), Surface: &SurfaceIntent{Op: SurfaceAppend}},
+	}
+	for _, d := range drafts {
+		if _, err := sess.Append(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c, ok := sess.(interface{ Close() error }); ok {
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir, id
+}
+
+// TestRecoverResolveAsInterruptedMulti 回归：多个未决调用一键裁决——每个
+// ToolCall 恰好补一条 result，不漏（c2）不重（c3 重复写出后被 remove 失败
+// 打断是旧实现的病）。range 期间未决集会被重建且可能被清空为 nil，实现
+// 必须先快照再迭代。
+func TestRecoverResolveAsInterruptedMulti(t *testing.T) {
+	ctx := context.Background()
+	dir, id := buildBrokenLogMulti(t, "c1", "c2", "c3")
+	st, err := NewJSONLStore(dir, WithRecoverPolicy(RecoverExposePending))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := st.Open(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := sess.(*jsonlSession)
+	if p := js.Pending(); len(p.Calls) != 3 {
+		t.Fatalf("pending calls = %+v, want 3", p.Calls)
+	}
+	if err := js.ResolveAsInterrupted(ctx); err != nil {
+		t.Fatalf("ResolveAsInterrupted: %v", err)
+	}
+	if p := js.Pending(); !p.empty() || js.pending != nil {
+		t.Fatalf("pending after resolve = %+v", p)
+	}
+
+	// 每个未决恰好一条补写结果（不重复、不遗漏）。
+	envs, err := sess.Events(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, env := range envs {
+		if env.Type != EventToolResult {
+			continue
+		}
+		var p ToolResultPayload
+		if err := json.Unmarshal(env.Data, &p); err != nil {
+			t.Fatal(err)
+		}
+		seen[p.ToolCallID]++
+	}
+	if len(seen) != 3 || seen["c1"] != 1 || seen["c2"] != 1 || seen["c3"] != 1 {
+		t.Fatalf("synthetic results = %v, want each of c1/c2/c3 exactly once", seen)
+	}
+
+	// Surface 恢复可用：user + assistant + 三条 tool result。
+	surface, err := sess.Surface(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(surface) != 5 {
+		t.Fatalf("surface len = %d, want 5", len(surface))
+	}
+	if err := js.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 重开（默认档）：日志已闭合，零合成。
+	st2, err := NewJSONLStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess2, err := st2.Open(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if c, ok := sess2.(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+	})
+	surface2, err := sess2.Surface(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(surface2) != 5 {
+		t.Fatalf("surface after reopen = %d, want 5 (no synthesis)", len(surface2))
+	}
+}
+
+// TestRecoverResolveAppendFailureKeepsPending：裁决落盘失败（句柄被关）时
+// 未决集**原样保留**、日志不多写半条；重试只补剩余项（已裁决的项不重写）。
+func TestRecoverResolveAppendFailureKeepsPending(t *testing.T) {
+	ctx := context.Background()
+	dir, id := buildBrokenLogMulti(t, "c1", "c2")
+	st, err := NewJSONLStore(dir, WithRecoverPolicy(RecoverExposePending))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := st.Open(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := sess.(*jsonlSession)
+	orig := js.f
+	t.Cleanup(func() {
+		js.f = orig // 测试中途人为置 nil，清理前先还原句柄
+		_ = js.ResolveAsInterrupted(ctx)
+		if c, ok := sess.(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+	})
+
+	// 第一项裁决成功。
+	if err := js.ResolvePending(ctx, ResolvePendingOption{
+		ToolCallID: "c1", Result: &ToolResultPayload{ToolCallID: "c1", Text: "pong:1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if p := js.Pending(); len(p.Calls) != 1 || p.Calls[0].ToolCallID != "c2" {
+		t.Fatalf("pending after first resolve = %+v", p.Calls)
+	}
+
+	// 落盘通道人为失灵：第二项裁决失败，但未决集必须原样保留。
+	f := js.f
+	js.f = nil
+	before, err := js.Events(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := js.ResolvePending(ctx, ResolvePendingOption{
+		ToolCallID: "c2", Result: &ToolResultPayload{ToolCallID: "c2", Text: "pong:2"},
+	}); err == nil {
+		t.Fatal("resolve over broken sink must fail")
+	}
+	if p := js.Pending(); len(p.Calls) != 1 || p.Calls[0].ToolCallID != "c2" {
+		t.Fatalf("pending after failed resolve = %+v (must stay)", p.Calls)
+	}
+	after, err := js.Events(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("failed resolve wrote %d events, want 0", len(after)-len(before))
+	}
+
+	// 通道恢复：重试只补剩余项，日志恰好两条 tool result（不重写已裁决项）。
+	js.f = f
+	if err := js.ResolvePending(ctx, ResolvePendingOption{
+		ToolCallID: "c2", Result: &ToolResultPayload{ToolCallID: "c2", Text: "pong:2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	envs, err := js.Events(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, env := range envs {
+		if env.Type != EventToolResult {
+			continue
+		}
+		var p ToolResultPayload
+		if err := json.Unmarshal(env.Data, &p); err != nil {
+			t.Fatal(err)
+		}
+		seen[p.ToolCallID]++
+	}
+	if seen["c1"] != 1 || seen["c2"] != 1 || len(seen) != 2 {
+		t.Fatalf("results = %v, want c1/c2 exactly once each", seen)
+	}
+	// 调用项已清空；悬空 step/turn 仍待闭合（本测试只验证调用项重试语义）。
+	if p := js.Pending(); len(p.Calls) != 0 {
+		t.Fatalf("pending calls after retry = %+v", p.Calls)
+	}
+}
+
 // TestRecoverResolveAsInterrupted：一键默认合成——等价默认档但宿主显式选。
 func TestRecoverResolveAsInterrupted(t *testing.T) {
 	ctx := context.Background()

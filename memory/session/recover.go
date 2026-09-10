@@ -226,8 +226,16 @@ func (s *jsonlSession) ResolveAsInterrupted(ctx context.Context) error {
 	if s.pending == nil || !pendingIncomplete(*s.pending) {
 		return ErrPendingEvents
 	}
+	// 先快照再迭代：removePendingCallLocked 会原地重建 slice（底层数组
+	// 左移）并在清空时把 s.pending 置 nil——直接 range s.pending.pendingCalls
+	// 会跳过/重复元素（重复项还会在 remove 失败处中断，留下漏裁决），
+	// 循环后再解引用 s.pending 会 nil panic。生命周期标志同样先摘出；
+	// openStep/openTurn 为真时 maybeClearPendingLocked 不会清 pending，
+	// 后续 closeStepLocked/closeTurnLocked 解引用安全。
+	ids := append([]string(nil), s.pending.pendingCalls...)
+	openStep, openTurn := s.pending.openStep, s.pending.openTurn
 	// 与 synthDrafts 同序：tool results → step → turn。
-	for _, id := range s.pending.pendingCalls {
+	for _, id := range ids {
 		if _, err := s.appendLocked(EventDraft{
 			Type:    EventToolResult,
 			Data:    mustJSON(ToolResultPayload{ToolCallID: id, Text: interruptedResultText, IsError: true}),
@@ -235,14 +243,16 @@ func (s *jsonlSession) ResolveAsInterrupted(ctx context.Context) error {
 		}); err != nil {
 			return err
 		}
-		s.removePendingCallLocked(id)
+		if err := s.removePendingCallLocked(id); err != nil {
+			return err
+		}
 	}
-	if s.pending.openStep {
+	if openStep {
 		if err := s.closeStepLocked(); err != nil {
 			return err
 		}
 	}
-	if s.pending.openTurn {
+	if openTurn {
 		if err := s.closeTurnLocked(); err != nil {
 			return err
 		}
