@@ -52,7 +52,6 @@ Pulse ships under the 0.x SemVer convention. From **v0.2.0**:
 | [`kernel/flow/yaml`](kernel/flow/yaml/README.md) | E2 declarative YAML graph loading (topology home A: Factory only exposes Run) | `flowyaml.Load` |
 | [`memory`](memory/README.md) | P2 memory & sessions (9 sub-packages): session / compaction / store / assemble / selfedit / index / candidate / reflection | `memory/README.md` global map |
 | [`observability`](observability/README.md) | Official observability package: Bootstrap + Record + Sink + NewTraceID (depends only on kernel) | `observability.Bootstrap()` |
-| [`examples`](examples/README.md) | Progressive lessons 00–07: kernel ground / assembly + vocabulary / ReAct / HITL / flow / session memory / long-term memory / production | `go run ./examples/00-hello-kernel` |
 | [`eval`](eval/README.md) | Evaluation suite: engineering-capability property tests + layered benchmarks + cross-framework comparison suite (`eval/war`) | `go test -race ./eval/` |
 
 ## The three-question mental model
@@ -194,7 +193,7 @@ go build ./...
 go test ./...
 
 # v2 core regression (no real API)
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/ ./examples/04-flow/ ./examples/07-production/
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/
 
 # eval property tests (main module; fixed seeds, ~10s)
 go test -race -count=1 ./eval/
@@ -221,7 +220,6 @@ memory/                    P2 memory & sessions (session / compaction / store / 
 observability/             v2 official observability package (Bootstrap / Record / Sink)
 eval/                      evaluation suite: property tests + layered benchmarks + cross-framework comparison suite (`eval/war`)
 docs/design/               architecture & migration docs (Accepted)
-examples/                  progressive lessons 00–07 + internal/demoapp assembly layer
 ```
 
 ## License

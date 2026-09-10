@@ -21,7 +21,6 @@ function pkgGroups(prefix) {
     group('可观测', ['observability']),
     group('文本处理', ['textsplit']),
     group('评测', ['eval', 'eval/war']),
-    group('示例', ['examples']),
   ]
 }
 
@@ -33,7 +32,6 @@ const zh = {
       { text: '指南', link: '/guide/quickstart', activeMatch: '^/guide/' },
       { text: '包文档', link: '/packages/', activeMatch: '^/packages/' },
       { text: '评测', link: '/eval', activeMatch: '^/eval' },
-      { text: '示例', link: '/examples', activeMatch: '^/examples' },
     ],
     sidebar: {
       '/guide/': [
@@ -47,7 +45,6 @@ const zh = {
       ],
       '/packages/': pkgGroups('/'),
       '/eval': [{ text: '评测', items: [{ text: '性能基准', link: '/eval' }] }],
-      '/examples': [{ text: '示例', items: [{ text: '8 课渐进示例', link: '/examples' }] }],
     },
     search: {
       provider: 'local',
@@ -82,7 +79,6 @@ const en = {
       { text: 'Guide', link: '/en/guide/quickstart', activeMatch: '^/en/guide/' },
       { text: 'Packages', link: '/en/packages/', activeMatch: '^/en/packages/' },
       { text: 'Benchmarks', link: '/en/eval', activeMatch: '^/en/eval' },
-      { text: 'Examples', link: '/en/examples', activeMatch: '^/en/examples' },
     ],
     sidebar: {
       '/en/guide/': [
@@ -96,7 +92,6 @@ const en = {
       ],
       '/en/packages/': pkgGroups('/en/'),
       '/en/eval': [{ text: 'Benchmarks', items: [{ text: 'Performance', link: '/en/eval' }] }],
-      '/en/examples': [{ text: 'Examples', items: [{ text: 'Lessons 00–07', link: '/en/examples' }] }],
     },
     search: { provider: 'local' },
     outline: { label: 'On this page' },

@@ -12,7 +12,6 @@
 | 可观测 | [observability](/packages/observability/) |
 | 文本处理 | [textsplit](/packages/textsplit/) |
 | 评测 | [eval](/packages/eval/) · [eval/war](/packages/eval/war/) |
-| 示例 | [examples](/packages/examples/) |
 
 ::: tip 内容来源
 每个包页面的正文 = 仓库中该包的 `README_zh.md`（中文站）/ `README.md`（英文站）原文，由 `site/scripts/sync-docs.mjs` 在构建时同步——仓库文档更新后站点自动跟进，无需二次维护。

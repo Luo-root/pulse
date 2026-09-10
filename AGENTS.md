@@ -9,7 +9,7 @@ Go library (`github.com/Luo-root/pulse`) — a Go AI agent runtime built around 
 ```bash
 go build ./...          # verify compilation
 go test ./...           # run all tests
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/ ./examples/04-flow/ ./examples/07-production/   # v2 core + flow/tools examples
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/   # v2 core
 go test -race -count=1 ./eval/   # eval property tests (main module)
 ```
 
@@ -33,14 +33,13 @@ textsplit/                  # 独立文本分块：尺寸预算+分隔符优先�
 docs/design/               # Accepted：plugin-kernel-v2 / flow-v2 / kernel-local-events / observability-v1 / toolset-v1 / skills-v1 / memory-layer-v1
 eval/                      # 评测：分层基准（#102）+ property tests + eval/war 跨框架对比（独立 go.mod，Issue #103）
                            # 未列出的 memory-layer 草稿不存在；P2 记忆层事实源是 memory-layer-research-and-v2-design.md（含 §17 补遗）
-examples/                   # 00–07 渐进示例（8 课：kernel→chat→react→hitl→flow→memory-session→memory-agent→production）
   internal/demoapp/         # 示例私有装配层（库包本身无 internal/；此处不违反「库无 internal」）
   skills/                   # 示例 Skill 材料（历史私有 frontmatter 键会被装载器忽略）
 ```
 
 ## Key conventions
 
-- **No `internal/` or `cmd/` in library packages** — this is a library, not a binary. All published packages are public API. `examples/internal/demoapp` is example-private scaffolding only.
+- **No `internal/` or `cmd/` in library packages** — this is a library, not a binary. All published packages are public API.
 - **Functional options pattern** used throughout (`loop.WithToolSet()`, `flow.WithMaxRunning()`, etc.).
 - **Chinese comments and doc** are the norm; preserve them when editing.
 - **v2 vocabulary contract**: `llm.GenerateRequest` only carries cross-provider stable fields; when a provider wire format has no counterpart, the adapter returns `ErrBadRequest` — never silently drop parameters and never add `map[string]any` escape hatches on the request vocabulary. `llm.Config.Options` is **client-level only** (org / timeout / headers / retries), not a request-parameter escape hatch.

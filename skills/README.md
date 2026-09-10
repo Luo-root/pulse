@@ -45,7 +45,7 @@ Each skill is a subdirectory + `SKILL.md`; `name` must match the directory name.
 
 ## Example material
 
-The repo examples live in [`examples/skills/`](../examples/skills/): two usable procedure packages are kept for now, `frontend-design` and `pptx` (without the OOXML schema tree).
+Procedure packages for the loader tests live in `skills/testdata/` (kept minimal; former repo examples `frontend-design`/`pptx` were removed together with the lessons).
 
 ## Tests
 

@@ -333,7 +333,7 @@ v1 不做：
 
 ## 11. 参考
 
-- 现实现：`loop/tools.go`、`loop/events.go`、`loop/loop.go`；`examples/internal/demoapp/hitl.go`、`bridge.go`
+- 现实现：`loop/tools.go`、`loop/events.go`、`loop/loop.go`（HITL 装配示范随旧课程移除，见 #156 两层装配）
 - 路线图原文：`docs/design/plugin-kernel-v2.md` §P1（待本设计 Accepted 同批修订）
 - Local 事件：`docs/design/kernel-local-events.md`
 - 观测边界：`docs/design/observability-v1-design.md`

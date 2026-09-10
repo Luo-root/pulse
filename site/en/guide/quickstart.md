@@ -90,4 +90,3 @@ go run ./main.go
 - **Orchestration**: three-state slot node graphs and YAML loading → [flow orchestration](/en/guide/flow)
 - **Memory**: sessions, compaction, long-term store, assembly → [Memory layer](/en/guide/memory)
 - **Per-package docs**: full bilingual docs for all 27 packages → [Packages](/en/packages/)
-- **Progressive lessons**: 8 lessons from kernel ground to production → [Examples](/en/examples)

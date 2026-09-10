@@ -314,7 +314,7 @@ Contract highlights:
 
 - Waiting/Running/Finished fire at most once per node; multiple `Retry` attempts do not re-emit.
 - an observer panic **must not** become a node failure.
-- the official adapter emits the two Records `flow.node_wait_finished` / `flow.node_run_finished`, each carrying `Duration`; graph and node identity go in the `AttrGraph` / `AttrNode` open segments (the official envelope is not extended). See `examples/04-flow` (the host's business peak-stat observer `FlowPeak` lives in `examples/internal/demoapp/flowpeak.go`; the 04-flow README is already tabulated).
+- the official adapter emits the two Records `flow.node_wait_finished` / `flow.node_run_finished`, each carrying `Duration`; graph and node identity go in the `AttrGraph` / `AttrNode` open segments (the official envelope is not extended).
 
 ### Observation Adapter: NewRecordObserver
 
@@ -330,7 +330,7 @@ Contract highlights:
 
 ### No Public Slot-Read API After the Graph Ends
 
-`Graph` has no public `Get` after the run. If a leaf can neither double-Provide the same output key (single producer) nor converge two Finals through AND (Skip would cascade through and swallow the join node), the example layer may write terminal results out through a closure — this is a **contract workaround**, not the "all outputs go through closures" convention. For the three constraints on "closure-written Final", see [`examples/04-flow/README.md`](../../examples/04-flow/README.md).
+`Graph` has no public `Get` after the run. If a leaf can neither double-Provide the same output key (single producer) nor converge two Finals through AND (Skip would cascade through and swallow the join node), the example layer may write terminal results out through a closure — this is a **contract workaround**, not the "all outputs go through closures" convention (constraints: single-producer key, no AND-convergence of two Finals, and the closure must write the terminal key only once).
 
 ## Declaration-Time Validation
 

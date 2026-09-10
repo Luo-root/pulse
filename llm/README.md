@@ -169,7 +169,7 @@ ctx = llm.WithEventScope(ctx, reqScope) // loop 在调模型前会做这一步
 
 Division of labor with loop: this package covers the token level; loop covers the decision level (approvals, traces). A request-level observer adapter must attach to the same `reqScope`, otherwise it will not hear the Local events.
 
-**The seam with loop's request assembly**: the `GenerateRequest` assembled by `loop.Agent` mainly carries Messages/Tools and **leaves blank** Temperature / MaxTokens etc. Anthropic Messages' `MaxTokens` is **required** (`nil` → `ErrBadRequest`). When calling Anthropic, the assembly layer's `before_generate` or an explicit request must fill it in; examples/demoapp attaches the defaults to `Registry.EventScope()` (the 01-chat fallback path) and the per-request `reqScope` (02/03) — it is not about adding a full request Option surface to the Agent, nor about attaching to the host root.
+**The seam with loop's request assembly**: the `GenerateRequest` assembled by `loop.Agent` mainly carries Messages/Tools and **leaves blank** Temperature / MaxTokens etc. Anthropic Messages' `MaxTokens` is **required** (`nil` → `ErrBadRequest`). When calling Anthropic, the assembly layer's `before_generate` or an explicit request must fill it in; an assembly layer attaches the defaults to `Registry.EventScope()` (process-wide fallback) and/or the per-request scope — it is not about adding a full request Option surface to the Agent, nor about attaching to the host root.
 
 You can also use `llm.Plugin()` to Provide the Registry into the enclosing scope; on unload, `Close` all instances.
 

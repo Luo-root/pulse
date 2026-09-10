@@ -17,7 +17,7 @@ After reading this you should be able to: configure an Agent with tools, run `Ru
 | Hard-wiring a specific model or tool set | Depends only on `llm.ChatModel` and `ToolSet` |
 | Filling in request sampling/length-cap fields | The request the Agent assembles mainly carries Messages/Tools; Temperature / **MaxTokens** etc. are filled in by the caller via `before_generate` or an explicit `GenerateRequest` |
 
-**The seam with Anthropic**: the Messages wire format **requires MaxTokens** (`nil` → `ErrBadRequest`). This package does not fill it and sets no magic default. The assembly layer (e.g. `examples/internal/demoapp`) can inject a default via `before_generate` only when the value is empty — this is a host demonstration, not a full request Option surface for the Agent.
+**The seam with Anthropic**: the Messages wire format **requires MaxTokens** (`nil` → `ErrBadRequest`). This package does not fill it and sets no magic default. The assembly layer can inject a default via `before_generate` only when the value is empty — this is a host demonstration, not a full request Option surface for the Agent.
 
 The Agent is a library object, not a plugin. `WithEventScope(nil)` (the default) means zero dispatch and zero kernel footprint.
 

@@ -43,7 +43,7 @@ b, err := loader.ReadFile(ctx, "pdf", "references/FORMS.md")
 
 ## 示例材料
 
-仓库示例在 [`examples/skills/`](../examples/skills/)：目前保留 `frontend-design`、`pptx` 两套可用规程包（不含 OOXML schema 树）。
+装载器测试用的规程包在 `skills/testdata/`（保持最小；原仓库示例 `frontend-design`/`pptx` 随课程一并移除）。
 
 ## 测试
 

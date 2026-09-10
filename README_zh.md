@@ -52,7 +52,6 @@ Pulse 按 0.x 的 SemVer 惯例发布：
 | [`kernel/flow/yaml`](kernel/flow/yaml/README_zh.md) | E2 YAML 声明式装图（拓扑归属 A：Factory 只给 Run） | `flowyaml.Load` |
 | [`memory`](memory/README_zh.md) | P2 记忆与会话（9 子包）：session / compaction / store / assemble / selfedit / index / candidate / reflection | `memory/README_zh.md` 全局地图 |
 | [`observability`](observability/README_zh.md) | 正式观测包：Bootstrap + Record + Sink + NewTraceID（只依赖 kernel） | `observability.Bootstrap()` |
-| [`examples`](examples/README.md) | 渐进示例 00–07：kernel 地基 / 装配链+词汇表 / ReAct / HITL / flow 编排 / 会话记忆 / 长期记忆 / 生产集成 | `go run ./examples/00-hello-kernel` |
 | [`eval`](eval/README_zh.md) | 评测套件：工程能力 property test + 分层 benchmark + 跨框架内战对比 | `go test -race ./eval/` |
 
 ## 三问心智模型
@@ -194,7 +193,7 @@ go build ./...
 go test ./...
 
 # v2 核心回归（无真实 API）
-go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/ ./examples/04-flow/ ./examples/07-production/
+go test -race -skip TestLive ./kernel/... ./llm/... ./loop/ ./toolset/... ./skills/ ./textsplit/... ./memory/... ./observability/
 
 # eval property tests（主 module；固定种子，约 10s）
 go test -race -count=1 ./eval/
@@ -221,7 +220,6 @@ memory/                    P2 记忆与会话（session / compaction / store / a
 observability/             v2 正式观测包（Bootstrap / Record / Sink）
 eval/                      评测套件：property test + 分层 benchmark + 内战对比
 docs/design/               架构设计与迁移文档（Accepted）
-examples/                  00–07 渐进示例 + internal/demoapp 装配层
 ```
 
 ## 许可证

@@ -1,7 +1,7 @@
 # flow v2：数据就绪驱动的节点编排
 
 > 状态：Accepted（设计拍板 2026-08-26）
-> 实现状态：**核心契约已落地**（`kernel/flow/` + 包 README + 测试 + examples/03）；**E1 已落地**（Issue [#25](https://github.com/Luo-root/pulse/issues/25) / PR #28）；**E2 已落地**（Issue [#32](https://github.com/Luo-root/pulse/issues/32) / PR #33：`Registry` + `kernel/flow/yaml`）
+> 实现状态：**核心契约已落地**（`kernel/flow/` + 包 README + 测试）；**E1 已落地**（Issue [#25](https://github.com/Luo-root/pulse/issues/25) / PR #28）；**E2 已落地**（Issue [#32](https://github.com/Luo-root/pulse/issues/32) / PR #33：`Registry` + `kernel/flow/yaml`）
 > 包位置：`kernel/flow/`
 > 公开 API 权威摘要：[`kernel/flow/README_zh.md`](../../kernel/flow/README_zh.md)（本篇保留理念、钉死契约与演进；API 段为与实现同形的摘要，避免双维护完整导出表）
 > 前置：v1 `components/flowchart` 已按 breaking 决策删除；本篇从源码提炼理念并给出 v2 契约。
@@ -327,7 +327,7 @@ provides:
 #### 最小 YAML 例子（3 节点 + Seed）
 
 ```yaml
-# 示意：与 examples/03 同构的线性链；不是最终 schema 冻结稿
+# 示意：线性链；不是最终 schema 冻结稿
 version: 1
 seeds:
   - key: { name: demo.user_input, type: "*llm.Message" }

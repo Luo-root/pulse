@@ -90,4 +90,3 @@ go run ./main.go
 - **编排**：flow 槽位三态节点图与 YAML 声明式装图 → [flow 编排](/guide/flow)
 - **记忆**：会话、压缩、长期存储与上下文装配 → [记忆层](/guide/memory)
 - **逐包文档**：27 个包的双语完整文档 → [包文档](/packages/)
-- **渐进示例**：8 课从 kernel 地基走到生产集成 → [示例](/examples)
