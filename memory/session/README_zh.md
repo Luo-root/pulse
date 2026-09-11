@@ -25,6 +25,7 @@ reg := sess.Registry()                          // 事件 codec 环境（FoldTra
 
 - `Seq`/`Time` 由 store 分配；`Append` **非幂等**——Flush 失败后不要原样重放同一批事件。
 - `Open` 即冷恢复（无独立 Recover 方法）：未闭合 turn/step、unpaired ToolCall 合成闭合事件**真实写回日志**后再 fold；live 会话不冷补；恢复幂等。
+- **恢复策略可选（#158）**：`NewJSONLStore(dir, WithRecoverPolicy(p))`——`RecoverSyntheticInterrupted`（默认，上述行为不变）；`RecoverExposePending`（**不合成**，未决现场挂会话句柄：`Pending()` 报告缺 result 的 ToolCall（含 Name/Arguments）与悬空 step/turn，宿主经 `ResolvePending` 补真实结果/显式闭合、`ResolveAsInterrupted` 一键走默认合成——HITL 等待点恢复的场景用这档；**未决期间 `Surface()` 拒绝投影**，返回 `ErrPendingEvents`——运行中间态是给宿主看的，unpaired tool call 喂给模型是坏请求）；`RecoverReject`（存在未决即拒绝 Open，`ErrPendingEvents`）。裁决期接口经 `sess.(session.Recoverable)` 类型断言取用（`Pending` / `ResolvePending` / `ResolveAsInterrupted`），与 `Close` 同为 JSONL 扩展、不进 `Session` 接口；裁决落盘走与 Append 同一条校验链（先 append 成功、后改内存未决集，输入校验前置，未知目标不落盘）；**裁决本身不 `Flush`**——写完落在页缓存，掉电/强杀可能丢决议，宿主裁决完成后应自行 `sess.Flush(ctx)`（契约不变：崩溃只保证 Flush 点之前）。
 - JSONL 实现额外提供 `Close() error`（类型断言使用）：释放文件锁与句柄，幂等。
 
 ## 两个 backend
@@ -41,7 +42,7 @@ JSONL 落盘布局：`{root}/{sessionID}/header.json` + `events.jsonl`（每行�
 
 ## 导出与导入（迁移保真）
 
-单文件迁移：`ExportSession` 把整个会话写成 header 行 + 信封行的流——**与 JSONL 会话文件同构（零新格式）**，blob 内联自包含（流中不出现 `blob:` 引用）；`ImportSession` 全量校验（seq 连续、类型经注册表分级、tool call/result 配对、未闭合拒绝）后经 store 的 `CreateSeeded` 重建，header 原样（SessionID 不变）。
+单文件迁移：`ExportSession` 把整个会话写成 header 行 + 信封行的流——**与 JSONL 会话文件同构（零新格式）**，blob 内联自包含（流中不出现 `blob:` 引用）；`ImportSession` 全量校验（seq 连续、类型经注册表分级、tool call/result 配对、未闭合拒绝）后经 store 的 `CreateSeeded` 重建，header 原样（SessionID 不变）。**导入不接 `WithRecoverPolicy`（定案）**：迁移要求源流来自闭合会话，未闭合按损坏拒绝——静默合成会污染保真链；要裁决先在源端用会话自己的策略解决再导出。
 
 ```go
 var stream bytes.Buffer
@@ -79,6 +80,7 @@ Ignorable ≠ 可以不记：`request.header` 仍必须由写入方发（system 
 | `ErrForkSplitToolGroup` / `ErrForkBadAt` | Fork 切在 tool 组中间 / 切点越界 |
 | `ErrFormatVersion` | header 版本不兼容（只认 1 与 2，不猜测迁移） |
 | `ErrSeedUnsupported` | 导入目标 store 未实现 Seeder（不做静默重编号降级） |
+| `ErrPendingEvents` | 存在未决（ExposePending 档未裁决）：`Open` 于 RecoverReject 档、未决期 `Surface()` 拒绝投影、裁决目标不在未决集 / 参数既非 Result 也非 Interrupted / 无项可裁 |
 | `ErrSessionClosed` / `ErrInvalidSessionID` / `ErrCursorStale` / `ErrDeleted` | Close 后写入 / ID 非法（须匹配 `[A-Za-z0-9_-]{1,128}`）/ List 游标失效 / 已删除会话写入 |
 
 ## 测试
