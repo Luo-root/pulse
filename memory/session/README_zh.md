@@ -25,7 +25,7 @@ reg := sess.Registry()                          // 事件 codec 环境（FoldTra
 
 - `Seq`/`Time` 由 store 分配；`Append` **非幂等**——Flush 失败后不要原样重放同一批事件。
 - `Open` 即冷恢复（无独立 Recover 方法）：未闭合 turn/step、unpaired ToolCall 合成闭合事件**真实写回日志**后再 fold；live 会话不冷补；恢复幂等。
-- **恢复策略可选（#158）**：`NewJSONLStore(dir, WithRecoverPolicy(p))`——`RecoverSyntheticInterrupted`（默认，上述行为不变）；`RecoverExposePending`（**不合成**，未决现场挂会话句柄：`Pending()` 报告缺 result 的 ToolCall（含 Name/Arguments）与悬空 step/turn，宿主经 `ResolvePending` 补真实结果/显式闭合、`ResolveAsInterrupted` 一键走默认合成——HITL 等待点恢复的场景用这档；**未决期间 `Surface()` 拒绝投影**，返回 `ErrPendingEvents`——运行中间态是给宿主看的，unpaired tool call 喂给模型是坏请求）；`RecoverReject`（存在未决即拒绝 Open，`ErrPendingEvents`）。裁决期接口经 `sess.(session.Recoverable)` 类型断言取用（`Pending` / `ResolvePending` / `ResolveAsInterrupted`），与 `Close` 同为 JSONL 扩展、不进 `Session` 接口；裁决落盘走与 Append 同一条校验链（先 append 成功、后改内存未决集，输入校验前置，未知目标不落盘）。
+- **恢复策略可选（#158）**：`NewJSONLStore(dir, WithRecoverPolicy(p))`——`RecoverSyntheticInterrupted`（默认，上述行为不变）；`RecoverExposePending`（**不合成**，未决现场挂会话句柄：`Pending()` 报告缺 result 的 ToolCall（含 Name/Arguments）与悬空 step/turn，宿主经 `ResolvePending` 补真实结果/显式闭合、`ResolveAsInterrupted` 一键走默认合成——HITL 等待点恢复的场景用这档；**未决期间 `Surface()` 拒绝投影**，返回 `ErrPendingEvents`——运行中间态是给宿主看的，unpaired tool call 喂给模型是坏请求）；`RecoverReject`（存在未决即拒绝 Open，`ErrPendingEvents`）。裁决期接口经 `sess.(session.Recoverable)` 类型断言取用（`Pending` / `ResolvePending` / `ResolveAsInterrupted`），与 `Close` 同为 JSONL 扩展、不进 `Session` 接口；裁决落盘走与 Append 同一条校验链（先 append 成功、后改内存未决集，输入校验前置，未知目标不落盘）；**裁决本身不 `Flush`**——写完落在页缓存，掉电/强杀可能丢决议，宿主裁决完成后应自行 `sess.Flush(ctx)`（契约不变：崩溃只保证 Flush 点之前）。
 - JSONL 实现额外提供 `Close() error`（类型断言使用）：释放文件锁与句柄，幂等。
 
 ## 两个 backend
