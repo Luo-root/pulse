@@ -30,7 +30,7 @@ Keys understood in `Config.Options`: `timeout_seconds`, `max_retries` (explicitl
 | Difference | Mapping |
 |---|---|
 | system is not a message role but a top-level parameter | All system messages merge into `System []TextBlockParam` |
-| **max_tokens is required**; the provider has no default | `req.MaxTokens == nil` → explicit `ErrBadRequest`, no magic default. `loop.Agent` does not fill it; the assembly layer (e.g. demoapp) can fill a default via `before_generate` |
+| **max_tokens is required**; the provider has no default | `req.MaxTokens == nil` → explicit `ErrBadRequest`, no magic default. `loop.Agent` does not fill it; the assembly layer (e.g. host) can fill a default via `before_generate` |
 | tool results are not a separate role | `RoleTool` → a user message containing only `tool_result` blocks (Anthropic requires tool_result at the head of the user turn) |
 | audio / video not supported | `PartCustom(audio/*\|video/*)` → explicit `ErrBadRequest` |
 | PDF goes through document blocks | `PartCustom(application/pdf)`: Data → base64 source, URL → url source |

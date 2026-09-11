@@ -6,7 +6,7 @@ Pulse v2's foundation is a **plugin kernel**: every modification to the environm
 
 Three questions answer most of what a new user needs:
 
-1. **How do models / tools get wired?** Today: `kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)` (walked through in the [quickstart](./quickstart.md)). A host assembly package that collapses this into one `host.New(Options)` call is the next major piece.
+1. **How do models / tools get wired?** Today: `kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)` (walked through in the [quickstart](./quickstart.md)). That chain now collapses into one `host.New(Options)` call (see the [host package docs](/en/packages/host/)); the [quickstart](./quickstart.md) still shows manual assembly step by step.
 2. **How does one turn run?** `agent.Run(ctx, input)` executes one stateless ReAct round: model ↔ tools until the model stops. History accumulation, retry/failover, and session persistence are owned by the caller — `loop` deliberately owns none of them.
 3. **Where does state live?** Three stores, by lifetime: conversation events in the session log (`memory/session`), long-term facts in the item store (`memory/store`), service instances in the kernel's service repository. Everything else is stateless and replaceable.
 

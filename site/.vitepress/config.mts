@@ -1,7 +1,17 @@
 import { defineConfig } from 'vitepress'
 
-// 包文档侧边栏：分组与链接前缀参数化（zh: /packages/…、en: /en/packages/…）
-function pkgGroups(prefix) {
+// 包文档侧边栏：分组与链接前缀参数化（zh: /packages/…、en: /en/packages/…）；
+// 分组标签随语言传入（zh 默认值 / en 显式表），避免英文站显示中文分组名。
+const ZH_LABELS = {
+  overview: '总览', kernel: '内核', model: '模型层', exec: '执行', assembly: '装配',
+  tools: '工具与技能', memory: '记忆', obs: '可观测', text: '文本处理', eval: '评测',
+}
+const EN_LABELS = {
+  overview: 'Overview', kernel: 'Kernel', model: 'Model layer', exec: 'Execution', assembly: 'Assembly',
+  tools: 'Tools & skills', memory: 'Memory', obs: 'Observability', text: 'Text', eval: 'Evaluation',
+}
+
+function pkgGroups(prefix, L = ZH_LABELS) {
   const P = (pkg) => `${prefix}packages/${pkg}/`
   const group = (text, pkgs, collapsed = false) => ({
     text,
@@ -9,18 +19,19 @@ function pkgGroups(prefix) {
     items: pkgs.map((p) => ({ text: p, link: P(p) })),
   })
   return [
-    { text: '总览', link: `${prefix}packages/` },
-    group('内核', ['kernel', 'kernel/flow', 'kernel/flow/yaml']),
-    group('模型层', ['llm', 'llm/openai', 'llm/anthropic']),
-    group('执行', ['loop']),
-    group('工具与技能', ['toolset', 'toolset/builtins', 'toolset/mcp', 'toolset/lsp', 'skills']),
-    group('记忆', [
+    { text: L.overview, link: `${prefix}packages/` },
+    group(L.kernel, ['kernel', 'kernel/flow', 'kernel/flow/yaml']),
+    group(L.model, ['llm', 'llm/openai', 'llm/anthropic']),
+    group(L.exec, ['loop']),
+    group(L.assembly, ['host']),
+    group(L.tools, ['toolset', 'toolset/builtins', 'toolset/mcp', 'toolset/lsp', 'skills']),
+    group(L.memory, [
       'memory', 'memory/session', 'memory/compaction', 'memory/store', 'memory/assemble',
       'memory/selfedit', 'memory/index', 'memory/index/openai', 'memory/reflection', 'memory/candidate',
     ], true),
-    group('可观测', ['observability']),
-    group('文本处理', ['textsplit']),
-    group('评测', ['eval', 'eval/war']),
+    group(L.obs, ['observability']),
+    group(L.text, ['textsplit']),
+    group(L.eval, ['eval', 'eval/war']),
   ]
 }
 
@@ -90,7 +101,7 @@ const en = {
           { text: 'Observability', link: '/en/guide/observability' },
         ] },
       ],
-      '/en/packages/': pkgGroups('/en/'),
+      '/en/packages/': pkgGroups('/en/', EN_LABELS),
       '/en/eval': [{ text: 'Benchmarks', items: [{ text: 'Performance', link: '/en/eval' }] }],
     },
     search: { provider: 'local' },

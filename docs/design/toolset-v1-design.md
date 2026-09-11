@@ -41,7 +41,7 @@ P1 措辞已在本 Accepted 文档 PR 同批修订 `plugin-kernel-v2.md`，避�
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ 装配层（demoapp / 未来宿主）                                   │
+│ 装配层（宿主；官方实现 host/）                                   │
 │  Use(toolset.Plugin)                                         │
 │  装本地工具插件 / MCP 来源插件 /（可选）Skills 装载器           │
 │  reqScope: Bridge + HITL On(before_tool_call)                │

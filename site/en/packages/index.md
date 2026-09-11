@@ -1,6 +1,6 @@
 # Package docs
 
-Full bilingual READMEs for all 27 packages are generated from the repository single source by the build script (**same source as the code, refreshed at build time**). The sidebar groups them by domain; this page is the quick index.
+Full bilingual READMEs for all 28 packages are generated from the repository single source by the build script (**same source as the code, refreshed at build time**). The sidebar groups them by domain; this page is the quick index.
 
 | Domain | Packages |
 |---|---|
@@ -9,6 +9,7 @@ Full bilingual READMEs for all 27 packages are generated from the repository sin
 | Execution | [loop](/en/packages/loop/) |
 | Tools & skills | [toolset](/en/packages/toolset/) · [toolset/builtins](/en/packages/toolset/builtins/) · [toolset/mcp](/en/packages/toolset/mcp/) · [toolset/lsp](/en/packages/toolset/lsp/) · [skills](/en/packages/skills/) |
 | Memory | [memory](/en/packages/memory/) · session · compaction · store · assemble · selfedit · index · index/openai · reflection · candidate |
+| Assembly | [host](/en/packages/host/) |
 | Observability | [observability](/en/packages/observability/) |
 | Text | [textsplit](/en/packages/textsplit/) |
 | Evaluation | [eval](/en/packages/eval/) · [eval/war](/en/packages/eval/war/) |

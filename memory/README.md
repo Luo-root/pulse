@@ -6,6 +6,26 @@ The P2 "memory & session" layer (design source of truth: [docs/design/memory-lay
 
 Each sub-package has its own `README_zh.md` / `README.md` pair (interface surface / semantics / error quick reference) and `doc.go` (godoc) — this document is the **global view**: problem inventory, end-to-end data flow, the complete dependency graph, cross-package invariants, and assembly bridge points. Read this first to build the map before diving into any sub-package.
 
+## Root-level assembly facade (two-layer assembly · layer one)
+
+`stack.go` provides in-package base assembly, with the **most general construction = full injection** (any SessionStore / MemoryStore implementation — host-custom persistence implements the interface and injects directly, zero facade changes) and **convenience wrappers = recommended defaults on top**. The memory layer is usable on its own (cross-package wiring belongs to the host assembly layer; this facade never imports loop/toolset):
+
+```go
+// Session stack: inject any SessionStore; conveniences give memory / JSONL defaults.
+ss := memory.NewSessionStack(myCustomStore)          // most general
+ss = memory.NewMemorySessionStack()                  // convenience: in-memory
+ss, err := memory.NewJSONLSessionStack("data/sessions") // convenience: JSONL on disk
+sess, err := ss.Create(ctx, session.SessionHeader{}) // / ss.Open(ctx, id)
+_ = ss.Store()                                       // full surface (export/import/list/recovery policy)
+
+// Item stack: inject store + meter + budget.
+stk := memory.NewItemStack(myStore, myMeter, assemble.Budget{...})
+stk = memory.NewMemoryItemStack(assemble.Budget{...}) // convenience: in-memory
+ac, err := stk.Assemble(ctx, assemble.AssembleInput{...})
+```
+
+Compaction is functional orchestration (`compaction.Compact`); when to trigger it is the host's call — every component defaults to off and is wired on demand. index/candidate are opt-ins (their seams have no default implementation; the host brings its own).
+
 ## What problem does this layer solve
 
 Agent memory is not a "vector database + conversation history" component; it is five kinds of data that are independent of each other and cooperate through a unified projection (design doc §0):

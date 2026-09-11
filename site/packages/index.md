@@ -1,6 +1,6 @@
 # 包文档
 
-全仓 27 个包的双语完整 README 由构建脚本从仓库单源同步生成（**与代码同源，构建时刷新**）。左侧侧边栏按域分组；本页是快速索引。
+全仓 28 个包的双语完整 README 由构建脚本从仓库单源同步生成（**与代码同源，构建时刷新**）。左侧侧边栏按域分组；本页是快速索引。
 
 | 域 | 包 |
 |---|---|
@@ -9,6 +9,7 @@
 | 执行 | [loop](/packages/loop/) |
 | 工具与技能 | [toolset](/packages/toolset/) · [toolset/builtins](/packages/toolset/builtins/) · [toolset/mcp](/packages/toolset/mcp/) · [toolset/lsp](/packages/toolset/lsp/) · [skills](/packages/skills/) |
 | 记忆 | [memory](/packages/memory/) · session · compaction · store · assemble · selfedit · index · index/openai · reflection · candidate |
+| 装配 | [host](/packages/host/) |
 | 可观测 | [observability](/packages/observability/) |
 | 文本处理 | [textsplit](/packages/textsplit/) |
 | 评测 | [eval](/packages/eval/) · [eval/war](/packages/eval/war/) |

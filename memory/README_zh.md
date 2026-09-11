@@ -4,6 +4,26 @@ P2「记忆与会话」层（设计事实源：[docs/design/memory-layer-researc
 
 每个子包有独立的 `README_zh.md`（接口面/语义/错误速查）与 `doc.go`（godoc）——本文档是**全局视角**：问题梳理、全链路数据流、完整依赖关系、跨包不变式、装配桥接点。读某个子包前先看这里建立地图。
 
+## 根级装配门面（两层装配·第一层）
+
+`stack.go` 提供包内基础装配，**最泛化构造 = 全参数注入**（任意 SessionStore / MemoryStore 实现——宿主自定义持久化直接实现接口后注入，门面零改动），**便捷封装 = 基于最泛化的推荐默认**。单用记忆层即可开箱（跨包接线归 host 装配层，本门面不碰 loop/toolset）：
+
+```go
+// 会话栈：注入任意 SessionStore；便捷封装给内存 / JSONL 两套默认。
+ss := memory.NewSessionStack(myCustomStore)          // 最泛化
+ss = memory.NewMemorySessionStack()                  // 便捷：内存
+ss, err := memory.NewJSONLSessionStack("data/sessions") // 便捷：JSONL 落盘
+sess, err := ss.Create(ctx, session.SessionHeader{}) // / ss.Open(ctx, id)
+_ = ss.Store()                                       // 完整接口面（导出/导入/列表/恢复策略）
+
+// 条目栈：注入 store + meter + budget。
+stk := memory.NewItemStack(myStore, myMeter, assemble.Budget{...})
+stk = memory.NewMemoryItemStack(assemble.Budget{...}) // 便捷：内存
+ac, err := stk.Assemble(ctx, assemble.AssembleInput{...})
+```
+
+compaction 是函数式编排（`compaction.Compact`），触发时机归宿主——各组件默认关、按需装配。index/candidate 是可选件（seam 无默认实现，宿主自带）。
+
 ## 这一层解决什么问题
 
 Agent 记忆不是一个「向量数据库 + 对话历史」组件，而是五类彼此独立、通过统一投影协作的数据（设计文 §0）：
