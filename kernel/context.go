@@ -28,8 +28,12 @@ type binding struct {
 // subscriber 包装服务变更订阅，提供稳定的指针身份——闭包不能用
 // 代码指针判等（同一函数字面量的不同闭包指针相同），否则一个
 // 订阅者的撤销会误删他人的订阅。
+//
+// deps 是本订阅者声明的依赖名：变更投递按名索引，只通知「变更名 ∈
+// deps」的订阅者；与其所在作用域层级无关（服务仓库全局唯一）。
 type subscriber struct {
-	fn func(changed []string)
+	fn   func(changed []string)
+	deps []string
 }
 
 // Context 是内核的核心抽象：一个服务仓库，同时也是一个效应
@@ -57,7 +61,8 @@ type Context struct {
 	children []*Context          // 派生出的子作用域（Dispose 时逆序级联回收）
 	events   *eventBus           // 本层事件总线
 
-	onServiceChange []*subscriber // 服务变更订阅（内部使用）
+	onServiceChange []*subscriber            // 本层登记的服务变更订阅（内部使用）
+	svcIndex        map[string][]*subscriber // 仅根作用域：依赖名 → 订阅者索引
 }
 
 // New 创建根作用域。
@@ -198,8 +203,17 @@ func (c *Context) dispose() {
 	if c.bindings != nil {
 		c.bindings = make(map[string]*binding) // 根仓库释放引用
 	}
+	subs := c.onServiceChange
 	c.onServiceChange = nil
 	c.mu.Unlock()
+
+	// 订阅者随作用域销毁从根索引摘除（幂等：Fiber 卸载通常已先摘过一次）。
+	if len(subs) > 0 {
+		root := c.root()
+		for _, sub := range subs {
+			root.removeSubscriber(sub)
+		}
+	}
 
 	// 先级联卸载插件实例，再失效事件总线。
 	// 注意：forceUnload 是静默的——树销毁不发逐 Fiber fiber_state（T7 裁决）；
@@ -247,16 +261,32 @@ func (c *Context) root() *Context {
 	return r
 }
 
-// onChange 订阅本层的服务变更，返回摘除函数（幂等）。
+// onChange 订阅服务变更，返回摘除函数（幂等）。
+//
+// deps 是本订阅者声明的依赖名：变更只投递给「变更名 ∈ deps」的
+// 订阅者（根索引按名登记，与作用域树规模解耦；无人声明的服务名
+// 投递成本近零）。撤销与作用域销毁都会摘除索引条目。
 // 内部 API：供插件生命周期使用。
-func (c *Context) onChange(fn func(changed []string)) (unsub func()) {
+func (c *Context) onChange(fn func(changed []string), deps []string) (unsub func()) {
+	sub := &subscriber{fn: fn, deps: deps}
+	root := c.root()
+	root.mu.Lock()
+	if root.svcIndex == nil {
+		root.svcIndex = make(map[string][]*subscriber)
+	}
+	for _, d := range deps {
+		root.svcIndex[d] = append(root.svcIndex[d], sub)
+	}
+	root.mu.Unlock()
+
 	c.mu.Lock()
-	sub := &subscriber{fn: fn}
 	c.onServiceChange = append(c.onServiceChange, sub)
 	c.mu.Unlock()
+
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			root.removeSubscriber(sub)
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			for i, cur := range c.onServiceChange {
@@ -269,26 +299,57 @@ func (c *Context) onChange(fn func(changed []string)) (unsub func()) {
 	}
 }
 
-// notifyServiceChange 将服务变更广播到整棵作用域树的所有订阅者。
+// removeSubscriber 从根索引摘除一个订阅者（幂等）。
+func (r *Context) removeSubscriber(sub *subscriber) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, name := range sub.deps {
+		list := r.svcIndex[name]
+		for i, cur := range list {
+			if cur == sub {
+				list = append(list[:i], list[i+1:]...)
+				break
+			}
+		}
+		if len(list) == 0 {
+			delete(r.svcIndex, name)
+			continue
+		}
+		r.svcIndex[name] = list
+	}
+}
+
+// notifyServiceChange 按依赖名索引投递服务变更：只通知声明了变更名的
+// 订阅者。
 //
-// 不做方向性裁剪（只向下/只向上）：依赖解析沿全局仓库进行，
-// 提供方可能晚于消费方出现在任意层；服务变更是低频事件，全树广播
-// 换取语义上的完备与实现的简单。每个订阅者自行过滤是否受影响。
-// 调用方不得持有任何层的锁。
+// 完备性不变：订阅者按声明的依赖名登记在根索引，与其所在作用域层级
+// 无关——提供方晚于消费方出现在任意层都能命中；此前「全树广播 +
+// 订阅者自行过滤」的投递面与它完全一致，只是把请求级 Provide 从
+// O(作用域树 + 插件数) 拉回 O(命中订阅者)。调用方不得持有任何层的锁。
 func (c *Context) notifyServiceChange(changed []string) {
 	root := c.root()
-	var walk func(*Context)
-	walk = func(n *Context) {
-		n.mu.Lock()
-		subs := append([]*subscriber{}, n.onServiceChange...)
-		kids := append([]*Context{}, n.children...)
-		n.mu.Unlock()
-		for _, sub := range subs {
-			sub.fn(changed)
-		}
-		for _, k := range kids {
-			walk(k)
+	for _, sub := range root.matchSubscribers(changed) {
+		sub.fn(changed)
+	}
+}
+
+// matchSubscribers 收集声明了任一变更名的订阅者（去重；单名快路径）。
+func (r *Context) matchSubscribers(changed []string) []*subscriber {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(changed) == 1 {
+		return append([]*subscriber(nil), r.svcIndex[changed[0]]...)
+	}
+	var subs []*subscriber
+	seen := make(map[*subscriber]struct{}, 4)
+	for _, name := range changed {
+		for _, sub := range r.svcIndex[name] {
+			if _, ok := seen[sub]; ok {
+				continue
+			}
+			seen[sub] = struct{}{}
+			subs = append(subs, sub)
 		}
 	}
-	walk(root)
+	return subs
 }

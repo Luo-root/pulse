@@ -51,7 +51,7 @@ flowchart TB
 三条主链贯穿全部交互：
 
 1. **装配链**：`Reconcile` 三阶段（锁内 diff → 解锁执行 mount/Close → 持锁提交）→ `mount` = factory → `Configure` → `Use`（loader.go:217）→ `settleSync` 同步首装 → `doLoad` = `host.Derive()` 建私有作用域 + `plugin.Apply(ctx)`（plugin.go:257）。Apply 内注册的一切（服务、监听、效应）都归到私有作用域——卸载即 Dispose 它。
-2. **响应式链**：任何 `Provide` 或绑定撤除 → `notifyServiceChange` 全树广播（context.go:278）→ Fiber 在 Use 时注册的变更订阅过滤自己声明的依赖名（plugin.go:132）→ 命中则 `markDirty` → 单飞 `settleLoop` 重评估（plugin.go:226）：依赖齐 → `doLoad`，缺 → `doUnload`。卸载 Dispose 私有作用域时绑定撤除**再次广播**——卸载天然向下游级联。
+2. **响应式链**：任何 `Provide` 或绑定撤除 → `notifyServiceChange` **按依赖名索引投递**（context.go:286，只通知声明了变更名的订阅者；无人声明的服务名投递成本近零——请求级 Provide 与插件树规模解耦，#168）→ 命中的 Fiber `markDirty` → 单飞 `settleLoop` 重评估（plugin.go:230）：依赖齐 → `doLoad`，缺 → `doUnload`。卸载 Dispose 私有作用域时绑定撤除**再次通知**——卸载天然向下游级联。
 3. **销毁链**：`Dispose` 固定顺序（context.go:180）：锁内快照并标记 → `forceUnload` 本层 Fiber（**静默，不发 fiber_state**）→ 逆序级联子作用域 → 清空事件总线 → 从父层摘除自己 → LIFO 执行效应栈。
 
 Fiber 五态与触发源（`from == to` 不发事件；树销毁整条链静默）：

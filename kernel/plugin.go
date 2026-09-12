@@ -127,20 +127,24 @@ func Use(host *Context, p Plugin) (*Fiber, error) {
 	}
 	f.setName(diagnosticName(p, fiberSeq.Add(1)))
 
-	// 订阅挂载层的服务变更（变更通知会从变更层广播到全树），
-	// 仅当变更触及自己声明的依赖名时才标记脏。
+	// 依赖名集合在 Use 时预建（Inject 一次性求值后不变），供变更投递
+	// 索引登记使用——不再每次回调重建。
+	depNames := make([]string, 0, len(f.inject))
+	seen := make(map[string]struct{}, len(f.inject))
+	for _, d := range f.inject {
+		n := d.depName()
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		depNames = append(depNames, n)
+	}
+
+	// 订阅服务变更：按依赖名索引投递，只会通知声明了变更名的订阅者，
+	// 收到即触及自己的依赖，直接标脏。
 	f.unsub = host.onChange(func(changed []string) {
-		names := make(map[string]struct{}, len(f.inject))
-		for _, d := range f.inject {
-			names[d.depName()] = struct{}{}
-		}
-		for _, k := range changed {
-			if _, hit := names[k]; hit {
-				f.markDirty()
-				return
-			}
-		}
-	})
+		f.markDirty()
+	}, depNames)
 
 	host.mu.Lock()
 	if host.disposed {
