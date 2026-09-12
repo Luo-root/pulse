@@ -80,3 +80,33 @@ See [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md
 - This package never imports / subscribes to llm, loop, or flow business events (each package adapts itself; arrows point to the foundations)
 - No second string-event bus (no `Collector.Emit(string, map)`; business direct writes go through the typed `CollectorKey`)
 - No stuffing token counts into official Record named fields (they go into Attrs, with keys owned by the fact's package)
+
+## Choosing an egress (SlogSink / LineSink / MemorySink)
+
+| Egress | Form | Use when |
+|---|---|---|
+| `SlogSink` | `log/slog` with a Text / JSON handler | You must plug into an existing logger or need JSON |
+| `LineSink` | Self-buffered line-oriented text (logfmt-style), **no slog** | High-rate single-host / file logging (recommended here) |
+| `MemorySink` | In-memory collection | Test assertions and demos |
+
+`LineSink` is **semantically aligned** with `SlogSink` (same field order, Attrs sorted by key, wall-clock stamping, duration in ms, error text, quoting when needed) and is a drop-in replacement; it skips slog's per-field `[]any` boxing and per-record key sorting:
+
+```go
+sink := observability.NewLineSink(file)   // 32 KiB line buffer by default
+defer sink.Flush()                        // mandatory before shutdown (last batch is buffered)
+_ = sink.Err()                            // first write error is recorded, never panics
+```
+
+Measured (i9-14900HX / Windows; envelope + 3 Attrs; output discarded, no disk):
+
+| Case | `SlogSink` | `LineSink` |
+|---|---|---|
+| Formatting (ns/op) | 5016–5355 | **726–786** |
+| Allocations (allocs/op) | 16 | **1** |
+| Including disk (slog+bufio ↔ LineSink's own buffer) | 5795–6028 | **1169–1180** |
+| Unbuffered disk (control) | 45012–51858 | — |
+
+Field-count sensitivity (discarded output): slog ≈ 3.5 / 5.3 / 7.9 µs at 0 / 3 / 10 attrs (8–30 allocs); `LineSink` ≈ 0.40 / 0.77 / 1.8 µs (1–2 allocs) — per-field cost drops from ~0.45 µs to ~0.12 µs.
+
+Standing benchmarks: `go test -bench . ./observability/` (`sink_bench_test.go` splits construction → formatting → disk so any egress change can be compared layer by layer). Conclusion: **bottleneck order = unbuffered write syscall ≫ slog formatting > fold/construction > kernel dispatch**.
+
