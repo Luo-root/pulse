@@ -166,23 +166,11 @@ func typeConflict(name string, existing *binding, typ any) error {
 	return nil
 }
 
-// Get 读取服务：先沿作用域链向上找**局部绑定**（近因优先，本 scope →
-// 祖先 → 根），未命中回全局服务仓库；命中后按类型断言返回。
-//
-// 第二个返回值为 false 表示依赖不存在——这正是插件 Inject
-// 未满足时挂起等待的判定依据。局部绑定存在时遮蔽全局：子树内读到
-// 局部值，子树外照读全局值（同名同型由 Provide 的类型闸保证）。
-func Get[T any](c *Context, k ServiceKey[T]) (T, bool) {
+// getGlobal 只读全局服务仓库（不经局部链）。**依赖解析（Require）用它**：
+// 局部绑定是请求级数据，不满足 fiber 依赖、也不触发重评估——「局部绑定
+// 不参与 fiber 依赖解析」是文档合同，靠这个读取路径保证。
+func getGlobal[T any](c *Context, k ServiceKey[T]) (T, bool) {
 	var zero T
-	for s := c; s != nil; s = s.parent {
-		if b, ok := s.localGet(k.name); ok {
-			v, ok := b.value.(T)
-			if !ok {
-				return zero, false
-			}
-			return v, true
-		}
-	}
 	root := c.root()
 	root.mu.Lock()
 	b, ok := root.bindings[k.name]
@@ -195,4 +183,27 @@ func Get[T any](c *Context, k ServiceKey[T]) (T, bool) {
 		return zero, false
 	}
 	return v, true
+}
+
+// Get 读取服务：先沿作用域链向上找**局部绑定**（近因优先，本 scope →
+// 祖先 → 根），未命中回全局服务仓库；命中后按类型断言返回。
+//
+// 第二个返回值为 false 表示依赖不存在——这正是插件 Inject
+// 未满足时挂起等待的判定依据。局部绑定存在时遮蔽全局：子树内读到
+// 局部值，子树外照读全局值（同名同型由 Provide 的类型闸保证）。
+//
+// 注意：依赖声明（Require）**不走本函数**，它只看全局仓库（getGlobal）——
+// 局部绑定不参与 fiber 生命周期。
+func Get[T any](c *Context, k ServiceKey[T]) (T, bool) {
+	for s := c; s != nil; s = s.parent {
+		if b, ok := s.localGet(k.name); ok {
+			v, ok := b.value.(T)
+			if !ok {
+				var zero T
+				return zero, false
+			}
+			return v, true
+		}
+	}
+	return getGlobal(c, k)
 }

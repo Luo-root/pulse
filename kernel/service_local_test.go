@@ -2,7 +2,9 @@ package kernel
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // 本文件是 #170 的验收面：作用域局部绑定 Provide(..., Local())——
@@ -188,6 +190,77 @@ func TestProvideLocalIsolationConcurrent(t *testing.T) {
 		}(w.scope, w.value)
 	}
 	wg.Wait()
+}
+
+// TestProvideLocalDoesNotSatisfyFiberDependency 守卫：局部绑定**不满足**
+// fiber 依赖（依赖解析只看全局仓库）——仅局部时保持 Inactive；补全局
+// 装载；撤全局卸载（局部仍在也不顶用）。「Active ⇒ 依赖满足」的不变式
+// 因此不会被局部绑定的撤除打破。
+func TestProvideLocalDoesNotSatisfyFiberDependency(t *testing.T) {
+	root := New()
+	defer root.Dispose()
+	host, err := root.Derive()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key := NewServiceKey[string]("test.local.dep")
+	mustProvideLocal(t, host, key, "local-only") // 仅局部
+
+	p := &countingPlugin{deps: []Dependency{Require(key)}}
+	f, err := Use(host, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.State(); got != StateInactive {
+		t.Fatalf("state = %s, want Inactive（局部绑定不得满足依赖）", got)
+	}
+	if n := atomic.LoadInt32(&p.applies); n != 0 {
+		t.Fatalf("applies = %d, want 0", n)
+	}
+
+	undoGlobal := mustProvide(t, root, key, "global")
+	waitForState(t, f, 2*time.Second, StateActive)
+	if n := atomic.LoadInt32(&p.applies); n != 1 {
+		t.Fatalf("applies = %d, want 1", n)
+	}
+
+	undoGlobal()
+	waitForState(t, f, 2*time.Second, StateInactive) // 局部还在，但依赖只看全局
+}
+
+// TestProvideLocalDoesNotNotify 「不投递」契约：局部绑定的安装与撤除
+// 都不产生变更投递；同层全局绑定照常投递（对照组）。
+func TestProvideLocalDoesNotNotify(t *testing.T) {
+	root := New()
+	defer root.Dispose()
+	child, err := root.Derive()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key := NewServiceKey[string]("test.local.notify")
+	var hits int32
+	unsub := child.onChange(func() { atomic.AddInt32(&hits, 1) }, []string{key.Name()})
+	defer unsub()
+
+	undoLocal := mustProvideLocal(t, child, key, "v")
+	if got := atomic.LoadInt32(&hits); got != 0 {
+		t.Fatalf("local provide delivered %d notifications, want 0", got)
+	}
+	undoLocal()
+	if got := atomic.LoadInt32(&hits); got != 0 {
+		t.Fatalf("local undo delivered %d notifications, want 0", got)
+	}
+
+	undoGlobal := mustProvide(t, root, key, "g") // 全局：照常投递
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Fatalf("global provide delivered %d notifications, want 1", got)
+	}
+	undoGlobal()
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Fatalf("global undo delivered %d notifications, want 2", got)
+	}
 }
 
 // BenchmarkGetGlobalOnly 请求 scope 读全局绑定（链上两层无局部：nil 检查 + 根锁）。
