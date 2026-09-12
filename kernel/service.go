@@ -51,6 +51,12 @@ type provideOpts struct {
 // 它是请求级数据而不是装配面（Fiber 的 Inject 只看全局命名空间）；
 // 本 scope 与其全部后代可读（Get 沿父链近因优先），父 / 兄弟不可见；
 // 同名时遮蔽全局；随作用域销毁撤除；同层重复登记 = 覆盖（后者胜）。
+//
+// 类型闸的覆盖次序（边界，有意）：只在**局部登记时**对照全局同名绑定
+// 校验类型（反向——先局部、后全局——不做校验，全树枚举会给请求路径
+// 引入新记账，与局部绑定的低开销目标相抵）。反向次序不一致时按
+// 「同名同义」约定兜底：子树内读局部（类型不符返回未命中、不回退），
+// 子树外读全局。
 func Local() ProvideOption {
 	return func(o *provideOpts) { o.local = true }
 }
@@ -125,6 +131,9 @@ func provide(c *Context, name string, v any, typ any) (func(), error) {
 // provideLocal 是 Provide(..., Local()) 的内部实现：绑定存本层快照，
 // 不写全局仓库、不投递变更。类型闸对同层已有绑定与全局同名绑定各查
 // 一次（防同名异义：局部类型与全局类型同名不同型会让读方随位置而变）。
+//
+// 闸的朝向只有「局部登记时对照全局」这一向：反向（先局部、后全局）
+// 不校验——见 Local godoc 的边界说明（同名同义约定兜底）。
 func provideLocal(c *Context, name string, v any, typ any) (func(), error) {
 	var b *binding
 	dispose, err := c.Effect(func() (func(), error) {
@@ -190,7 +199,8 @@ func getGlobal[T any](c *Context, k ServiceKey[T]) (T, bool) {
 //
 // 第二个返回值为 false 表示依赖不存在——这正是插件 Inject
 // 未满足时挂起等待的判定依据。局部绑定存在时遮蔽全局：子树内读到
-// 局部值，子树外照读全局值（同名同型由 Provide 的类型闸保证）。
+// 局部值，子树外照读全局值（同名同型由 Provide 的类型闸在「局部先于
+// 全局」的次序上保证；反向次序按同名同义约定，见 Local godoc）。
 //
 // 注意：依赖声明（Require）**不走本函数**，它只看全局仓库（getGlobal）——
 // 局部绑定不参与 fiber 生命周期。
