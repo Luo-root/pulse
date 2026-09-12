@@ -31,7 +31,7 @@ v2 的目标：把 Cordis 的思想以 Go 的方式重新实现为 pulse 的内�
 | 论文概念 | 含义 | kernel 对应 |
 |---|---|---|
 | revertible effect | 每个上下文变换携带显式逆元，运行时跟踪 | `Context.Effect(apply)` 返回 dispose，作用域销毁 LIFO unwind；apply 可返回 nil undo（逆元为恒等，no-op 兜底）= 声明该效应无需还原 |
-| reactive coeffect | 依赖声明规范，环境变化时响应式通知 | `Plugin.Inject() []Dependency` + 服务变更广播 + fiber 收敛 |
+| reactive coeffect | 依赖声明规范，环境变化时响应式通知 | `Plugin.Inject() []Dependency` + 服务变更按依赖名投递（#168 修订）+ fiber 收敛 |
 | context type Γ | 效应上下文与余效应上下文统一 | `Context`：服务仓库 + 效应栈 + 作用域树节点 |
 | component {inject, apply} | 组件声明 | `Plugin` 接口 |
 | fiber（惯性状态机） | 组件实例化与转换 | `Fiber`（Inactive/Loading/Active/Unloading/Failed） |
@@ -55,9 +55,13 @@ v2 的目标：把 Cordis 的思想以 Go 的方式重新实现为 pulse 的内�
 
 ### 有意钉死的语义（有测试背书，不是漏测）
 
-- **同名覆盖即撤旧，不还原前值**：后到的 `Provide` 覆盖旧绑定并广播变更；
+- **同名覆盖即撤旧，不还原前值**：后到的 `Provide` 覆盖旧绑定并通知变更；
   覆盖者卸载后服务消失、依赖方自动卸载——被覆盖方的旧 dispose 是空操作，
   不复活前值。两个插件抢同一服务名视为装配错误，行为可预期且可观测。
+  **修订（#168，2026-09）**：变更通知由「全树广播 + 订阅者自行过滤」改为
+  「按依赖名索引投递」——只通知声明了变更名的订阅者，请求级 `Provide`
+  的成本与插件树规模解耦（实测 100 插件树 5.3µs → 365ns，斜率
+  49ns → 0.3ns/插件）；覆盖语义与依赖方重评估行为不变。
 - **事件派发默认全树广播**：`Emit` / `Waterfall` / `Parallel` 从 root 遍历整棵树
   （根到叶、层内注册顺序）——兄弟作用域的策略插件因此能拦截彼此；
   监听本身是 Effect，随注册方作用域销毁自动摘除。这是宿主级观察的契约。

@@ -52,9 +52,9 @@ flowchart TB
 
 Three chains cover all interactions:
 
-1. **Assembly chain**: `Reconcile` runs in three phases (locked diff → unlocked mount/Close → locked commit) → `mount` = factory → `Configure` → `Use` (loader.go:217) → `settleSync` synchronous first load → `doLoad` = `host.Derive()` builds a private scope + `plugin.Apply(ctx)` (plugin.go:257). Everything registered inside Apply (services, listeners, effects) lands in that private scope — unloading means disposing it.
-2. **Reactive chain**: any `Provide` or binding removal → `notifyServiceChange` broadcasts tree-wide (context.go:278) → the change subscription registered by `Use` filters against the fiber's declared dependency names (plugin.go:132) → on a hit, `markDirty` → the single-flight `settleLoop` re-evaluates (plugin.go:226): dependencies satisfied → `doLoad`, missing → `doUnload`. Disposing the private scope removes bindings, which **broadcasts again** — unloading cascades downstream naturally.
-3. **Destruction chain**: `Dispose` in a fixed order (context.go:180): snapshot and mark under lock → `forceUnload` local fibers (**silent, no fiber_state**) → cascade child scopes in reverse → clear the event bus → remove itself from the parent → unwind effects LIFO.
+1. **Assembly chain**: `Reconcile` runs in three phases (locked diff → unlocked mount/Close → locked commit) → `mount` = factory → `Configure` → `Use` (loader.go:254) → `settleSync` synchronous first load → `doLoad` = `host.Derive()` builds a private scope + `plugin.Apply(ctx)` (plugin.go:253). Everything registered inside Apply (services, listeners, effects) lands in that private scope — unloading means disposing it.
+2. **Reactive chain**: any `Provide` or binding removal → `notifyServiceChange` **delivers by dependency-name index** (context.go:342 — only subscribers that declared the changed name are notified; a service nobody declares costs near zero per change, so request-level `Provide` is decoupled from the plugin-tree size, #168) → a hit marks the fiber dirty → the single-flight `settleLoop` re-evaluates (plugin.go:222): dependencies satisfied → `doLoad`, missing → `doUnload`. Disposing the private scope removes bindings, which **notifies again** — unloading cascades downstream naturally.
+3. **Destruction chain**: `Dispose` in a fixed order (context.go:185): snapshot and mark under lock → `forceUnload` local fibers (**silent, no fiber_state**) → cascade child scopes in reverse → clear the event bus → remove itself from the parent → unwind effects LIFO.
 
 Fiber states and their triggers (`from == to` emits nothing; tree destruction is silent throughout):
 
@@ -192,7 +192,7 @@ Reconciliation rules:
 
 ### Choosing an Assembly Style
 
-`Use` is the only loading primitive — the last step of `Loader.mount` is `Use` (loader.go:224). The Loader is an optional declarative layer on top of it that manages **entries**, not plugins: reactive loading/unloading, state-machine convergence, event dispatch, and effect reclamation all live in the Use/Fiber layer; bypassing the Loader breaks no invariant. The two assembly paths coexist by design — pick by assembly shape:
+`Use` is the only loading primitive — the last step of `Loader.mount` is `Use` (loader.go:254). The Loader is an optional declarative layer on top of it that manages **entries**, not plugins: reactive loading/unloading, state-machine convergence, event dispatch, and effect reclamation all live in the Use/Fiber layer; bypassing the Loader breaks no invariant. The two assembly paths coexist by design — pick by assembly shape:
 
 | Scenario | Expected usage |
 |---|---|

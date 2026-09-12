@@ -41,7 +41,7 @@ func keyType[T any]() any {
 // 语义：
 //   - 同名旧绑定的撤除与新绑定的安装合为一次原子变更（覆盖即撤旧，
 //     被覆盖方的旧 dispose 不复活前值——有意语义，有测试背书）；
-//   - 变更完成后向整棵作用域树广播通知，声明了该依赖的插件实例
+//   - 变更完成后按依赖名投递给声明了该服务的订阅者，声明该依赖的插件实例
 //     会据此重新评估自己的装载状态（激活 / 卸载 / 无感）；
 //   - 返回的 dispose 只撤销本次安装（幂等），不影响其他历史。
 func Provide[T any](c *Context, k ServiceKey[T], v T) (func(), error) {
@@ -81,7 +81,7 @@ func provide(c *Context, name string, v any, typ any) (func(), error) {
 			if cur, ok := store.bindings[name]; ok && cur == b {
 				delete(store.bindings, name)
 				store.mu.Unlock()
-				store.notifyServiceChange([]string{name})
+				store.notifyServiceChange(name)
 				return
 			}
 			store.mu.Unlock()
@@ -91,9 +91,9 @@ func provide(c *Context, name string, v any, typ any) (func(), error) {
 		return nil, err
 	}
 
-	// 广播安装（覆盖语义对外表现为"这个服务变了"）。
-	// 此时 Effect 已返回（锁外），广播安全。
-	store.notifyServiceChange([]string{name})
+	// 通知安装（覆盖语义对外表现为"这个服务变了"）。
+	// 此时 Effect 已返回（锁外），投递安全。
+	store.notifyServiceChange(name)
 	return dispose, nil
 }
 

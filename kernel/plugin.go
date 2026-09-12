@@ -127,20 +127,16 @@ func Use(host *Context, p Plugin) (*Fiber, error) {
 	}
 	f.setName(diagnosticName(p, fiberSeq.Add(1)))
 
-	// 订阅挂载层的服务变更（变更通知会从变更层广播到全树），
-	// 仅当变更触及自己声明的依赖名时才标记脏。
-	f.unsub = host.onChange(func(changed []string) {
-		names := make(map[string]struct{}, len(f.inject))
-		for _, d := range f.inject {
-			names[d.depName()] = struct{}{}
-		}
-		for _, k := range changed {
-			if _, hit := names[k]; hit {
-				f.markDirty()
-				return
-			}
-		}
-	})
+	// 依赖名集合在 Use 时预建（Inject 一次性求值后不变），供变更投递
+	// 索引登记使用——不再每次回调重建。
+	depNames := make([]string, 0, len(f.inject))
+	for _, d := range f.inject {
+		depNames = append(depNames, d.depName())
+	}
+
+	// 订阅服务变更：按依赖名索引投递，只会通知声明了该名字的订阅者，
+	// 收到即触及自己的依赖，直接标脏（回调无参——命中即相关）。
+	f.unsub = host.onChange(f.markDirty, depNames)
 
 	host.mu.Lock()
 	if host.disposed {
@@ -300,7 +296,7 @@ func (f *Fiber) doLoad() {
 }
 
 // doUnload 执行卸载：丢弃私有作用域（其中一切注册按 LIFO 回收，
-// 绑定撤除自动广播通知，从而驱动下游插件卸载）。
+// 绑定撤除自动触发变更投递，从而驱动下游插件卸载）。
 func (f *Fiber) doUnload() {
 	ch1, ok1 := f.transition(StateUnloading, nil) // T6a: active→unloading（自带锁）
 	f.emitTransition(ch1, ok1)
@@ -318,8 +314,8 @@ func (f *Fiber) doUnload() {
 	f.emitTransition(ch2, ok2)
 }
 
-// forceUnload 由宿主作用域销毁时调用：整棵树都在拆除，不再广播
-// 通知，仅同步状态并释放引用。（私有作用域由宿主对 children 的
+// forceUnload 由宿主作用域销毁时调用：整棵树都在拆除，不再发事件、
+// 也不再投递变更通知，仅同步状态并释放引用。（私有作用域由宿主对 children 的
 // 级联销毁回收。）
 func (f *Fiber) forceUnload() {
 	f.mu.Lock()
