@@ -22,7 +22,7 @@
 | D7 | Record 加 `Attrs` 开放段：标量 kv，值域经泛型 `Set/Get` 锁死（~string/~int64/~float64/~bool） | ① 继续加运行期具名字段；② `map[string]any` 逃生舱 | ① 具名字段让信封随包增长，每加一类观测就改信封；② map 逃生舱静默吞未知键、与词汇表侧立场同构。Attrs 把「开放」与「任意对象」切开：Message 切片/附件/思维链在类型上进不来（隐私边界的类型部分），key 自述意图 + Sink 侧 redact 兜住蓄意标量注入 |
 | D8 | 观测 key 契约由**事实归属包**定义（`llm.AttrModel`、`loop.AttrTool`、`flow.AttrNode`），桥执行折叠 | observability 聚合适配各包维度 | 字段语义的知识留在归属包——observability 只做信封与出口，不成为所有包观测字段的汇聚点；key 约定 `<组件>.<字段>` 点分，各包独立 key 空间 |
 | D9 | 桥正式化为伴生包 `observability/bridge`（允许 import llm/loop/flow） | 留在 demoapp 手写（60 行 + 三个 hack） | 装配层桥是所有宿主的公共需求，不是示例私有物；demoapp 改为官方包消费者。分层边界不变：本体不 import 业务组件，「认识业务组件」的桥单独成包 |
-| D10 | Collector 服务化：`bridge.CollectorKey` 进请求 scope，业务插件 `kernel.Get` 直写 | 业务观测走 kernel 事件总线 | 直写不带总线开销与类型面膨胀；HostID/TraceID 自动携带（#125 Web 地基入口形态：kernel+observability 以 Web 框架地基为方向） |
+| D10 | Collector 服务化：`bridge.CollectorKey` 进请求 scope，业务插件 `kernel.Get` 直写 | 业务观测走 kernel 事件总线 | 直写不带总线开销与类型面膨胀；HostID/TraceID 自动携带（#125 Web 地基入口形态：kernel+observability 以 Web 框架地基为方向）。**修订（#170，2026-09）**：绑定改为**作用域局部**（`kernel.Provide(..., kernel.Local())`）——修复并发请求互相覆盖导致 TraceID 串台的缺陷（全局仓库写入是原实现）；读方须持请求 scope 或其子孙，父 / 兄弟 / 其他请求读不到；不投递变更、请求级开销与插件树规模解耦 |
 | D11 | 实例身份随事实发出：llm 事件载荷带 `Instance`（Declare 的 id）、loop 载荷带 `Agent`（NewAgent 的 name）、flow Observer 回调带 `graphID`（New 的 graphID）；三家 id 构造期必填，折叠进 Attrs `llm.instance` / `loop.agent` / `flow.graph`；唯一性差异：llm id 是 Registry 唯一键（重复 Declare 替换并关旧实例），loop/flow 的 name/graphID 是纯标签无唯一性，同名并存归因同键、可分性由宿主命名保证 | ① 宿主运行期靠 Fiber 名/包装层约定区分实例；② 观测侧在构造时刻登记 id→身份映射表 | TraceID 只分「哪一次」不分「哪个实例/哪张图」，多实例共享 scope 是常态（多 Agent 协作、A/B 模型、多图编排复用同名节点）；身份随事实发出与 D8 key 归属同构——两处写同名必然漂移；yaml 装图走 `LoadOptions.GraphID` |
 
 ## 2. 分层与归属

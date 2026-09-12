@@ -33,7 +33,7 @@ Where the core concepts live in the source:
 
 ## Structure Overview and Call Chains
 
-The skeleton is a Context tree: every scope has an event bus, an effect stack, and a fiber table, but the **service repository lives only in the root** — `Provide` / `Get` locate the root repository via `root()`; the scope tree owns lifecycle and event propagation, not service visibility.
+The skeleton is a Context tree: every scope has an event bus, an effect stack, and a fiber table, and the **global service repository lives only in the root** — by default `Provide` / `Get` locate the root repository via `root()`; the scope tree owns lifecycle and event propagation, not global service visibility. **Scope-local bindings are the exception** (`Provide(ctx, Key, v, kernel.Local())`): they live on that scope, are visible only to it and its descendants, and `Get` walks the parent chain nearest-first — the path for request-scoped data (next section).
 
 ```mermaid
 flowchart TB
@@ -117,6 +117,8 @@ v, ok := kernel.Get(ctx, Key) // ok==false 表示未提供
 ```
 
 Overwriting the same name = unload the old and load the new, **without reverting the previous value** (backed by tests). The same name with a different type is rejected at `Provide`. Prefix names with the package, e.g. `pulse.llm`.
+
+**Scope-local bindings** (the path for request-scoped data): `kernel.Provide(scope, Key, v, kernel.Local())` — the binding lives on that scope and is visible only to it and its descendants (parents, siblings, and other concurrent requests cannot read it); it **does not notify subscribers and does not enter the dependency index** (a fiber's `Inject` only sees the global namespace). `Get` walks up the parent chain nearest-first; a local binding shadows a global one; the binding is removed when the scope is disposed. With no broadcast, request-level cost is decoupled from the plugin-tree size — measured 5.3µs → 365ns per request-level `Provide` at a 100-plugin tree (#168). Canonical user: `observability.AttachCollector` (the request's Collector is readable only by that request's code — concurrent requests never crosstalk).
 
 ## 3. Plugins: Use / Fiber
 
@@ -267,8 +269,8 @@ Positioning: the plugin foundation. Design: unload reverts the effect + dependen
 | `ServiceKey[T]` | Type-safe service key | Package-level `var Key = NewServiceKey[*T]("pulse.x")` |
 | `NewServiceKey` | Creates a key | Name it with a package prefix |
 | `(ServiceKey).Name` | The key's registered name | Diagnostics, dependency filtering |
-| `Provide` | Writes to the global repository | Returns a dispose; overwrites do not revert the previous value; same name with a different type errors |
-| `Get` | Reads | `(v, ok)`; not provided → `ok==false` |
+| `Provide` | Registers a binding (global by default) | Returns a dispose; overwrites do not revert the previous value; same name with a different type errors; `kernel.Local()` option = scope-local |
+| `Get` | Reads (nearest local first → global fallback) | `(v, ok)`; not provided → `ok==false` |
 
 **Plugins**
 
