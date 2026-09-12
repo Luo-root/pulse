@@ -64,6 +64,62 @@ Attrs open seg:   scalar kv (~string/~int64/~float64/~bool)
 - When `Time` is zero, the builtin Sinks (`SlogSink` / `MemorySink`) fill in the wall clock; the `SlogSink` Attrs segment is emitted in key order (`Attrs.MarshalJSON` likewise).
 - Builtins: `SlogSink`, `MemorySink`, `MultiSink`.
 
+## Async egress (AsyncSink)
+
+Wrap a slow egress (file / network exporter) in `AsyncSink`: `Write` only deep-copies
+`Attrs` and enqueues, then returns; a single background goroutine writes in FIFO order.
+Kernel event dispatch is fully synchronous (`Emit` / `EmitLocal` / `Waterfall`;
+`Parallel` waits too), so without this layer the egress's latency lands directly on
+requests and agent steps.
+
+```go
+sink := observability.NewAsyncSink(observability.SlogSink{Logger: lg},
+    observability.WithCapacity(1024)) // default 1024; blocks when full (no loss)
+defer sink.Close(ctx)                 // host shutdown path: drain + stop the worker
+```
+
+- **Full-queue policy**: blocks by default (backpressure, no loss); `DropOnFull()`
+  drops the newest record and counts it in `Dropped()`;
+- **`Flush(ctx)`** waits for everything enqueued up to the call (including in-flight);
+  an expired ctx returns an error and **keeps the queue** (the worker keeps draining);
+- **`Close(ctx)`** stops intake, drains, and stops the worker (idempotent); an expired
+  ctx returns immediately with the remaining queue counted as dropped;
+- **`Dropped()`** is a single combined counter: full-queue drops / writes after Close /
+  blocked writes woken by Close / leftovers on Close timeout / records skipped by an
+  inner panic;
+- **inner panics** are recovered and counted; the worker keeps consuming (it is the
+  only consumer — a silently stalled worker is worse than a crash);
+- **Explicit Close/Flush is a prerequisite**: skip it and queued records die with the
+  process. Copyable host shutdown wiring:
+
+```go
+func main() {
+    sink := observability.NewAsyncSink(realSink, observability.WithCapacity(4096))
+    defer func() {
+        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+        _ = sink.Close(ctx) // drain the async egress before the process exits
+    }()
+    // ... business code: sink.Write(...) stays off the request path
+}
+```
+
+Measured (i9-14900HX, Windows; baseline = `SlogSink` writing straight to an
+unbuffered file):
+
+| Case | Direct | AsyncSink |
+|---|---|---|
+| Burst of 1000 (producer side) | 95.3 ms (95 µs/rec) | **1.5 ms (1.5 µs/rec) ≈ 63x** |
+| Background drain (same batch) | — (included above) | 52 ms (the work still exists, just off the producer path) |
+| Enqueue (empty Attrs) | — | 211–242 ns, 0 alloc |
+| Enqueue (3 Attrs) | — | ≈ 1.0 µs, 2 allocs (deep copy is O(N)) |
+
+**Async does not raise the throughput ceiling**: once the sustained rate exceeds the
+egress's capacity the bounded queue fills and backpressures the producer to the
+egress's rate — that is the price of "no loss"; use `DropOnFull()` to drop instead of
+block. It is a pessimization for already-fast sinks (e.g. `MemorySink`) — do not wrap
+those by default.
+
 ## Relationship to request-scoped events
 
 | Fact | Dispatch | Who listens |
