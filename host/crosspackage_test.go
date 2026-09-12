@@ -14,6 +14,23 @@ import (
 	"github.com/Luo-root/pulse/toolset"
 )
 
+// captureModel 包住内层模型并记录最后一次请求——用于字面断言「续跑轮里
+// 模型实际收到的 history 带着裁决文本」，而不是只从 Surface 间接推断。
+type captureModel struct {
+	inner llm.ChatModel
+	last  *llm.GenerateRequest
+}
+
+func (m *captureModel) Generate(ctx context.Context, req *llm.GenerateRequest) (*llm.Response, error) {
+	m.last = req
+	return m.inner.Generate(ctx, req)
+}
+
+func (m *captureModel) Stream(ctx context.Context, req *llm.GenerateRequest) (<-chan llm.StreamEvent, error) {
+	m.last = req
+	return m.inner.Stream(ctx, req)
+}
+
 // TestHostCrossPackageHITLRecovery 跨包验收（host + memory/session + loop +
 // kernel 四包拼起来）：Agent 跑到 HITL 等待点 → 进程猝死（不写 tool.result、
 // 不闭合 turn/step）→ 以 ExposePending 冷恢复打开 → 宿主裁决（补**真实**
@@ -88,8 +105,9 @@ func TestHostCrossPackageHITLRecovery(t *testing.T) {
 	close(gateRelease) // 放行闸门，让回合走完（预期因落盘失败而报错）
 	if err := <-roundErr; err == nil {
 		t.Fatal("round must fail after the persistence sink is gone (fail closed)")
-	} else if !strings.Contains(err.Error(), "session append") {
-		t.Fatalf("crash-path error = %v, want an append failure", err)
+	} else if !errors.Is(err, session.ErrSessionClosed) {
+		// 锚语义不锚文案：Host 用 %w 包住 session 哨兵，句柄已关可直接判定。
+		t.Fatalf("crash-path error = %v, want ErrSessionClosed (handle closed)", err)
 	}
 
 	// ---- 第二段生命周期：ExposePending 冷恢复 → 裁决 → 续跑 ----
@@ -122,7 +140,8 @@ func TestHostCrossPackageHITLRecovery(t *testing.T) {
 		t.Fatalf("pending lifecycle = %+v, want open step+turn", p)
 	}
 
-	h2 := newTestHost(t, model, func(o *Options) {
+	capModel := &captureModel{inner: model}
+	h2 := newTestHost(t, capModel, func(o *Options) {
 		o.Session = stack2
 		o.Tools = []ToolSource{deploy}
 	})
@@ -179,5 +198,27 @@ func TestHostCrossPackageHITLRecovery(t *testing.T) {
 	tr := surface[2].Parts[0].ToolResultValue
 	if tr == nil || tr.ToolCallID != "c1" || len(tr.Content) == 0 || !strings.Contains(tr.Content[0].Text, "approved: deployed to prod") {
 		t.Fatalf("adjudicated tool result = %+v, want the real adjudicated text", tr)
+	}
+
+	// 字面闭环：续跑轮里模型**实际收到的请求**就带着裁决文本（不是从
+	// Surface 反推——scripted 模型不读输入，这里直接查 captured request）。
+	if capModel.last == nil {
+		t.Fatal("resumed round never reached the model")
+	}
+	fed := false
+	for _, m := range capModel.last.Messages {
+		for _, part := range m.Parts {
+			if part.Kind != llm.PartToolResult || part.ToolResultValue == nil {
+				continue
+			}
+			for _, c := range part.ToolResultValue.Content {
+				if strings.Contains(c.Text, "approved: deployed to prod") {
+					fed = true
+				}
+			}
+		}
+	}
+	if !fed {
+		t.Fatal("resumed round did not feed the adjudicated tool result to the model")
 	}
 }
