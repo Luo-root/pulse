@@ -31,14 +31,19 @@ type Dependency struct {
 func (d Dependency) depName() string { return d.name }
 
 // satisfied 报告该依赖在当前作用域视图下是否满足。
+// 依赖解析只看全局仓库（getGlobal）——局部绑定不参与 fiber 生命周期。
 func (d Dependency) satisfied(c *Context) bool { return d.check(c) }
 
 // Require 声明对一个服务的依赖。类型不符视同不存在。
+//
+// 依赖解析只认**全局**绑定（`getGlobal`，不经局部链）：局部绑定是
+// 请求级数据，既不满足依赖、也不触发纤维重评估——「局部绑定不参与
+// fiber 依赖解析」是合同，不是巧合。
 func Require[T any](k ServiceKey[T]) Dependency {
 	return Dependency{
 		name: k.name,
 		check: func(c *Context) bool {
-			_, ok := Get(c, k)
+			_, ok := getGlobal(c, k)
 			return ok
 		},
 	}

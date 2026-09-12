@@ -31,7 +31,7 @@ kernel 用同一套 `Context` 同时记住「现在有什么」和「曾经改�
 
 ## 结构全景与调用链
 
-骨架是一棵 Context 树：每层都有事件总线、效应栈、插件实例表，但**服务仓库只在根层**——`Provide` / `Get` 都经 `root()` 定位到根仓库；作用域树管生命周期归属与事件传播，不管服务可见性。
+骨架是一棵 Context 树：每层都有事件总线、效应栈、插件实例表，**全局服务仓库只在根层**——默认 `Provide` / `Get` 都经 `root()` 定位到根仓库；作用域树管生命周期归属与事件传播，不管全局服务的可见性。**局部绑定是例外**（`Provide(ctx, Key, v, kernel.Local())`）：存本层、只在本 scope 及其后代可见，`Get` 沿父链近因优先——用于请求级数据（见下节）。
 
 ```mermaid
 flowchart TB
@@ -50,9 +50,9 @@ flowchart TB
 
 三条主链贯穿全部交互：
 
-1. **装配链**：`Reconcile` 三阶段（锁内 diff → 解锁执行 mount/Close → 持锁提交）→ `mount` = factory → `Configure` → `Use`（loader.go:254）→ `settleSync` 同步首装 → `doLoad` = `host.Derive()` 建私有作用域 + `plugin.Apply(ctx)`（plugin.go:253）。Apply 内注册的一切（服务、监听、效应）都归到私有作用域——卸载即 Dispose 它。
-2. **响应式链**：任何 `Provide` 或绑定撤除 → `notifyServiceChange` **按依赖名索引投递**（context.go:342，只通知声明了变更名的订阅者；无人声明的服务名投递成本近零——请求级 Provide 与插件树规模解耦，#168）→ 命中的 Fiber `markDirty` → 单飞 `settleLoop` 重评估（plugin.go:222）：依赖齐 → `doLoad`，缺 → `doUnload`。卸载 Dispose 私有作用域时绑定撤除**再次通知**——卸载天然向下游级联。
-3. **销毁链**：`Dispose` 固定顺序（context.go:185）：锁内快照并标记 → `forceUnload` 本层 Fiber（**静默，不发 fiber_state**）→ 逆序级联子作用域 → 清空事件总线 → 从父层摘除自己 → LIFO 执行效应栈。
+1. **装配链**：`Reconcile` 三阶段（锁内 diff → 解锁执行 mount/Close → 持锁提交）→ `mount` = factory → `Configure` → `Use`（loader.go:254）→ `settleSync` 同步首装 → `doLoad` = `host.Derive()` 建私有作用域 + `plugin.Apply(ctx)`（plugin.go:258）。Apply 内注册的一切（服务、监听、效应）都归到私有作用域——卸载即 Dispose 它。
+2. **响应式链**：任何 `Provide` 或绑定撤除 → `notifyServiceChange` **按依赖名索引投递**（context.go:398，只通知声明了变更名的订阅者；无人声明的服务名投递成本近零——请求级 Provide 与插件树规模解耦，#168）→ 命中的 Fiber `markDirty` → 单飞 `settleLoop` 重评估（plugin.go:227）：依赖齐 → `doLoad`，缺 → `doUnload`。卸载 Dispose 私有作用域时绑定撤除**再次通知**——卸载天然向下游级联。
+3. **销毁链**：`Dispose` 固定顺序（context.go:195）：锁内快照并标记 → `forceUnload` 本层 Fiber（**静默，不发 fiber_state**）→ 逆序级联子作用域 → 清空事件总线 → 从父层摘除自己 → LIFO 执行效应栈。
 
 Fiber 五态与触发源（`from == to` 不发事件；树销毁整条链静默）：
 
@@ -115,6 +115,8 @@ v, ok := kernel.Get(ctx, Key) // ok==false 表示未提供
 ```
 
 同名覆盖 = 撤旧装新，**不还原前值**（有测试背书）。同名不同类型在 Provide 时被拒绝。name 建议带包前缀，如 `pulse.llm`。
+
+**作用域局部绑定**（请求级数据走这条）：`kernel.Provide(scope, Key, v, kernel.Local())`——绑定存本层，只在本 scope 及其后代可见（父 / 兄弟 / 其他并发请求读不到）；**不投递变更、不进依赖索引**（Fiber 的 `Inject` 只看全局命名空间）；`Get` 沿父链近因优先，同名时局部遮蔽全局；随 scope 销毁撤除。因为没有广播，请求级开销与插件树规模解耦——实测 100 插件树下每请求 `Provide` 从 5.3µs 降到 365ns（#168）。典型用法＝`observability.AttachCollector`：本请求的 Collector 只有本请求的代码读得到（并发请求互不串台）。
 
 ## 3. 插件：Use / Fiber
 
@@ -265,8 +267,8 @@ _ = kernel.Parallel(ctx, Tick, 0)      // 并发；返回 []error 或 nil
 | `ServiceKey[T]` | 类型安全的服务键 | 包级 `var Key = NewServiceKey[*T]("pulse.x")` |
 | `NewServiceKey` | 创建键 | name 带包前缀 |
 | `(ServiceKey).Name` | 键的注册名 | 诊断、依赖过滤 |
-| `Provide` | 写入全局仓库 | 返回 dispose；覆盖不还原前值；同名不同类型报错 |
-| `Get` | 读取 | `(v, ok)`，未提供 `ok==false` |
+| `Provide` | 登记绑定（默认全局） | 返回 dispose；覆盖不还原前值；同名不同类型报错；`kernel.Local()` 选项 = 作用域局部 |
+| `Get` | 读取（局部近因优先 → 全局回退） | `(v, ok)`，未提供 `ok==false` |
 
 **插件**
 

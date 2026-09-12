@@ -43,7 +43,7 @@ defer reqScope.Dispose()
 // source); a fully custom scheme works too (host-owned formats, e.g.
 // a hostID prefix plus a per-request sequence).
 cfg := observability.ObserveConfig{Sink: sink, HostID: "host-1", TraceID: observability.NewTraceID()}
-c, err := observability.AttachCollector(reqScope, cfg) // direct-write service for business plugins
+c, err := observability.AttachCollector(reqScope, cfg) // direct-write service (scope-local: readable only inside this request subtree)
 err = llm.Observe(reqScope, cfg)                       // llm package adapter
 err = loop.Observe(reqScope, cfg)                      // loop package adapter
 // flow graph: flow.WithObserver(must(flow.NewRecordObserver(cfg)))
@@ -71,7 +71,7 @@ Attrs open seg:   scalar kv (~string/~int64/~float64/~bool)
 | fiber_state / loader_action | Tree-wide `Emit` | `Bootstrap` |
 | tool / turn / llm generate | `EmitLocal` / `WaterfallLocal` | Per-package `Observe` (attached to reqScope) |
 | flow node segments | Observer callbacks | `flow.NewRecordObserver` |
-| Business custom facts | — | `observability.CollectorKey` service direct write (`kernel.Get`) |
+| Business custom facts | — | `observability.CollectorKey` direct write (**scope-local binding**: read via `kernel.Get` with the request scope or a descendant; parents / siblings / other concurrent requests cannot see it) |
 
 See [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md) and [`docs/design/observability-v1-design.md`](../docs/design/observability-v1-design.md) for details.
 

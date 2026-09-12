@@ -36,19 +36,55 @@ func keyType[T any]() any {
 	return reflect.TypeOf((*T)(nil))
 }
 
-// Provide 向全局服务仓库登记一个服务绑定，返回撤销函数。
+// ProvideOption 配置一次 Provide 的可见性（当前仅此一维）。
+type ProvideOption func(*provideOpts)
+
+type provideOpts struct {
+	local bool
+}
+
+// Local 让绑定只在本作用域子树可见：
+//
+//	kernel.Provide(scope, key, v, kernel.Local())
+//
+// 语义：绑定存**本层**，不写全局仓库、不投递变更、不进依赖索引——
+// 它是请求级数据而不是装配面（Fiber 的 Inject 只看全局命名空间）；
+// 本 scope 与其全部后代可读（Get 沿父链近因优先），父 / 兄弟不可见；
+// 同名时遮蔽全局；随作用域销毁撤除；同层重复登记 = 覆盖（后者胜）。
+//
+// 类型闸的覆盖次序（边界，有意）：只在**局部登记时**对照全局同名绑定
+// 校验类型（反向——先局部、后全局——不做校验，全树枚举会给请求路径
+// 引入新记账，与局部绑定的低开销目标相抵）。反向次序不一致时按
+// 「同名同义」约定兜底：子树内读局部（类型不符返回未命中、不回退），
+// 子树外读全局。
+func Local() ProvideOption {
+	return func(o *provideOpts) { o.local = true }
+}
+
+// Provide 向服务仓库登记一个绑定，返回撤销函数。
+//
+// 默认是**全局**绑定（任何作用域 Get 得到）；带 Local() 选项则为
+// 作用域局部绑定（仅本子树可见，见 Local）。
 //
 // 语义：
 //   - 同名旧绑定的撤除与新绑定的安装合为一次原子变更（覆盖即撤旧，
 //     被覆盖方的旧 dispose 不复活前值——有意语义，有测试背书）；
-//   - 变更完成后按依赖名投递给声明了该服务的订阅者，声明该依赖的插件实例
-//     会据此重新评估自己的装载状态（激活 / 卸载 / 无感）；
+//   - 全局绑定的变更完成后按依赖名投递给声明了该服务的订阅者，声明该依赖
+//     的插件实例会据此重新评估自己的装载状态（激活 / 卸载 / 无感）；
+//     局部绑定不投递（不参与 fiber 依赖解析）；
 //   - 返回的 dispose 只撤销本次安装（幂等），不影响其他历史。
-func Provide[T any](c *Context, k ServiceKey[T], v T) (func(), error) {
+func Provide[T any](c *Context, k ServiceKey[T], v T, opts ...ProvideOption) (func(), error) {
+	var o provideOpts
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if o.local {
+		return provideLocal(c, k.name, v, keyType[T]())
+	}
 	return provide(c, k.name, v, keyType[T]())
 }
 
-// provide 是 Provide 的内部形态，附带类型指纹。
+// provide 是 Provide 全局形态的内部实现，附带类型指纹。
 //
 // 服务绑定统一存放在根作用域的仓库中（对齐 Cordis 的 runtime
 // store：作用域管理生命周期归属与事件传播，服务命名空间全局唯一，
@@ -61,14 +97,9 @@ func provide(c *Context, name string, v any, typ any) (func(), error) {
 	var b *binding
 	dispose, err := c.Effect(func() (func(), error) {
 		store.mu.Lock()
-		if old, ok := store.bindings[name]; ok && old.typ != nil && typ != nil {
-			ot, _ := old.typ.(reflect.Type)
-			nt, _ := typ.(reflect.Type)
-			if ot != nil && nt != nil && ot != nt {
-				store.mu.Unlock()
-				return nil, fmt.Errorf("kernel: service %q already provided as %s, cannot re-provide as %s",
-					name, ot, nt)
-			}
+		if err := typeConflict(name, store.bindings[name], typ); err != nil {
+			store.mu.Unlock()
+			return nil, err
 		}
 		b = &binding{value: v, typ: typ}
 		store.bindings[name] = b
@@ -97,11 +128,57 @@ func provide(c *Context, name string, v any, typ any) (func(), error) {
 	return dispose, nil
 }
 
-// Get 读取服务：在全局服务仓库中按键查找并断言类型。
+// provideLocal 是 Provide(..., Local()) 的内部实现：绑定存本层快照，
+// 不写全局仓库、不投递变更。类型闸对同层已有绑定与全局同名绑定各查
+// 一次（防同名异义：局部类型与全局类型同名不同型会让读方随位置而变）。
 //
-// 第二个返回值为 false 表示依赖不存在——这正是插件 Inject
-// 未满足时挂起等待的判定依据。
-func Get[T any](c *Context, k ServiceKey[T]) (T, bool) {
+// 闸的朝向只有「局部登记时对照全局」这一向：反向（先局部、后全局）
+// 不校验——见 Local godoc 的边界说明（同名同义约定兜底）。
+func provideLocal(c *Context, name string, v any, typ any) (func(), error) {
+	var b *binding
+	dispose, err := c.Effect(func() (func(), error) {
+		if existing, ok := c.localGet(name); ok {
+			if err := typeConflict(name, existing, typ); err != nil {
+				return nil, err
+			}
+		}
+		root := c.root()
+		root.mu.Lock()
+		gb := root.bindings[name]
+		root.mu.Unlock()
+		if err := typeConflict(name, gb, typ); err != nil {
+			return nil, err
+		}
+
+		b = &binding{value: v, typ: typ}
+		c.setLocal(name, b)
+		return func() { c.removeLocal(name, b) }, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return dispose, nil
+}
+
+// typeConflict 校验同名绑定的类型指纹一致性（任一侧为空则跳过，
+// 与既有全局行为一致）。
+func typeConflict(name string, existing *binding, typ any) error {
+	if existing == nil || existing.typ == nil || typ == nil {
+		return nil
+	}
+	ot, _ := existing.typ.(reflect.Type)
+	nt, _ := typ.(reflect.Type)
+	if ot != nil && nt != nil && ot != nt {
+		return fmt.Errorf("kernel: service %q already provided as %s, cannot re-provide as %s",
+			name, ot, nt)
+	}
+	return nil
+}
+
+// getGlobal 只读全局服务仓库（不经局部链）。**依赖解析（Require）用它**：
+// 局部绑定是请求级数据，不满足 fiber 依赖、也不触发重评估——「局部绑定
+// 不参与 fiber 依赖解析」是文档合同，靠这个读取路径保证。
+func getGlobal[T any](c *Context, k ServiceKey[T]) (T, bool) {
 	var zero T
 	root := c.root()
 	root.mu.Lock()
@@ -115,4 +192,28 @@ func Get[T any](c *Context, k ServiceKey[T]) (T, bool) {
 		return zero, false
 	}
 	return v, true
+}
+
+// Get 读取服务：先沿作用域链向上找**局部绑定**（近因优先，本 scope →
+// 祖先 → 根），未命中回全局服务仓库；命中后按类型断言返回。
+//
+// 第二个返回值为 false 表示依赖不存在——这正是插件 Inject
+// 未满足时挂起等待的判定依据。局部绑定存在时遮蔽全局：子树内读到
+// 局部值，子树外照读全局值（同名同型由 Provide 的类型闸在「局部先于
+// 全局」的次序上保证；反向次序按同名同义约定，见 Local godoc）。
+//
+// 注意：依赖声明（Require）**不走本函数**，它只看全局仓库（getGlobal）——
+// 局部绑定不参与 fiber 生命周期。
+func Get[T any](c *Context, k ServiceKey[T]) (T, bool) {
+	for s := c; s != nil; s = s.parent {
+		if b, ok := s.localGet(k.name); ok {
+			v, ok := b.value.(T)
+			if !ok {
+				var zero T
+				return zero, false
+			}
+			return v, true
+		}
+	}
+	return getGlobal(c, k)
 }

@@ -37,7 +37,7 @@ defer reqScope.Dispose()
 // TraceID 由宿主每请求调用一次 NewTraceID 生成（单一生成源）；
 // 也可以完全自带方案（宿主自有格式，如 hostID 前缀 + 自增序号）。
 cfg := observability.ObserveConfig{Sink: sink, HostID: "host-1", TraceID: observability.NewTraceID()}
-c, err := observability.AttachCollector(reqScope, cfg) // 业务插件直写服务
+c, err := observability.AttachCollector(reqScope, cfg) // 业务插件直写服务（作用域局部：仅本请求 scope 及后代可读）
 err = llm.Observe(reqScope, cfg)                       // llm 包适配
 err = loop.Observe(reqScope, cfg)                      // loop 包适配
 // flow 图：flow.WithObserver(must(flow.NewRecordObserver(cfg)))
@@ -65,7 +65,7 @@ Attrs 开放段：标量 kv（~string/~int64/~float64/~bool）
 | fiber_state / loader_action | 全树 `Emit` | `Bootstrap` |
 | tool / turn / llm generate | `EmitLocal` / `WaterfallLocal` | 各包 `Observe`（挂 reqScope） |
 | flow 节点分段 | Observer 回调 | `flow.NewRecordObserver` |
-| 业务自定义事实 | —— | `observability.CollectorKey` 服务直写（`kernel.Get`） |
+| 业务自定义事实 | —— | `observability.CollectorKey` 直写（**作用域局部绑定**：持请求 scope 或其子孙 `kernel.Get`；父 / 兄弟 / 其他并发请求读不到，不串台） |
 
 详见 [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md) 与 [`docs/design/observability-v1-design.md`](../docs/design/observability-v1-design.md)。
 

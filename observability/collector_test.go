@@ -84,3 +84,61 @@ func TestAttachCollectorOverwrite(t *testing.T) {
 		t.Fatal("second attach must win (Provide overwrite semantics)")
 	}
 }
+
+// 并发隔离（#170）：两个并列请求 scope 各自 Attach，互不可见；父作用域
+// 也读不到——这正是「请求级直写」此前串台的修复锚点（修复前两个请求
+// 互相覆盖，从任何 scope 都读到最后一个 Attach 的 Collector）。
+func TestAttachCollectorIsolation(t *testing.T) {
+	root := kernel.New()
+	t.Cleanup(root.Dispose)
+	sink := &MemorySink{}
+
+	reqA, err := root.Derive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqB, err := root.Derive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	subA, err := reqA.Derive() // 请求内的后代作用域（如插件私有 scope）
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cA, err := AttachCollector(reqA, ObserveConfig{Sink: sink, HostID: "h", TraceID: "tr-A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cB, err := AttachCollector(reqB, ObserveConfig{Sink: sink, HostID: "h", TraceID: "tr-B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := kernel.Get(reqA, CollectorKey); !ok || got != cA {
+		t.Fatalf("reqA read = %v, want its own collector", ok)
+	}
+	if got, ok := kernel.Get(reqB, CollectorKey); !ok || got != cB {
+		t.Fatalf("reqB read = %v, want its own collector", ok)
+	}
+	if got, ok := kernel.Get(subA, CollectorKey); !ok || got != cA {
+		t.Fatal("request descendant must see the request's collector")
+	}
+	if _, ok := kernel.Get(root, CollectorKey); ok {
+		t.Fatal("parent scope must not see a request-scoped collector")
+	}
+
+	// 各写各的：TraceID 不串台。
+	cA.Write("req.a", "ok")
+	cB.Write("req.b", "ok")
+	recs := sink.Snapshot()
+	if len(recs) != 2 {
+		t.Fatalf("sink has %d records, want 2", len(recs))
+	}
+	if recs[0].Event != "req.a" || recs[0].TraceID != "tr-A" {
+		t.Fatalf("reqA record = %+v（TraceID 不得串台）", recs[0])
+	}
+	if recs[1].Event != "req.b" || recs[1].TraceID != "tr-B" {
+		t.Fatalf("reqB record = %+v（TraceID 不得串台）", recs[1])
+	}
+}

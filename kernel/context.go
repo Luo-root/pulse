@@ -3,6 +3,7 @@ package kernel
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 // ErrDisposed 表示对一个已经销毁的作用域执行了非法操作。
@@ -36,6 +37,13 @@ type subscriber struct {
 	deps []string
 }
 
+// localBindings 是某作用域局部绑定的一次性快照：写侧持 Context.mu
+// 复制重建（copy-on-write），读侧原子加载、无锁——Get 的链上查找因此
+// 不需要加锁（局部绑定通常只有 0–2 条）。
+type localBindings struct {
+	m map[string]*binding
+}
+
 // Context 是内核的核心抽象：一个服务仓库，同时也是一个效应
 // 跟踪器。它对应论文中的统一 context 类型——既承载"环境当前
 // 是什么样"，也承载"我们曾对环境做过什么"（效应栈）。
@@ -63,6 +71,8 @@ type Context struct {
 
 	onServiceChange []*subscriber            // 本层登记的服务变更订阅（内部使用）
 	svcIndex        map[string][]*subscriber // 仅根作用域：依赖名 → 订阅者索引
+
+	locals atomic.Pointer[localBindings] // 本层局部绑定（Provide(..., Local())；读无锁）
 }
 
 // New 创建根作用域。
@@ -259,6 +269,52 @@ func (c *Context) root() *Context {
 		r = r.parent
 	}
 	return r
+}
+
+// localGet 读取本层局部绑定（无锁：原子加载不可变快照）。
+func (c *Context) localGet(name string) (*binding, bool) {
+	snap := c.locals.Load()
+	if snap == nil {
+		return nil, false
+	}
+	b, ok := snap.m[name]
+	return b, ok
+}
+
+// setLocal 写入本层局部绑定（写时复制；覆盖同层同名绑定）。
+func (c *Context) setLocal(name string, b *binding) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m := make(map[string]*binding, 2)
+	if snap := c.locals.Load(); snap != nil {
+		for k, v := range snap.m {
+			m[k] = v
+		}
+	}
+	m[name] = b
+	c.locals.Store(&localBindings{m: m})
+}
+
+// removeLocal 撤除本层局部绑定——仅当当前仍指向 b（被后续覆盖时是
+// 空操作，与全局「被覆盖方的撤销不复活前值」语义一致）。
+func (c *Context) removeLocal(name string, b *binding) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snap := c.locals.Load()
+	if snap == nil || snap.m[name] != b {
+		return
+	}
+	m := make(map[string]*binding, len(snap.m))
+	for k, v := range snap.m {
+		if k != name {
+			m[k] = v
+		}
+	}
+	if len(m) == 0 {
+		c.locals.Store(nil)
+		return
+	}
+	c.locals.Store(&localBindings{m: m})
 }
 
 // onChange 订阅服务变更，返回摘除函数（幂等）。

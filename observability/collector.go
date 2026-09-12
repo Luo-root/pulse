@@ -34,7 +34,12 @@ var (
 //	c, ok := kernel.Get(scope, observability.CollectorKey)
 //
 // 直写观测（Write / WriteAttrs），HostID/TraceID 自动携带，与各包
-// Observe 折出的记录走同一 Sink（同一出口）。服务随 scope 销毁撤除。
+// Observe 折出的记录走同一 Sink（同一出口）。
+//
+// 可见性是**作用域局部**的（kernel.Provide(..., kernel.Local())）：
+// Collector 只有本请求 scope 及其后代读得到——父 / 兄弟 / 其他请求
+// 都读不到（并发请求互不串台）。读方因此要持请求 scope（或其子孙）
+// 去 Get；服务随 scope 销毁撤除。
 var CollectorKey = kernel.NewServiceKey[*Collector]("pulse.observability.collector")
 
 // Collector 是业务插件的观测直写面（双基座入口形态）：不认识任何
@@ -73,8 +78,10 @@ func (c *Collector) write(event, status string, set func(a *Attrs)) {
 	c.sink.Write(rec)
 }
 
-// AttachCollector 把 Collector 注册进请求 scope（随 scope 销毁撤除）。
-// 同一 scope 重复 Attach 按 Provide 覆盖语义以最后一次为准。
+// AttachCollector 把 Collector 注册进请求 scope：**作用域局部绑定**
+// （kernel.Provide(..., kernel.Local())），只有该 scope 及其后代
+// 读得到，父 / 兄弟 / 其他并发请求都读不到——随 scope 销毁撤除。
+// 同一 scope 重复 Attach 按覆盖语义以最后一次为准。
 // nil scope / nil Sink 返回哨兵错误。
 func AttachCollector(scope *kernel.Context, cfg ObserveConfig) (*Collector, error) {
 	if scope == nil {
@@ -84,7 +91,7 @@ func AttachCollector(scope *kernel.Context, cfg ObserveConfig) (*Collector, erro
 		return nil, ErrNilSink
 	}
 	c := &Collector{sink: cfg.Sink, hostID: cfg.HostID, traceID: cfg.TraceID}
-	if _, err := kernel.Provide(scope, CollectorKey, c); err != nil {
+	if _, err := kernel.Provide(scope, CollectorKey, c, kernel.Local()); err != nil {
 		return nil, err
 	}
 	return c, nil
