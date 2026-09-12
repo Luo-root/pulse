@@ -2,7 +2,7 @@
 
 pulse v2 的可逆工具注册面（Accepted：[`docs/design/toolset-v1-design.md`](../docs/design/toolset-v1-design.md)）。
 
-给本地工具、未来 MCP 来源一个统一的 `pulse.tools` 注册中心；loop 仍然只看见 `loop.ToolSet`。审批继续挂在请求级 `before_tool_call`，**不**另开 `before_execute` 总线。
+给本地工具与 MCP 来源（[`toolset/mcp`](mcp/README_zh.md)）一个统一的 `pulse.tools` 注册中心；loop 仍然只看见 `loop.ToolSet`。审批继续挂在请求级 `before_tool_call`，**不**另开 `before_execute` 总线。
 
 ## 刻意不做
 

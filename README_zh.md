@@ -21,7 +21,7 @@
 
 **Pulse** 是一个围绕插件内核构建的 Go AI agent 运行时，v2 内核已以 v0.2.0 发布。
 
-v2 内核以可逆效应和依赖响应式为基座。核心重构已落地：插件内核、provider 中立模型层、无状态 ReAct 回合执行器、工具与 Skills 体系、记忆层（会话、压缩、长期存储、上下文装配）、双基座观测栈（信封 + 各包折叠适配 + Collector 直写服务），以及声明式 flow 编排。v1 的 Agent、旧模型适配器、DAG、记忆、HITL 与遥测实现已彻底移除，不保留兼容层。
+v2 内核以可逆效应和依赖响应式为基座。核心重构已落地：插件内核、provider 中立模型层、无状态 ReAct 回合执行器、工具与 Skills 体系、记忆层（会话、压缩、长期存储、上下文装配）、双基座观测栈（信封 + 各包折叠适配 + Collector 直写服务）、声明式 flow 编排，以及两层装配（memory 根级门面 + host 跨包串联）。v1 的 Agent、旧模型适配器、DAG、记忆、HITL 与遥测实现已彻底移除，不保留兼容层。
 
 ## 发布与兼容性（v0.2.0 起）
 
@@ -59,13 +59,68 @@ Pulse 按 0.x 的 SemVer 惯例发布：
 
 三个问题覆盖新用户需要知道的大部分内容：
 
-1. **模型 / 工具怎么接起来？** 当前：`kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)`（下面的快速上手会走一遍）。这条链现已收敛为一次 `host.New(Options)` 装配（[`host`](host/README_zh.md) 包）；下面的快速上手仍逐步展示手工装配。
+1. **模型 / 工具怎么接起来？** 最短路径是 `host.New(Options)` 一步装配（[`host`](host/README_zh.md) 包：内核注入 → 供应商 → 模型声明 → 工具来源 → 可选会话栈与观测，`DefaultAgent` 直接拿到 agent）；想了解每一步的接线时看下面的手工装配链：`kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)`。
 2. **一次 turn 怎么跑？** `agent.Run(ctx, input)` 执行一个无状态 ReAct 回合：模型 ↔ 工具循环直到模型停。历史累积、重试/failover、会话持久化都归调用方——`loop` 刻意一样都不拥有。
 3. **状态存在哪？** 按生命周期分三个 store：会话事件在事件日志（`memory/session`）、长期事实在 item store（`memory/store`）、服务实例在 kernel 服务仓库。其余一切无状态、可替换。
 
 ## 快速上手：模型 + ReAct 工具回合
 
-以下示例演示当前 v2 的最短链路。请用环境变量提供 API Key，避免写入代码。
+两条路径：**推荐的一步装配（`host`）**，以及**手工装配**（逐步看清接线）。请用环境变量提供 API Key，避免写入代码。
+
+### 一步装配（host）
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/Luo-root/pulse/host"
+    "github.com/Luo-root/pulse/kernel"
+    "github.com/Luo-root/pulse/llm"
+    "github.com/Luo-root/pulse/llm/openai"
+)
+
+func main() {
+    k := kernel.New() // kernel 归应用所有：你的其他插件也 Use 到这里
+    defer k.Dispose()
+
+    h, err := host.New(host.Options{
+        Kernel:    k,
+        Providers: []host.Provider{host.Provider(openai.Register)},
+        Models: []host.ModelDecl{{
+            Name: "main",
+            Config: llm.Config{
+                Provider: openai.ProviderCompletions,
+                Model:    "gpt-4o-mini",
+                APIKey:   os.Getenv("OPENAI_API_KEY"),
+            },
+        }},
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    agent, err := h.DefaultAgent(context.Background(), host.DefaultAgentOptions{
+        Name:   "assistant",
+        Model:  "main",
+        System: "你是一个简洁的助手。",
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    res, err := agent.Run(context.Background(), llm.UserText("你好，做个自我介绍"))
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(res.Final.Text())
+}
+```
+
+### 手工装配（了解每一步）
 
 ```go
 package main
@@ -153,6 +208,11 @@ func main() {
 ```text
 调用方
   │
+  ├── host（跨包装配，可选）：host.New → DefaultAgent
+  │     ├── 会话 ↔ loop 三向接线（Surface/history · 事件驱动落盘 · 请求 scope）
+  │     ├── 观测桥（llm.Observe + loop.Observe，每请求独立 TraceID）
+  │     └── ToolGate（HITL 最小挂点）/ ScopeHook（应用自订阅 loop/llm 事件）
+  │
   ├── kernel.Context
   │     ├── ServiceKey：类型安全服务
   │     ├── Effect：卸载即还原
@@ -183,8 +243,8 @@ func main() {
 - **彻底 breaking**：删除 v1 模型抽象及依赖它的实现；不保留兼容层。
 - **词汇表优先**：`llm` 只收跨 provider 有稳定语义的字段；无对应线格式时 adapter 显式 `ErrBadRequest`，不静默吞参数。
 - **插件不是口号**：对环境的修改都注册可逆 Effect；服务依赖变化驱动 Fiber 装载 / 卸载。
-- **Agent 无状态**：`loop.Agent` 只执行一个回合；历史、会话存储、重试与 failover 由上层或后续 v2 组件承担。
-- **v1 components 已删除**：工具 / MCP / 沙箱 / Skill 将作为 v2 插件重写，不复活旧包。
+- **Agent 无状态**：`loop.Agent` 只执行一个回合；历史、会话存储、重试与 failover 由上层承担——v2 的官方装配是 `memory/session`（事件日志 + 冷恢复）+ `host`（三向接线与请求级 scope）。
+- **v1 components 已删除**：工具 / MCP / Skills 已在 v2 重写（`toolset/builtins`、`toolset/mcp`、`skills`），不复活旧包；命令执行的沙箱边界归宿主部署层（三层边界见 `toolset/builtins` README）。
 
 ## 构建与测试
 

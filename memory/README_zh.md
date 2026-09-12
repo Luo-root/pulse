@@ -149,7 +149,7 @@ memory/reflection     → kernel, llm, memory/candidate, memory/store
 
 ## 宿主装配桥接点（memory 不做的事，谁做）
 
-memory 层刻意不做的胶水，全部归装配层/宿主：
+memory 层刻意不做的胶水，全部归装配层/宿主——官方装配实现是 [`host`](../host/README_zh.md)（下表「装配层」即该层）：
 
 | 桥接点 | 归属 | 说明 |
 |---|---|---|

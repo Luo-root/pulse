@@ -151,7 +151,7 @@ Dependency rules (review verdicts, non-negotiable):
 
 ## Host assembly bridge points (what memory does not do, and who does it)
 
-The glue that the memory layer deliberately does not do all belongs to the assembly layer/host:
+The glue that the memory layer deliberately does not do all belongs to the assembly layer/host — the official assembly implementation is [`host`](../host/README.md) ("assembly layer" below means that layer):
 
 | Bridge point | Owner | Notes |
 |---|---|---|
