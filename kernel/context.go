@@ -19,7 +19,7 @@ type effectEntry struct {
 // binding 是一条服务绑定。
 //
 // typ 存键值类型指纹，用于同名跨类型冲突检测；响应式依赖的
-// 感知由绑定撤除时的全树广播驱动，不需要提供者身份。
+// 感知由绑定撤除时的变更投递驱动，不需要提供者身份。
 type binding struct {
 	value any
 	typ   any
@@ -29,10 +29,10 @@ type binding struct {
 // 代码指针判等（同一函数字面量的不同闭包指针相同），否则一个
 // 订阅者的撤销会误删他人的订阅。
 //
-// deps 是本订阅者声明的依赖名：变更投递按名索引，只通知「变更名 ∈
-// deps」的订阅者；与其所在作用域层级无关（服务仓库全局唯一）。
+// deps 是本订阅者声明的依赖名（登记前去重）：变更投递按名索引，只
+// 通知声明了该名字的订阅者；与其所在作用域层级无关（服务仓库全局唯一）。
 type subscriber struct {
-	fn   func(changed []string)
+	fn   func()
 	deps []string
 }
 
@@ -159,7 +159,7 @@ func (c *Context) Effect(apply func() (func(), error)) (dispose func(), err erro
 			}
 		}
 		c.mu.Unlock()
-		// 解锁后执行：撤销回调可能广播服务变更、触碰其他层的锁，
+		// 解锁后执行：撤销回调可能触发服务变更投递、触碰其他层的锁，
 		// 持本层锁执行会与其形成锁序环。
 		if run != nil {
 			run()
@@ -263,11 +263,23 @@ func (c *Context) root() *Context {
 
 // onChange 订阅服务变更，返回摘除函数（幂等）。
 //
-// deps 是本订阅者声明的依赖名：变更只投递给「变更名 ∈ deps」的
-// 订阅者（根索引按名登记，与作用域树规模解耦；无人声明的服务名
-// 投递成本近零）。撤销与作用域销毁都会摘除索引条目。
+// deps 是本订阅者声明的依赖名（内部去重后登记）：变更只投递给声明了
+// 该名字的订阅者（根索引按名登记，与作用域树规模解耦；无人声明的服务
+// 名投递成本近零）。撤销与作用域销毁都会摘除索引条目。
 // 内部 API：供插件生命周期使用。
-func (c *Context) onChange(fn func(changed []string), deps []string) (unsub func()) {
+func (c *Context) onChange(fn func(), deps []string) (unsub func()) {
+	if len(deps) > 1 {
+		seen := make(map[string]struct{}, len(deps))
+		uniq := make([]string, 0, len(deps))
+		for _, d := range deps {
+			if _, ok := seen[d]; ok {
+				continue
+			}
+			seen[d] = struct{}{}
+			uniq = append(uniq, d)
+		}
+		deps = uniq
+	}
 	sub := &subscriber{fn: fn, deps: deps}
 	root := c.root()
 	root.mu.Lock()
@@ -319,37 +331,24 @@ func (r *Context) removeSubscriber(sub *subscriber) {
 	}
 }
 
-// notifyServiceChange 按依赖名索引投递服务变更：只通知声明了变更名的
-// 订阅者。
+// notifyServiceChange 按依赖名索引投递服务变更：只通知声明了该名字的
+// 订阅者。每次调用投递**单个**服务名的变更——Provide 安装与撤销都是
+// 单名事件。
 //
 // 完备性不变：订阅者按声明的依赖名登记在根索引，与其所在作用域层级
 // 无关——提供方晚于消费方出现在任意层都能命中；此前「全树广播 +
 // 订阅者自行过滤」的投递面与它完全一致，只是把请求级 Provide 从
 // O(作用域树 + 插件数) 拉回 O(命中订阅者)。调用方不得持有任何层的锁。
-func (c *Context) notifyServiceChange(changed []string) {
+func (c *Context) notifyServiceChange(name string) {
 	root := c.root()
-	for _, sub := range root.matchSubscribers(changed) {
-		sub.fn(changed)
+	for _, sub := range root.matchSubscribers(name) {
+		sub.fn()
 	}
 }
 
-// matchSubscribers 收集声明了任一变更名的订阅者（去重；单名快路径）。
-func (r *Context) matchSubscribers(changed []string) []*subscriber {
+// matchSubscribers 返回声明了 name 的订阅者快照（锁内拷贝、锁外投递）。
+func (r *Context) matchSubscribers(name string) []*subscriber {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(changed) == 1 {
-		return append([]*subscriber(nil), r.svcIndex[changed[0]]...)
-	}
-	var subs []*subscriber
-	seen := make(map[*subscriber]struct{}, 4)
-	for _, name := range changed {
-		for _, sub := range r.svcIndex[name] {
-			if _, ok := seen[sub]; ok {
-				continue
-			}
-			seen[sub] = struct{}{}
-			subs = append(subs, sub)
-		}
-	}
-	return subs
+	return append([]*subscriber(nil), r.svcIndex[name]...)
 }
