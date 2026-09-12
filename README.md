@@ -21,7 +21,7 @@
 
 **Pulse** is a Go agent runtime built around a plugin kernel, shipping its v2 core as v0.2.0.
 
-The v2 kernel is built on reversible effects and dependency-reactive loading. The core rewrite has landed: a plugin kernel, a provider-neutral model layer, a stateless ReAct turn executor, the tool & skills system, the memory layer (sessions, compaction, long-term store, assembly), a dual-foundation observability stack (envelope + per-package folding adapters with a direct-write Collector), and declarative flow orchestration. The v1 Agent, legacy model adapters, DAG, memory, HITL, and telemetry implementations were removed entirely with no compatibility layer; APIs may still adjust during the preview window.
+The v2 kernel is built on reversible effects and dependency-reactive loading. The core rewrite has landed: a plugin kernel, a provider-neutral model layer, a stateless ReAct turn executor, the tool & skills system, the memory layer (sessions, compaction, long-term store, assembly), a dual-foundation observability stack (envelope + per-package folding adapters with a direct-write Collector), declarative flow orchestration, and the two-layer assembly (the `memory` facade + `host` cross-package wiring). The v1 Agent, legacy model adapters, DAG, memory, HITL, and telemetry implementations were removed entirely with no compatibility layer.
 
 ## Release & Compatibility
 
@@ -59,13 +59,68 @@ Pulse ships under the 0.x SemVer convention. From **v0.2.0**:
 
 Three questions answer most of what a new user needs:
 
-1. **How do models / tools get wired?** Today: `kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)` (walk through it in the Quick Start below). That chain now collapses into one `host.New(Options)` call (the [`host`](host/README.md) package); the Quick Start below still shows manual assembly step by step.
+1. **How do models / tools get wired?** The shortest path is one `host.New(Options)` call (the [`host`](host/README.md) package: kernel injection → provider → model declarations → tool sources → optional session stack and observability; `DefaultAgent` hands you an agent). To see every step of the wiring, the Quick Start below still walks the manual chain: `kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)`.
 2. **How does one turn run?** `agent.Run(ctx, input)` executes one stateless ReAct round: model ↔ tools until the model stops. History accumulation, retry/failover, and session persistence are owned by the caller — `loop` deliberately owns none of them.
 3. **Where does state live?** Three stores, by lifetime: conversation events in the session log (`memory/session`), long-term facts in the item store (`memory/store`), service instances in the kernel's service repository. Everything else is stateless and replaceable.
 
 ## Quick Start: Model + ReAct Tool Round
 
-The shortest v2 path. Provide the API key via environment variables; never hard-code credentials.
+Two paths: **the recommended one-call `host` assembly**, and **manual assembly** (every step spelled out). Provide the API key via environment variables; never hard-code credentials.
+
+### One-call assembly (host)
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/Luo-root/pulse/host"
+    "github.com/Luo-root/pulse/kernel"
+    "github.com/Luo-root/pulse/llm"
+    "github.com/Luo-root/pulse/llm/openai"
+)
+
+func main() {
+    k := kernel.New() // the kernel is app-owned: your other plugins Use the same root
+    defer k.Dispose()
+
+    h, err := host.New(host.Options{
+        Kernel:    k,
+        Providers: []host.Provider{host.Provider(openai.Register)},
+        Models: []host.ModelDecl{{
+            Name: "main",
+            Config: llm.Config{
+                Provider: openai.ProviderCompletions,
+                Model:    "gpt-4o-mini",
+                APIKey:   os.Getenv("OPENAI_API_KEY"),
+            },
+        }},
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    agent, err := h.DefaultAgent(context.Background(), host.DefaultAgentOptions{
+        Name:   "assistant",
+        Model:  "main",
+        System: "You are a concise assistant.",
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    res, err := agent.Run(context.Background(), llm.UserText("Introduce yourself in one line"))
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(res.Final.Text())
+}
+```
+
+### Manual assembly (step by step)
 
 ```go
 package main
@@ -153,6 +208,11 @@ Accounting, reproduction commands, and the full reading live in [`eval/war/READM
 ```text
 Caller
   │
+  ├── host (cross-package assembly, optional): host.New → DefaultAgent
+  │     ├── session ↔ loop three-way wiring (Surface/history · event-driven persistence · request scope)
+  │     ├── observability bridge (llm.Observe + loop.Observe, per-request TraceID)
+  │     └── ToolGate (minimal HITL mount) / ScopeHook (subscribe to loop/llm events yourself)
+  │
   ├── kernel.Context
   │     ├── ServiceKey: typed services
   │     ├── Effect: unload reverts
@@ -183,8 +243,8 @@ The design blueprint and the v1 → v2 migration order live in [`docs/design/plu
 - **Hard breaking change**: the v1 model abstraction and everything depending on it is deleted; no compatibility layer.
 - **Vocabulary first**: `llm` only accepts fields with stable cross-provider semantics; when a wire format has no counterpart, the adapter returns an explicit `ErrBadRequest` — never silently drops parameters.
 - **Plugins are not a slogan**: every mutation of the environment is registered as a reversible Effect; service dependency changes drive Fiber load / unload.
-- **Agents are stateless**: `loop.Agent` runs exactly one turn; history, session storage, retry, and failover belong to the caller or later v2 components.
-- **v1 components are gone**: tools / MCP / sandbox / Skills are rewritten as v2 plugins; the old packages are not resurrected.
+- **Agents are stateless**: `loop.Agent` runs exactly one turn; history, session storage, retry, and failover belong to the layer above — the official v2 assembly is `memory/session` (event log + cold recovery) plus `host` (three-way wiring and request-scoped mounts).
+- **v1 components are gone**: tools / MCP / Skills are rewritten in v2 (`toolset/builtins`, `toolset/mcp`, `skills`); the old packages are not resurrected. The command-execution sandbox boundary belongs to the host deployment layer (see the "three boundary layers" section in `toolset/builtins`).
 
 ## Build & Test
 
@@ -216,7 +276,7 @@ llm/                       v2 model vocabulary, Registry, provider adapters
 loop/                      v2 stateless ReAct turns
 toolset/                   reversible tool registry (builtins / mcp / lsp sub-packages)
 skills/                    Agent Skills loader (agentskills.io)
-textsplit/                 text chunking (shared by index/openai and future long-text modules)
+textsplit/                 text chunking (shared by index/openai and long-text modules)
 memory/                    P2 memory & sessions (session / compaction / store / assemble / selfedit / index / candidate / reflection)
 host/                      two-layer assembly, layer two: cross-package seams (kernel injection + session↔loop event-driven persistence)
 observability/             v2 official observability package (Bootstrap / Record / Sink)

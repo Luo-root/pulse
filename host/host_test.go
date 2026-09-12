@@ -16,7 +16,7 @@ import (
 	"github.com/Luo-root/pulse/toolset"
 )
 
-func scriptedProvider(model *llm.ScriptedModel) Provider {
+func scriptedProvider(model llm.ChatModel) Provider {
 	return func(c *kernel.Context, reg *llm.Registry) error {
 		_, err := reg.RegisterProvider(c, "stub", func(cfg llm.Config) (llm.ChatModel, error) {
 			return model, nil
@@ -25,7 +25,7 @@ func scriptedProvider(model *llm.ScriptedModel) Provider {
 	}
 }
 
-func newTestHost(t *testing.T, model *llm.ScriptedModel, opt func(*Options)) *Host {
+func newTestHost(t *testing.T, model llm.ChatModel, opt func(*Options)) *Host {
 	t.Helper()
 	k := kernel.New()
 	t.Cleanup(k.Dispose) // kernel 归调用方所有：生命周期随测试清理

@@ -4,7 +4,7 @@
 
 The reversible tool registration surface of pulse v2 (Accepted: [`docs/design/toolset-v1-design.md`](../docs/design/toolset-v1-design.md)).
 
-It gives local tools and future MCP sources a single unified `pulse.tools` Registry; loop still only sees `loop.ToolSet`. Approval stays on the request-scoped `before_tool_call`; **no** separate `before_execute` bus is added.
+It gives local tools and MCP sources ([`toolset/mcp`](mcp/README.md)) a single unified `pulse.tools` Registry; loop still only sees `loop.ToolSet`. Approval stays on the request-scoped `before_tool_call`; **no** separate `before_execute` bus is added.
 
 ## Deliberately out of scope
 
