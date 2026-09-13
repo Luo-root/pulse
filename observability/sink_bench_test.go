@@ -36,11 +36,30 @@ func benchLineRecord(attrs int) Record {
 }
 
 // --- 层 0：只构造 Record（折叠侧成本，不含写入） ---
-
+//
+// 注意：key/值用常量预置，避免把「基准自身的字符串拼装」算进 Record 构造
+// ——否则会虚增 allocs（实测：动态拼 key 时 +3 allocs，全是拼装噪声）。
 func BenchmarkLayer_RecordBuild(b *testing.B) {
+	const (
+		kModel = "llm.model"
+		kInst  = "llm.instance"
+		kTok   = "llm.tokens_in"
+		vModel = "gpt-4o-mini"
+		vInst  = "main"
+	)
+	var vTok int64 = 1234
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = benchLineRecord(3)
+		var r Record
+		r.HostID = "host-1"
+		r.TraceID = "tr-0123456789abcdef"
+		r.Source = SourceAdapter
+		r.Event = "llm.generate_finished"
+		r.Status = "stop"
+		r.Duration = 1234567
+		Set(&r.Attrs, kModel, vModel)
+		Set(&r.Attrs, kInst, vInst)
+		Set(&r.Attrs, kTok, vTok)
 	}
 }
 

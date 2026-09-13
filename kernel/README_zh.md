@@ -228,6 +228,16 @@ _ = kernel.Parallel(ctx, Tick, 0)      // 并发；返回 []error 或 nil
 
 事件名全局唯一；同名不同类型在注册时被拒绝。waterfall **不支持 prepend**。监听随作用域销毁自动摘除。`On` 与 `OnWaterfall` 混用时两类独立派发、互不干扰。
 
+**派发是零拷贝的**（#177）：监听器表按 kind 分列并以**写时复制（COW）**维护——`On` / `OnWaterfall` 注册与摘除时复制重建该事件的切片（低频路径），派发侧直接持有不可变快照、不再逐次过滤拷贝。快照窗口语义不变：派发期间的增删不影响本次派发（新增者下一次才生效；已摘除者仍可能收到在途的最后一次派发）。实测（同机同轮，分配数为一等证据）：
+
+| 场景 | 重构前 | 重构后 |
+|---|---|---|
+| `EmitLocal` 单监听 | 39.5 ns / 2 allocs | **27.2 ns / 1 alloc** |
+| `EmitLocal` 三监听 | 75 ns / 4 allocs | **29 ns / 1 alloc** |
+| `WaterfallLocal` 两条 around | ~160 ns / 5 allocs | **87 ns / 3 allocs** |
+
+剩余的固定 1 alloc 是**载荷上堆**（监听器拿 `*P` 以便就地改写，编译器据此把载荷移入堆，`events.go` 的逃逸分析可见）——属 API 语义的固有成本，热点事件如要规避可改用指针载荷键。常驻基线：`go test -bench . ./kernel/ -run '^$' -bench 'BenchmarkEmit|BenchmarkWaterfallLocal|BenchmarkEventRegister'`。
+
 派发分两层（详见 [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md)）：
 
 | API | 语义 | 适用 |
