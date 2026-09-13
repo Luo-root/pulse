@@ -83,11 +83,16 @@ func TestFirstUseFullTrajectory(t *testing.T) {
 	host := newTracedHost(t, r.sink)
 	defer host.Dispose()
 
-	if _, err := kernel.Use(host, nopPlugin{}); err != nil {
+	f, err := kernel.Use(host, nopPlugin{})
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	got := r.transitionsOf("nopPlugin#2")
+	// 诊断名取 f.Name()，不要硬编码 "nopPlugin#2"：fiberSeq 是包级全局
+	// 计数器，任何在本用例之前执行的 Use 都会让序号失配——失配的表现是
+	// 「该名无轨迹」（transitions = []）而不是报错，排查成本高。
+	// 本文件其余用例都是 f.Name() 口径。
+	got := r.transitionsOf(f.Name())
 	want := [][2]string{{"inactive", "loading"}, {"loading", "active"}}
 	if len(got) != len(want) {
 		t.Fatalf("transitions = %v, want %v", got, want)

@@ -40,6 +40,17 @@ var (
 // Collector 只有本请求 scope 及其后代读得到——父 / 兄弟 / 其他请求
 // 都读不到（并发请求互不串台）。读方因此要持请求 scope（或其子孙）
 // 去 Get；服务随 scope 销毁撤除。
+//
+// 注意：作用域局部绑定**不参与 fiber 依赖解析**。声明
+//
+//	func (p *T) Inject() []kernel.Dependency {
+//		return []kernel.Dependency{kernel.Require(observability.CollectorKey)}
+//	}
+//
+// 的插件会永远停在 inactive——不报错、不打日志、不触发事件（局部绑定是
+// 请求级数据，Require 只认全局绑定，见 kernel.Local）。Collector 的正确
+// 消费形态是持请求 scope 用 Get 读取；插件无故不激活时，用
+// FiberSnapshots() 的 WaitingFor 看未满足的依赖名。
 var CollectorKey = kernel.NewServiceKey[*Collector]("pulse.observability.collector")
 
 // Collector 是业务插件的观测直写面（双基座入口形态）：不认识任何
@@ -83,6 +94,9 @@ func (c *Collector) write(event, status string, set func(a *Attrs)) {
 // 读得到，父 / 兄弟 / 其他并发请求都读不到——随 scope 销毁撤除。
 // 同一 scope 重复 Attach 按覆盖语义以最后一次为准。
 // nil scope / nil Sink 返回哨兵错误。
+//
+// 因为是局部绑定，它**不满足 kernel.Require**——消费方用 kernel.Get
+// 读取，不要声明成 fiber 依赖（见 CollectorKey）。
 func AttachCollector(scope *kernel.Context, cfg ObserveConfig) (*Collector, error) {
 	if scope == nil {
 		return nil, ErrNilScope

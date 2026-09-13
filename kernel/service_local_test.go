@@ -302,3 +302,45 @@ func BenchmarkGetWithLocal(b *testing.B) {
 		}
 	}
 }
+
+// WaitingFor 是「插件为什么没激活」唯一可见的信号（#185 让消费方靠它排查）：
+// 局部绑定满足 Get、不满足 Require，所以声明 Require 的 fiber 停在 inactive，
+// 快照按 Inject 声明序给出未满足的服务名。
+func TestWaitingForNamesUnmetLocalDependency(t *testing.T) {
+	ctx := New()
+	defer ctx.Dispose()
+
+	key := NewServiceKey[int]("test.waitingfor.local")
+	if _, err := Provide(ctx, key, 7, Local()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := Get(ctx, key); !ok {
+		t.Fatal("local binding must be readable from its own scope")
+	}
+
+	p := &countingPlugin{deps: []Dependency{Require(key)}}
+	f, err := Use(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.State(); got != StateInactive {
+		t.Fatalf("state = %v, want inactive（局部绑定不满足依赖）", got)
+	}
+	if n := atomic.LoadInt32(&p.applies); n != 0 {
+		t.Fatalf("Apply ran %d times, want 0", n)
+	}
+
+	var seen bool
+	for _, s := range ctx.FiberSnapshots() {
+		if s.Name != f.Name() {
+			continue
+		}
+		seen = true
+		if got := s.WaitingFor; len(got) != 1 || got[0] != key.Name() {
+			t.Fatalf("WaitingFor = %v, want [%s]", got, key.Name())
+		}
+	}
+	if !seen {
+		t.Fatalf("fiber %q missing from FiberSnapshots", f.Name())
+	}
+}
