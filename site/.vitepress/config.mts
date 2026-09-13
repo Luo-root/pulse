@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitepress'
 
 // 版本号单源：description 与 footer 都引用它——发版时只改这一处。
-const VERSION = 'v0.2.1'
+const VERSION = 'v0.2.2'
 
 // 包文档侧边栏：分组与链接前缀参数化（zh: /packages/…、en: /en/packages/…）；
 // 分组标签随语言传入（zh 默认值 / en 显式表），避免英文站显示中文分组名。

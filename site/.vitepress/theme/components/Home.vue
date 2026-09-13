@@ -2,15 +2,19 @@
 import { computed } from 'vue'
 import { useData } from 'vitepress'
 
+// 版本号单源：badge / tagline / CTA / Release 链接都引用它——发版只改这一处。
+const VERSION = 'v0.2.2'
+const RELEASE_URL = `https://github.com/Luo-root/pulse/releases/tag/${VERSION}`
+
 const { lang } = useData()
 const isZh = computed(() => lang.value.startsWith('zh'))
 
 const copy = {
   zh: {
-    badge: 'v0.2.1 · 开源 MIT',
+    badge: `${VERSION} · 开源 MIT`,
     heroTitle: '一切皆插件，',
     heroTitleAccent: '卸载即还原',
-    tagline: 'Pulse 是一个 Go AI agent 框架——以可逆效应与依赖响应式装载为基座的插件内核。模型、工具、编排、记忆、观测作为内核上的能力租户组合；host 薄串联包提供官方装配路径，v2 核心 v0.2.1 已发布。',
+    tagline: `Pulse 是一个 Go AI agent 框架——以可逆效应与依赖响应式装载为基座的插件内核。模型、工具、编排、记忆、观测作为内核上的能力租户组合；host 薄串联包提供官方装配路径，v2 核心 ${VERSION} 已发布。`,
     ctaStart: '快速开始',
     ctaPackages: '包文档',
     ctaGithub: 'GitHub',
@@ -31,15 +35,15 @@ const copy = {
     start2Title: '官方装配路径',
     start2Desc: '要直接落地一个能跑的 Agent，用 host 薄串联包：会话栈、模型 Registry、工具集三向接线一次接好，host.New + DefaultAgent 三行参数起步。',
     ctaTitle: '在开源、可逆、可组合的基座上构建 Agent',
-    ctaDesc: 'v0.2.1 已发布——性能线收口（事件派发零拷贝、Record 的 Attrs 切片化、出口补齐 LineSink / AsyncSink），host 装配层落地后 README 恢复 framework 自称，28 个包的双语文档全部就绪。',
-    ctaRelease: 'v0.2.1 Release',
+    ctaDesc: `${VERSION} 已发布——“作用域局部绑定不满足 Require”写进三处 godoc 并配语义护栏（#185），英文站补齐 locale 配置，版本字面量收成单源。`,
+    ctaRelease: `${VERSION} Release`,
     ctaEval: '评测数字',
   },
   en: {
-    badge: 'v0.2.1 · Open Source MIT',
+    badge: `${VERSION} · Open Source MIT`,
     heroTitle: 'Everything is a plugin, ',
     heroTitleAccent: 'unload to restore',
-    tagline: 'Pulse is a Go AI agent framework — a plugin kernel grounded in reversible effects and dependency-reactive service loading. Models, tools, orchestration, memory, observability compose as tenants on the kernel; the thin host package provides the official assembly path, shipping as v0.2.1.',
+    tagline: `Pulse is a Go AI agent framework — a plugin kernel grounded in reversible effects and dependency-reactive service loading. Models, tools, orchestration, memory, observability compose as tenants on the kernel; the thin host package provides the official assembly path, shipping as ${VERSION}.`,
     ctaStart: 'Quick start',
     ctaPackages: 'Package docs',
     ctaGithub: 'GitHub',
@@ -60,8 +64,8 @@ const copy = {
     start2Title: 'The official assembly path',
     start2Desc: 'To land a working agent directly, use the thin host package: session stack, model registry and tools are wired in one call — host.New plus DefaultAgent, three parameters to start.',
     ctaTitle: 'Build agents on a reversible, composable foundation',
-    ctaDesc: 'v0.2.1 is out — the performance round is closed (zero-copy event dispatch, slice-backed Record attrs, LineSink / AsyncSink exits), the host assembly layer landed so the README calls itself a framework again, and bilingual docs cover all 28 packages.',
-    ctaRelease: 'v0.2.1 Release',
+    ctaDesc: `${VERSION} is out — the "scope-local bindings do not satisfy Require" contract now lives in three godoc surfaces with semantic guardrail tests (#185), the English site got its own locale config, and the version literal is single-sourced.`,
+    ctaRelease: `${VERSION} Release`,
     ctaEval: 'Benchmarks',
   },
 }
@@ -153,7 +157,7 @@ const icons = {
         <p class="cta-desc">{{ t.ctaDesc }}</p>
         <div class="actions center">
           <a class="btn btn-primary" href="https://github.com/Luo-root/pulse" target="_blank" rel="noopener">{{ t.ctaGithub }}</a>
-          <a class="btn btn-ghost" href="https://github.com/Luo-root/pulse/releases/tag/v0.2.1" target="_blank" rel="noopener">{{ t.ctaRelease }}</a>
+          <a class="btn btn-ghost" :href="RELEASE_URL" target="_blank" rel="noopener">{{ t.ctaRelease }}</a>
           <a class="btn btn-ghost" href="/pulse/eval">{{ t.ctaEval }}</a>
         </div>
       </div>

@@ -1,6 +1,6 @@
 # Quick start
 
-Pulse is a Go AI agent framework built around a plugin kernel, shipping its v2 core as v0.2.1. This page walks the shortest path: **plugin kernel + model layer + a ReAct tool round**.
+Pulse is a Go AI agent framework built around a plugin kernel, shipping its v2 core as v0.2.2. This page walks the shortest path: **plugin kernel + model layer + a ReAct tool round**.
 
 ## Requirements
 
