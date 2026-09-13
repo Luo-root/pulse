@@ -1,0 +1,38 @@
+# 行尾归一为 LF —— 仓库内存 LF，检出也按 LF。
+#
+# 背景：Windows 上 core.autocrlf=true 时，不加这段会按平台默认把工作副本检出成
+# CRLF。Go 工具链按 LF 判定格式，于是出现两类误判：
+#   - gofmt -l / go fmt 把每个文件都列为「未格式化」（全量假阳性）；
+#   - go fmt ./... 反向把整棵树改写成 LF，git status 出现一大片「已修改」，
+#     而 git diff --numstat 里没有内容差异。
+# 索引里本来就全是 LF（322 个文本文件），这里只把落盘形态钉死，不改已提交内容。
+# 已存在的 CRLF 工作副本需重新检出一次才会变 LF：git rm -r --cached . 后 git reset --hard。
+* text=auto eol=lf
+
+# 二进制：不参与行尾转换与文本 diff。
+*.gif binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.pptx binary
+*.xlsx binary
+*.docx binary
+
+# Go 工具链文件显式声明，不依赖 auto 探测。
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
+# 平台脚本保持各自约定：旧版 Windows PowerShell 对 LF-only 脚本不友好。
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
