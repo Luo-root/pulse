@@ -1,6 +1,6 @@
 # Quick start
 
-Pulse is a Go agent runtime built around a plugin kernel, shipping its v2 core as v0.2.0. This page walks the shortest path: **plugin kernel + model layer + a ReAct tool round**.
+Pulse is a Go AI agent framework built around a plugin kernel, shipping its v2 core as v0.2.1. This page walks the shortest path: **plugin kernel + model layer + a ReAct tool round**.
 
 ## Requirements
 
@@ -89,4 +89,4 @@ go run ./main.go
 - **Core concepts**: Effect / ServiceKey / events and the loading model → [Core concepts](/en/guide/concepts)
 - **Orchestration**: three-state slot node graphs and YAML loading → [flow orchestration](/en/guide/flow)
 - **Memory**: sessions, compaction, long-term store, assembly → [Memory layer](/en/guide/memory)
-- **Per-package docs**: full bilingual docs for all 27 packages → [Packages](/en/packages/)
+- **Per-package docs**: full bilingual docs for all 28 packages → [Packages](/en/packages/)
