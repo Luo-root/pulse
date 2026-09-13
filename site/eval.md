@@ -38,7 +38,7 @@ eval 的分层基准（#102，L0–L3）与 war 同机数字交叉验证：
 
 ```bash
 cd eval/war
-go test -bench . -benchmem -run '^$' .   # 建议加 -count=2 看方差
+go test -bench . -benchmem -run '^$' . -count=2   # 即下表口径；加大 -count 看方差
 go test -run TestWarSanity -count=1 .    # 正确性哨兵
 ```
 

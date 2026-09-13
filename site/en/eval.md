@@ -38,7 +38,7 @@ The eval layered benchmarks (#102, L0–L3) cross-check the war numbers on the s
 
 ```bash
 cd eval/war
-go test -bench . -benchmem -run '^$' .   # add -count=2 to observe variance
+go test -bench . -benchmem -run '^$' . -count=2   # the table below; raise the count to see variance
 go test -run TestWarSanity -count=1 .    # correctness sentinel
 ```
 

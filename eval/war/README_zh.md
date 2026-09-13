@@ -8,7 +8,7 @@
 
 ```powershell
 cd eval/war
-go test -bench . -benchmem -run '^$' .          # 建议加 -count=2 看方差
+go test -bench . -benchmem -run '^$' . -count=2   # 即下表口径；加大 -count 看方差
 go test -run TestWarSanity -count=1 .           # 正确性哨兵：每任务真实跑通
 ```
 

@@ -8,7 +8,7 @@ Same machine, same task set, equally-thin stub models — measuring the infrastr
 
 ```powershell
 cd eval/war
-go test -bench . -benchmem -run '^$' .          # add -count=2 to observe variance
+go test -bench . -benchmem -run '^$' . -count=2   # the table below; raise the count to see variance
 go test -run TestWarSanity -count=1 .           # correctness sentinel: every task really runs
 ```
 
