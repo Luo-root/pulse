@@ -13,6 +13,37 @@ Pulse is a Go AI agent framework built around a plugin kernel, shipping its v2 c
 go get github.com/Luo-root/pulse
 ```
 
+## Less wiring: one-step assembly (host)
+
+If you'd rather not wire it yourself, use the thin `host` package — providers, model declarations and the session stack mount on the kernel, and `DefaultAgent` turns three parameters into a working agent:
+
+```go
+k := kernel.New()
+defer k.Dispose()
+
+h, err := host.New(host.Options{
+	Kernel:    k,
+	Providers: []host.Provider{host.Provider(openai.Register)},
+	Models: []host.ModelDecl{
+		{Name: "main", Config: llm.Config{Provider: openai.ProviderCompletions, Model: "gpt-4o-mini", APIKey: os.Getenv("OPENAI_API_KEY")}},
+	},
+	Session: memory.NewMemorySessionStack(),
+})
+if err != nil {
+	panic(err)
+}
+
+agent, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main"})
+if err != nil {
+	panic(err)
+}
+res, err := agent.Run(ctx, llm.UserText("hello"))
+```
+
+Tools, observability exits and the approval gate (`ToolGate`) attach at this layer; for non-default sources switch to `h.NewAgent` — no special cases. See the [host package docs](/en/packages/host/).
+
+The manual assembly below produces the same result, one layer at a time.
+
 ## Shortest path: model + ReAct tool round
 
 The example below is full production assembly: kernel host → llm.Registry (observed wrapper) → named model instance → MemToolSet tool registration → Agent with a request scope.
