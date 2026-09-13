@@ -74,9 +74,9 @@ Same-machine, same-task cross-framework numbers (see [Benchmarks](/en/eval)):
 
 | Task | Pulse flow | Eino compose | Multiplier |
 |---|---|---|---|
-| T3 linear chain (3 passthrough nodes) | 8.6–8.9 µs / 73 allocs | 17.9–18.1 µs / 323 allocs | ~2.0× |
-| T4 fan-out/fan-in DAG | 9.0–9.3 µs / 73 allocs | 30.3–37.9 µs / 411–462 allocs | ~3.3–4.1× |
+| T3 linear chain (3 passthrough nodes) | 8.3–8.4 µs / 73 allocs | 17.6–17.9 µs / 323 allocs | ~2.1× |
+| T4 fan-out/fan-in DAG | 8.7 µs / 73 allocs | 30.5–35.7 µs / 411–462 allocs (Graph keyed fan-in / Workflow field mapping) | ~3.5–4.1× |
 
-**AND slots make fan-out free**: the DAG costs the same as the linear chain, same allocs. The counterpart's join scheduling runs ~1.7× over its own linear chain, and its field-mapping layer adds another +15–20%.
+**AND slots make fan-out free**: the DAG costs the same as the linear chain, same allocs. The counterpart's join scheduling runs ~1.7× over its own linear chain, and its field-mapping layer adds another +12–17%.
 
 See the [flow package docs](/en/packages/kernel/flow/) and [flow/yaml package docs](/en/packages/kernel/flow/yaml/).

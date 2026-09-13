@@ -74,9 +74,9 @@ nodes:
 
 | 任务 | Pulse flow | Eino compose | 倍数 |
 |---|---|---|---|
-| T3 线性链（3 透传节点） | 8.6–8.9 µs / 73 allocs | 17.9–18.1 µs / 323 allocs | ~2.0× |
-| T4 分支汇聚 DAG | 9.0–9.3 µs / 73 allocs | 30.3–37.9 µs / 411–462 allocs | ~3.3–4.1× |
+| T3 线性链（3 透传节点） | 8.3–8.4 µs / 73 allocs | 17.6–17.9 µs / 323 allocs | ~2.1× |
+| T4 分支汇聚 DAG | 8.7 µs / 73 allocs | 30.5–35.7 µs / 411–462 allocs（Graph 键化 fan-in / Workflow 字段映射） | ~3.5–4.1× |
 
-**AND 槽位让 fan-out 免费**：DAG 与线性链同价同 allocs。对比方的 join 调度较其自身线性链贵 ~1.7×，字段映射层再 +15–20%。
+**AND 槽位让 fan-out 免费**：DAG 与线性链同价同 allocs。对比方的 join 调度较其自身线性链贵 ~1.7×，字段映射层再 +12–17%。
 
 详见 [flow 包文档](/packages/kernel/flow/) 与 [flow/yaml 包文档](/packages/kernel/flow/yaml/)。
