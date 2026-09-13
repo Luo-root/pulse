@@ -24,7 +24,8 @@
 - **Side-band events**: observability subscribes via kernel On/Emit and **never enters** Waterfall chains — observation never changes business behavior;
 - **Snapshot after subscription**: the Bootstrap banner is a post-subscription state snapshot (late-mounting observers don't miss history, because the snapshot rebuilds current state);
 - **Two-tier trace**: `host_id` (assembly-time identity) + `trace_id` (request-time identity), threading four layers at runtime (host → scope → model → tools);
-- **`Attrs` is an insertion-ordered slice, not a map**: the first write reserves capacity for six entries, so common records allocate once; overwriting a key keeps its original position; the write surface is only the generic `Set[T AttrValue]` — there is no `map[string]any` escape hatch.
+- **`Attrs` is an insertion-ordered slice, not a map**: the first write reserves capacity for six entries, so common records allocate once; overwriting a key keeps its original position; the write surface is only the generic `Set[T AttrValue]` — there is no `map[string]any` escape hatch;
+- **Request-level services are local bindings**: the `CollectorKey` mounted by `AttachCollector` is reachable only via `Get` from the request scope or a descendant — parents / siblings / other concurrent requests cannot see it (no cross-talk); it **does not participate in fiber dependency resolution**, so a plugin declaring `kernel.Require(CollectorKey)` sits silently in `inactive` — diagnose with `FiberSnapshots().WaitingFor`.
 
 ## Shortest usage
 

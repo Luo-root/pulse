@@ -24,7 +24,8 @@
 - **旁路事件**：观测用 kernel 的 On/Emit 订阅，**不进** Waterfall 拦截链——观测永远不改变业务行为；
 - **订阅后快照**：Bootstrap 横幅是订阅后的状态快照（后装的观测不会错过历史，因为快照重建当前态）；
 - **trace 双层**：`host_id`（装配期身份）+ `trace_id`（请求期身份），运行期四层贯通（宿主 → scope → 模型 → 工具）；
-- **`Attrs` 是插入序切片，不是 map**：首次写入按 6 条预留容量，常见记录一次分配；同名覆盖保持原位置；写入面只有泛型 `Set[T AttrValue]`，没有 `map[string]any` 逃生舱。
+- **`Attrs` 是插入序切片，不是 map**：首次写入按 6 条预留容量，常见记录一次分配；同名覆盖保持原位置；写入面只有泛型 `Set[T AttrValue]`，没有 `map[string]any` 逃生舱；
+- **请求级服务是局部绑定**：`AttachCollector` 装的 `CollectorKey` 只有本请求 scope 及其后代 `Get` 得到，父 / 兄弟 / 其他并发请求读不到（互不串台）；它**不参与 fiber 依赖解析**——用 `kernel.Require(CollectorKey)` 声明依赖的插件会静默停在 `inactive`，靠 `FiberSnapshots().WaitingFor` 排查。
 
 ## 最短用法
 

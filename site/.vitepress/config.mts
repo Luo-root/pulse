@@ -1,5 +1,8 @@
 import { defineConfig } from 'vitepress'
 
+// 版本号单源：description 与 footer 都引用它——发版时只改这一处。
+const VERSION = 'v0.2.1'
+
 // 包文档侧边栏：分组与链接前缀参数化（zh: /packages/…、en: /en/packages/…）；
 // 分组标签随语言传入（zh 默认值 / en 显式表），避免英文站显示中文分组名。
 const ZH_LABELS = {
@@ -85,7 +88,7 @@ const en = {
   label: 'English',
   lang: 'en-US',
   link: '/en/',
-  description: 'Go AI agent framework — reversible effects and dependency-reactive service loading; the v2 core ships as v0.2.1',
+  description: `Go AI agent framework — reversible effects and dependency-reactive service loading; the v2 core ships as ${VERSION}`,
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/en/guide/quickstart', activeMatch: '^/en/guide/' },
@@ -105,6 +108,10 @@ const en = {
       '/en/packages/': pkgGroups('/en/', EN_LABELS),
       '/en/eval': [{ text: 'Benchmarks', items: [{ text: 'Performance', link: '/en/eval' }] }],
     },
+    footer: {
+      message: `Open Source · MIT · ${VERSION}`,
+      copyright: 'Copyright © 2026 Luo-root',
+    },
     search: { provider: 'local' },
     outline: { label: 'On this page' },
     docFooter: { prev: 'Previous', next: 'Next' },
@@ -115,7 +122,7 @@ export default defineConfig({
   base: '/pulse/',
   lang: 'zh-CN',
   title: 'Pulse',
-  description: 'Go AI agent 框架——可逆效应与依赖响应式装载，v2 核心已以 v0.2.1 发布',
+  description: `Go AI agent 框架——可逆效应与依赖响应式装载，v2 核心已以 ${VERSION} 发布`,
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/pulse/favicon.svg' }]], // head 里的自定义 link 不吃 base 自动前缀，硬编码（与 base 同步）
   locales: { root: zh, en },
   // v1.x dead-link checker 会把「目录尾斜杠链接」(/dir/) 规范化为 /dir/index 后查路由表，
@@ -127,7 +134,7 @@ export default defineConfig({
     siteTitle: 'Pulse',
     socialLinks: [{ icon: 'github', link: 'https://github.com/Luo-root/pulse' }],
     footer: {
-      message: '开源 · MIT · v0.2.1',
+      message: `开源 · MIT · ${VERSION}`,
       copyright: 'Copyright © 2026 Luo-root',
     },
   },

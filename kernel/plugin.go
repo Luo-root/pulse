@@ -39,6 +39,13 @@ func (d Dependency) satisfied(c *Context) bool { return d.check(c) }
 // 依赖解析只认**全局**绑定（`getGlobal`，不经局部链）：局部绑定是
 // 请求级数据，既不满足依赖、也不触发纤维重评估——「局部绑定不参与
 // fiber 依赖解析」是合同，不是巧合。
+//
+// 依赖声明前先确认该服务是全局绑定：若服务由
+// `Provide(..., kernel.Local())` 装（例如请求级直写服务），`Require`
+// 永远不满足，插件会静默停在 inactive。
+//
+// 排查：插件长期 inactive 时，`FiberSnapshots()` 的 `WaitingFor`
+// 会列出未满足的依赖名——据此区分「服务没装」与「服务是局部绑定」。
 func Require[T any](k ServiceKey[T]) Dependency {
 	return Dependency{
 		name: k.name,

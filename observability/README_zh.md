@@ -116,7 +116,7 @@ func main() {
 | fiber_state / loader_action | 全树 `Emit` | `Bootstrap` |
 | tool / turn / llm generate | `EmitLocal` / `WaterfallLocal` | 各包 `Observe`（挂 reqScope） |
 | flow 节点分段 | Observer 回调 | `flow.NewRecordObserver` |
-| 业务自定义事实 | —— | `observability.CollectorKey` 直写（**作用域局部绑定**：持请求 scope 或其子孙 `kernel.Get`；父 / 兄弟 / 其他并发请求读不到，不串台） |
+| 业务自定义事实 | —— | `observability.CollectorKey` 直写（**作用域局部绑定**：持请求 scope 或其子孙 `kernel.Get`；父 / 兄弟 / 其他并发请求读不到，不串台）；**不满足 `kernel.Require`**——局部绑定不进依赖解析，用它声明依赖的插件会静默停在 `inactive`，用 `FiberSnapshots().WaitingFor` 排查 |
 
 详见 [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md) 与 [`docs/design/observability-v1-design.md`](../docs/design/observability-v1-design.md)。
 

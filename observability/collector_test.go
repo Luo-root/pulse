@@ -142,3 +142,42 @@ func TestAttachCollectorIsolation(t *testing.T) {
 		t.Fatalf("reqB record = %+v（TraceID 不得串台）", recs[1])
 	}
 }
+
+// #185：Collector 是作用域局部绑定，**不满足 kernel.Require**——声明
+// Require(CollectorKey) 的插件会静默停在 inactive（不报错、不打日志、
+// 不触发事件）。这条合同写在 CollectorKey / AttachCollector 的 godoc 里，
+// 本用例把它钉住：若将来把 AttachCollector 改回全局绑定，这里会失败，
+// 提醒同步 godoc 与升级说明。
+func TestAttachCollectorDoesNotSatisfyRequire(t *testing.T) {
+	host := kernel.New()
+	defer host.Dispose()
+
+	if _, err := AttachCollector(host, ObserveConfig{Sink: &MemorySink{}, HostID: "h1", TraceID: "tr-1"}); err != nil {
+		t.Fatal(err)
+	}
+	// 「装好了」与「依赖不满足」并存：本层 Get 得到，Require 却永不满足。
+	if _, ok := kernel.Get(host, CollectorKey); !ok {
+		t.Fatal("collector must be readable from its own scope")
+	}
+
+	p := &requireCollectorPlugin{}
+	f, err := kernel.Use(host, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.State(); got != kernel.StateInactive || p.applied {
+		t.Fatalf("Require(CollectorKey) must stay inactive: state=%v applied=%v", got, p.applied)
+	}
+}
+
+// requireCollectorPlugin 是 #185 的消费方形态：把请求级直写服务声明成依赖。
+type requireCollectorPlugin struct{ applied bool }
+
+func (p *requireCollectorPlugin) Inject() []kernel.Dependency {
+	return []kernel.Dependency{kernel.Require(CollectorKey)}
+}
+
+func (p *requireCollectorPlugin) Apply(*kernel.Context) error {
+	p.applied = true
+	return nil
+}

@@ -129,7 +129,7 @@ those by default.
 | fiber_state / loader_action | Tree-wide `Emit` | `Bootstrap` |
 | tool / turn / llm generate | `EmitLocal` / `WaterfallLocal` | Per-package `Observe` (attached to reqScope) |
 | flow node segments | Observer callbacks | `flow.NewRecordObserver` |
-| Business custom facts | — | `observability.CollectorKey` direct write (**scope-local binding**: read via `kernel.Get` with the request scope or a descendant; parents / siblings / other concurrent requests cannot see it) |
+| Business custom facts | — | `observability.CollectorKey` direct write (**scope-local binding**: read via `kernel.Get` with the request scope or a descendant; parents / siblings / other concurrent requests cannot see it); **it does not satisfy `kernel.Require`** — local bindings stay out of dependency resolution, so a plugin declaring it as a dependency sits silently in `inactive`; diagnose with `FiberSnapshots().WaitingFor` |
 
 See [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md) and [`docs/design/observability-v1-design.md`](../docs/design/observability-v1-design.md) for details.
 
