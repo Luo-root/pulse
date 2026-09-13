@@ -1,0 +1,91 @@
+name: Feature request
+description: Propose something Pulse should do. A survey first, then a proposal.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Pulse settles the design in the issue **before** code exists, so a proposal that lays
+        out options and trade-offs moves much faster than one that only names an API. The
+        fields below follow [CONTRIBUTING.md](https://github.com/Luo-root/pulse/blob/main/CONTRIBUTING.md).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: |
+        The situation you are actually in — not the API you want. What happens today, and what
+        does it cost you in time, correctness, or operational risk?
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-to-do
+    attributes:
+      label: What to do
+      description: The concrete deliverable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: What NOT to do
+      description: The explicit non-goals. This is what keeps the ticket from growing while it is being worked on.
+    validations:
+      required: true
+
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: Prior art and options considered
+      description: |
+        How do comparable projects solve this? Lay out the options with their trade-offs —
+        **including "do nothing"** — and say which one you recommend and why. Present options;
+        don't assert a conclusion the evidence doesn't carry.
+    validations:
+      required: true
+
+  - type: textarea
+    id: design
+    attributes:
+      label: Design rationale
+      description: If you have a shape in mind — how it would be built, which contracts it touches, what it rules out.
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: A checklist that can be verified one item at a time.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: breaking
+    attributes:
+      label: Would this need a breaking change?
+      description: |
+        Under the freeze contract (v0.2.0+), a breaking change may only ride a minor release and
+        must be listed at the top of the release notes.
+      options:
+        - No — a pure addition
+        - Yes — it changes existing behavior or API
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and this is not a duplicate.
+          required: true
+        - label: I have read CONTRIBUTING.md.
+          required: true
