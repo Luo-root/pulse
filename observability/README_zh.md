@@ -56,7 +56,7 @@ Attrs 开放段：标量 kv（~string/~int64/~float64/~bool）
 - 无 `map[string]any` 逃生舱；`Attrs` 的写入面只有泛型 `Set[T AttrValue]`——`[]byte`、struct、slice、任意对象在类型上进不来（隐私边界的类型部分），key 自述意图 + Sink 侧 redact 钩子兜住蓄意标量注入。
 - `Sink.Write(Record)`：**无** `context.Context`（kernel Emit 路径不带 ctx）。
 - `Time` 为零时由内置 Sink（`SlogSink` / `MemorySink`）补 wall clock；`SlogSink` 的 Attrs 段按 key 字典序输出（`Attrs.MarshalJSON` 同序）。
-- 内置：`SlogSink`、`MemorySink`、`MultiSink`。
+- 内置：`SlogSink`、`LineSink`、`MemorySink`、`MultiSink`；`AsyncSink` 是**包装器**（包住任一下沉出口改为异步投递，见「出口选择」）。
 
 ## 异步出口（AsyncSink）
 
@@ -95,7 +95,7 @@ func main() {
 }
 ```
 
-实测（i9-14900HX，Windows；对照 = `SlogSink` 直写无缓冲文件）：
+实测（i9-14900HX，Windows，AC 供电空载；**绝对 ns 随电源/负载状态可差 2–4×，以比值与 alloc 计数为准**；对照 = `SlogSink` 直写无缓冲文件）：
 
 | 口径 | 直接写 | AsyncSink |
 |---|---|---|

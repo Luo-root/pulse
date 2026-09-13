@@ -233,6 +233,7 @@ func (s *AsyncSink) worker() {
 		if s.forceDrop {
 			s.dropped.Add(uint64(s.count))
 			s.count, s.head = 0, 0
+			s.drain.Broadcast() // 协议完整：等待者不能错过最后一次「已排空」唤醒
 			s.mu.Unlock()
 			return
 		}
