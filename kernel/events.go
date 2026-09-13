@@ -47,32 +47,44 @@ const (
 // 零拷贝（此前每次派发都要按 kind 过滤并新建切片）。快照窗口语义与
 // 重构前一致：派发期间的增删不影响本次派发（在途派发持有旧切片，
 // 正在卸载的作用域仍可能收到最后一次派发）。
+//
+// 三张表全部**懒建**：从未注册过监听器的作用域零 map 分配（派生/销毁
+// 作用域是每请求的高频路径），首次注册时才建对应 kind 的表。
 type eventBus struct {
 	mu        sync.Mutex
-	types     map[string]reflect.Type // 事件名 -> 载荷类型指纹
-	observe   map[string][]*listener  // COW：观察型监听器（Emit / EmitLocal / Parallel）
-	waterfall map[string][]*listener  // COW：around 型监听器（Waterfall / WaterfallLocal）
+	types     map[string]reflect.Type // 事件名 -> 载荷类型指纹（懒建）
+	observe   map[string][]*listener  // COW：观察型监听器（懒建）
+	waterfall map[string][]*listener  // COW：around 型监听器（懒建）
 }
 
-func newEventBus() *eventBus {
-	return &eventBus{
-		types:     make(map[string]reflect.Type),
-		observe:   make(map[string][]*listener),
-		waterfall: make(map[string][]*listener),
-	}
-}
+func newEventBus() *eventBus { return &eventBus{} }
 
 // payloadType 返回 P 的类型指纹。
 func payloadType[P any]() reflect.Type {
 	return reflect.TypeOf((*P)(nil))
 }
 
-// tableLocked 返回该 kind 对应的监听器表（自持锁语义：调用方持 b.mu）。
+// tableLocked 返回该 kind 对应的监听器表（可能为 nil＝尚未建；自持锁
+// 语义：调用方持 b.mu）。读路径直接用它（nil map 读取安全）。
 func (b *eventBus) tableLocked(kind listenerKind) map[string][]*listener {
 	if kind == listenerWaterfall {
 		return b.waterfall
 	}
 	return b.observe
+}
+
+// ensureTableLocked 返回该 kind 的表，必要时建（写路径用；自持锁语义）。
+func (b *eventBus) ensureTableLocked(kind listenerKind) map[string][]*listener {
+	if t := b.tableLocked(kind); t != nil {
+		return t
+	}
+	t := make(map[string][]*listener)
+	if kind == listenerWaterfall {
+		b.waterfall = t
+	} else {
+		b.observe = t
+	}
+	return t
 }
 
 // list 返回该事件指定 kind 的监听器快照（COW 切片，调用方只读；
@@ -93,9 +105,12 @@ func (b *eventBus) add(name string, typ reflect.Type, l *listener) error {
 				name, known, typ)
 		}
 	} else {
+		if b.types == nil {
+			b.types = make(map[string]reflect.Type)
+		}
 		b.types[name] = typ
 	}
-	t := b.tableLocked(l.kind)
+	t := b.ensureTableLocked(l.kind)
 	t[name] = appendCopyListener(t[name], l)
 	return nil
 }
@@ -131,12 +146,12 @@ func appendCopyListener(ls []*listener, l *listener) []*listener {
 }
 
 // clear 丢弃本层全部监听器（作用域销毁时调用：已死作用域的
-// 监听不得再被任何派发触达）。类型指纹保留（类型校验与生命周期无关）。
+// 监听不得再被任何派发触达）。置 nil 即清空（懒建语义，零分配）；
+// 类型指纹保留（类型校验与生命周期无关）。
 func (b *eventBus) clear() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.observe = make(map[string][]*listener)
-	b.waterfall = make(map[string][]*listener)
+	b.observe, b.waterfall = nil, nil
 }
 
 // OnWaterfall 注册一个 waterfall（around 中间件）监听器。
