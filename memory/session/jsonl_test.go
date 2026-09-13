@@ -513,10 +513,14 @@ func TestJSONLCrossProcessDelete(t *testing.T) {
 
 // TestJSONLLockHeartbeat：Flush 兼作锁心跳——持锁超过 stale 阈值但有心跳
 // 的会话不被误抢占（对照：无心跳的同龄锁被另一 store 实例抢占）。
+//
+// stale 阈值取 2s 而非毫秒级：判定是 `time.Since(mtime) > stale`，CI 负载高时
+// 「心跳后到 peer.Open」的间隔可能达到几十毫秒——阈值太紧会让心跳用例假失败
+// （心跳后仍被判 stale 而遭抢占）；旧 mtime 用 2 小时，对照用例不受影响。
 func TestJSONLLockHeartbeat(t *testing.T) {
-	store := newJSONLStore(t, JSONLStale(50*time.Millisecond))
+	store := newJSONLStore(t, JSONLStale(2*time.Second))
 	// 第二个 store 实例模拟另一进程：独立 open 缓存，Open 会真正走到文件锁。
-	peer, err := NewJSONLStore(store.root, JSONLStale(50*time.Millisecond))
+	peer, err := NewJSONLStore(store.root, JSONLStale(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
