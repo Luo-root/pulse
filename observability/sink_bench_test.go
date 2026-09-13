@@ -20,7 +20,7 @@ type benchNoopSink struct{}
 
 func (benchNoopSink) Write(Record) {}
 
-func benchRecordN(attrs int) Record {
+func benchLineRecord(attrs int) Record {
 	r := Record{
 		HostID:   "host-1",
 		TraceID:  "tr-0123456789abcdef",
@@ -40,7 +40,7 @@ func benchRecordN(attrs int) Record {
 func BenchmarkLayer_RecordBuild(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = benchRecordN(3)
+		_ = benchLineRecord(3)
 	}
 }
 
@@ -48,7 +48,7 @@ func BenchmarkLayer_RecordBuild(b *testing.B) {
 
 func BenchmarkLayer_NoopSink(b *testing.B) {
 	s := benchNoopSink{}
-	r := benchRecordN(3)
+	r := benchLineRecord(3)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -57,7 +57,7 @@ func BenchmarkLayer_NoopSink(b *testing.B) {
 
 func BenchmarkLayer_MemorySink(b *testing.B) {
 	s := &MemorySink{}
-	r := benchRecordN(3)
+	r := benchLineRecord(3)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -68,7 +68,7 @@ func BenchmarkLayer_MemorySink(b *testing.B) {
 
 func BenchmarkLayer_SlogDiscardText(b *testing.B) {
 	s := SlogSink{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	r := benchRecordN(3)
+	r := benchLineRecord(3)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -77,7 +77,7 @@ func BenchmarkLayer_SlogDiscardText(b *testing.B) {
 
 func BenchmarkLayer_SlogDiscardJSON(b *testing.B) {
 	s := SlogSink{Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))}
-	r := benchRecordN(3)
+	r := benchLineRecord(3)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -95,7 +95,7 @@ func BenchmarkLayer_SlogFileBuffered(b *testing.B) {
 	bw := bufio.NewWriterSize(f, 64<<10)
 	defer bw.Flush()
 	s := SlogSink{Logger: slog.New(slog.NewTextHandler(bw, nil))}
-	r := benchRecordN(3)
+	r := benchLineRecord(3)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -109,7 +109,7 @@ func BenchmarkLayer_SlogFileRaw(b *testing.B) {
 	}
 	defer f.Close()
 	s := SlogSink{Logger: slog.New(slog.NewTextHandler(f, nil))}
-	r := benchRecordN(3)
+	r := benchLineRecord(3)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -120,7 +120,7 @@ func BenchmarkLayer_SlogFileRaw(b *testing.B) {
 
 func BenchmarkLayer_LineDiscard(b *testing.B) {
 	s := NewLineSink(io.Discard)
-	r := benchRecordN(3)
+	r := benchLineRecord(3)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -134,7 +134,7 @@ func BenchmarkLayer_LineFile(b *testing.B) {
 	}
 	defer f.Close()
 	s := NewLineSink(f)
-	r := benchRecordN(3)
+	r := benchLineRecord(3)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -146,7 +146,7 @@ func BenchmarkLayer_LineFile(b *testing.B) {
 
 func BenchmarkScale_Slog_0(b *testing.B) {
 	s := SlogSink{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	r := benchRecordN(0)
+	r := benchLineRecord(0)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -155,7 +155,7 @@ func BenchmarkScale_Slog_0(b *testing.B) {
 
 func BenchmarkScale_Slog_3(b *testing.B) {
 	s := SlogSink{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	r := benchRecordN(3)
+	r := benchLineRecord(3)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -164,7 +164,7 @@ func BenchmarkScale_Slog_3(b *testing.B) {
 
 func BenchmarkScale_Slog_10(b *testing.B) {
 	s := SlogSink{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	r := benchRecordN(10)
+	r := benchLineRecord(10)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -173,7 +173,7 @@ func BenchmarkScale_Slog_10(b *testing.B) {
 
 func BenchmarkScale_Line_0(b *testing.B) {
 	s := NewLineSink(io.Discard)
-	r := benchRecordN(0)
+	r := benchLineRecord(0)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -182,7 +182,7 @@ func BenchmarkScale_Line_0(b *testing.B) {
 
 func BenchmarkScale_Line_3(b *testing.B) {
 	s := NewLineSink(io.Discard)
-	r := benchRecordN(3)
+	r := benchLineRecord(3)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)
@@ -191,7 +191,7 @@ func BenchmarkScale_Line_3(b *testing.B) {
 
 func BenchmarkScale_Line_10(b *testing.B) {
 	s := NewLineSink(io.Discard)
-	r := benchRecordN(10)
+	r := benchLineRecord(10)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		s.Write(r)

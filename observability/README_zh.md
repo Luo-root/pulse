@@ -91,7 +91,7 @@ defer sink.Flush()                        // 关闭前必须 Flush（最后一�
 _ = sink.Err()                            // 写错误记首错，不 panic
 ```
 
-实测（i9-14900HX / Windows；含信封 + 3 Attrs；丢弃输出不落盘）：
+实测（i9-14900HX / Windows，AC 供电空载；**绝对 ns 随电源/负载可差 2–4×，以比值与 alloc 计数为准**；含信封 + 3 Attrs；丢弃输出不落盘）：
 
 | 口径 | `SlogSink` | `LineSink` |
 |---|---|---|

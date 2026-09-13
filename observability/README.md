@@ -97,7 +97,7 @@ defer sink.Flush()                        // mandatory before shutdown (last bat
 _ = sink.Err()                            // first write error is recorded, never panics
 ```
 
-Measured (i9-14900HX / Windows; envelope + 3 Attrs; output discarded, no disk):
+Measured (i9-14900HX / Windows, AC power and idle; **absolute ns varies 2–4x with power/load — trust ratios and alloc counts**; envelope + 3 Attrs; output discarded, no disk):
 
 | Case | `SlogSink` | `LineSink` |
 |---|---|---|

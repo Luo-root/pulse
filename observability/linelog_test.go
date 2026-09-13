@@ -3,6 +3,7 @@ package observability
 import (
 	"bytes"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -121,8 +122,9 @@ func TestLineSinkCapturesWriteError(t *testing.T) {
 	}
 }
 
-// TestLineSinkParityWithSlogFields 与 SlogSink 的字段面保持同序同集：
-// 同一条记录两边输出的字段名序列一致（值域格式不做逐字比对）。
+// TestLineSinkParityWithSlogFields 与 SlogSink 的字段面**实测对照**：同一条
+// 记录分别过两个出口，逐字段比对字段名序列（slog 侧跳过 handler 自带的
+// time/level/msg 三件套）。值格式不逐字比对（引号细节见 LineSink godoc）。
 func TestLineSinkParityWithSlogFields(t *testing.T) {
 	rec := Record{
 		HostID:  "h1",
@@ -133,22 +135,106 @@ func TestLineSinkParityWithSlogFields(t *testing.T) {
 	}
 	Set(&rec.Attrs, "b.key", "v")
 	Set(&rec.Attrs, "a.key", "v")
-
 	rec.Time = time.Unix(0, 0).UTC()
+
+	// LineSink 侧
+	var lineBuf bytes.Buffer
+	ls := NewLineSink(&lineBuf)
+	ls.Write(rec)
+	_ = ls.Flush()
+	lineNames := fieldNames(strings.TrimSpace(lineBuf.String()))
+
+	// SlogSink 侧（同一记录、同一 TextHandler）
+	var slogBuf bytes.Buffer
+	ss := SlogSink{Logger: slog.New(slog.NewTextHandler(&slogBuf, nil))}
+	ss.Write(rec)
+	slogNames := fieldNames(strings.TrimSpace(slogBuf.String()))
+
+	const handlerPrefix = 3 // time / level / msg
+	if len(slogNames) < handlerPrefix {
+		t.Fatalf("slog 输出字段过少：%q", slogBuf.String())
+	}
+	slogAttrs := slogNames[handlerPrefix:]
+	if len(slogAttrs) != len(lineNames) {
+		t.Fatalf("字段数不符：line=%v slog(去前缀)=%v", lineNames, slogAttrs)
+	}
+	for i := range lineNames {
+		if lineNames[i] != slogAttrs[i] {
+			t.Fatalf("第 %d 个字段名不符：line=%q slog=%q\nline 全行 %q\nslog 全行 %q",
+				i, lineNames[i], slogAttrs[i], lineBuf.String(), slogBuf.String())
+		}
+	}
+}
+
+// fieldNames 从 logfmt 风格行里取字段名（测试用：值不含空格与转义）。
+func fieldNames(line string) []string {
+	var out []string
+	for _, tok := range strings.Fields(line) {
+		if i := strings.IndexByte(tok, '='); i > 0 {
+			out = append(out, tok[:i])
+		}
+	}
+	return out
+}
+
+// TestLineSinkManyAttrsSorted >8 个 Attrs 走 sort.Strings 回退分支：仍按
+// key 字典序输出、一条不少（乱序插入以真正校验排序）。
+func TestLineSinkManyAttrsSorted(t *testing.T) {
 	var buf bytes.Buffer
 	s := NewLineSink(&buf)
+	rec := Record{Source: SourceAdapter, Event: "evt"}
+	rec.Time = time.Unix(0, 0).UTC()
+
+	var wantKeys []string
+	for i := 0; i < 12; i++ {
+		k := "k." + string(rune('a'+i))
+		wantKeys = append(wantKeys, k)
+	}
+	// 逆序插入：若回退分支没排序，输出会跟着逆序。
+	for i := len(wantKeys) - 1; i >= 0; i-- {
+		Set(&rec.Attrs, wantKeys[i], "v")
+	}
+	s.Write(rec)
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := fieldNames(strings.TrimSpace(buf.String()))
+	// 前缀字段：time/source/event（无 host_id/trace_id/status/error）。
+	wantPrefix := []string{"time", "source", "event"}
+	if len(got) != len(wantPrefix)+len(wantKeys) {
+		t.Fatalf("字段数 = %d, want %d（%v）", len(got), len(wantPrefix)+len(wantKeys), got)
+	}
+	for i, w := range wantPrefix {
+		if got[i] != w {
+			t.Fatalf("前缀字段第 %d 位 = %q, want %q", i, got[i], w)
+		}
+	}
+	for i, w := range wantKeys {
+		if got[len(wantPrefix)+i] != w {
+			t.Fatalf("Attrs 第 %d 位 = %q, want %q（应字典序）", i, got[len(wantPrefix)+i], w)
+		}
+	}
+}
+
+// TestLineSinkQuotesKeyWhenNeeded 键与值同规则：含空格/等号的 key 也加引号
+// （与 slog.TextHandler 的 needsQuoting 口径一致）。
+func TestLineSinkQuotesKeyWhenNeeded(t *testing.T) {
+	var buf bytes.Buffer
+	s := NewLineSink(&buf)
+	rec := Record{Source: SourceAdapter, Event: "evt"}
+	rec.Time = time.Unix(0, 0).UTC()
+	Set(&rec.Attrs, "weird key", "v") // 含空格 → 加引号
+	Set(&rec.Attrs, "plain.key", "v")
 	s.Write(rec)
 	_ = s.Flush()
 
-	got := strings.Fields(strings.TrimSpace(buf.String()))
-	wantOrder := []string{"time=", "host_id=", "trace_id=", "source=", "event=", "status=", "a.key=", "b.key="}
-	for i, prefix := range wantOrder {
-		if !strings.HasPrefix(got[i], prefix) {
-			t.Fatalf("字段序第 %d 位 = %q, want 前缀 %q（全行 %q）", i, got[i], prefix, buf.String())
-		}
+	out := buf.String()
+	if !strings.Contains(out, `"weird key"=v`) {
+		t.Fatalf("含空格的 key 应加引号，got %q", out)
 	}
-	if len(got) != len(wantOrder) {
-		t.Fatalf("字段数 = %d, want %d", len(got), len(wantOrder))
+	if !strings.Contains(out, "plain.key=v") {
+		t.Fatalf("普通 key 不应加引号，got %q", out)
 	}
 }
 

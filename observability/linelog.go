@@ -36,7 +36,8 @@ const defaultLineBufSize = 32 << 10
 //     duration_ms, status, error, fiber/from/to, loader_kind/entry_id/plugin；
 //   - Attrs 按 key 字典序输出（确定性，便于 grep 与聚合）；
 //   - Time 为零时补 wall clock；Duration 输出毫秒整数；Err 输出 error 文本；
-//   - 值需要时按 Go 字符串字面量加引号（含空格/等号/引号/控制字符）。
+//   - 键与值同规则：需要时按 Go 字符串字面量加引号（含空格/等号/引号/
+//     控制字符）——与 `slog.TextHandler` 的 needsQuoting 口径一致。
 //
 // 契约：
 //   - **并发安全**：内部一把锁保护缓冲与出口；
@@ -187,18 +188,19 @@ func insertionSortStrings(xs []string) {
 	}
 }
 
-// appendTextField 追加 ` key=<文本>`（文本按需加引号）。
+// appendTextField 追加 ` key=<文本>`（key 与值同规则：需要时加引号）。
 func appendTextField(dst []byte, key, val string) []byte {
 	dst = append(dst, ' ')
-	dst = append(dst, key...)
+	dst = appendTextValue(dst, key)
 	dst = append(dst, '=')
 	return appendTextValue(dst, val)
 }
 
-// appendScalarField 追加 ` key=<标量>`（按 kind 直写，不经 any 装箱）。
+// appendScalarField 追加 ` key=<标量>`（key 与值同规则：需要时加引号；
+// 标量按 kind 直写，不经 any 装箱）。
 func appendScalarField(dst []byte, key string, v attrScalar) []byte {
 	dst = append(dst, ' ')
-	dst = append(dst, key...)
+	dst = appendTextValue(dst, key)
 	dst = append(dst, '=')
 	switch v.kind {
 	case attrString:
