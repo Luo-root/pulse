@@ -20,6 +20,13 @@ type benchNoopSink struct{}
 
 func (benchNoopSink) Write(Record) {}
 
+// benchAttrKeys 是**常量**键表：被测路径不该把「基准自身的字符串拼装」算进去
+// （动态拼 key 会虚增 allocs）。各层用同一形状的记录，便于逐层对照。
+var benchAttrKeys = [...]string{
+	"llm.model", "llm.instance", "llm.tokens_in", "llm.temp", "llm.cached",
+	"llm.finish", "llm.role", "llm.vendor", "llm.region", "llm.tier",
+}
+
 func benchLineRecord(attrs int) Record {
 	r := Record{
 		HostID:   "host-1",
@@ -29,37 +36,20 @@ func benchLineRecord(attrs int) Record {
 		Status:   "stop",
 		Duration: 1234567,
 	}
-	for i := 0; i < attrs; i++ {
-		Set(&r.Attrs, "k."+string(rune('a'+i)), "v")
+	for i := 0; i < attrs && i < len(benchAttrKeys); i++ {
+		Set(&r.Attrs, benchAttrKeys[i], "v")
 	}
 	return r
 }
 
 // --- 层 0：只构造 Record（折叠侧成本，不含写入） ---
 //
-// 注意：key/值用常量预置，避免把「基准自身的字符串拼装」算进 Record 构造
-// ——否则会虚增 allocs（实测：动态拼 key 时 +3 allocs，全是拼装噪声）。
+// 与其它层共用同一 `benchLineRecord` 形状（常量键、无拼装噪声），
+// 以便逐层对照；期望值 ≈ 2 allocs（map 的 hmap + bucket），装箱被编译器消除。
 func BenchmarkLayer_RecordBuild(b *testing.B) {
-	const (
-		kModel = "llm.model"
-		kInst  = "llm.instance"
-		kTok   = "llm.tokens_in"
-		vModel = "gpt-4o-mini"
-		vInst  = "main"
-	)
-	var vTok int64 = 1234
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		var r Record
-		r.HostID = "host-1"
-		r.TraceID = "tr-0123456789abcdef"
-		r.Source = SourceAdapter
-		r.Event = "llm.generate_finished"
-		r.Status = "stop"
-		r.Duration = 1234567
-		Set(&r.Attrs, kModel, vModel)
-		Set(&r.Attrs, kInst, vInst)
-		Set(&r.Attrs, kTok, vTok)
+		_ = benchLineRecord(3)
 	}
 }
 

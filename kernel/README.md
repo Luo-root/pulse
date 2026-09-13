@@ -240,6 +240,12 @@ Event names are globally unique; the same name with a different type is rejected
 
 The remaining fixed 1 alloc is the **payload escaping to the heap** (listeners receive `*P` so they can mutate in place; the compiler therefore moves the payload — see the escape analysis on `events.go`). That cost is inherent to the API; hot events can opt into pointer payload keys to avoid it. Standing baselines: `go test -bench . ./kernel/ -run '^$' -bench 'BenchmarkEmit|BenchmarkWaterfallLocal|BenchmarkEventRegister'`.
 
+**Cost surface (measured, listed in full)**:
+
+- **Register / remove**: rebuilds that event's slice — a **cold-bucket registration** (first listener for that event name) costs the same as before (Δ=0, which is exactly what `host` does on a fresh per-request scope); from the **3rd listener on the same event name** each addition costs +1 alloc (equal while the bucket holds ≤2; the old path used amortized growth).
+- **Scope lifecycle**: splitting by kind turns the `eventBus` tables from 2 (`types` + `listeners`) into 3 (`types` + `observe` + `waterfall`), and `clear()` from 1 `make` into 2 — **+2 allocs per scope lifecycle** (measured `Derive()+Dispose()`: 5.0 → 7.0). To flatten it you could lazily create the tables (init in `add`), at the cost of one extra branch on the registration path — usually not worth it; listed as an alternative.
+- **Net**: +2 fixed per derived scope vs −1..−3 allocs per event dispatch — clearly positive for the "many dispatches per request" shape.
+
 Dispatch has two layers (see [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md)):
 
 | API | Semantics | Use case |

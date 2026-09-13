@@ -64,6 +64,37 @@ func TestEventBusSnapshotWindow(t *testing.T) {
 	}
 }
 
+// TestEventBusListZeroCopy list 返回**同一不可变快照**（零拷贝的直接断言）：
+// 连续两次调用拿到同一底层数组；只有 add/remove 之后才换成新切片（COW）。
+func TestEventBusListZeroCopy(t *testing.T) {
+	c := New()
+	defer c.Dispose()
+	fn := func(*cowPayload) {}
+
+	if err := c.events.add(cowKey.name, payloadType[cowPayload](), &listener{kind: listenerObserve, fn: fn}); err != nil {
+		t.Fatal(err)
+	}
+	a := c.events.list(cowKey.name, listenerObserve)
+	b := c.events.list(cowKey.name, listenerObserve)
+	if len(a) != 1 || len(b) != 1 {
+		t.Fatalf("len a=%d b=%d, want 1", len(a), len(b))
+	}
+	if &a[0] != &b[0] {
+		t.Fatal("连续两次 list 应返回同一快照（零拷贝），不得每次新建切片")
+	}
+
+	if err := c.events.add(cowKey.name, payloadType[cowPayload](), &listener{kind: listenerObserve, fn: fn}); err != nil {
+		t.Fatal(err)
+	}
+	after := c.events.list(cowKey.name, listenerObserve)
+	if len(after) != 2 {
+		t.Fatalf("add 后快照 len=%d, want 2", len(after))
+	}
+	if &after[0] == &a[0] {
+		t.Fatal("add 后应换成新切片（COW 不变式）")
+	}
+}
+
 // TestEventBusKindSeparation observe / waterfall 两张表互不干扰。
 func TestEventBusKindSeparation(t *testing.T) {
 	c := New()
