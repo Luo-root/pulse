@@ -56,7 +56,57 @@ Attrs 开放段：标量 kv（~string/~int64/~float64/~bool）
 - 无 `map[string]any` 逃生舱；`Attrs` 的写入面只有泛型 `Set[T AttrValue]`——`[]byte`、struct、slice、任意对象在类型上进不来（隐私边界的类型部分），key 自述意图 + Sink 侧 redact 钩子兜住蓄意标量注入。
 - `Sink.Write(Record)`：**无** `context.Context`（kernel Emit 路径不带 ctx）。
 - `Time` 为零时由内置 Sink（`SlogSink` / `MemorySink`）补 wall clock；`SlogSink` 的 Attrs 段按 key 字典序输出（`Attrs.MarshalJSON` 同序）。
-- 内置：`SlogSink`、`MemorySink`、`MultiSink`。
+- 内置：`SlogSink`、`LineSink`、`MemorySink`、`MultiSink`；`AsyncSink` 是**包装器**（包住任一下沉出口改为异步投递，见「出口选择」）。
+
+## 异步出口（AsyncSink）
+
+慢出口（文件 / 网络导出器）用 `AsyncSink` 包一层：`Write` 只做 `Attrs` 深拷 +
+入队即返回，单后台协程按 FIFO 写出。kernel 的事件派发全同步（`Emit` /
+`EmitLocal` / `Waterfall`；`Parallel` 也等完成），不包这一层，出口有多慢，请求
+与 agent 步进就有多慢。
+
+```go
+sink := observability.NewAsyncSink(observability.SlogSink{Logger: lg},
+    observability.WithCapacity(1024)) // 缺省 1024；满时阻塞（不丢）
+defer sink.Close(ctx)                 // 宿主关闭路径：排空 + 停协程
+```
+
+- **满时策略**：缺省 block（回压给生产者，不丢）；`DropOnFull()` 丢新并计入
+  `Dropped()`；
+- **`Flush(ctx)`** 等「调用时刻已入队（含在途）」全部送达；ctx 过期返回错误、
+  **队列保留**（后台继续处理，记录不丢）；
+- **`Close(ctx)`** 停收 + 排空 + 停协程（幂等）；ctx 过期立即返回，队列剩余计丢；
+- **`Dropped()`** 是合一计数：满丢弃 / Close 后写入 / Close 唤醒的阻塞写入 /
+  Close 超时残留 / inner panic 跳过，全部计入；
+- **inner panic** 被 recover 并计数，worker 继续（它是唯一消费者，静默停摆比
+  崩溃更隐蔽）；
+- **显式 Close/Flush 是前置**：进程退出不做这件事，队列内记录就随进程消失。
+  宿主关闭路径的可抄接线：
+
+```go
+func main() {
+    sink := observability.NewAsyncSink(realSink, observability.WithCapacity(4096))
+    defer func() {
+        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+        _ = sink.Close(ctx) // 先排空异步出口，再让进程退出
+    }()
+    // ... 业务：sink.Write(...) 走请求路径，不阻塞
+}
+```
+
+实测（i9-14900HX，Windows，AC 供电空载；**绝对 ns 随电源/负载状态可差 2–4×，以比值与 alloc 计数为准**；对照 = `SlogSink` 直写无缓冲文件）：
+
+| 口径 | 直接写 | AsyncSink |
+|---|---|---|
+| 突发 1000 条（生产者侧） | 95.3 ms（95 µs/条） | **1.5 ms（1.5 µs/条）≈ 63×** |
+| 后台排空（同批） | —（含在上面） | 52 ms（成本仍在，只是离开生产者路径） |
+| 入队（空 Attrs） | — | 211–242 ns，0 alloc |
+| 入队（含 3 Attrs） | — | ≈ 1.0 µs，2 allocs（深拷 O(N)） |
+
+**异步不提高吞吐上限**：持续速率超过出口能力时，有界队列会被填满并把生产者回压
+到出口速率——这正是「不丢记录」的代价；要丢不堵就用 `DropOnFull()`。它对已经很快
+的出口（如 `MemorySink`）是负优化，别默认套。
 
 ## 与请求级事件的关系
 
