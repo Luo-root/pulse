@@ -7,19 +7,19 @@
 </div>
 
 <div align="center">
-  <h3>Go agent runtime core — reversible effects, reactive service loading.</h3>
+  <h3>Go AI agent framework — reversible effects, reactive service loading.</h3>
 </div>
 
 <div align="center">
   <a href="https://go.dev/"><img alt="Go 1.25.0" src="https://img.shields.io/badge/Go-1.25.0-blue.svg" /></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg" /></a>
-  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.2.0"><img alt="Release v0.2.0" src="https://img.shields.io/badge/release-v0.2.0-2563eb.svg" /></a>
+  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.2.1"><img alt="Release v0.2.1" src="https://img.shields.io/badge/release-v0.2.1-2563eb.svg" /></a>
   <a href="https://luo-root.github.io/pulse/"><img alt="Docs: English | 中文" src="https://img.shields.io/badge/docs-English%20%7C%20%E4%B8%AD%E6%96%87-2563eb.svg" /></a>
 </div>
 
 <br />
 
-**Pulse** is a Go agent runtime built around a plugin kernel, shipping its v2 core as v0.2.0.
+**Pulse** is a Go AI agent framework built around a plugin kernel, shipping its v2 core as v0.2.1.
 
 The v2 kernel is built on reversible effects and dependency-reactive loading. The core rewrite has landed: a plugin kernel, a provider-neutral model layer, a stateless ReAct turn executor, the tool & skills system, the memory layer (sessions, compaction, long-term store, assembly), a dual-foundation observability stack (envelope + per-package folding adapters with a direct-write Collector), declarative flow orchestration, and the two-layer assembly (the `memory` facade + `host` cross-package wiring). The v1 Agent, legacy model adapters, DAG, memory, HITL, and telemetry implementations were removed entirely with no compatibility layer.
 
@@ -187,19 +187,19 @@ For more models, streaming, multimodal input, reasoning parameters, the capabili
 
 ## Performance Benchmarks
 
-Framework infrastructure overhead is quantified with same-machine, same-task comparisons: [`eval/war`](eval/war/README.md) (standalone nested module, [Issue #103](https://github.com/Luo-root/pulse/issues/103)) — Pulse full production assembly vs Eino v0.9.19's official production entry, equally-thin stub models, and a correctness sentinel asserting every task really runs (i9-14900HX / Go 1.25; **compare magnitudes and multiplier ranges, not single digits**):
+Framework infrastructure overhead is quantified with same-machine, same-task comparisons: [`eval/war`](eval/war/README.md) (standalone nested module, [Issue #103](https://github.com/Luo-root/pulse/issues/103)) — Pulse full production assembly vs Eino v0.9.19's official production entry, equally-thin stub models, and a correctness sentinel asserting every task really runs (i9-14900HX / Go 1.25, `-count=2`; **compare magnitudes and multiplier ranges, not single digits**):
 
 | Task | Pulse | Eino v0.9.19 | Multiplier range |
 |---|---|---|---|
-| T1 text round (reused: assemble once, pure runtime) | 3.6 µs / 22 allocs | 36.6–40.9 µs / 407 allocs | **~10–11×** |
-| T1 text round (cold start: full rebuild each run) | 10.5–10.7 µs / 139 allocs | 38.8–39.0 µs / 425 allocs | **~3.7×** |
-| T2 tool round-trip (cold-start upper bound) | 15.1–15.9 µs / 177 allocs | 116.4–117.7 µs / 1364 allocs | **~7.4–7.7×** |
-| T3 linear-chain orchestration (3 passthrough nodes) | 8.6–8.9 µs / 73 allocs | 17.9–18.1 µs / 323 allocs | **~2.0×** |
-| T4 fan-out/fan-in DAG (1 source → 2 branches → AND join) | 9.0–9.3 µs / 73 allocs | 30.3–37.9 µs / 411–462 allocs (Graph keyed fan-in / Workflow field-mapping variants) | **~3.3–4.1×** |
+| T1 text round (reused: assemble once, pure runtime) | 3.2–3.7 µs / 22 allocs | 31.2–36.9 µs / 407 allocs | **~8.5–11.4×** |
+| T1 text round (cold start: full rebuild each run) | 8.8–10.9 µs / 125 allocs | 30.5–31.3 µs / 425 allocs | **~2.8–3.6×** |
+| T2 tool round-trip (cold-start upper bound) | 12.8–13.9 µs / 163 allocs | 94.2–96.0 µs / 1364 allocs | **~6.8–7.5×** |
+| T3 linear-chain orchestration (3 passthrough nodes) | 8.3–8.4 µs / 73 allocs | 17.6–17.9 µs / 323 allocs | **~2.1×** |
+| T4 fan-out/fan-in DAG (1 source → 2 branches → AND join) | 8.7 µs / 73 allocs | 30.5–35.7 µs / 411–462 allocs (Graph keyed fan-in / Workflow field-mapping variants) | **~3.5–4.1×** |
 
 Accounting, reproduction commands, and the full reading live in [`eval/war/README.md`](eval/war/README.md). All gaps are negligible against a real LLM call (seconds) — this quantifies the base price of an architectural choice, not an "unusable" verdict. Three takeaways:
 
-1. **Orchestration fan-out is free**: flow's AND slots make branch joins nearly free — the DAG (T4) costs the same as the linear chain (T3), same allocs; Eino's join scheduling runs ~1.7× over its own linear chain, and `compose.Workflow` field mapping adds another +15–20%.
+1. **Orchestration fan-out is free**: flow's AND slots make branch joins nearly free — the DAG (T4) costs the same as the linear chain (T3), same allocs; Eino's join scheduling runs ~1.7× over its own linear chain, and `compose.Workflow` field mapping adds another +12–17%.
 2. **Explicit DAG dataflow**: flow nodes declare Requires / Provides at construction (Key + three-state slots), so join dependencies live on the node signature; the same topology in `compose.Graph` relies on runtime machinery — AllPredecessor triggering + `WithOutputKey` keying + default map merging — and `compose.Workflow` adds a field-mapping layer on top, leaving the dataflow semantics more implicit at equal topology.
 3. **Layered assembly with kernel**: flow does not import kernel and runs graphs standalone (T3/T4 are exactly that form); when needed, the assembly layer injects the kernel host / services into node closures, and orchestration steps consume registered capabilities directly (T1/T2's Agent rounds are the full kernel form). [`kernel/flow/yaml`](kernel/flow/yaml/README.md) adds declarative graph loading — standalone runs, kernel assembly, and YAML declaration are orthogonal usages, combined per scenario.
 

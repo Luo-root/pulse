@@ -1,6 +1,6 @@
 # 快速开始
 
-Pulse 是一个围绕插件内核构建的 Go AI agent 运行时，v2 内核已以 v0.2.0 发布。本页带你跑通最短链路：**插件内核 + 模型适配层 + ReAct 工具回合**。
+Pulse 是一个围绕插件内核构建的 Go AI agent 框架，v2 内核已以 v0.2.1 发布。本页带你跑通最短链路：**插件内核 + 模型适配层 + ReAct 工具回合**。
 
 ## 环境要求
 
@@ -12,6 +12,37 @@ Pulse 是一个围绕插件内核构建的 Go AI agent 运行时，v2 内核已�
 ```bash
 go get github.com/Luo-root/pulse
 ```
+
+## 更省事：一步装配（host）
+
+不想自己接线就用 `host` 薄串联包——核心里挂好 Provider、模型声明与会话栈，`DefaultAgent` 三行参数出一个能跑的 Agent：
+
+```go
+k := kernel.New()
+defer k.Dispose()
+
+h, err := host.New(host.Options{
+	Kernel:    k,
+	Providers: []host.Provider{host.Provider(openai.Register)},
+	Models: []host.ModelDecl{
+		{Name: "main", Config: llm.Config{Provider: openai.ProviderCompletions, Model: "gpt-4o-mini", APIKey: os.Getenv("OPENAI_API_KEY")}},
+	},
+	Session: memory.NewMemorySessionStack(),
+})
+if err != nil {
+	panic(err)
+}
+
+agent, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main"})
+if err != nil {
+	panic(err)
+}
+res, err := agent.Run(ctx, llm.UserText("hello"))
+```
+
+工具集、观测出口、审批闸门（`ToolGate`）都在这层加；非默认来源改走 `h.NewAgent`，零特例。详见 [host 包文档](/packages/host/)。
+
+下面是同一结果的手工装配，用来一步步看清每层在做什么。
 
 ## 最短链路：模型 + ReAct 工具回合
 
@@ -89,4 +120,4 @@ go run ./main.go
 - **核心概念**：kernel 的 Effect / ServiceKey / 事件与装载模型 → [核心概念](/guide/concepts)
 - **编排**：flow 槽位三态节点图与 YAML 声明式装图 → [flow 编排](/guide/flow)
 - **记忆**：会话、压缩、长期存储与上下文装配 → [记忆层](/guide/memory)
-- **逐包文档**：27 个包的双语完整文档 → [包文档](/packages/)
+- **逐包文档**：28 个包的双语完整文档 → [包文档](/packages/)

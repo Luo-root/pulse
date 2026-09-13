@@ -7,19 +7,19 @@
 </div>
 
 <div align="center">
-  <h3>Go AI agent 运行时内核——可逆副作用，依赖响应式装载。</h3>
+  <h3>Go AI agent 框架——可逆副作用，依赖响应式装载。</h3>
 </div>
 
 <div align="center">
   <a href="https://go.dev/"><img alt="Go 1.25.0" src="https://img.shields.io/badge/Go-1.25.0-blue.svg" /></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg" /></a>
-  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.2.0"><img alt="Release v0.2.0" src="https://img.shields.io/badge/release-v0.2.0-2563eb.svg" /></a>
+  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.2.1"><img alt="Release v0.2.1" src="https://img.shields.io/badge/release-v0.2.1-2563eb.svg" /></a>
   <a href="https://luo-root.github.io/pulse/"><img alt="Docs: English | 中文" src="https://img.shields.io/badge/docs-English%20%7C%20%E4%B8%AD%E6%96%87-2563eb.svg" /></a>
 </div>
 
 <br />
 
-**Pulse** 是一个围绕插件内核构建的 Go AI agent 运行时，v2 内核已以 v0.2.0 发布。
+**Pulse** 是一个围绕插件内核构建的 Go AI agent 框架，v2 内核已以 v0.2.1 发布。
 
 v2 内核以可逆效应和依赖响应式为基座。核心重构已落地：插件内核、provider 中立模型层、无状态 ReAct 回合执行器、工具与 Skills 体系、记忆层（会话、压缩、长期存储、上下文装配）、双基座观测栈（信封 + 各包折叠适配 + Collector 直写服务）、声明式 flow 编排，以及两层装配（memory 根级门面 + host 跨包串联）。v1 的 Agent、旧模型适配器、DAG、记忆、HITL 与遥测实现已彻底移除，不保留兼容层。
 
@@ -187,19 +187,19 @@ func main() {
 
 ## 性能基准
 
-框架基建开销有同机同任务的量化对比：[`eval/war`](eval/war/README_zh.md)（独立嵌套 module，[Issue #103](https://github.com/Luo-root/pulse/issues/103)）——Pulse 全家桶生产装配 vs Eino v0.9.19 官方生产入口，等薄 stub 模型对齐，正确性哨兵断言每个任务真实跑通（i9-14900HX / Go 1.25；**比量级与倍数区间，不比个位数**）：
+框架基建开销有同机同任务的量化对比：[`eval/war`](eval/war/README_zh.md)（独立嵌套 module，[Issue #103](https://github.com/Luo-root/pulse/issues/103)）——Pulse 全家桶生产装配 vs Eino v0.9.19 官方生产入口，等薄 stub 模型对齐，正确性哨兵断言每个任务真实跑通（i9-14900HX / Go 1.25，`-count=2`；**比量级与倍数区间，不比个位数**）：
 
 | 任务 | Pulse | Eino v0.9.19 | 倍数区间 |
 |---|---|---|---|
-| T1 文本回合（复用：装配一次，纯运行） | 3.6 µs / 22 allocs | 36.6–40.9 µs / 407 allocs | **~10–11×** |
-| T1 文本回合（冷启动：每轮重建） | 10.5–10.7 µs / 139 allocs | 38.8–39.0 µs / 425 allocs | **~3.7×** |
-| T2 工具往返（冷启动上界） | 15.1–15.9 µs / 177 allocs | 116.4–117.7 µs / 1364 allocs | **~7.4–7.7×** |
-| T3 线性链编排（3 透传节点） | 8.6–8.9 µs / 73 allocs | 17.9–18.1 µs / 323 allocs | **~2.0×** |
-| T4 分支汇聚 DAG（1 源→2 分支→AND join） | 9.0–9.3 µs / 73 allocs | 30.3–37.9 µs / 411–462 allocs（Graph 键化 fan-in / Workflow 字段映射两变体） | **~3.3–4.1×** |
+| T1 文本回合（复用：装配一次，纯运行） | 3.2–3.7 µs / 22 allocs | 31.2–36.9 µs / 407 allocs | **~8.5–11.4×** |
+| T1 文本回合（冷启动：每轮重建） | 8.8–10.9 µs / 125 allocs | 30.5–31.3 µs / 425 allocs | **~2.8–3.6×** |
+| T2 工具往返（冷启动上界） | 12.8–13.9 µs / 163 allocs | 94.2–96.0 µs / 1364 allocs | **~6.8–7.5×** |
+| T3 线性链编排（3 透传节点） | 8.3–8.4 µs / 73 allocs | 17.6–17.9 µs / 323 allocs | **~2.1×** |
+| T4 分支汇聚 DAG（1 源→2 分支→AND join） | 8.7 µs / 73 allocs | 30.5–35.7 µs / 411–462 allocs（Graph 键化 fan-in / Workflow 字段映射两变体） | **~3.5–4.1×** |
 
 数字口径、复现命令与完整解读见 [`eval/war/README_zh.md`](eval/war/README_zh.md)。相对真实 LLM 调用（秒级）这些差值都可忽略——量化的是架构选择的基础价格，不是「对方不可用」的判断。三条要点：
 
-1. **编排 fan-out 免费**：flow 的 AND 槽位让分支汇聚几乎不加价——DAG（T4）与线性链（T3）同价同 allocs；Eino 的 join 调度较其自身线性链贵 ~1.7×，`compose.Workflow` 字段映射再 +15–20%。
+1. **编排 fan-out 免费**：flow 的 AND 槽位让分支汇聚几乎不加价——DAG（T4）与线性链（T3）同价同 allocs；Eino 的 join 调度较其自身线性链贵 ~1.7×，`compose.Workflow` 字段映射再 +12–17%。
 2. **DAG 数据流显式**：flow 节点在构造处声明 Requires / Provides（Key + 槽位三态），分支汇聚的依赖关系写在节点签名上；`compose.Graph` 同拓扑要靠 AllPredecessor 触发模式 + `WithOutputKey` 键化 + map 默认合并等运行期机制拼出汇聚语义，`compose.Workflow` 再叠加一层字段映射——同等拓扑下数据流语义更隐式。
 3. **与 kernel 分层组装**：flow 不 import kernel，可零依赖独立跑图（T3/T4 即此形态）；需要时在装配层把 kernel 宿主 / 服务以闭包注入节点，编排步骤内直接取用注册能力（T1/T2 的 Agent 回合即 kernel 全家桶形态）。另有 [`kernel/flow/yaml`](kernel/flow/yaml/README_zh.md) 声明式装图——独立运行、kernel 组装、YAML 声明三种用法正交，按场景组合。
 

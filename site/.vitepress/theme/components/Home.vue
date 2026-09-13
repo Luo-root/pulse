@@ -7,10 +7,10 @@ const isZh = computed(() => lang.value.startsWith('zh'))
 
 const copy = {
   zh: {
-    badge: 'v0.2.0 · 开源 MIT',
+    badge: 'v0.2.1 · 开源 MIT',
     heroTitle: '一切皆插件，',
     heroTitleAccent: '卸载即还原',
-    tagline: 'Pulse 是一个 Go AI agent 运行时内核——以可逆效应与依赖响应式装载为基座的插件内核。模型、工具、编排、记忆、观测作为内核上的能力租户组合，v2 核心 v0.2.0 已发布。',
+    tagline: 'Pulse 是一个 Go AI agent 框架——以可逆效应与依赖响应式装载为基座的插件内核。模型、工具、编排、记忆、观测作为内核上的能力租户组合；host 薄串联包提供官方装配路径，v2 核心 v0.2.1 已发布。',
     ctaStart: '快速开始',
     ctaPackages: '包文档',
     ctaGithub: 'GitHub',
@@ -21,25 +21,25 @@ const copy = {
       { icon: 'llm', title: 'provider 中立模型层', desc: '词汇表只收跨 provider 稳定语义的字段；无对应线格式显式 ErrBadRequest，绝不静默吞参数。OpenAI / Anthropic 官方适配器。', link: '/pulse/packages/llm/', linkText: '查看 llm' },
       { icon: 'loop', title: '无状态 ReAct', desc: 'loop.Agent 只执行一个回合——工具调用、HITL 决策事件、Waterfall 拦截点；历史与会话交由记忆层承担。', link: '/pulse/packages/loop/', linkText: '查看 loop' },
       { icon: 'flow', title: '编排与记忆', desc: 'kernel/flow 槽位三态节点图（AND 汇聚、Skip、Observer）+ YAML 声明式装图；memory 九子包覆盖会话到反思管线。', link: '/pulse/guide/flow', linkText: '编排指南' },
-      { icon: 'obs', title: '可观测', desc: 'Bootstrap + Record + Sink，只依赖 kernel；trace 分 host / trace 两层，旁路订阅不进拦截链。', link: '/pulse/guide/observability', linkText: '观测指南' },
-      { icon: 'eval', title: '评测基建', desc: '分层基准 L0–L3、19 条 property 不变式、跨框架对比 eval/war——编排 fan-out 免费、纯运行 ~10× 差距都有数字与口径。', link: '/pulse/eval', linkText: '看数字' },
+      { icon: 'obs', title: '可观测', desc: 'Bootstrap + Record + Sink，内置 SlogSink / LineSink / MemorySink 出口与 AsyncSink 包装，只依赖 kernel；trace 分 host / trace 两层，旁路订阅不进拦截链。', link: '/pulse/guide/observability', linkText: '观测指南' },
+      { icon: 'eval', title: '评测基建', desc: '分层基准 L0–L3、19 条 property 不变式、跨框架对比 eval/war——编排 fan-out 免费、纯运行 ~8.5–11.4× 差距都有数字与口径。', link: '/pulse/eval', linkText: '看数字' },
     ],
     startEyebrow: '开始使用',
     startTitle: '两条路进入 Pulse',
     start1Title: '安装',
     start1Desc: '需要 Go 1.25+。一行命令引入运行时，用环境变量提供模型 API Key。',
-    start2Title: '跑通第一课',
-    start2Desc: '8 课渐进示例从内核地基走到生产集成；缺 API Key 时自动走脚本模型，课程不依赖真实凭据。',
+    start2Title: '官方装配路径',
+    start2Desc: '要直接落地一个能跑的 Agent，用 host 薄串联包：会话栈、模型 Registry、工具集三向接线一次接好，host.New + DefaultAgent 三行参数起步。',
     ctaTitle: '在开源、可逆、可组合的基座上构建 Agent',
-    ctaDesc: 'v0.2.0 已发布——freeze 契约生效（breaking 只随 minor）、会话与长期记忆官方导出/导入、双基座观测栈与 27 个包的双语文档全部就绪。',
-    ctaRelease: 'v0.2.0 Release',
+    ctaDesc: 'v0.2.1 已发布——性能线收口（事件派发零拷贝、Record 的 Attrs 切片化、出口补齐 LineSink / AsyncSink），host 装配层落地后 README 恢复 framework 自称，28 个包的双语文档全部就绪。',
+    ctaRelease: 'v0.2.1 Release',
     ctaEval: '评测数字',
   },
   en: {
-    badge: 'v0.2.0 · Open Source MIT',
+    badge: 'v0.2.1 · Open Source MIT',
     heroTitle: 'Everything is a plugin, ',
     heroTitleAccent: 'unload to restore',
-    tagline: 'Pulse is a Go agent runtime core — a plugin kernel grounded in reversible effects and dependency-reactive service loading. Models, tools, orchestration, memory, observability compose as tenants on the kernel, shipping as v0.2.0.',
+    tagline: 'Pulse is a Go AI agent framework — a plugin kernel grounded in reversible effects and dependency-reactive service loading. Models, tools, orchestration, memory, observability compose as tenants on the kernel; the thin host package provides the official assembly path, shipping as v0.2.1.',
     ctaStart: 'Quick start',
     ctaPackages: 'Package docs',
     ctaGithub: 'GitHub',
@@ -50,18 +50,18 @@ const copy = {
       { icon: 'llm', title: 'Provider-neutral model layer', desc: 'The vocabulary only carries fields with stable cross-provider semantics; missing wire counterparts return ErrBadRequest — parameters are never silently dropped.', link: '/pulse/en/packages/llm/', linkText: 'Read llm docs' },
       { icon: 'loop', title: 'Stateless ReAct', desc: 'loop.Agent runs exactly one turn — tool calls, HITL decision events, waterfall interception points; history and sessions belong to the memory layer.', link: '/pulse/en/packages/loop/', linkText: 'Read loop docs' },
       { icon: 'flow', title: 'Orchestration & memory', desc: 'kernel/flow three-state slot node graph (AND joins, Skip, Observer) + YAML declarative loading; nine memory sub-packages from sessions to reflection.', link: '/pulse/en/guide/flow', linkText: 'Orchestration guide' },
-      { icon: 'obs', title: 'Observability', desc: 'Bootstrap + Record + Sink, kernel-only dependency; two-tier trace (host / request), side-band subscriptions that never touch interception chains.', link: '/pulse/en/guide/observability', linkText: 'Observability guide' },
-      { icon: 'eval', title: 'Evaluation infra', desc: 'Layered benchmarks L0–L3, 19 property invariants, cross-framework suite eval/war — free fan-out and the ~10× pure-runtime gap, with numbers and accounting.', link: '/pulse/en/eval', linkText: 'See the numbers' },
+      { icon: 'obs', title: 'Observability', desc: 'Bootstrap + Record + Sink with built-in SlogSink / LineSink / MemorySink exits and an AsyncSink wrapper, kernel-only dependency; two-tier trace (host / request), side-band subscriptions that never touch interception chains.', link: '/pulse/en/guide/observability', linkText: 'Observability guide' },
+      { icon: 'eval', title: 'Evaluation infra', desc: 'Layered benchmarks L0–L3, 19 property invariants, cross-framework suite eval/war — free fan-out and the ~8.5–11.4× pure-runtime gap, with numbers and accounting.', link: '/pulse/en/eval', linkText: 'See the numbers' },
     ],
     startEyebrow: 'Get started',
     startTitle: 'Two ways into Pulse',
     start1Title: 'Install',
     start1Desc: 'Requires Go 1.25+. One command brings in the runtime; provide the model API key via environment variables.',
-    start2Title: 'Run the first lesson',
-    start2Desc: 'Eight progressive lessons walk from kernel ground to production; without an API key they fall back to scripted models — no real credentials needed.',
+    start2Title: 'The official assembly path',
+    start2Desc: 'To land a working agent directly, use the thin host package: session stack, model registry and tools are wired in one call — host.New plus DefaultAgent, three parameters to start.',
     ctaTitle: 'Build agents on a reversible, composable foundation',
-    ctaDesc: 'v0.2.0 is out — the freeze contract is in effect (breaking changes ride minor releases only), official session & memory export/import, a dual-foundation observability stack, and bilingual docs for 27 packages.',
-    ctaRelease: 'v0.2.0 Release',
+    ctaDesc: 'v0.2.1 is out — the performance round is closed (zero-copy event dispatch, slice-backed Record attrs, LineSink / AsyncSink exits), the host assembly layer landed so the README calls itself a framework again, and bilingual docs cover all 28 packages.',
+    ctaRelease: 'v0.2.1 Release',
     ctaEval: 'Benchmarks',
   },
 }
@@ -140,7 +140,7 @@ const icons = {
           <div class="card start-card">
             <span class="card-title">{{ t.start2Title }}</span>
             <span class="card-desc">{{ t.start2Desc }}</span>
-            <code class="code"><span class="dollar">$ </span>go run .</code>
+            <code class="code">h, _ := host.New(host.Options{...})</code>
           </div>
         </div>
       </div>
@@ -153,7 +153,7 @@ const icons = {
         <p class="cta-desc">{{ t.ctaDesc }}</p>
         <div class="actions center">
           <a class="btn btn-primary" href="https://github.com/Luo-root/pulse" target="_blank" rel="noopener">{{ t.ctaGithub }}</a>
-          <a class="btn btn-ghost" href="https://github.com/Luo-root/pulse/releases/tag/v0.2.0" target="_blank" rel="noopener">{{ t.ctaRelease }}</a>
+          <a class="btn btn-ghost" href="https://github.com/Luo-root/pulse/releases/tag/v0.2.1" target="_blank" rel="noopener">{{ t.ctaRelease }}</a>
           <a class="btn btn-ghost" href="/pulse/eval">{{ t.ctaEval }}</a>
         </div>
       </div>

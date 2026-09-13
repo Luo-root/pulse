@@ -1,6 +1,6 @@
 # Quick start
 
-Pulse is a Go agent runtime built around a plugin kernel, shipping its v2 core as v0.2.0. This page walks the shortest path: **plugin kernel + model layer + a ReAct tool round**.
+Pulse is a Go AI agent framework built around a plugin kernel, shipping its v2 core as v0.2.1. This page walks the shortest path: **plugin kernel + model layer + a ReAct tool round**.
 
 ## Requirements
 
@@ -12,6 +12,37 @@ Pulse is a Go agent runtime built around a plugin kernel, shipping its v2 core a
 ```bash
 go get github.com/Luo-root/pulse
 ```
+
+## Less wiring: one-step assembly (host)
+
+If you'd rather not wire it yourself, use the thin `host` package — providers, model declarations and the session stack mount on the kernel, and `DefaultAgent` turns three parameters into a working agent:
+
+```go
+k := kernel.New()
+defer k.Dispose()
+
+h, err := host.New(host.Options{
+	Kernel:    k,
+	Providers: []host.Provider{host.Provider(openai.Register)},
+	Models: []host.ModelDecl{
+		{Name: "main", Config: llm.Config{Provider: openai.ProviderCompletions, Model: "gpt-4o-mini", APIKey: os.Getenv("OPENAI_API_KEY")}},
+	},
+	Session: memory.NewMemorySessionStack(),
+})
+if err != nil {
+	panic(err)
+}
+
+agent, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main"})
+if err != nil {
+	panic(err)
+}
+res, err := agent.Run(ctx, llm.UserText("hello"))
+```
+
+Tools, observability exits and the approval gate (`ToolGate`) attach at this layer; for non-default sources switch to `h.NewAgent` — no special cases. See the [host package docs](/en/packages/host/).
+
+The manual assembly below produces the same result, one layer at a time.
 
 ## Shortest path: model + ReAct tool round
 
@@ -89,4 +120,4 @@ go run ./main.go
 - **Core concepts**: Effect / ServiceKey / events and the loading model → [Core concepts](/en/guide/concepts)
 - **Orchestration**: three-state slot node graphs and YAML loading → [flow orchestration](/en/guide/flow)
 - **Memory**: sessions, compaction, long-term store, assembly → [Memory layer](/en/guide/memory)
-- **Per-package docs**: full bilingual docs for all 27 packages → [Packages](/en/packages/)
+- **Per-package docs**: full bilingual docs for all 28 packages → [Packages](/en/packages/)
