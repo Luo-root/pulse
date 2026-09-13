@@ -56,3 +56,7 @@ WaterfallLocal(c, key, payload)  // 只 c 本层 around；nil 安全原样返回
 ## 不做
 
 父链冒泡、`EmitSubtree`、payload 塞 TraceID、Bridge 事后过滤。
+
+## 修订
+
+**#177（2026-09）**：监听器表改为**按 kind 分列 + 写时复制（COW）**，派发由「逐次按 kind 过滤并新建切片」变为**零拷贝快照**（`EmitLocal` 单监听 39.5 ns / 2 allocs → 27 ns / 1 alloc；三监听 4 allocs → 1；`WaterfallLocal` 两条 around 5 → 3）。派发边界与快照窗口语义**不变**：`EmitLocal` / `WaterfallLocal` 仍只本层；派发期间的增删不影响本次派发（新增下一次生效、已摘除者仍可能在途收到一次）。注册/摘除是低频路径，代价是该路径每次复制重建一个切片：**桶冷注册**（该事件名首次注册）与改造前相等，**同一事件名从第 3 条起**每次 +1 alloc。另一处代价：按 kind 分列使 `eventBus` 表 2→3 张、`clear()` 1→2 次 `make`，**每个作用域生命周期 +2 allocs**（实测 `Derive()+Dispose()` 5.0 → 7.0）；抹平备选＝懒建表（`add` 时 init），通常不值。

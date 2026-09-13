@@ -228,6 +228,22 @@ _ = kernel.Parallel(ctx, Tick, 0)      // 并发；返回 []error 或 nil
 
 事件名全局唯一；同名不同类型在注册时被拒绝。waterfall **不支持 prepend**。监听随作用域销毁自动摘除。`On` 与 `OnWaterfall` 混用时两类独立派发、互不干扰。
 
+**派发是零拷贝的**（#177）：监听器表按 kind 分列并以**写时复制（COW）**维护——`On` / `OnWaterfall` 注册与摘除时复制重建该事件的切片（低频路径），派发侧直接持有不可变快照、不再逐次过滤拷贝。快照窗口语义不变：派发期间的增删不影响本次派发（新增者下一次才生效；已摘除者仍可能收到在途的最后一次派发）。实测（同机同轮，分配数为一等证据）：
+
+| 场景 | 重构前 | 重构后 |
+|---|---|---|
+| `EmitLocal` 单监听 | 39.5 ns / 2 allocs | **27.2 ns / 1 alloc** |
+| `EmitLocal` 三监听 | 75 ns / 4 allocs | **29 ns / 1 alloc** |
+| `WaterfallLocal` 两条 around | ~160 ns / 5 allocs | **87 ns / 3 allocs** |
+
+剩余的固定 1 alloc 是**载荷上堆**（监听器拿 `*P` 以便就地改写，编译器据此把载荷移入堆，`events.go` 的逃逸分析可见）——属 API 语义的固有成本，热点事件如要规避可改用指针载荷键。常驻基线：`go test -bench . ./kernel/ -run '^$' -bench 'BenchmarkEmit|BenchmarkWaterfallLocal|BenchmarkEventRegister'`。
+
+**代价面（实测，逐条列全）**：
+
+- **注册 / 摘除**：每次复制重建该事件的切片——**桶冷注册**（该事件名首次注册）与改造前相等（Δ=0，host 每请求在新派生作用域注册正是这种形态）；**同一事件名从第 3 条起每次 +1 alloc**（桶内 ≤2 条时仍相等；旧实现是 amortized 扩容）。
+- **作用域生命周期**：按 kind 分列使 `eventBus` 的表从 2 张（`types` + `listeners`）变 3 张（`types` + `observe` + `waterfall`），`clear()` 从 1 次 `make` 变 2 次——**每个作用域生命周期净增 +2 allocs**（实测 `Derive()+Dispose()` 5.0 → 7.0）。若要抹平可改为**懒建表**（`add` 时 init），代价是注册路径多一个分支——通常不值，列作备选。
+- **净账**：每请求派生一个作用域的固定成本 +2，而每次事件派发省 1–3 allocs——对「请求内多次派发」的形态显著为正。
+
 派发分两层（详见 [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md)）：
 
 | API | 语义 | 适用 |

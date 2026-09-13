@@ -20,6 +20,13 @@ type benchNoopSink struct{}
 
 func (benchNoopSink) Write(Record) {}
 
+// benchAttrKeys 是**常量**键表：被测路径不该把「基准自身的字符串拼装」算进去
+// （动态拼 key 会虚增 allocs）。各层用同一形状的记录，便于逐层对照。
+var benchAttrKeys = [...]string{
+	"llm.model", "llm.instance", "llm.tokens_in", "llm.temp", "llm.cached",
+	"llm.finish", "llm.role", "llm.vendor", "llm.region", "llm.tier",
+}
+
 func benchLineRecord(attrs int) Record {
 	r := Record{
 		HostID:   "host-1",
@@ -29,14 +36,16 @@ func benchLineRecord(attrs int) Record {
 		Status:   "stop",
 		Duration: 1234567,
 	}
-	for i := 0; i < attrs; i++ {
-		Set(&r.Attrs, "k."+string(rune('a'+i)), "v")
+	for i := 0; i < attrs && i < len(benchAttrKeys); i++ {
+		Set(&r.Attrs, benchAttrKeys[i], "v")
 	}
 	return r
 }
 
 // --- 层 0：只构造 Record（折叠侧成本，不含写入） ---
-
+//
+// 与其它层共用同一 `benchLineRecord` 形状（常量键、无拼装噪声），
+// 以便逐层对照；期望值 ≈ 2 allocs（map 的 hmap + bucket），装箱被编译器消除。
 func BenchmarkLayer_RecordBuild(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {

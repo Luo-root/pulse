@@ -230,6 +230,22 @@ _ = kernel.Parallel(ctx, Tick, 0)      // 并发；返回 []error 或 nil
 
 Event names are globally unique; the same name with a different type is rejected at registration. Waterfalls **do not support prepend**. Listeners are removed automatically when their scope is disposed. When `On` and `OnWaterfall` are mixed, the two kinds dispatch independently and do not interfere.
 
+**Dispatch is zero-copy** (#177): listener tables are split by kind and maintained **copy-on-write** — `On` / `OnWaterfall` rebuild the event's slice on registration/removal (a low-frequency path), while dispatch holds an immutable snapshot and no longer filters/copies per call. The snapshot-window semantics are unchanged: adding or removing during a dispatch does not affect that dispatch (new listeners apply to the next one; a removed listener may still receive the in-flight dispatch). Measured (same machine/session; allocation counts are the primary evidence):
+
+| Case | Before | After |
+|---|---|---|
+| `EmitLocal`, one listener | 39.5 ns / 2 allocs | **27.2 ns / 1 alloc** |
+| `EmitLocal`, three listeners | 75 ns / 4 allocs | **29 ns / 1 alloc** |
+| `WaterfallLocal`, two around | ~160 ns / 5 allocs | **87 ns / 3 allocs** |
+
+The remaining fixed 1 alloc is the **payload escaping to the heap** (listeners receive `*P` so they can mutate in place; the compiler therefore moves the payload — see the escape analysis on `events.go`). That cost is inherent to the API; hot events can opt into pointer payload keys to avoid it. Standing baselines: `go test -bench . ./kernel/ -run '^$' -bench 'BenchmarkEmit|BenchmarkWaterfallLocal|BenchmarkEventRegister'`.
+
+**Cost surface (measured, listed in full)**:
+
+- **Register / remove**: rebuilds that event's slice — a **cold-bucket registration** (first listener for that event name) costs the same as before (Δ=0, which is exactly what `host` does on a fresh per-request scope); from the **3rd listener on the same event name** each addition costs +1 alloc (equal while the bucket holds ≤2; the old path used amortized growth).
+- **Scope lifecycle**: splitting by kind turns the `eventBus` tables from 2 (`types` + `listeners`) into 3 (`types` + `observe` + `waterfall`), and `clear()` from 1 `make` into 2 — **+2 allocs per scope lifecycle** (measured `Derive()+Dispose()`: 5.0 → 7.0). To flatten it you could lazily create the tables (init in `add`), at the cost of one extra branch on the registration path — usually not worth it; listed as an alternative.
+- **Net**: +2 fixed per derived scope vs −1..−3 allocs per event dispatch — clearly positive for the "many dispatches per request" shape.
+
 Dispatch has two layers (see [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md)):
 
 | API | Semantics | Use case |
