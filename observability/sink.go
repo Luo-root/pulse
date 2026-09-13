@@ -57,10 +57,12 @@ func (s SlogSink) Write(r Record) {
 			"plugin", r.PluginName,
 		)
 	}
-	// Attrs 段：内部 map 无序，按 key 字典序输出，同一记录的日志行确定。
+	// Attrs 段：按 key 字典序输出（确定性；内部存储是插入序切片，
+	// 出口不依赖其顺序）。
 	if r.Attrs.Len() > 0 {
 		for _, k := range r.Attrs.sortedKeys() {
-			attrs = append(attrs, k, r.Attrs.m[k].native())
+			x, _ := r.Attrs.lookup(k)
+			attrs = append(attrs, k, x.native())
 		}
 	}
 	logger.Info("pulse.observability", attrs...)

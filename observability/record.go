@@ -82,12 +82,29 @@ type AttrValue interface {
 // Attrs 是产生方自定义的标量 kv。key 约定 <组件>.<字段> 点分
 // （如 llm.model、loop.tool、flow.node），各组件独立 key 空间。
 //
-// 零值可用。写入经泛型 Set（就地），读取经泛型 Get；Range 供出口
-// 无序遍历，MarshalJSON 按 key 排序输出。并发语义与 Record 一致：
-// 产生方单 goroutine 填充，进入 Sink 后只读。
+// 存储是**插入序小切片**：首次写入按 attrInlineCap 预留容量，常见记录
+// （≤6 条）只需**一次分配**（此前是 map 的 hmap + bucket 两次）；读取为
+// 线性扫描——条数少时快于哈希，且天然确定性（Range / sortedKeys 不再
+// 依赖 map 的无序迭代）。顺序 = 写入顺序；同名覆盖保持原位置。
+//
+// 零值可用。写入经泛型 Set（就地），读取经泛型 Get；Range 按**插入序**
+// 遍历（强于此前的「无序遍历」，出口可据此得到稳定输出），MarshalJSON
+// 按 key 排序输出。并发语义与 Record 一致：产生方单 goroutine 填充，
+// 进入 Sink 后只读。
 type Attrs struct {
-	m map[string]attrScalar
+	entries []attrEntry
 }
+
+// attrEntry 是一条键值对。
+type attrEntry struct {
+	key string
+	val attrScalar
+}
+
+// attrInlineCap 是首次写入预留的条目容量：覆盖各包折叠的常见规模
+// （llm 5 条 / loop 2–3 条 / flow 2–3 条），使常见记录一次分配到位；
+// 超出后按切片自然扩容（仍是对数级分配，不再按条数线性增长）。
+const attrInlineCap = 6
 
 type attrKind uint8
 
@@ -128,9 +145,24 @@ func (x attrScalar) native() any {
 // 内容载荷（prompt、消息、思维链）不能以 kv 形式进入观测记录，
 // 这是本包隐私边界的类型部分。
 func Set[T AttrValue](a *Attrs, key string, val T) {
-	if a.m == nil {
-		a.m = make(map[string]attrScalar)
+	x := scalarOf(val)
+	for i := range a.entries {
+		if a.entries[i].key == key {
+			a.entries[i].val = x // 同名覆盖保持原位置（插入序稳定）
+			return
+		}
 	}
+	if a.entries == nil {
+		a.entries = make([]attrEntry, 0, attrInlineCap)
+	}
+	a.entries = append(a.entries, attrEntry{key: key, val: x})
+}
+
+// scalarOf 把约束内取值归一为定长联合表示。T 的类型集见 AttrValue——
+// []byte、struct、slice、任意对象在类型上就无法进入，内容载荷
+// （prompt、消息、思维链）不能以 kv 形式进入观测记录，这是本包隐私
+// 边界的类型部分。
+func scalarOf[T AttrValue](val T) attrScalar {
 	var x attrScalar
 	switch v := any(val).(type) {
 	case string:
@@ -152,17 +184,25 @@ func Set[T AttrValue](a *Attrs, key string, val T) {
 			x = attrScalar{kind: attrFloat, f: rv.Float()}
 		case reflect.Bool:
 			x = attrScalar{kind: attrBool, b: rv.Bool()}
-		default:
-			return // 约束保证不可达
 		}
 	}
-	a.m[key] = x
+	return x
+}
+
+// lookup 线性查找（条数少时快于哈希；插入序切片无哈希表）。
+func (a Attrs) lookup(key string) (attrScalar, bool) {
+	for i := range a.entries {
+		if a.entries[i].key == key {
+			return a.entries[i].val, true
+		}
+	}
+	return attrScalar{}, false
 }
 
 // Get 读取标量值：缺失或与 T 底层类型不符返回零值与 false。
 func Get[T AttrValue](a Attrs, key string) (T, bool) {
 	var zero T
-	x, ok := a.m[key]
+	x, ok := a.lookup(key)
 	if !ok {
 		return zero, false
 	}
@@ -203,21 +243,23 @@ func Get[T AttrValue](a Attrs, key string) (T, bool) {
 }
 
 // Len 返回条数。
-func (a Attrs) Len() int { return len(a.m) }
+func (a Attrs) Len() int { return len(a.entries) }
 
-// Range 无序遍历键值对；val 已还原为基础类型（string/int64/float64/bool）。
-// 出口实现如需确定性输出，请按 key 排序（参考 SlogSink / MarshalJSON）。
+// Range 按**插入序**遍历键值对；val 已还原为基础类型
+// （string/int64/float64/bool）。插入序是确定性顺序（同名覆盖保持原
+// 位置）——出口无需再排序即可获得稳定输出；需要按 key 排序时参考
+// SlogSink / LineSink / MarshalJSON。
 func (a Attrs) Range(fn func(key string, val any)) {
-	for k, x := range a.m {
-		fn(k, x.native())
+	for _, e := range a.entries {
+		fn(e.key, e.val.native())
 	}
 }
 
 // sortedKeys 返回按键排序的全部 key（同包出口用）。
 func (a Attrs) sortedKeys() []string {
-	keys := make([]string, 0, len(a.m))
-	for k := range a.m {
-		keys = append(keys, k)
+	keys := make([]string, 0, len(a.entries))
+	for _, e := range a.entries {
+		keys = append(keys, e.key)
 	}
 	sort.Strings(keys)
 	return keys
@@ -238,7 +280,8 @@ func (a Attrs) MarshalJSON() ([]byte, error) {
 		}
 		buf.Write(kb)
 		buf.WriteByte(':')
-		vb, err := json.Marshal(a.m[k].native())
+		x, _ := a.lookup(k)
+		vb, err := json.Marshal(x.native())
 		if err != nil {
 			return nil, err
 		}

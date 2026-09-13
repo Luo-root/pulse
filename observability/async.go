@@ -269,14 +269,13 @@ func (s *AsyncSink) writeOne(r Record) {
 	s.inner.Write(r)
 }
 
-// clone 深拷 Attrs（重建内部 map）。零值/空返回零值，不分配。
+// clone 深拷 Attrs（复制条目切片——值拷贝共享底层数组，异步持有必须
+// 独立一份）。零值/空返回零值，不分配。
 func (a Attrs) clone() Attrs {
-	if len(a.m) == 0 {
+	if len(a.entries) == 0 {
 		return Attrs{}
 	}
-	m := make(map[string]attrScalar, len(a.m))
-	for k, v := range a.m {
-		m[k] = v
-	}
-	return Attrs{m: m}
+	entries := make([]attrEntry, len(a.entries))
+	copy(entries, a.entries)
+	return Attrs{entries: entries}
 }

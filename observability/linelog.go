@@ -151,30 +151,33 @@ func appendRecordLine(dst []byte, r Record) []byte {
 }
 
 // appendAttrs 按 key 字典序追加 Attrs（≤8 个键用栈上数组插入排序，零分配）。
+// 内部存储是插入序切片；排序后逐键 lookup（≤8 条时线性扫描的代价可忽略）。
 func appendAttrs(dst []byte, a Attrs) []byte {
-	n := len(a.m)
+	n := len(a.entries)
 	if n == 0 {
 		return dst
 	}
-	var small [8]string
-	if n <= len(small) {
+	if n <= 8 {
+		var small [8]string
 		keys := small[:0]
-		for k := range a.m {
-			keys = append(keys, k)
+		for _, e := range a.entries {
+			keys = append(keys, e.key)
 		}
 		insertionSortStrings(keys)
 		for _, k := range keys {
-			dst = appendScalarField(dst, k, a.m[k])
+			x, _ := a.lookup(k)
+			dst = appendScalarField(dst, k, x)
 		}
 		return dst
 	}
 	keys := make([]string, 0, n)
-	for k := range a.m {
-		keys = append(keys, k)
+	for _, e := range a.entries {
+		keys = append(keys, e.key)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		dst = appendScalarField(dst, k, a.m[k])
+		x, _ := a.lookup(k)
+		dst = appendScalarField(dst, k, x)
 	}
 	return dst
 }

@@ -76,7 +76,7 @@ Attrs 开放段：标量 kv（~string/~int64/~float64/~bool），key 约定 <组
 - 装配记录：TraceID/Duration/Attrs 为零值
 - 桥记录：填 TraceID/Duration/Status/Attrs；业务维度（`llm.AttrModel`、`llm.AttrTokensIn/Out/Cached`、`loop.AttrTool`、`loop.AttrSteps`、`flow.AttrNode`）经 Attrs 进入，**不再扩具名字段**（D7/D8）
 - 隐私边界（类型部分）：Attrs 的写入面只有泛型 `Set[T AttrValue]`，`[]byte`、struct、slice、任意对象在类型上无法进入——prompt、消息切片、思维链内容不能以 kv 形式进记录；「把 payload 塞进一个标量值」属于蓄意行为，防线是 key 自述意图 + Sink 侧 redact 钩子（宿主 Sink 实现可拒绝敏感 key / 截断超长 / 限条数）
-- 出口确定性：Attrs 内部 map 无序，SlogSink 按 key 字典序输出，`Attrs.MarshalJSON` 同序；导出实现应保持同一约定
+- 出口确定性：Attrs 内部为**插入序切片**（修订 #179，2026-09：此前是 map，逐条 Set 时 hmap+bucket 两次分配，常见 5 条记录每记录 2 allocs；改切片后首次写入按 6 条预留容量、常见记录 1 次分配，读取线性扫描且天然确定性）；SlogSink / LineSink 按 key 字典序输出，`Attrs.MarshalJSON` 同序，`Range` 按插入序；导出实现应保持同一约定
 
 ### 3.2 Sink
 
