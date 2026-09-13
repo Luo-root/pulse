@@ -59,6 +59,7 @@ Assembly-only:    FiberName, From, To, LoaderKind, EntryID, PluginName
 Attrs open seg:   scalar kv (~string/~int64/~float64/~bool)
 ```
 
+- `Attrs` is an **insertion-ordered slice** internally (#179): the first write reserves room for 6 entries, so a typical record costs one allocation; `Range` walks in insertion order (deterministic) and key-sorting is the egress's job (`SlogSink` / `LineSink` / `MarshalJSON` share that order). Overwriting a key keeps its original position.
 - No `map[string]any` escape hatch; the only write path into `Attrs` is the generic `Set[T AttrValue]` — `[]byte`, structs, slices, and arbitrary objects cannot enter by type (the type part of the privacy boundary); self-describing keys plus a Sink-side redact hook cover deliberate scalar injection.
 - `Sink.Write(Record)`: **no** `context.Context` (the kernel Emit path carries no ctx).
 - When `Time` is zero, the builtin Sinks (`SlogSink` / `MemorySink`) fill in the wall clock; the `SlogSink` Attrs segment is emitted in key order (`Attrs.MarshalJSON` likewise).

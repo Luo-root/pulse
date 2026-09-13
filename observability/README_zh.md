@@ -53,6 +53,7 @@ err = loop.Observe(reqScope, cfg)                      // loop 包适配
 Attrs 开放段：标量 kv（~string/~int64/~float64/~bool）
 ```
 
+- `Attrs` 内部是**插入序切片**（#179）：首次写入按 6 条预留容量，常见记录一次分配；`Range` 按插入序（确定性），按 key 排序由出口负责（SlogSink / LineSink / `MarshalJSON` 同序）。同名覆盖保持原位置。
 - 无 `map[string]any` 逃生舱；`Attrs` 的写入面只有泛型 `Set[T AttrValue]`——`[]byte`、struct、slice、任意对象在类型上进不来（隐私边界的类型部分），key 自述意图 + Sink 侧 redact 钩子兜住蓄意标量注入。
 - `Sink.Write(Record)`：**无** `context.Context`（kernel Emit 路径不带 ctx）。
 - `Time` 为零时由内置 Sink（`SlogSink` / `MemorySink`）补 wall clock；`SlogSink` 的 Attrs 段按 key 字典序输出（`Attrs.MarshalJSON` 同序）。
