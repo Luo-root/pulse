@@ -67,7 +67,7 @@ type Record struct {
 	PluginName string // loader_action: plugin 注册名
 
 	// Attrs 是产生方自定义的标量 kv（运行期适配与业务插件使用，
-	// 经 Set/Get 写读）。出口实现应按 key 排序输出以获得确定性。
+	// 经 Set/Get 写读）。出口按**插入序**输出（= 产生方的语义序）；
 	// 引用语义见 Sink 接口契约：产出方 Write 后不再修改，Sink 只读。
 	Attrs Attrs
 }
@@ -247,8 +247,9 @@ func (a Attrs) Len() int { return len(a.entries) }
 
 // Range 按**插入序**遍历键值对；val 已还原为基础类型
 // （string/int64/float64/bool）。插入序是确定性顺序（同名覆盖保持原
-// 位置）——出口无需再排序即可获得稳定输出；需要按 key 排序时参考
-// SlogSink / LineSink / MarshalJSON。
+// 位置）——出口无需再排序即可获得稳定输出，内置出口（SlogSink /
+// LineSink）都按此序输出；只有 MarshalJSON 为对齐 JSON 对象的外部
+// 工具链按 key 排序。
 func (a Attrs) Range(fn func(key string, val any)) {
 	for _, e := range a.entries {
 		fn(e.key, e.val.native())
@@ -307,6 +308,7 @@ type Sink interface {
 }
 
 // stampTime 在 Time 为零时补 wall clock，避免调用方漏填导致死字段。
+// 只有会输出 `Time` 的出口需要它（LineSink / MemorySink）。
 func stampTime(r Record) Record {
 	if r.Time.IsZero() {
 		r.Time = time.Now()
@@ -317,7 +319,8 @@ func stampTime(r Record) Record {
 // MultiSink 扇出到多个 Sink；nil 成员跳过。
 type MultiSink []Sink
 
-// Write 实现 Sink。Time 由叶子 Sink（SlogSink / MemorySink）补齐。
+// Write 实现 Sink。Time 由叶子 Sink（LineSink / MemorySink）补齐；
+// SlogSink 不经手 Time——时间字段由宿主的 handler 给出。
 func (s MultiSink) Write(r Record) {
 	for _, sink := range s {
 		if sink != nil {

@@ -12,10 +12,17 @@
 
 | 出口 | 形态 | 适用 |
 |---|---|---|
-| `SlogSink` | `log/slog`，Text / JSON handler | 接宿主既有 logger、要 JSON 结构化 |
-| `LineSink` | 自带缓冲的行式文本（logfmt 风格），**不经 slog** | 单机 / 文件落盘的高频路径（推荐） |
+| `LineSink` | **默认出口。** 一行一条的人读文本（列式版式），自带缓冲，**不经 slog** | 任何给人看的地方：终端 / 日志文件 / 启动横幅；比 `SlogSink` 便宜约 5 倍且零分配 |
+| `SlogSink` | `log/slog`，Text / JSON handler | 接宿主既有 logger、要 JSON 喂采集器 |
 | `MemorySink` | 内存收集 | 测试断言与演示 |
 | `MultiSink` | `[]Sink` 切片，扇出到多个出口 | 同时落盘 + 收集 |
+
+```text
+PULSE | 2026/09/14 - 12:42:03.531 | completed  |   585.0µs | llm.generate_finished | source=bridge | llm.model=gpt-4o-mini llm.tokens_in=42 | host=pulse-web | trace=6504f73f
+PULSE | 2026/09/14 - 12:42:03.100 | -          |         - | pulse.kernel.fiber_state | source=kernel | fiber=llmAdapter#3 | state=loading→active
+```
+
+缺的状态 / 耗时列渲染 `-`，事件列于是每行对齐；耗时带单位不取整；属性按插入序；颜色只在目的地是终端时出现。
 
 `AsyncSink` 是**包装器**而不是出口：包住任一慢出口（文件 / 网络）把投递移出请求路径，`Write` 只做 `Attrs` 深拷 + 入队。它对已经很快的出口（如 `MemorySink`）是负优化，别默认套；持续速率超过出口能力时队列会回压到出口速率——这正是「不丢记录」的代价。
 

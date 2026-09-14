@@ -12,10 +12,17 @@
 
 | Exit | Shape | Use when |
 |---|---|---|
-| `SlogSink` | `log/slog`, Text / JSON handler | You already have a logger, or need JSON structure |
-| `LineSink` | Self-buffered logfmt-style text, **never through slog** | High-frequency single-host / file paths (recommended) |
+| `LineSink` | **The default.** One human-readable line per record (column layout), self-buffered, **never through slog** | Anything a person reads: terminal / log file / startup banner; ~5x cheaper than `SlogSink` and zero-alloc |
+| `SlogSink` | `log/slog`, Text / JSON handler | You already have a logger, or need JSON for a collector |
 | `MemorySink` | In-memory collection | Test assertions and demos |
 | `MultiSink` | A `[]Sink` slice fanning out to several exits | Landing to file **and** collecting |
+
+```text
+PULSE | 2026/09/14 - 12:42:03.531 | completed  |   585.0µs | llm.generate_finished | source=bridge | llm.model=gpt-4o-mini llm.tokens_in=42 | host=pulse-web | trace=6504f73f
+PULSE | 2026/09/14 - 12:42:03.100 | -          |         - | pulse.kernel.fiber_state | source=kernel | fiber=llmAdapter#3 | state=loading→active
+```
+
+A missing status / duration column renders `-`, so the event column lines up on every record; durations keep their unit instead of truncating to zero; `Attrs` follow insertion order; colour appears only when the destination is a terminal.
 
 `AsyncSink` is a **wrapper**, not an exit: it wraps any slow exit (file / network) and moves delivery off the request path — `Write` only deep-copies `Attrs` and enqueues. It is a pessimization for already-fast exits (e.g. `MemorySink`), so don't apply it by default; when the sustained rate exceeds the exit's capacity the queue back-pressures to the exit's rate, which is the price of never dropping a record.
 
