@@ -1,6 +1,6 @@
 # 可观测性
 
-`observability` 是 v2 的正式观测包：**Bootstrap + Record + Sink** 三件事 + 每请求 TraceID 默认生成器（`NewTraceID`），只依赖 kernel——零业务依赖，不 import llm/loop/flow。
+`observability` 是 v2 的正式观测包：**Bootstrap + Record + Sink** 三件事 + 每请求 TraceID 默认生成器（`NewTraceID`）+ 宿主自带出口（`WithRenderer`），只依赖 kernel——零业务依赖，不 import llm/loop/flow。
 
 ## 三件事
 
@@ -25,6 +25,26 @@ PULSE | 2026/09/14 - 12:42:03.100 | -          |         - | pulse.kernel.fiber_
 缺的状态 / 耗时列渲染 `-`，事件列于是每行对齐；耗时带单位不取整；属性按插入序；颜色只在目的地是终端时出现。
 
 `AsyncSink` 是**包装器**而不是出口：包住任一慢出口（文件 / 网络）把投递移出请求路径，`Write` 只做 `Attrs` 深拷 + 入队。它对已经很快的出口（如 `MemorySink`）是负优化，别默认套；持续速率超过出口能力时队列会回压到出口速率——这正是「不丢记录」的代价。
+
+## 宿主自带出口（WithRenderer）
+
+列式版式是**默认**的，不是唯一的。想让**域事实进列**（HTTP 的方法 / 路径 / 客户端，LLM 的模型 / 用量……）时，用 `WithRenderer(fn)` 换掉**行体**渲染器，用包内导出的编码原语拼自己的列——不必自带一个 Sink：
+
+```go
+render := func(dst []byte, r observability.Record, color bool) []byte {
+	model, _ := observability.Get[string](r.Attrs, llm.AttrModel) // 类型化取值，不经 any
+	dst = observability.AppendTextValue(dst, model)
+	dst = append(dst, " | "...)
+	return observability.AppendDuration(dst, r.Duration)
+}
+sink := observability.NewLineSink(os.Stdout,
+	observability.WithImmediate(), // 盯终端：每条写完即见
+	observability.WithRenderer(render))
+```
+
+边界：行首标识（`WithPrefix`）、结尾换行、缓冲、`Flush`、写错误、颜色判定仍归 sink；`color`（当前是否上色）作为入参交给你，所以不必自己探测终端，也不会把 ANSI 写进重定向到文件的日志。
+
+六条编码原语（`AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendAttrsExcept` / `AppendPadding` / `DisplayWidth`）与内置版式**同形**，属冻结面；其中 `AppendAttrsExcept` 用来把「固定列盖不住的属性」补到行尾，不必自己重写标量与引号口径。可运行示例见包文档的 `Example_hostRenderer`。
 
 ## 设计要点
 

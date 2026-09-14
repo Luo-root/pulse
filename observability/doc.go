@@ -35,10 +35,11 @@
 // 渲染器，用本包导出的编码原语拼自己的列——出口仍然不认识任何业务语义，
 // 域语义留在宿主手里。
 //
-// 渲染器的契约只有三条：**只产行体**（行首标识与结尾换行由 sink 加）；
+// 渲染器的契约只有四条：**只产行体**（行首标识与结尾换行由 sink 加）；
 // 拿到的 color 是 sink 解析好的结论（不必自己判终端，也不会把 ANSI 写进
 // 重定向到文件的日志）；不缓冲、不写 w（写出时机归 sink，WithImmediate
-// 控制即时性）。
+// 控制即时性）；**在 sink 的内部锁内被调用**——别在渲染器里回调 sink 的
+// Write / Flush / Err（sync.Mutex 不可重入，会安静挂住），也别长时间阻塞。
 //
 //	render := func(dst []byte, r observability.Record, color bool) []byte {
 //		dst = r.Time.AppendFormat(dst, "2006/01/02 - 15:04:05.000")
