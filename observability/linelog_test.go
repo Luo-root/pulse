@@ -3,15 +3,21 @@ package observability
 import (
 	"bytes"
 	"errors"
+	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
-// 本文件是 LineSink 的契约验收面：格式（字段序 + Attrs 排序 + 引号）、
-// 缓冲与 Flush、并发安全、错误捕获。
+// 本文件是 LineSink 的契约验收面：版式（列 / 组 / 属性插入序 / 引号 / 占位）、
+// 颜色开关、缓冲与 Flush、并发安全、错误捕获。
+//
+// 版式口径见 LineSink godoc。断言写成**逐字全文比对**而不是 Contains——列宽、
+// 分隔符、字段顺序都是契约的一部分，松断言盖不住回归。
 
 func TestLineSinkFormatContract(t *testing.T) {
 	var buf bytes.Buffer
@@ -38,15 +44,276 @@ func TestLineSinkFormatContract(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := `time=2026-09-12T12:00:00Z host_id=h1 trace_id=tr-1 source=bridge event=llm.generate_finished duration_ms=2500 status=stop error="boom x" app.note="hello world" app.plain=plain llm.cached=true llm.model=gpt-4o-mini llm.temp=0.7 llm.tokens_in=42` + "\n"
+	// 列：标识 | 时间(25) | 状态(左对齐 10) | 耗时(右对齐 9) | 事件 | 具名 | attrs | host | err | trace
+	want := `PULSE | 2026/09/12 - 12:00:00.000 | stop       |     2.50s | llm.generate_finished | source=bridge | ` +
+		`llm.model=gpt-4o-mini llm.tokens_in=42 llm.temp=0.7 llm.cached=true app.note="hello world" app.plain=plain | ` +
+		`host=h1 | err="boom x" | trace=tr-1` + "\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("line mismatch:\n got %q\nwant %q", got, want)
 	}
 }
 
+// TestLineSinkFormatAssemblyRecord 装配期记录（无状态 / 无耗时）走同一版式：
+// 空列渲染 `-`，事件列起点与运行期记录一致。
+func TestLineSinkFormatAssemblyRecord(t *testing.T) {
+	var buf bytes.Buffer
+	s := NewLineSink(&buf)
+	rec := Record{
+		HostID:    "h1",
+		Source:    SourceKernel,
+		Event:     EventFiberState,
+		FiberName: "llmAdapter#3",
+		From:      "loading",
+		To:        "active",
+	}
+	rec.Time = time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+
+	s.Write(rec)
+	_ = s.Flush()
+
+	want := "PULSE | 2026/09/12 - 12:00:00.000 | -          |         - | pulse.kernel.fiber_state | " +
+		"source=kernel | fiber=llmAdapter#3 | state=loading→active | host=h1\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("line mismatch:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestLineSinkColumnsAligned 「规整」的可测形式：状态 / 耗时列宽度不随内容变化，
+// 事件列在每行的同一列起始。空状态（`-`）与长耗时同样不破列。
+func TestLineSinkColumnsAligned(t *testing.T) {
+	var buf bytes.Buffer
+	s := NewLineSink(&buf)
+
+	records := []Record{
+		{Source: SourceAdapter, Event: "evt", Status: "ok", Duration: 820 * time.Nanosecond},
+		{Source: SourceAdapter, Event: "evt", Status: "completed", Duration: 585100 * time.Nanosecond},
+		{Source: SourceAdapter, Event: "evt", Duration: 2500 * time.Millisecond},
+		{Source: SourceAdapter, Event: "evt", Status: "stop"},
+	}
+	for _, r := range records {
+		s.Write(r)
+	}
+	_ = s.Flush()
+
+	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	if len(lines) != len(records) {
+		t.Fatalf("lines = %d, want %d", len(lines), len(records))
+	}
+	at := runeIndex(lines[0], "| evt |")
+	if at < 0 {
+		t.Fatalf("事件列未按 `| evt |` 成形：%q", lines[0])
+	}
+	for i, ln := range lines[1:] {
+		if got := runeIndex(ln, "| evt |"); got != at {
+			t.Fatalf("第 %d 行事件列起点 = %d, want %d\n行：%q", i+1, got, at, ln)
+		}
+	}
+
+	// 长状态（宿主装配横幅那种一整句）原样输出：列宽是下限不是截断，也不加引号。
+	buf.Reset()
+	s.Write(Record{
+		Source: SourceKernel,
+		Event:  EventHostReady,
+		Status: "active=3 failed=0 waiting=0 idle=1 total=4",
+	})
+	_ = s.Flush()
+	if !strings.Contains(buf.String(), "| active=3 failed=0 waiting=0 idle=1 total=4 |         - | observability.host_ready |") {
+		t.Fatalf("长状态应原样保留：%q", buf.String())
+	}
+}
+
+// TestLineSinkNoAllocOnHotPath 热路径**零分配**是本出口的公开承诺（README 出口表
+// 与 godoc 都写着 0 allocs）。用 AllocsPerRun 锁住它：谁再引入 `Format` 出字符串、
+// 经 `Attrs.Range` 装箱（`native()` 逐值装箱）、或按 key 排序（>8 条要 make
+// []string），这条立刻变红——分配计数是整数、跨运行确定，不像 ns 会漂。
+func TestLineSinkNoAllocOnHotPath(t *testing.T) {
+	s := NewLineSink(io.Discard) // 默认 32 KiB 缓冲：200 条远不到阈值，测的是纯渲染
+	for _, attrs := range []int{3, 10} {
+		rec := Record{
+			HostID:   "h1",
+			TraceID:  "tr-1",
+			Source:   SourceAdapter,
+			Event:    "llm.generate_finished",
+			Status:   "stop",
+			Duration: 2500 * time.Millisecond,
+		}
+		for i := 0; i < attrs; i++ {
+			Set(&rec.Attrs, "k."+strconv.Itoa(i), int64(i))
+		}
+		if got := testing.AllocsPerRun(200, func() { s.Write(rec) }); got != 0 {
+			t.Fatalf("%d 个属性时热路径分配 = %v, want 0", attrs, got)
+		}
+	}
+}
+
+// runeIndex 返回 sub 在 s 中的**显示列**（rune）下标：`µ` 占 1 列但 2 字节，
+// 列对齐是显示宽度的事，按字节比会误判。
+func runeIndex(s, sub string) int {
+	i := strings.Index(s, sub)
+	if i < 0 {
+		return -1
+	}
+	return utf8.RuneCountInString(s[:i])
+}
+
+// TestLineSinkDurationUnits 耗时带单位且**不取整到毫秒**：旧的
+// `duration_ms=0` 让亚毫秒记录看不出快慢（票面第 5 条）。
+func TestLineSinkDurationUnits(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string // 9 列定宽的耗时列
+	}{
+		{0, "        -"},
+		{820 * time.Nanosecond, "    820ns"},
+		{585100 * time.Nanosecond, "  585.1µs"},
+		{7620 * time.Microsecond, "   7.62ms"},
+		{1230 * time.Millisecond, "    1.23s"},
+	}
+	for _, c := range cases {
+		var buf bytes.Buffer
+		s := NewLineSink(&buf)
+		rec := Record{Source: SourceAdapter, Event: "evt", Status: "ok", Duration: c.d}
+		rec.Time = time.Unix(0, 0).UTC()
+		s.Write(rec)
+		_ = s.Flush()
+
+		line := strings.TrimSuffix(buf.String(), "\n")
+		if !strings.Contains(line, lineSep+c.want+lineSep) {
+			t.Fatalf("耗时列 %v 不符：\n got %q\nwant 含 %q", c.d, line, lineSep+c.want+lineSep)
+		}
+		if strings.Contains(line, "duration_ms=0") {
+			t.Fatalf("亚毫秒耗时不得被写成 0：%q", line)
+		}
+	}
+}
+
+// TestLineSinkColor 颜色只在显式开启时出现，且只落在结构信号上
+// （标识 / 时间 / trace 暗淡，错误耗时红、≥1s 耗时黄）。
+func TestLineSinkColor(t *testing.T) {
+	rec := Record{Source: SourceAdapter, Event: "evt", Status: "ok", Duration: 1500 * time.Millisecond}
+	rec.Time = time.Unix(0, 0).UTC()
+
+	t.Run("off by default on non-file writer", func(t *testing.T) {
+		var buf bytes.Buffer
+		s := NewLineSink(&buf)
+		s.Write(rec)
+		_ = s.Flush()
+		if strings.Contains(buf.String(), "\x1b[") {
+			t.Fatalf("非终端目的地不得上色：%q", buf.String())
+		}
+	})
+
+	t.Run("explicit off on colored sink", func(t *testing.T) {
+		var buf bytes.Buffer
+		s := NewLineSink(&buf, WithColor(false))
+		s.Write(rec)
+		_ = s.Flush()
+		if strings.Contains(buf.String(), "\x1b[") {
+			t.Fatalf("WithColor(false) 不得上色：%q", buf.String())
+		}
+	})
+
+	t.Run("on", func(t *testing.T) {
+		var buf bytes.Buffer
+		s := NewLineSink(&buf, WithColor(true))
+		s.Write(rec)
+		_ = s.Flush()
+		out := buf.String()
+		for _, want := range []struct{ name, code string }{
+			{"标识暗淡", ansiDim + DefaultLinePrefix + ansiReset},
+			{"时间暗淡", ansiDim + "1970/01/01 - 00:00:00.000" + ansiReset},
+			{"≥1s 耗时黄色", ansiYellow},
+		} {
+			if !strings.Contains(out, want.code) {
+				t.Fatalf("%s 未上色：%q", want.name, out)
+			}
+		}
+		if strings.Contains(out, ansiRed) {
+			t.Fatalf("无错误不应出现红色：%q", out)
+		}
+	})
+
+	t.Run("error duration painted red", func(t *testing.T) {
+		var buf bytes.Buffer
+		s := NewLineSink(&buf, WithColor(true))
+		bad := rec
+		bad.Duration = time.Microsecond
+		bad.Err = errors.New("boom")
+		s.Write(bad)
+		_ = s.Flush()
+		if !strings.Contains(buf.String(), ansiRed) {
+			t.Fatalf("有 Err 的耗时应变红：%q", buf.String())
+		}
+	})
+}
+
+// TestLineSinkPrefixOption WithPrefix("") 关闭标识列（多服务共用终端时才需要它），
+// 且不影响其余列。票面第 2 条（每行固定 `level=INFO msg=…` 前缀）在人读面的解法。
+func TestLineSinkPrefixOption(t *testing.T) {
+	var buf bytes.Buffer
+	s := NewLineSink(&buf, WithPrefix(""))
+	rec := Record{Source: SourceAdapter, Event: "evt", Status: "ok"}
+	rec.Time = time.Unix(0, 0).UTC()
+	s.Write(rec)
+	_ = s.Flush()
+
+	out := buf.String()
+	if strings.Contains(out, DefaultLinePrefix) {
+		t.Fatalf("WithPrefix(\"\") 后不应有标识：%q", out)
+	}
+	if !strings.HasPrefix(out, "1970/01/01 - 00:00:00.000 | ok") {
+		t.Fatalf("标识关闭后时间列应行首对齐：%q", out)
+	}
+
+	buf.Reset()
+	s2 := NewLineSink(&buf, WithPrefix("API"))
+	s2.Write(rec)
+	_ = s2.Flush()
+	if !strings.HasPrefix(buf.String(), "API | 1970/01/01") {
+		t.Fatalf("自定义标识未生效：%q", buf.String())
+	}
+}
+
+// TestLineSinkNoFieldLost 固定列盖不住的字段一个不丢：把 Record 的每个字段都填上
+// 唯一标记值，逐个断言出现在输出里。装配期与运行期两条路各来一遍。
+func TestLineSinkNoFieldLost(t *testing.T) {
+	rec := Record{
+		HostID:     "mk-host",
+		TraceID:    "mk-trace",
+		Source:     Source("mk-source"),
+		Event:      "mk-event",
+		Status:     "mk-status",
+		Duration:   time.Second,
+		Err:        errors.New("mk-error"),
+		FiberName:  "mk-fiber",
+		From:       "mk-from",
+		To:         "mk-to",
+		LoaderKind: "mk-loader",
+		EntryID:    "mk-entry",
+		PluginName: "mk-plugin",
+	}
+	Set(&rec.Attrs, "mk.key", "mk-value")
+
+	var buf bytes.Buffer
+	s := NewLineSink(&buf)
+	s.Write(rec)
+	_ = s.Flush()
+
+	line := buf.String()
+	for _, want := range []string{
+		"mk-host", "mk-trace", "mk-source", "mk-event", "mk-status", "1.00s", "mk-error",
+		"mk-fiber", "mk-from", "mk-to", "mk-loader", "mk-entry", "mk-plugin", "mk.key=mk-value",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("字段 %q 未出现在输出里：%q", want, line)
+		}
+	}
+}
+
 func TestLineSinkBuffersUntilFlushOrThreshold(t *testing.T) {
 	var buf bytes.Buffer
-	s := NewLineSink(&buf, WithBufSize(64))
+	// 阈值要放得下一条完整行（约 70 字节）：太小则首次 Write 就落盘，测不出缓冲。
+	s := NewLineSink(&buf, WithBufSize(256))
 
 	s.Write(Record{Event: "small"})
 	if buf.Len() != 0 {
@@ -55,7 +322,7 @@ func TestLineSinkBuffersUntilFlushOrThreshold(t *testing.T) {
 	if err := s.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "event=small") {
+	if !strings.Contains(buf.String(), "| small") {
 		t.Fatalf("Flush 后应在出口里，got %q", buf.String())
 	}
 
@@ -94,7 +361,7 @@ func TestLineSinkConcurrentWrites(t *testing.T) {
 		t.Fatalf("lines = %d, want %d（并发写不得丢行）", len(lines), writers*per)
 	}
 	for _, ln := range lines {
-		if !strings.HasPrefix(ln, "time=") || !strings.Contains(ln, " event=evt") {
+		if !strings.HasPrefix(ln, DefaultLinePrefix+" | ") || !strings.Contains(ln, "| evt") {
 			t.Fatalf("行内容错乱（交错写？）：%q", ln)
 		}
 	}
@@ -122,103 +389,107 @@ func TestLineSinkCapturesWriteError(t *testing.T) {
 	}
 }
 
-// TestLineSinkParityWithSlogFields 与 SlogSink 的字段面**实测对照**：同一条
-// 记录分别过两个出口，逐字段比对字段名序列（slog 侧跳过 handler 自带的
-// time/level/msg 三件套）。值格式不逐字比对（引号细节见 LineSink godoc）。
-func TestLineSinkParityWithSlogFields(t *testing.T) {
+// TestLineSinkFactParityWithSlogSink 两个出口的**事实面**对照：同一条记录分别
+// 过 LineSink 与 SlogSink，每个事实都必须在，且**出现的先后完全一致**。
+//
+// 比的是事实（标记值）而不是字段名字面——人读面把状态 / 耗时 / 事件做成列，
+// 把 host_id / error / trace_id 压成 host / err / trace，把 from/to 合成
+// state=a→b，把 duration_ms 换成带单位的 1.50s；机器面保持原 key。两边
+// 一旦有人改了顺序或漏了字段，这里就红。
+func TestLineSinkFactParityWithSlogSink(t *testing.T) {
 	rec := Record{
-		HostID:  "h1",
-		TraceID: "tr-1",
-		Source:  SourceAdapter,
-		Event:   "evt",
-		Status:  "ok",
+		HostID:   "hostMK",
+		TraceID:  "traceMK",
+		Source:   Source("srcMK"),
+		Event:    "eventMK",
+		Status:   "statusMK",
+		Duration: 1500 * time.Millisecond,
+		Err:      errors.New("errMK"),
 	}
-	Set(&rec.Attrs, "b.key", "v")
-	Set(&rec.Attrs, "a.key", "v")
-	rec.Time = time.Unix(0, 0).UTC()
+	Set(&rec.Attrs, "b.key", "attrBMK")
+	Set(&rec.Attrs, "a.key", "attrAMK") // 逆序插入：两边都必须照插入序输出
 
-	// LineSink 侧
 	var lineBuf bytes.Buffer
 	ls := NewLineSink(&lineBuf)
 	ls.Write(rec)
 	_ = ls.Flush()
-	lineNames := fieldNames(strings.TrimSpace(lineBuf.String()))
 
-	// SlogSink 侧（同一记录、同一 TextHandler）
 	var slogBuf bytes.Buffer
-	ss := SlogSink{Logger: slog.New(slog.NewTextHandler(&slogBuf, nil))}
-	ss.Write(rec)
-	slogNames := fieldNames(strings.TrimSpace(slogBuf.String()))
+	SlogSink{Logger: slog.New(slog.NewTextHandler(&slogBuf, nil))}.Write(rec)
 
-	const handlerPrefix = 3 // time / level / msg
-	if len(slogNames) < handlerPrefix {
-		t.Fatalf("slog 输出字段过少：%q", slogBuf.String())
+	line, slogLine := lineBuf.String(), slogBuf.String()
+
+	facts := []struct{ name, line, slog string }{
+		{"status", "statusMK", "status=statusMK"},
+		{"duration", "1.50s", "duration_ms=1500"},
+		{"event", "eventMK", "event=eventMK"},
+		{"source", "source=srcMK", "source=srcMK"},
+		{"attrs 第 1 条（插入序）", "b.key=attrBMK", "b.key=attrBMK"},
+		{"attrs 第 2 条（插入序）", "a.key=attrAMK", "a.key=attrAMK"},
+		{"host", "host=hostMK", "host_id=hostMK"},
+		{"err", "err=errMK", "error=errMK"},
+		{"trace", "trace=traceMK", "trace_id=traceMK"},
 	}
-	slogAttrs := slogNames[handlerPrefix:]
-	if len(slogAttrs) != len(lineNames) {
-		t.Fatalf("字段数不符：line=%v slog(去前缀)=%v", lineNames, slogAttrs)
-	}
-	for i := range lineNames {
-		if lineNames[i] != slogAttrs[i] {
-			t.Fatalf("第 %d 个字段名不符：line=%q slog=%q\nline 全行 %q\nslog 全行 %q",
-				i, lineNames[i], slogAttrs[i], lineBuf.String(), slogBuf.String())
+
+	lineAt, slogAt := -1, -1
+	for _, f := range facts {
+		li, si := strings.Index(line, f.line), strings.Index(slogLine, f.slog)
+		if li < 0 {
+			t.Fatalf("LineSink 缺事实 %s（%q）：%q", f.name, f.line, line)
 		}
+		if si < 0 {
+			t.Fatalf("SlogSink 缺事实 %s（%q）：%q", f.name, f.slog, slogLine)
+		}
+		if li <= lineAt {
+			t.Fatalf("LineSink 事实顺序错：%s 在第 %d 列，上一事实在第 %d 列\n%q", f.name, li, lineAt, line)
+		}
+		if si <= slogAt {
+			t.Fatalf("SlogSink 事实顺序错：%s 在第 %d 列，上一事实在第 %d 列\n%q", f.name, si, slogAt, slogLine)
+		}
+		lineAt, slogAt = li, si
 	}
 }
 
-// fieldNames 从 logfmt 风格行里取字段名（测试用：值不含空格与转义）。
-func fieldNames(line string) []string {
-	var out []string
-	for _, tok := range strings.Fields(line) {
-		if i := strings.IndexByte(tok, '='); i > 0 {
-			out = append(out, tok[:i])
-		}
-	}
-	return out
-}
-
-// TestLineSinkManyAttrsSorted >8 个 Attrs 走 sort.Strings 回退分支：仍按
-// key 字典序输出、一条不少（乱序插入以真正校验排序）。
-func TestLineSinkManyAttrsSorted(t *testing.T) {
+// TestLineSinkAttrsInsertionOrderBeyondInlineCap 越过预留容量（attrInlineCap = 6）
+// 的自然扩容路径同样按插入序输出：逆序插入 12 条，若还残留排序就会变成正序。
+func TestLineSinkAttrsInsertionOrderBeyondInlineCap(t *testing.T) {
 	var buf bytes.Buffer
 	s := NewLineSink(&buf)
 	rec := Record{Source: SourceAdapter, Event: "evt"}
 	rec.Time = time.Unix(0, 0).UTC()
 
-	var wantKeys []string
-	for i := 0; i < 12; i++ {
-		k := "k." + string(rune('a'+i))
-		wantKeys = append(wantKeys, k)
+	const n = 12
+	keys := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		keys = append(keys, "k."+string(rune('a'+i)))
 	}
-	// 逆序插入：若回退分支没排序，输出会跟着逆序。
-	for i := len(wantKeys) - 1; i >= 0; i-- {
-		Set(&rec.Attrs, wantKeys[i], "v")
+	inserted := make([]string, 0, n)
+	for i := n - 1; i >= 0; i-- { // 逆序插入
+		Set(&rec.Attrs, keys[i], "v")
+		inserted = append(inserted, keys[i])
 	}
+
 	s.Write(rec)
 	if err := s.Flush(); err != nil {
 		t.Fatal(err)
 	}
+	line := strings.TrimSuffix(buf.String(), "\n")
 
-	got := fieldNames(strings.TrimSpace(buf.String()))
-	// 前缀字段：time/source/event（无 host_id/trace_id/status/error）。
-	wantPrefix := []string{"time", "source", "event"}
-	if len(got) != len(wantPrefix)+len(wantKeys) {
-		t.Fatalf("字段数 = %d, want %d（%v）", len(got), len(wantPrefix)+len(wantKeys), got)
-	}
-	for i, w := range wantPrefix {
-		if got[i] != w {
-			t.Fatalf("前缀字段第 %d 位 = %q, want %q", i, got[i], w)
+	prev := -1
+	for _, k := range inserted {
+		at := strings.Index(line, k+"=")
+		if at < 0 {
+			t.Fatalf("属性 %q 丢失：%q", k, line)
 		}
-	}
-	for i, w := range wantKeys {
-		if got[len(wantPrefix)+i] != w {
-			t.Fatalf("Attrs 第 %d 位 = %q, want %q（应字典序）", i, got[len(wantPrefix)+i], w)
+		if at <= prev {
+			t.Fatalf("属性 %q 未按插入序（在第 %d 列，上一条在第 %d 列）：%q", k, at, prev, line)
 		}
+		prev = at
 	}
 }
 
-// TestLineSinkQuotesKeyWhenNeeded 键与值同规则：含空格/等号的 key 也加引号
-// （与 slog.TextHandler 的 needsQuoting 口径一致）。
+// TestLineSinkQuotesKeyWhenNeeded 组内 k=v 的键与值同规则：含空格 / 等号的
+// key 也加引号（与 slog.TextHandler 的 needsQuoting 口径一致）。
 func TestLineSinkQuotesKeyWhenNeeded(t *testing.T) {
 	var buf bytes.Buffer
 	s := NewLineSink(&buf)
@@ -226,15 +497,15 @@ func TestLineSinkQuotesKeyWhenNeeded(t *testing.T) {
 	rec.Time = time.Unix(0, 0).UTC()
 	Set(&rec.Attrs, "weird key", "v") // 含空格 → 加引号
 	Set(&rec.Attrs, "plain.key", "v")
+	Set(&rec.Attrs, "eq.key", "a=b") // 值含等号 → 加引号
 	s.Write(rec)
 	_ = s.Flush()
 
 	out := buf.String()
-	if !strings.Contains(out, `"weird key"=v`) {
-		t.Fatalf("含空格的 key 应加引号，got %q", out)
-	}
-	if !strings.Contains(out, "plain.key=v") {
-		t.Fatalf("普通 key 不应加引号，got %q", out)
+	for _, want := range []string{`"weird key"=v`, "plain.key=v", `eq.key="a=b"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("%q 未按引号规则输出：%q", want, out)
+		}
 	}
 }
 

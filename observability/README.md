@@ -59,10 +59,10 @@ Assembly-only:    FiberName, From, To, LoaderKind, EntryID, PluginName
 Attrs open seg:   scalar kv (~string/~int64/~float64/~bool)
 ```
 
-- `Attrs` is an **insertion-ordered slice** internally (#179): the first write reserves room for 6 entries, so a typical record costs one allocation; `Range` walks in insertion order (deterministic) and key-sorting is the egress's job (`SlogSink` / `LineSink` / `MarshalJSON` share that order). Overwriting a key keeps its original position.
+- `Attrs` is an **insertion-ordered slice** internally (#179): the first write reserves room for 6 entries, so a typical record costs one allocation; `Range` walks in insertion order (deterministic, and it is the order the producer wrote them in — its semantic order). The builtin egresses (`SlogSink` / `LineSink`) emit that same order and never sort; only `Attrs.MarshalJSON` sorts by key, for tooling that expects stable object keys. Overwriting a key keeps its original position.
 - No `map[string]any` escape hatch; the only write path into `Attrs` is the generic `Set[T AttrValue]` — `[]byte`, structs, slices, and arbitrary objects cannot enter by type (the type part of the privacy boundary); self-describing keys plus a Sink-side redact hook cover deliberate scalar injection.
 - `Sink.Write(Record)`: **no** `context.Context` (the kernel Emit path carries no ctx).
-- When `Time` is zero, the builtin Sinks (`SlogSink` / `MemorySink`) fill in the wall clock; the `SlogSink` Attrs segment is emitted in key order (`Attrs.MarshalJSON` likewise).
+- When `Time` is zero, the builtin egresses that print it (`LineSink` / `MemorySink`) fill in the wall clock; `SlogSink` never touches `Time` — the time field comes from your handler, so a record can never end up with two `time=` keys.
 - Builtins: `SlogSink`, `LineSink`, `MemorySink`, `MultiSink`; `AsyncSink` is a **wrapper** (makes any downstream egress asynchronous — see “Choosing an egress”).
 
 ## Async egress (AsyncSink)
@@ -139,15 +139,26 @@ See [`docs/design/kernel-local-events.md`](../docs/design/kernel-local-events.md
 - No second string-event bus (no `Collector.Emit(string, map)`; business direct writes go through the typed `CollectorKey`)
 - No stuffing token counts into official Record named fields (they go into Attrs, with keys owned by the fact's package)
 
-## Choosing an egress (SlogSink / LineSink / MemorySink)
+## Choosing an egress (LineSink / SlogSink / MemorySink)
 
 | Egress | Form | Use when |
 |---|---|---|
-| `SlogSink` | `log/slog` with a Text / JSON handler | You must plug into an existing logger or need JSON |
-| `LineSink` | Self-buffered line-oriented text (logfmt-style), **no slog** | High-rate single-host / file logging (recommended here) |
+| `LineSink` | **Default.** One human-readable line per record, self-buffered, never through `log/slog` | Anything a person reads: terminal, log file, startup banner. ~5x cheaper than `SlogSink`, zero-alloc |
+| `SlogSink` | `log/slog` with a Text / JSON handler | You must plug into an existing logger, or need JSON for a collector |
 | `MemorySink` | In-memory collection | Test assertions and demos |
 
-`LineSink` is **semantically aligned** with `SlogSink` (same field order, Attrs sorted by key, wall-clock stamping, duration in ms, error text, quoting when needed) and is a drop-in replacement; it skips slog's per-field `[]any` boxing and per-record key sorting:
+```text
+PULSE | 2026/09/14 - 12:42:03.531 | completed  |   585.0µs | llm.generate_finished | source=bridge | llm.model=gpt-4o-mini llm.tokens_in=42 | host=pulse-web | trace=6504f73f
+PULSE | 2026/09/14 - 12:42:03.100 | -          |         - | pulse.kernel.fiber_state | source=kernel | fiber=llmAdapter#3 | state=loading→active
+```
+
+`LineSink` carries the **same facts in the same order** as `SlogSink`; only the presentation differs, and every difference is deliberate:
+
+- **Columns** `| <status> | <duration> | <event> |` replace three `k=v` fields. A missing column renders `-`, so the event column starts at the same offset on every line — alignment is the whole point of a format you scan rather than parse.
+- **Duration keeps its unit** (`820ns` / `585.1µs` / `7.62ms` / `1.23s`) instead of an integer `duration_ms`, which truncated every sub-millisecond record to `0`. Integer math, no float formatting.
+- **Shorter keys** where it reads better: `host_id`→`host`, `trace_id`→`trace`, `error`→`err`, `loader_kind`→`loader`, `entry_id`→`entry`, and `from`/`to` collapse into `state=loading→active`. Values are unchanged — a fact is never dropped, only renamed.
+- **`Attrs` in insertion order** (the producer's semantic order), as in `SlogSink`; nothing is sorted.
+- **ANSI colour only when the destination is a terminal** (`*os.File` + char device), and only on structural signals: dim prefix / time / trace, red duration on error, yellow duration ≥ 1s. Never on the `Status` string — that vocabulary belongs to the package that owns the fact, not to the base layer.
 
 ```go
 sink := observability.NewLineSink(file)   // 32 KiB line buffer by default
@@ -155,16 +166,16 @@ defer sink.Flush()                        // mandatory before shutdown (last bat
 _ = sink.Err()                            // first write error is recorded, never panics
 ```
 
-Measured (i9-14900HX / Windows, AC power and idle; **absolute ns varies 2–4x with power/load — trust ratios and alloc counts**; envelope + 3 Attrs; output discarded, no disk):
+Measured (i9-14900HX / Windows, AC power and idle; **absolute ns varies 2–4x with power/load state — trust ratios and alloc counts, and only compare numbers from the same run**; envelope + 3 Attrs; whole table re-measured in one session for #194):
 
 | Case | `SlogSink` | `LineSink` |
 |---|---|---|
-| Formatting (ns/op) | 5016–5355 | **726–786** |
-| Allocations (allocs/op) | 16 | **1** |
-| Including disk (slog+bufio ↔ LineSink's own buffer) | 5795–6028 | **1169–1180** |
-| Unbuffered disk (control) | 45012–51858 | — |
+| Formatting (ns/op) | 1135–1155 | **213** |
+| Allocations (allocs/op) | 14 | **0** |
+| Including disk (slog+bufio ↔ LineSink's own buffer) | 1258 | **347** |
+| Unbuffered disk (control) | 12267 | — |
 
-Field-count sensitivity (discarded output): slog ≈ 3.5 / 5.3 / 7.9 µs at 0 / 3 / 10 attrs (8–30 allocs); `LineSink` ≈ 0.40 / 0.77 / 1.8 µs (1–2 allocs) — per-field cost drops from ~0.45 µs to ~0.12 µs.
+Field-count sensitivity (discarded output): `SlogSink` ≈ 0.87 / 1.15 / 1.85 µs at 0 / 3 / 10 attrs (8–29 allocs) versus `LineSink` ≈ 0.18 / 0.21 / 0.29 µs (**0 allocs at every width**) — per-field cost drops from ~0.5 µs to ~0.06 µs, and the widest records gain most (the old egress sorted keys once past 8 attrs).
 
 Standing benchmarks: `go test -bench . ./observability/` (`sink_bench_test.go` splits construction → formatting → disk so any egress change can be compared layer by layer). Conclusion: **bottleneck order = unbuffered write syscall ≫ slog formatting > fold/construction > kernel dispatch**.
 

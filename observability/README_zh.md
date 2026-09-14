@@ -53,10 +53,10 @@ err = loop.Observe(reqScope, cfg)                      // loop 包适配
 Attrs 开放段：标量 kv（~string/~int64/~float64/~bool）
 ```
 
-- `Attrs` 内部是**插入序切片**（#179）：首次写入按 6 条预留容量，常见记录一次分配；`Range` 按插入序（确定性），按 key 排序由出口负责（SlogSink / LineSink / `MarshalJSON` 同序）。同名覆盖保持原位置。
+- `Attrs` 内部是**插入序切片**（#179）：首次写入按 6 条预留容量，常见记录一次分配；`Range` 按插入序（确定性，且就是产生方写入的语义序）。内置出口（`SlogSink` / `LineSink`）照样输出、不做排序；只有 `Attrs.MarshalJSON` 按 key 排序（对齐 JSON 对象的外部工具链）。同名覆盖保持原位置。
 - 无 `map[string]any` 逃生舱；`Attrs` 的写入面只有泛型 `Set[T AttrValue]`——`[]byte`、struct、slice、任意对象在类型上进不来（隐私边界的类型部分），key 自述意图 + Sink 侧 redact 钩子兜住蓄意标量注入。
 - `Sink.Write(Record)`：**无** `context.Context`（kernel Emit 路径不带 ctx）。
-- `Time` 为零时由内置 Sink（`SlogSink` / `MemorySink`）补 wall clock；`SlogSink` 的 Attrs 段按 key 字典序输出（`Attrs.MarshalJSON` 同序）。
+- `Time` 为零时由会输出它的内置出口（`LineSink` / `MemorySink`）补 wall clock；`SlogSink` 不碰 `Time`——时间字段由宿主的 handler 给出，记录里不会再出现第二个 `time=`。
 - 内置：`SlogSink`、`LineSink`、`MemorySink`、`MultiSink`；`AsyncSink` 是**包装器**（包住任一下沉出口改为异步投递，见「出口选择」）。
 
 ## 异步出口（AsyncSink）
@@ -126,15 +126,26 @@ func main() {
 - 不做第二套字符串事件总线（无 `Collector.Emit(string, map)`；业务直写走类型化的 `CollectorKey`）
 - 不把 token 计数塞进官方 Record 具名字段（走 Attrs，key 归属包定义）
 
-## 出口选择（SlogSink / LineSink / MemorySink）
+## 出口选择（LineSink / SlogSink / MemorySink）
 
 | 出口 | 形态 | 适用 |
 |---|---|---|
-| `SlogSink` | `log/slog`，Text / JSON handler | 要接宿主既有 logger、要 JSON 结构化 |
-| `LineSink` | 自带缓冲的行式文本（logfmt 风格），**不经 slog** | 单机/文件落盘的高频路径（本包推荐） |
+| `LineSink` | **默认出口。** 一行一条的人读文本，自带缓冲，**不经 slog** | 任何给人看的地方：终端、日志文件、启动横幅。比 `SlogSink` 便宜约 5 倍，零分配 |
+| `SlogSink` | `log/slog`，Text / JSON handler | 要接宿主既有 logger、要 JSON 喂采集器 |
 | `MemorySink` | 内存收集 | 测试断言与演示 |
 
-`LineSink` 的语义与 `SlogSink` **对齐**（同字段序、Attrs 按 key 字典序、Time 补 wall clock、Duration 毫秒、Err 文本、值按需加引号），可直接替换；它绕开了 `slog` 的 `[]any` 逐字段装箱与每条的 keys 排序分配：
+```text
+PULSE | 2026/09/14 - 12:42:03.531 | completed  |   585.0µs | llm.generate_finished | source=bridge | llm.model=gpt-4o-mini llm.tokens_in=42 | host=pulse-web | trace=6504f73f
+PULSE | 2026/09/14 - 12:42:03.100 | -          |         - | pulse.kernel.fiber_state | source=kernel | fiber=llmAdapter#3 | state=loading→active
+```
+
+`LineSink` 与 `SlogSink` **同一批事实、同一顺序**，差别只在呈现；每一处差异都是刻意的：
+
+- **列** `| <状态> | <耗时> | <事件> |` 取代三个 k=v 字段。缺值渲染 `-`，让事件列在每行的同一列起始——「一眼扫过去不用重新找列」才是版式的全部意义；
+- **耗时不取整**（`820ns` / `585.1µs` / `7.62ms` / `1.23s`），不再是整数 `duration_ms`（旧口径把亚毫秒记录全写成 `0`）。全程整数运算，不走浮点格式化；
+- **key 名更短**：`host_id`→`host`、`trace_id`→`trace`、`error`→`err`、`loader_kind`→`loader`、`entry_id`→`entry`，`from`/`to` 合成 `state=loading→active`。只改名不丢值；
+- **Attrs 按插入序**（产生方语义序），与 `SlogSink` 同口径，不做任何排序；
+- **只在目的地是终端时上色**（`*os.File` + 字符设备），且只按结构信号：标识 / 时间 / trace 暗淡，有错的耗时红色、≥1s 黄色。**不按 `Status` 字符串猜语义**——那是事实归属包的词表，不是基座的知识。
 
 ```go
 sink := observability.NewLineSink(file)   // 缺省 32 KiB 行缓冲
@@ -142,16 +153,16 @@ defer sink.Flush()                        // 关闭前必须 Flush（最后一�
 _ = sink.Err()                            // 写错误记首错，不 panic
 ```
 
-实测（i9-14900HX / Windows，AC 供电空载；**绝对 ns 随电源/负载可差 2–4×，以比值与 alloc 计数为准**；含信封 + 3 Attrs；丢弃输出不落盘）：
+实测（i9-14900HX / Windows，AC 供电空载；**绝对 ns 随电源/负载可差 2–4×，以比值与 alloc 计数为准，且只在同一轮内比较**；含信封 + 3 Attrs；整张表在 #194 里同会话重测）：
 
 | 口径 | `SlogSink` | `LineSink` |
 |---|---|---|
-| 格式化（ns/op） | 5016–5355 | **726–786** |
-| 分配（allocs/op） | 16 | **1** |
-| 含落盘（slog+bufio ↔ LineSink 自带缓冲） | 5795–6028 | **1169–1180** |
-| 无缓冲落盘（对照） | 45012–51858 | — |
+| 格式化（ns/op） | 1135–1155 | **213** |
+| 分配（allocs/op） | 14 | **0** |
+| 含落盘（slog+bufio ↔ LineSink 自带缓冲） | 1258 | **347** |
+| 无缓冲落盘（对照） | 12267 | — |
 
-字段数敏感性（丢弃输出）：slog 约 3.5 / 5.3 / 7.9 µs（0 / 3 / 10 attrs，8–30 allocs），`LineSink` 约 0.40 / 0.77 / 1.8 µs（1–2 allocs）——每字段成本从 ~0.45 µs 降到 ~0.12 µs。
+字段数敏感性（丢弃输出）：`SlogSink` 约 0.87 / 1.15 / 1.85 µs（0 / 3 / 10 attrs，8–29 allocs），`LineSink` 约 0.18 / 0.21 / 0.29 µs（**各档均 0 alloc**）——每字段成本从 ~0.5 µs 降到 ~0.06 µs，且属性最多的记录收益最大（旧出口超过 8 个属性就要排序）。
 
 常驻基准：`go test -bench . ./observability/`（`sink_bench_test.go` 把「构造 → 格式化 → 落盘」逐层拆开，任何出口改动先跑它对照）。结论：**瓶颈排序 = 无缓冲落盘 syscall ≫ slog 格式化 > 折叠构造 > kernel 派发**。
 

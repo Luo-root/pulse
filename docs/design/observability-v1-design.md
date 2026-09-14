@@ -1,6 +1,6 @@
 # Observability v1 设计：kernel typed 旁路事件 + 快照横幅 + Sink
 
-> 状态：Accepted（方案 A，评审定案 2026-08-27；适配下沉修订 2026-09，Issue [#127](https://github.com/Luo-root/pulse/issues/127)——双基座模型：折叠适配从伴生 bridge 下沉至各事实归属包，bridge 包废除）
+> 状态：Accepted（方案 A，评审定案 2026-08-27；适配下沉修订 2026-09，Issue [#127](https://github.com/Luo-root/pulse/issues/127)——双基座模型：折叠适配从伴生 bridge 下沉至各事实归属包，bridge 包废除；出口版式修订 2026-09-14，Issue [#194](https://github.com/Luo-root/pulse/issues/194)——LineSink 定为默认出口并改列式人读版式，Attrs 改按插入序输出，SlogSink 去掉重复 `time=` 与 `duration_ms` 取整）
 > 包位置：`observability/`（与 Issue [#16](https://github.com/Luo-root/pulse/issues/16) 同步实现）；观测适配面在 llm / loop / flow 各包（`Observe` / `NewRecordObserver`）
 > 前置：examples/internal/observability 原型已验证运行期桥可行（PR #15）；本篇为其正式化收缩版设计
 > 依赖：observability 本体只 import `kernel`；llm/loop/flow 可 import kernel + observability（双基座租户），全仓无逆向依赖
@@ -76,7 +76,7 @@ Attrs 开放段：标量 kv（~string/~int64/~float64/~bool），key 约定 <组
 - 装配记录：TraceID/Duration/Attrs 为零值
 - 桥记录：填 TraceID/Duration/Status/Attrs；业务维度（`llm.AttrModel`、`llm.AttrTokensIn/Out/Cached`、`loop.AttrTool`、`loop.AttrSteps`、`flow.AttrNode`）经 Attrs 进入，**不再扩具名字段**（D7/D8）
 - 隐私边界（类型部分）：Attrs 的写入面只有泛型 `Set[T AttrValue]`，`[]byte`、struct、slice、任意对象在类型上无法进入——prompt、消息切片、思维链内容不能以 kv 形式进记录；「把 payload 塞进一个标量值」属于蓄意行为，防线是 key 自述意图 + Sink 侧 redact 钩子（宿主 Sink 实现可拒绝敏感 key / 截断超长 / 限条数）
-- 出口确定性：Attrs 内部为**插入序切片**（修订 #179，2026-09：此前是 map，逐条 Set 时 hmap+bucket 两次分配，常见 5 条记录每记录 2 allocs；改切片后首次写入按 6 条预留容量、常见记录 1 次分配，读取线性扫描且天然确定性）；SlogSink / LineSink 按 key 字典序输出，`Attrs.MarshalJSON` 同序，`Range` 按插入序；导出实现应保持同一约定
+- 出口确定性：Attrs 内部为**插入序切片**（修订 #179，2026-09：此前是 map，逐条 Set 时 hmap+bucket 两次分配，常见 5 条记录每记录 2 allocs；改切片后首次写入按 6 条预留容量、常见记录 1 次分配，读取线性扫描且天然确定性）；**出口按插入序输出、不做排序**（修订 #194，2026-09-14：此前 SlogSink / LineSink 按 key 字典序输出——字典序不是阅读序，且出口不认识业务语义，排不出来；超过 8 个属性还要多一次排序与分配）。`Range` 同序；只有 `Attrs.MarshalJSON` 按 key 排序（对齐期望稳定对象键的外部工具链）；导出实现应保持同一约定
 
 ### 3.2 Sink
 
@@ -86,7 +86,7 @@ type Sink interface {
 }
 ```
 
-内置出口 SlogSink（stderr）/ LineSink（自带缓冲的行式文本，高频落盘推荐）/ MemorySink（测试断言）/ MultiSink（扇出）；**AsyncSink 是包装器而非新出口形态**——它包住任一下沉 Sink，只改变投递时机（入队即返回 + 后台单协程 FIFO），队列有界、满时默认阻塞（可丢新），不改变记录形态与字段语义。`Time` 为零时由内置 Sink 补 wall clock。导出器（otel/prometheus）将来以「新增 Sink 实现」方式接入，不动包结构。
+内置出口 **LineSink（默认：自带缓冲的行式人读文本，列式版式 `标识 | 时间 | 状态 | 耗时 | 事件 | 具名段 | attrs | host | err | trace`、属性插入序、只在终端上色、零分配）** / SlogSink（接宿主既有 logger 或要 JSON 时用，同一批字段同一顺序，给机器读）/ MemorySink（测试断言）/ MultiSink（扇出）；**AsyncSink 是包装器而非新出口形态**——它包住任一下沉 Sink，只改变投递时机（入队即返回 + 后台单协程 FIFO），队列有界、满时默认阻塞（可丢新），不改变记录形态与字段语义。`Time` 为零时由会输出它的内置出口（LineSink / MemorySink）补 wall clock；SlogSink 不碰 `Time`（时间字段由宿主 handler 给出，避免每条两个 `time=`）。导出器（otel/prometheus）将来以「新增 Sink 实现」方式接入，不动包结构。
 
 ### 3.3 kernel 侧新增公开面
 
@@ -179,7 +179,7 @@ otel/prometheus 导出器 · 采样与动态级别 · Web UI · 正式包内业�
 5. Record 表面测试：无 map、装配段在桥记录中零值
 6. examples 回归 + trace_id 桥内四层贯通
 7. race 下并发收敛不丢事件
-8. Attrs 表面测试：Set/Get 四类标量往返、命名标量（~int64 等）兼容、类型不符 ok=false、MarshalJSON 按序、SlogSink attrs 段排序且位于具名字段之后
+8. Attrs 表面测试：Set/Get 四类标量往返、命名标量（~int64 等）兼容、类型不符 ok=false、MarshalJSON 按序、两个出口的 attrs 段按**插入序**且位于具名字段之后（#194 起不再排序）；LineSink 版式契约（列对齐 / 缺值占位 `-` / 耗时带单位不取整 / 终端才上色 / 事实面与 SlogSink 逐项对照）
 9. bridge 全链路（#125）：scripted agent 工具回合记录序列与 attrs 逐条断言；双 scope TraceID 隔离 + Dispose 摘除；HITL 中立（before_tool_call 监听恰一次、拒绝路径记 rejected）；Collector 直写自动携带标识；FlowObserver wait/run 分段（Duration>0）、skip 单条等待、双节点 nodeID 隔离、三家归因锚（llm 同 scope 并发双实例 / loop 并发双 Agent / flow 并发双图，#144）
 
 ## 9. 观测适配下沉（Issue #127，2026-09）

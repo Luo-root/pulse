@@ -20,6 +20,14 @@
 //	if _, err := kernel.Use(host, observability.Bootstrap("host-1", sink)); err != nil { ... }
 //	kernel.Use(host, llm.Plugin()) // 此后的每次状态迁移都会进 Sink
 //
+// 默认出口是 **LineSink**——一行一条的人读文本（列式版式、属性插入序、
+// 只在终端上色），自带 32 KiB 缓冲、零分配、不经 slog：
+//
+//	sink := observability.NewLineSink(os.Stdout) // 关闭前必须 Flush()
+//
+// 需要接宿主既有 logger、或要 JSON 喂采集器时换 SlogSink（同一批字段、
+// 同一顺序，只是给机器读）。选型与实测见「出口选择」。
+//
 // # TraceID 生成
 //
 // D3 约定 TraceID 由宿主单一生成源注入：宿主每请求调用 NewTraceID
