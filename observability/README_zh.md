@@ -168,3 +168,44 @@ _ = sink.Err()                            // 写错误记首错，不 panic
 
 常驻基准：`go test -bench . ./observability/`（`sink_bench_test.go` 把「构造 → 格式化 → 落盘」逐层拆开，任何出口改动先跑它对照）。结论：**瓶颈排序 = 无缓冲落盘 syscall ≫ slog 格式化 > 折叠构造 > kernel 派发**。
 
+## 宿主自带出口（WithRenderer）
+
+上面那套列式版式是**默认**的，不是唯一的。宿主想让**域事实进列**（HTTP 的方法 / 路径 / 客户端，LLM 的模型 / 用量……）时，换掉行体渲染器，用包内导出的编码原语拼自己的列——出口仍然不认识任何业务语义，域语义留在宿主手里。
+
+渲染器的契约只有四条：
+
+- **只产行体**：行首标识（`WithPrefix`，含它的暗淡上色）与结尾换行由 sink 加——它们属于 sink 语义，不属于版式；
+- **`color` 是 sink 解析好的结论**（TTY 判定 + `WithColor` 覆盖）：宿主不必自己判断目的地，也不会把 ANSI 写进重定向到文件的日志；
+- **不缓冲、不写 writer**：写出时机归 sink（默认攒批，`WithImmediate()` 每条即写）；
+- **在 sink 的内部锁内被调用**：别在渲染器里回调 sink 自己的方法（`Write` / `Flush` / `Err`——`sync.Mutex` 不可重入，结果是安静挂住而不是报错），也别长时间阻塞，那会挡住所有并发写入。
+
+```go
+render := func(dst []byte, r observability.Record, color bool) []byte {
+	dst = r.Time.AppendFormat(dst, "2006/01/02 - 15:04:05.000")
+	dst = append(dst, " | "...)
+	model, _ := observability.Get[string](r.Attrs, llm.AttrModel) // 类型化取值，不经 any
+	dst = observability.AppendTextValue(dst, model)
+	dst = append(dst, " | "...)
+	return observability.AppendDuration(dst, r.Duration)
+}
+sink := observability.NewLineSink(os.Stdout,
+	observability.WithImmediate(), // 盯终端：每条写完即见
+	observability.WithRenderer(render))
+```
+
+导出的原语与内置版式**同形**——`linelog_renderer_test.go` 从内置行切分逐字节比对，不是靠约定：
+
+| 原语 | 与内置版式同形的口径 |
+|---|---|
+| `AppendDuration` | 带单位、不取整：`820ns` / `585.1µs` / `7.62ms` / `1.23s` |
+| `AppendTextValue` | `k=v` 的按需引号规则（含空格 / 等号 / 引号 / 控制字符） |
+| `AppendAttrs` | 整组属性：插入序 + 四类标量 + 同一条引号规则 |
+| `AppendAttrsExcept` | 同一条渲染循环的子集版：跳过已进固定列的键，剩下的按插入序补到行尾——「固定列盖不住的属性不丢」这条内置不变式的宿主版 |
+| 单值（`Get[T]` 取出的域事实） | 与 `AppendAttrs` 同一口径：文本走 `AppendTextValue`、`int64` 走 `AppendInt(…, 10)`、**`float64` 走 `AppendFloat(…, 'g', -1, 64)`**（`'f'` 会把 `1e-06` 写成 `0.000001`，同一个值与 attrs 段不同形）、`bool` 走 `AppendBool` |
+| `DisplayWidth` + `AppendPadding` | 按**显示列**补齐（CJK / 全角 2 列、组合记号 0 列） |
+| 空组 / 缺值 | **宿主自判**：`AppendAttrs` 对空组产 0 字节（分隔符自己按 `Attrs.Len() > 0` 加）；`AppendAttrsExcept` 全被跳过时**也**产 0 字节，那一路得按**产出长度**判空（`Len() > 0` 问的是「组非空」，不是「有可渲染项」）；`AppendTextValue("")` 渲染成 `""`（看着像有值）——缺列的占位（内置用 `-`）属版式选择，取属性用 `Get[T]` 的 ok 位区分「没有」与「是零值」 |
+
+**什么时候该自带出口**：要按自己域的语义改**版式或上色**时。只是「默认版式够用、想接自己的 logger / 要 JSON」→ 继续用 `SlogSink`；只是「换个目的地」→ 什么都不用换，`NewLineSink(w)` 就够。
+
+这六条原语与 `LineRenderer` 属**冻结面**（见根 README 的 Release & Compatibility）：口径改动随 minor 发布。可运行的完整示例（四列 + 零分配写法）见 `Example_hostRenderer`。
+

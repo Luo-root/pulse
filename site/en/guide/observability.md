@@ -1,6 +1,6 @@
 # Observability
 
-`observability` is v2's official observability package: **Bootstrap + Record + Sink** — three things plus the default per-request TraceID generator (`NewTraceID`), kernel-only dependency, zero business imports (never imports llm/loop/flow).
+`observability` is v2's official observability package: **Bootstrap + Record + Sink** — three things plus the default per-request TraceID generator (`NewTraceID`) and host-provided egress (`WithRenderer`), kernel-only dependency, zero business imports (never imports llm/loop/flow).
 
 ## The three things
 
@@ -25,6 +25,26 @@ PULSE | 2026/09/14 - 12:42:03.100 | -          |         - | pulse.kernel.fiber_
 A missing status / duration column renders `-`, so the event column lines up on every record; durations keep their unit instead of truncating to zero; `Attrs` follow insertion order; colour appears only when the destination is a terminal.
 
 `AsyncSink` is a **wrapper**, not an exit: it wraps any slow exit (file / network) and moves delivery off the request path — `Write` only deep-copies `Attrs` and enqueues. It is a pessimization for already-fast exits (e.g. `MemorySink`), so don't apply it by default; when the sustained rate exceeds the exit's capacity the queue back-pressures to the exit's rate, which is the price of never dropping a record.
+
+## Host-provided egress (WithRenderer)
+
+The columnar layout is the **default**, not the only one. When you want **domain facts in columns** (HTTP method / path / client, LLM model / usage, …), replace the line-body renderer with `WithRenderer(fn)` and build your own columns from the exported encoding primitives — no need to bring your own Sink:
+
+```go
+render := func(dst []byte, r observability.Record, color bool) []byte {
+	model, _ := observability.Get[string](r.Attrs, llm.AttrModel) // typed read, no `any`
+	dst = observability.AppendTextValue(dst, model)
+	dst = append(dst, " | "...)
+	return observability.AppendDuration(dst, r.Duration)
+}
+sink := observability.NewLineSink(os.Stdout,
+	observability.WithImmediate(), // watching a terminal: every line lands at once
+	observability.WithRenderer(render))
+```
+
+Boundary: the line prefix (`WithPrefix`), the trailing newline, buffering, `Flush`, write errors and the colour decision all stay with the sink; `color` (whether colour is on right now) is handed to you, so you never probe the terminal yourself and never leak ANSI into a redirected log file.
+
+The six encoding primitives (`AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendAttrsExcept` / `AppendPadding` / `DisplayWidth`) are **byte-identical** to the built-in layout and part of the frozen surface; `AppendAttrsExcept` is how you append "attributes the fixed columns cannot hold" without re-implementing the scalar and quoting rules. A runnable example is `Example_hostRenderer` in the package docs.
 
 ## Design points
 
