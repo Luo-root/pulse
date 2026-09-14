@@ -59,6 +59,9 @@ func WithImmediate() LineOption {
 //     到文件的日志里；
 //   - 不缓冲、不写 w——写出时机由 sink 决定（缺省攒批，WithImmediate 每条
 //     即写）；
+//   - **在 sink 的内部锁内被调用**：别在渲染器里回调 sink 自己的方法
+//     （`Write` / `Flush` / `Err`——`sync.Mutex` 不可重入，会死锁，而且表现
+//     是安静挂住不是报错），也别长时间阻塞，那会挡住所有并发写入；
 //   - 零分配由渲染器自己负责：热路径上每次 Write 都会调它一次，分配一次
 //     就是每条一次。
 //
@@ -429,6 +432,10 @@ func (s *LineSink) unpaint(dst []byte, painted bool) []byte {
 // 规则；输出与内置版式的 attrs 段逐字节同形。要挑单个事实进域列用
 // `Get[T](a, key)` 取类型化值，再用 AppendTextValue / strconv 拼。
 //
+// **空 Attrs（Len() == 0）产出 0 字节**：组间分隔符由调用方按需加——内置版式
+// 的写法是 `if r.Attrs.Len() > 0 { dst = append(dst, lineSep...); ... }`。
+// 直接「先补分隔符再调它」会在无属性记录上多出一段空列。
+//
 // 旧实现按 key 字典序输出并为此排序（≤8 个键走栈上插入排序）——但字典序不是
 // 阅读序，出口也排不出来：`http.request.method` 该排在 `http.response.body.size`
 // 前面是 HTTP 知识，出口不认识。Attrs 内部本来就是插入序切片（#179），产生方
@@ -544,6 +551,10 @@ func appendFraction(dst []byte, n int64) []byte {
 // AppendTextValue 追加文本值：含空格 / 等号 / 引号 / 控制字符时按 Go 字符串
 // 字面量加引号（与 slog.TextHandler 的 needsQuoting 精神一致）；空串也算需要
 // 引号，渲染成 `""`。
+//
+// 注意**空串渲染成 `""` 是有值的样子**：「没有这个事实」与「值就是空串」是
+// 两件事，缺列的占位属版式选择、由宿主决定——内置版式对缺列用 `-`。取属性时
+// 用 `Get[T]` 的 ok 位区分，别把零值当缺值。
 //
 // 宿主自带出口时用它渲染文本事实与键名，保证与内置版式同一条引号规则——
 // 同一段含空格的错误文本不会在一个出口加引号、在另一个不加。

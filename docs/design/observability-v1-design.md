@@ -90,7 +90,7 @@ type Sink interface {
 
 **渲染层可替换**（#198，2026-09-14）：上面那套列式版式是**默认实现**，不是唯一版式。宿主想让域事实进列（HTTP 的方法 / 路径 / 客户端，LLM 的模型 / 用量……）时用 `WithRenderer(fn)` 换掉**行体**渲染器（`LineRenderer func(dst []byte, r Record, color bool) []byte`），用导出的编码原语拼自己的列，**不必自带一个 Sink**（原先宿主为此要重写时长格式化、引号规则、列补齐三条规则，约 2/3 与上游同义）。边界：行首标识（`WithPrefix`，含暗淡上色）、结尾换行、缓冲、`Flush`、写错误、颜色判定（TTY + `WithColor`）仍归 sink——它们是**出口语义**，与换不换渲染器无关；`color` 作为入参交给渲染器，宿主因此不必自己探测终端、也不会把 ANSI 写进重定向到文件的日志。域列的定义与上色规则完全由宿主提供，基座仍不认识任何业务语义。
 
-五条编码原语 `AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendPadding` / `DisplayWidth` 是**内置版式的同一实现**（导出而非复制），因此与内置输出逐字节同形；它们与 `LineRenderer` 一起属**冻结面**——口径改动（例如把 `DisplayWidth` 的 emoji 近似改准）会改变宿主出口的字节，须随 minor 并在 Release notes 说明。替代方案（「域列回调 + 关事件列 / 关具名段 / 关 attrs 等布局开关」与「只导出原语、宿主仍自带 Sink」）在 #198 讨论中被否：前者等于让上游长出一套版式 DSL，且宿主的目标版式往往不是默认骨架的子集或超集；后者没有解决「宿主自理缓冲 / 即时性 / 错误处理」的重复。
+五条编码原语 `AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendPadding` / `DisplayWidth` 是**内置版式的同一实现**（导出而非复制），因此**用它们拼出的片段**与内置输出逐字节同形——注意不是整行：列序与具名段压缩（`from`/`to` → `state=a→b`）是版式逻辑，换渲染器后宿主拿到的是自己的行。它们与 `LineRenderer` 一起属**冻结面**——口径改动（例如把 `DisplayWidth` 的 emoji 近似改准）会改变宿主出口的字节，须随 minor 并在 Release notes 说明。替代方案（「域列回调 + 关事件列 / 关具名段 / 关 attrs 等布局开关」与「只导出原语、宿主仍自带 Sink」）在 #198 讨论中被否：前者等于让上游长出一套版式 DSL，且宿主的目标版式往往不是默认骨架的子集或超集；后者没有解决「宿主自理缓冲 / 即时性 / 错误处理」的重复。
 
 ### 3.3 kernel 侧新增公开面
 

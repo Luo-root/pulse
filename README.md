@@ -34,7 +34,7 @@ Pulse ships under the 0.x SemVer convention. From **v0.2.0**:
   - kernel plugin lifecycle semantics: same-name supersede without restore, event listeners are Effects, generational commits;
   - the session event stream format (header v1/v2);
   - the `MemoryStore` / `SessionStore` method sets and the sentinel-error semantics of optional capability interfaces (`Seeder`, `ImportStore`);
-  - the observability egress encoding rules — `AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendPadding` / `DisplayWidth` — and the `LineRenderer` contract: a host-built egress renders the same bytes for the same facts as the built-in layout.
+  - the observability egress encoding rules — `AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendPadding` / `DisplayWidth` — and the `LineRenderer` contract: the **fragments** a host egress builds from these five primitives are byte-identical to the corresponding fragments of the built-in layout (column order and named-segment compression are layout logic, not primitives — a host renderer does not reproduce the default line).
 - No second full rewrite: there will be no v1→v2-style tree removal without a compatibility path.
 
 ## Current Capabilities

@@ -29,18 +29,27 @@ func Example_hostRenderer() {
 	render := func(dst []byte, r observability.Record, color bool) []byte {
 		dst = r.Time.AppendFormat(dst, "2006/01/02 - 15:04:05.000")
 
-		// 域事实取自 attrs：Get[T] 拿类型化值，不用经过 any
-		model, _ := observability.Get[string](r.Attrs, llm.AttrModel)
+		// 域事实取自 attrs：Get[T] 拿类型化值（不经 any），**看 ok 位**——
+		// 缺属性很正常（loop / flow 的记录没有 llm.model），缺了按自己的版式
+		// 渲染占位符，别把零值当有值
+		model, ok := observability.Get[string](r.Attrs, llm.AttrModel)
+		if !ok {
+			model = "-" // 占位是版式选择；内置版式缺列同样用 `-`
+		}
 		dst = append(dst, " | "...)
 		dst = observability.AppendTextValue(dst, model)
 		dst = observability.AppendPadding(dst, 12-observability.DisplayWidth(model))
 
-		in, _ := observability.Get[int64](r.Attrs, llm.AttrTokensIn)
-		out, _ := observability.Get[int64](r.Attrs, llm.AttrTokensOut)
+		in, okIn := observability.Get[int64](r.Attrs, llm.AttrTokensIn)
+		out, okOut := observability.Get[int64](r.Attrs, llm.AttrTokensOut)
 		dst = append(dst, " | "...)
-		dst = strconv.AppendInt(dst, in, 10)
-		dst = append(dst, '/')
-		dst = strconv.AppendInt(dst, out, 10)
+		if !okIn && !okOut {
+			dst = append(dst, "-"...)
+		} else {
+			dst = strconv.AppendInt(dst, in, 10)
+			dst = append(dst, '/')
+			dst = strconv.AppendInt(dst, out, 10)
+		}
 
 		// 耗时复用同一口径（带单位、不取整）；右对齐用栈上小缓冲算长度，
 		// 不为了量宽度分配字符串
@@ -90,8 +99,12 @@ func TestHostRendererNoAlloc(t *testing.T) {
 		func(dst []byte, r observability.Record, color bool) []byte {
 			var scratch [16]byte
 			dst = r.Time.AppendFormat(dst, "2006/01/02 - 15:04:05.000")
-			dst = append(dst, " | "...)
-			dst = observability.AppendAttrs(dst, r.Attrs)
+			// AppendAttrs 对空组产 0 字节，分隔符得自己按 Len() 判断——
+			// 直接「先补 ` | ` 再调它」会在无属性记录上多出一段空列
+			if r.Attrs.Len() > 0 {
+				dst = append(dst, " | "...)
+				dst = observability.AppendAttrs(dst, r.Attrs)
+			}
 			dst = append(dst, " | "...)
 			text := observability.AppendDuration(scratch[:0], r.Duration)
 			dst = observability.AppendPadding(dst, 9-utf8.RuneCount(text))

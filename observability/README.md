@@ -185,11 +185,12 @@ Standing benchmarks: `go test -bench . ./observability/` (`sink_bench_test.go` s
 
 The columnar layout above is the **default**, not the only one. When a host wants **domain facts in columns** (HTTP method / path / client, LLM model / usage, …) it replaces the line-body renderer and builds its own columns from the exported encoding primitives — the egress still knows nothing about any business vocabulary; the domain stays on the host side.
 
-The renderer contract is three lines long:
+The renderer contract is four lines long:
 
 - **Body only**: the line prefix (`WithPrefix`, including its dim colouring) and the trailing newline are added by the sink — they are sink semantics, not layout.
 - **`color` is the sink's resolved decision** (TTY detection + `WithColor` override): the host never probes the destination itself, and never writes ANSI into a log file that was redirected to disk.
 - **No buffering, no writes to the writer**: the write timing belongs to the sink (batched by default, per-record with `WithImmediate()`).
+- **Called while the sink holds its internal lock**: never call back into the sink's own methods (`Write` / `Flush` / `Err` — the mutex is not reentrant, and the result is a silent hang rather than an error) and never block for long; that would stall every concurrent writer.
 
 ```go
 render := func(dst []byte, r observability.Record, color bool) []byte {
@@ -213,6 +214,7 @@ The exported primitives are **byte-identical** to the built-in layout — `linel
 | `AppendTextValue` | The `k=v` quoting rule (spaces / equals / quotes / control characters) |
 | `AppendAttrs` | A whole attrs group: insertion order + four scalar kinds + the same quoting rule |
 | `DisplayWidth` + `AppendPadding` | Padding by **display column** (CJK / fullwidth 2 columns, combining marks 0) |
+| Empty group / missing value | **The host decides**: `AppendAttrs` emits 0 bytes for an empty group (add the separator yourself, guarded by `Attrs.Len() > 0`), `AppendTextValue("")` renders `""` (which looks like a value), and the placeholder for a missing column (the built-in uses `-`) is a layout choice — use the `ok` bit of `Get[T]` to tell "absent" from "zero" |
 
 **When to bring your own egress**: when you need to change the **layout or the colouring** by your own domain semantics. If the default layout is fine and you only need your existing logger or JSON, keep `SlogSink`; if you only need a different destination, change nothing — `NewLineSink(w)` is enough.
 

@@ -34,7 +34,7 @@ Pulse 按 0.x 的 SemVer 惯例发布：
   - kernel 插件生命周期语义：同名覆盖撤旧不还原、事件监听即 Effect、代际提交；
   - 会话事件流格式（header v1/v2）；
   - `MemoryStore` / `SessionStore` 五方法集与可选能力接口的哨兵错误语义（`Seeder` / `ImportStore`）；
-  - 观测出口的编码口径——`AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendPadding` / `DisplayWidth`——与 `LineRenderer` 契约：宿主自带的出口对同一批事实渲染出与内置版式相同的字节。
+  - 观测出口的编码口径——`AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendPadding` / `DisplayWidth`——与 `LineRenderer` 契约：宿主出口用这五条原语拼出的**片段**与内置版式的对应片段逐字节一致（列序与具名段压缩属版式逻辑、不在原语里，换了渲染器不会得到与默认相同的整行）。
 - 不再有第二次整体重写：不会出现 v1→v2 式的无兼容路径整树删除。
 
 ## 当前可用能力

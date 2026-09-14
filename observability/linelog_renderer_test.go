@@ -117,6 +117,38 @@ func TestAppendPaddingNonPositive(t *testing.T) {
 	}
 }
 
+// TestDisplayWidth 表驱动钉住宽度近似表。它是**导出即冻结**的口径（godoc 自己
+// 写着「这张近似表是公开契约的一部分」），所以每类字符行为都得有断言，不能只靠
+// 一个 CJK 用例。
+//
+// 最后两行的 emoji 是**已知近似**（本表按 1 列算，终端可能给 2 列）。把它们钉在
+// 测试里是故意的：将来谁想把 emoji 改判 2 列，这条会先红，就不得不去动 Release
+// notes 与冻结清单，而不是悄悄改了就走。
+func TestDisplayWidth(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+		why  string
+	}{
+		{"585.1µs", 7, "godoc 举的例子：µ 是 2 字节 1 列"},
+		{"e\u0301", 1, "组合记号 0 列"},
+		{"\u200b", 0, "零宽空格"},
+		{"\u200d", 0, "零宽连接符"},
+		{"\ufeff", 0, "零宽不换行空格（BOM）"},
+		{"a\x01b", 2, "C0 控制字符不占列"},
+		{"a\x7fb", 2, "C1（DEL）不占列"},
+		{"Ａ", 2, "全角 ASCII"},
+		{"运行中", 6, "CJK 2 列"},
+		{"𠀀", 2, "CJK 扩展 B（U+20000）"},
+		{"🪵", 1, "近似：emoji 按 1 列（终端可能 2 列）"},
+		{"👨‍👩‍👧", 3, "近似：3 个 emoji 各 1 列 + 2 个 ZWJ 各 0 列"},
+	} {
+		if got := DisplayWidth(tc.in); got != tc.want {
+			t.Errorf("DisplayWidth(%q) = %d, want %d（%s）", tc.in, got, tc.want, tc.why)
+		}
+	}
+}
+
 // TestWithRendererReplacesBody 换渲染器只换行体：标识与结尾换行仍由 sink 加，
 // 渲染器拿到的 color 是 sink 解析好的结论（不需要自己判终端）。
 func TestWithRendererReplacesBody(t *testing.T) {
