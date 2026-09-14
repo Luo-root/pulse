@@ -127,7 +127,10 @@ func TestLineSinkColumnsAligned(t *testing.T) {
 // 经 `Attrs.Range` 装箱（`native()` 逐值装箱）、或按 key 排序（>8 条要 make
 // []string），这条立刻变红——分配计数是整数、跨运行确定，不像 ns 会漂。
 func TestLineSinkNoAllocOnHotPath(t *testing.T) {
-	s := NewLineSink(io.Discard) // 默认 32 KiB 缓冲：200 条远不到阈值，测的是纯渲染
+	// 默认 32 KiB 缓存的覆盖情况（实测单行字节数）：3 属性档 200 条约 28 KB，
+	// 走纯渲染；10 属性档约 37 KB，会跨一次阈值、把 flush 路径一并覆盖
+	// （`io.Discard.Write` 本身不分配，两条路径上的 0 alloc 断言都成立）。
+	s := NewLineSink(io.Discard)
 	for _, attrs := range []int{3, 10} {
 		rec := Record{
 			HostID:   "h1",
@@ -146,8 +149,9 @@ func TestLineSinkNoAllocOnHotPath(t *testing.T) {
 	}
 }
 
-// runeIndex 返回 sub 在 s 中的**显示列**（rune）下标：`µ` 占 1 列但 2 字节，
-// 列对齐是显示宽度的事，按字节比会误判。
+// runeIndex 返回 sub 在 s 里的 rune 下标。本用例的语料全是 ASCII（耗时里的
+// `µ` 也是 1 列宽），故 rune 下标 == 显示列；含全角字符的场景按显示列逐字比对，
+// 见 TestLineSinkCJKStatusAligned。
 func runeIndex(s, sub string) int {
 	i := strings.Index(s, sub)
 	if i < 0 {
@@ -310,6 +314,34 @@ func TestLineSinkNoFieldLost(t *testing.T) {
 	}
 }
 
+// TestLineSinkCJKStatusAligned 状态列按**显示列**补齐：中文状态不能把该行
+// 后续列右推。CJK 全角字符 1 rune 占 2 列——`运行中` 是 3 rune 却 6 列，
+// 补 4 个空格到 10 列；按 rune 补会补成 7 个空格、事件列右推 3 列。
+func TestLineSinkCJKStatusAligned(t *testing.T) {
+	cases := []struct {
+		status string
+		want   string // 10 列定宽的状态列
+	}{
+		{"ok", "ok        "},        // 2 列 + 8
+		{"completed", "completed "}, // 9 列 + 1
+		{"运行", "运行      "},          // 4 列 + 6
+		{"运行中", "运行中    "},          // 6 列 + 4
+	}
+	for _, c := range cases {
+		var buf bytes.Buffer
+		s := NewLineSink(&buf)
+		rec := Record{Source: SourceAdapter, Event: "evt", Status: c.status}
+		rec.Time = time.Unix(0, 0).UTC()
+		s.Write(rec)
+		_ = s.Flush()
+
+		line := strings.TrimSuffix(buf.String(), "\n")
+		if !strings.Contains(line, lineSep+c.want+lineSep) {
+			t.Fatalf("状态 %q 的补齐不符：\n got %q\nwant 含 %q", c.status, line, lineSep+c.want+lineSep)
+		}
+	}
+}
+
 func TestLineSinkBuffersUntilFlushOrThreshold(t *testing.T) {
 	var buf bytes.Buffer
 	// 阈值要放得下一条完整行（约 70 字节）：太小则首次 Write 就落盘，测不出缓冲。
@@ -398,13 +430,19 @@ func TestLineSinkCapturesWriteError(t *testing.T) {
 // 一旦有人改了顺序或漏了字段，这里就红。
 func TestLineSinkFactParityWithSlogSink(t *testing.T) {
 	rec := Record{
-		HostID:   "hostMK",
-		TraceID:  "traceMK",
-		Source:   Source("srcMK"),
-		Event:    "eventMK",
-		Status:   "statusMK",
-		Duration: 1500 * time.Millisecond,
-		Err:      errors.New("errMK"),
+		HostID:     "hostMK",
+		TraceID:    "traceMK",
+		Source:     Source("srcMK"),
+		Event:      "eventMK",
+		Status:     "statusMK",
+		Duration:   1500 * time.Millisecond,
+		Err:        errors.New("errMK"),
+		FiberName:  "fiberMK",
+		From:       "fromMK",
+		To:         "toMK",
+		LoaderKind: "loaderMK",
+		EntryID:    "entryMK",
+		PluginName: "pluginMK",
 	}
 	Set(&rec.Attrs, "b.key", "attrBMK")
 	Set(&rec.Attrs, "a.key", "attrAMK") // 逆序插入：两边都必须照插入序输出
@@ -424,11 +462,17 @@ func TestLineSinkFactParityWithSlogSink(t *testing.T) {
 		{"duration", "1.50s", "duration_ms=1500"},
 		{"event", "eventMK", "event=eventMK"},
 		{"source", "source=srcMK", "source=srcMK"},
+		// 具名段是两出口 key 名唯一不同的地方（人读面压缩），必须逐项对照。
+		{"fiber", "fiber=fiberMK", "fiber=fiberMK"},
+		{"state ← from/to", "state=fromMK→toMK", "from=fromMK to=toMK"},
+		{"loader ← loader_kind", "loader=loaderMK", "loader_kind=loaderMK"},
+		{"entry ← entry_id", "entry=entryMK", "entry_id=entryMK"},
+		{"plugin", "plugin=pluginMK", "plugin=pluginMK"},
 		{"attrs 第 1 条（插入序）", "b.key=attrBMK", "b.key=attrBMK"},
 		{"attrs 第 2 条（插入序）", "a.key=attrAMK", "a.key=attrAMK"},
-		{"host", "host=hostMK", "host_id=hostMK"},
-		{"err", "err=errMK", "error=errMK"},
-		{"trace", "trace=traceMK", "trace_id=traceMK"},
+		{"host ← host_id", "host=hostMK", "host_id=hostMK"},
+		{"err ← error", "err=errMK", "error=errMK"},
+		{"trace ← trace_id", "trace=traceMK", "trace_id=traceMK"},
 	}
 
 	lineAt, slogAt := -1, -1

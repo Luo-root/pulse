@@ -77,7 +77,8 @@ const (
 //   - **固定列**：标识（dim）→ 时间 → 状态 → 耗时 → 事件。时间定宽 25 列
 //     （`2006/01/02 - 15:04:05.000`，含毫秒）；不用 RFC3339Nano——它会吃掉
 //     小数末尾的 0，「12:42:03.531」与「12:42:04.12」宽度不一，列就跳了。
-//     状态左对齐（状态是词不是数字：completed / stop / active），耗时列右对齐
+//     状态左对齐（状态是词不是数字：completed / stop / active，**补齐按
+//     显示列**，全角字符按 2 列），耗时列右对齐
 //     且**带单位、不取整**：`820ns` / `585.1µs` / `7.62ms` / `1.23s`——旧的
 //     `duration_ms=0` 把亚毫秒记录写成 0，快慢全看不出来；
 //   - **列缺值渲染 `-`**：装配期记录没有状态与耗时，占位保证事件列起点恒定
@@ -105,8 +106,9 @@ const (
 //
 // 不经 `log/slog`：没有 `[]any` 逐字段装箱、没有 slog.Value 转换、没有每条的
 // 键排序分配——数字走 `strconv.Append*`，时间走 `AppendFormat`，属性直接读
-// 内部条目（不经 `Range` 的闭包与 `native()` 装箱）。实测见 sink_bench_test.go：
-// 与 SlogSink 相差一个数量级，是默认出口的底气。
+// 内部条目（不经 `Range` 的闭包与 `native()` 装箱）。实测（`sink_bench_test.go`，
+// 同一会话）渲染成本约为 `SlogSink` 的 **1/5**，且**零分配**（`SlogSink`
+// 每条 14 allocs）——这是它当默认出口的底气。
 //
 // # 契约
 //
@@ -116,14 +118,13 @@ const (
 //   - **关闭前 Flush()**：未达阈值的最后一批仍在内存里；
 //   - 需要 JSON 结构化输出、或要接宿主既有 logger 时，用 SlogSink。
 type LineSink struct {
-	mu         sync.Mutex
-	w          io.Writer
-	buf        []byte
-	threshold  int
-	prefix     string
-	color      bool
-	timeLayout string
-	err        error
+	mu        sync.Mutex
+	w         io.Writer
+	buf       []byte
+	threshold int
+	prefix    string
+	color     bool
+	err       error
 }
 
 // NewLineSink 构造行式出口。w 为 nil 视为编程错误（panic）；w 只需被本 Sink
@@ -144,12 +145,11 @@ func NewLineSink(w io.Writer, opts ...LineOption) *LineSink {
 		color = o.color
 	}
 	return &LineSink{
-		w:          w,
-		buf:        make([]byte, 0, o.bufSize),
-		threshold:  o.bufSize,
-		prefix:     o.prefix,
-		color:      color,
-		timeLayout: lineTimeLayout,
+		w:         w,
+		buf:       make([]byte, 0, o.bufSize),
+		threshold: o.bufSize,
+		prefix:    o.prefix,
+		color:     color,
 	}
 }
 
@@ -207,7 +207,7 @@ func (s *LineSink) appendLine(dst []byte, r Record) []byte {
 
 	painted := false
 	dst, painted = s.paint(dst, ansiDim)
-	dst = r.Time.AppendFormat(dst, s.timeLayout)
+	dst = r.Time.AppendFormat(dst, lineTimeLayout)
 	dst = s.unpaint(dst, painted)
 
 	dst = append(dst, lineSep...)
@@ -230,13 +230,16 @@ func (s *LineSink) appendLine(dst []byte, r Record) []byte {
 // appendStatusCol 状态列：左对齐、宽度下限 colStatus。状态是词不是数字
 // （completed / stop / failed / active），左对齐符合阅读；超长状态（宿主
 // 装配横幅那种一整句）原样输出——列宽是下限，不是截断。
+//
+// 补齐按**显示列**而不是 rune 数：状态是宿主可配的自由文本，「运行中」是
+// 3 rune 却占 6 列，按 rune 补会让该行的后续列整体右推 3 列。
 func (s *LineSink) appendStatusCol(dst []byte, r Record) []byte {
 	if r.Status == "" {
 		dst = append(dst, emptyCol...)
-		return appendPadding(dst, colStatus-len(emptyCol))
+		return appendPadding(dst, colStatus-displayWidth(emptyCol))
 	}
 	dst = append(dst, r.Status...)
-	return appendPadding(dst, colStatus-utf8.RuneCountInString(r.Status))
+	return appendPadding(dst, colStatus-displayWidth(r.Status))
 }
 
 // appendDurationCol 耗时列：右对齐、带单位。零值（未计时）渲染 `-`——写
@@ -256,6 +259,7 @@ func (s *LineSink) appendDurationCol(dst []byte, r Record) []byte {
 	}
 	painted := false
 	dst, painted = s.paint(dst, code)
+	// 耗时文本只有 ASCII 数字与 `µ`（两者都是 1 列宽），rune 数 == 显示列数。
 	dst = appendPadding(dst, colDuration-utf8.RuneCount(text))
 	dst = append(dst, text...)
 	return s.unpaint(dst, painted)
@@ -379,6 +383,43 @@ func appendAttrs(dst []byte, a Attrs) []byte {
 		}
 	}
 	return dst
+}
+
+// displayWidth 返回 s 在终端里占的**显示列**数：CJK / 假名 / 韩文音节 /
+// 全角形式按 2 列，组合记号与零宽字符按 0 列，C0/C1 控制字符不占列，
+// 其余按 1 列。
+//
+// 为什么不用 utf8.RuneCountInString：中文状态（「运行中」）是 3 rune 但
+// 占 6 列，按 rune 补齐会把该行后续列整体右推——而状态正是宿主可配的
+// 自由文本（本包 godoc 自己举了「宿主装配横幅那种一整句」的例子）。
+//
+// 表是常见区段的近似（东亚宽度 East Asian Width 的子集）：只为给状态列
+// 补齐而引 golang.org/x/text/width 不值当。覆盖不到的（emoji 变体选择符、
+// 罕用宽字符）按 1 列算，与终端可能差 1 列。
+func displayWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		switch {
+		case r < 0x20 || (r >= 0x7f && r < 0xa0):
+			// C0 / C1 控制字符：不占列
+		case r >= 0x0300 && r <= 0x036f, // 组合附加符号
+			r >= 0x200b && r <= 0x200f, // 零宽 / 方向标记
+			r == 0xfeff:                // 零宽不换行空格（BOM）
+			// 0 列
+		case r >= 0x1100 && r <= 0x115f, // 韩文字母
+			r >= 0x2e80 && r <= 0xa4cf,   // CJK 部首 / 假名 / 注音 / 韩文兼容 / 彝文
+			r >= 0xac00 && r <= 0xd7a3,   // 韩文音节
+			r >= 0xf900 && r <= 0xfaff,   // CJK 兼容表意
+			r >= 0xfe30 && r <= 0xfe6f,   // CJK 兼容形式
+			r >= 0xff00 && r <= 0xff60,   // 全角 ASCII
+			r >= 0xffe0 && r <= 0xffe6,   // 全角符号
+			r >= 0x20000 && r <= 0x3fffd: // CJK 扩展 B 及以后
+			w += 2
+		default:
+			w++
+		}
+	}
+	return w
 }
 
 // appendDuration 追加带单位的耗时：`820ns` / `585.1µs` / `7.62ms` / `1.23s`。

@@ -22,7 +22,9 @@ Dependency arrows all point to the foundations: this package imports only kernel
 host := kernel.New()
 defer host.Dispose()
 
-sink := &observability.MemorySink{} // or SlogSink{Logger: slog.Default()}
+// Default egress: LineSink. Plug into an existing logger with SlogSink{Logger: …},
+// or use &MemorySink{} for tests.
+sink := observability.NewLineSink(os.Stdout)
 // Must be Used first: kernel events are not replayed; a late Bootstrap
 // can only recover the current view from the snapshot banner.
 if _, err := kernel.Use(host, observability.Bootstrap("host-1", sink)); err != nil {

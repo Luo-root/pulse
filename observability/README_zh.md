@@ -20,7 +20,9 @@ pulse v2 正式观测包（双基座之一）：旁路订阅 kernel 装配事件
 host := kernel.New()
 defer host.Dispose()
 
-sink := &observability.MemorySink{} // 或 SlogSink{Logger: slog.Default()}
+// 默认出口是 LineSink；要接宿主既有 logger 用 SlogSink{Logger: …}，
+// 测试用 &MemorySink{}。
+sink := observability.NewLineSink(os.Stdout)
 // 必须最先 Use：kernel 事件不回放；后装只能靠快照横幅兜底当前视图。
 if _, err := kernel.Use(host, observability.Bootstrap("host-1", sink)); err != nil {
     panic(err)
