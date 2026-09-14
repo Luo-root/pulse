@@ -3,6 +3,7 @@ package observability
 import (
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -67,9 +68,9 @@ func WithImmediate() LineOption {
 //
 // 想让**域事实进列**（HTTP 的方法 / 路径 / 客户端，LLM 的模型 / 用量……）
 // 时提供自己的实现，用本包导出的编码原语（AppendDuration /
-// AppendTextValue / AppendAttrs / AppendPadding / DisplayWidth）保证与内置
-// 版式同形——出口本身不认识任何业务语义，域语义留在宿主手里。默认渲染器
-// 的用法见包文档「宿主自带出口」一节。
+// AppendTextValue / AppendAttrs / AppendAttrsExcept / AppendPadding /
+// DisplayWidth）保证与内置版式同形——出口本身不认识任何业务语义，域语义
+// 留在宿主手里。默认渲染器的用法见包文档「宿主自带出口」一节。
 type LineRenderer func(dst []byte, r Record, color bool) []byte
 
 // WithRenderer 替换行体渲染器（缺省是内置列式版式）。传 nil 视为编程错误，
@@ -430,28 +431,78 @@ func (s *LineSink) unpaint(dst []byte, painted bool) []byte {
 //
 // 宿主自带出口时直接用它渲染 attrs 段，不必重写「四类标量 + 按需引号」这套
 // 规则；输出与内置版式的 attrs 段逐字节同形。要挑单个事实进域列用
-// `Get[T](a, key)` 取类型化值，再用 AppendTextValue / strconv 拼。
+// `Get[T](a, key)` 取类型化值，再按同一口径拼——四类标量各只有一行：
+//
+//	string   AppendTextValue(dst, s)
+//	int64    strconv.AppendInt(dst, i, 10)
+//	float64  strconv.AppendFloat(dst, f, 'g', -1, 64)
+//	bool     strconv.AppendBool(dst, b)
+//
+// 浮点是唯一有第二选择的：`'f'` 更顺手，但同一个值会写出不同字节
+// （`1e-06` → `0.000001`），同一个域列值与内置 attrs 段就不同形了。
 //
 // **空 Attrs（Len() == 0）产出 0 字节**：组间分隔符由调用方按需加——内置版式
 // 的写法是 `if r.Attrs.Len() > 0 { dst = append(dst, lineSep...); ... }`。
 // 直接「先补分隔符再调它」会在无属性记录上多出一段空列。
+//
+// **口径稳定**：插入序、引号规则与标量渲染是各出口共用的一致性资产，改动随
+// minor 发布（见 README 的冻结清单）。
+func AppendAttrs(dst []byte, a Attrs) []byte {
+	return appendAttrsSkipping(dst, a, nil)
+}
+
+// AppendAttrsExcept 与 AppendAttrs **同一口径**（插入序 + 四类标量 + 按需
+// 引号），但跳过 `skip` 里列出的键。宿主把已经渲染成固定列的键名传进来，剩下
+// 的就是「固定列盖不住、但**不该丢**」的属性——这条不变式内置版式自己就在守
+// （固定列盖不住的属性照样出现在行尾），导出原语只是把它变成宿主可复用的形态。
+//
+// 键名走变参而不是过滤闭包：宿主的列键集是**静态**的，包级一张切片
+// `colKeys...` 摊开即可；回调式过滤还要额外约定「别在闭包捕获输出缓冲」。
+//
+// skip 里列不存在的键是 no-op；skip 为空等价于 AppendAttrs。
+//
+// **全被跳过时同样产出 0 字节**（与空组一致），所以分隔符不能先写、也不能拿
+// `Attrs.Len() > 0` 判空——`Len()` 问的是「组非空」，不是「有可渲染项」。按
+// **产出长度**决定：
+//
+//	mark := len(dst)
+//	dst = append(dst, " | "...)
+//	dst = AppendAttrsExcept(dst, r.Attrs, colKeys...)
+//	if len(dst) == mark+len(" | ") {
+//		dst = dst[:mark] // 全被固定列吃掉，这一组不写
+//	}
+//
+// **口径稳定**：与 AppendAttrs 同属冻结面，改动随 minor 发布（见 README 的
+// 冻结清单）。
+func AppendAttrsExcept(dst []byte, a Attrs, skip ...string) []byte {
+	return appendAttrsSkipping(dst, a, skip)
+}
+
+// appendAttrsSkipping 是 AppendAttrs / AppendAttrsExcept 的**同一实现**：两条
+// 导出面只差「跳过哪些键」，顺序 / 标量 / 引号这套口径不存在第二份。
+//
+// 首条不带前导空格按 `first` 判定而不是下标 `i > 0`——有跳过时下标不再是
+// 「第几个写出的」。
 //
 // 旧实现按 key 字典序输出并为此排序（≤8 个键走栈上插入排序）——但字典序不是
 // 阅读序，出口也排不出来：`http.request.method` 该排在 `http.response.body.size`
 // 前面是 HTTP 知识，出口不认识。Attrs 内部本来就是插入序切片（#179），产生方
 // 的写的顺序就是它想被读到的顺序，直接照抄即可，还省掉一次排序。
 //
-// 直接遍历内部条目：`Attrs.Range` 的回调是闭包，捕获 dst 会让缓冲逃逸到堆，
-// 且 `native()` 会逐值装箱——两条都足以把「1 alloc/条」变成「每字段 1 alloc」。
-//
-// **口径稳定**：插入序、引号规则与标量渲染是各出口共用的一致性资产，改动随
-// minor 发布（见 README 的冻结清单）。
-func AppendAttrs(dst []byte, a Attrs) []byte {
+// 不走 `Attrs.Range`：回调把值交出去时是 `any`（`native()`），省不省得掉那份
+// 装箱取决于调用点形状（闭包能否内联、值会不会转手给不可内联的辅助函数）——
+// 出口是热路径，这里不赌编译器。
+func appendAttrsSkipping(dst []byte, a Attrs, skip []string) []byte {
+	first := true
 	for i := range a.entries {
-		if i > 0 {
+		e := &a.entries[i]
+		if len(skip) > 0 && slices.Contains(skip, e.key) {
+			continue
+		}
+		if !first {
 			dst = append(dst, ' ')
 		}
-		e := &a.entries[i]
+		first = false
 		dst = AppendTextValue(dst, e.key)
 		dst = append(dst, '=')
 		switch e.val.kind {

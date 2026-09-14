@@ -52,10 +52,11 @@
 //		observability.WithImmediate(),
 //		observability.WithRenderer(render))
 //
-// 导出原语（AppendDuration / AppendTextValue / AppendAttrs / AppendPadding /
-// DisplayWidth）与内置版式**同形**：同一条记录在两种版式下，耗时、属性组、
-// 列补齐逐字节一致——一致性由基座保证，宿主只决定「我这个域有哪些列」。
-// 可运行的完整示例（含四列与零分配写法）见 Example_hostRenderer。
+// 导出原语（AppendDuration / AppendTextValue / AppendAttrs /
+// AppendAttrsExcept / AppendPadding / DisplayWidth）与内置版式**同形**：
+// 同一条记录在两种版式下，耗时、属性组、列补齐逐字节一致——一致性由基座
+// 保证，宿主只决定「我这个域有哪些列」。可运行的完整示例（含四列与零分配
+// 写法）见 Example_hostRenderer。
 //
 // # TraceID 生成
 //

@@ -200,10 +200,12 @@ sink := observability.NewLineSink(os.Stdout,
 | `AppendDuration` | 带单位、不取整：`820ns` / `585.1µs` / `7.62ms` / `1.23s` |
 | `AppendTextValue` | `k=v` 的按需引号规则（含空格 / 等号 / 引号 / 控制字符） |
 | `AppendAttrs` | 整组属性：插入序 + 四类标量 + 同一条引号规则 |
+| `AppendAttrsExcept` | 同一条渲染循环的子集版：跳过已进固定列的键，剩下的按插入序补到行尾——「固定列盖不住的属性不丢」这条内置不变式的宿主版 |
+| 单值（`Get[T]` 取出的域事实） | 与 `AppendAttrs` 同一口径：文本走 `AppendTextValue`、`int64` 走 `AppendInt(…, 10)`、**`float64` 走 `AppendFloat(…, 'g', -1, 64)`**（`'f'` 会把 `1e-06` 写成 `0.000001`，同一个值与 attrs 段不同形）、`bool` 走 `AppendBool` |
 | `DisplayWidth` + `AppendPadding` | 按**显示列**补齐（CJK / 全角 2 列、组合记号 0 列） |
-| 空组 / 缺值 | **宿主自判**：`AppendAttrs` 对空组产 0 字节（分隔符自己按 `Attrs.Len() > 0` 加）、`AppendTextValue("")` 渲染成 `""`（看着像有值）——缺列的占位（内置用 `-`）属版式选择，取属性用 `Get[T]` 的 ok 位区分「没有」与「是零值」 |
+| 空组 / 缺值 | **宿主自判**：`AppendAttrs` 对空组产 0 字节（分隔符自己按 `Attrs.Len() > 0` 加）；`AppendAttrsExcept` 全被跳过时**也**产 0 字节，那一路得按**产出长度**判空（`Len() > 0` 问的是「组非空」，不是「有可渲染项」）；`AppendTextValue("")` 渲染成 `""`（看着像有值）——缺列的占位（内置用 `-`）属版式选择，取属性用 `Get[T]` 的 ok 位区分「没有」与「是零值」 |
 
 **什么时候该自带出口**：要按自己域的语义改**版式或上色**时。只是「默认版式够用、想接自己的 logger / 要 JSON」→ 继续用 `SlogSink`；只是「换个目的地」→ 什么都不用换，`NewLineSink(w)` 就够。
 
-这五个原语与 `LineRenderer` 属**冻结面**（见根 README 的 Release & Compatibility）：口径改动随 minor 发布。可运行的完整示例（四列 + 零分配写法）见 `Example_hostRenderer`。
+这六条原语与 `LineRenderer` 属**冻结面**（见根 README 的 Release & Compatibility）：口径改动随 minor 发布。可运行的完整示例（四列 + 零分配写法）见 `Example_hostRenderer`。
 

@@ -227,3 +227,101 @@ func TestWithImmediateWritesThrough(t *testing.T) {
 		t.Fatalf("默认缓冲下不该立刻可见，实测 %d 字节", buf2.Len())
 	}
 }
+
+// TestAppendAttrsExceptMatchesAppendAttrs 两条 attrs 导出面是**同一实现**：
+// 不跳过任何键时逐字节相同（四类标量与引号规则一并）。谁只改了其中一条，
+// 这条先红——「宿主不必重写口径」靠的就是这份同一性。
+func TestAppendAttrsExceptMatchesAppendAttrs(t *testing.T) {
+	rec := seamRecord()
+	want := string(AppendAttrs(nil, rec.Attrs))
+
+	if got := string(AppendAttrsExcept(nil, rec.Attrs)); got != want {
+		t.Fatalf("空 skip 与 AppendAttrs 不同形：\n got %q\nwant %q", got, want)
+	}
+	// 列了不存在的键 = no-op（宿主的列键集里有别的域的词是常态）
+	if got := string(AppendAttrsExcept(nil, rec.Attrs, "not.there")); got != want {
+		t.Fatalf("跳过不存在的键不该改变输出：\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestAppendAttrsExceptRenderRest 宿主拿它把「固定列盖不住的属性」补到行尾：
+// 输出 = 未被跳过那部分按**插入序**渲染，首条仍不带前导空格。
+func TestAppendAttrsExceptRenderRest(t *testing.T) {
+	rec := seamRecord() // 插入序：llm.model / llm.tokens_in / llm.cached / app.note
+
+	got := string(AppendAttrsExcept(nil, rec.Attrs, "llm.tokens_in", "llm.cached"))
+	if want := `llm.model=gpt-4o-mini app.note="hello world"`; got != want {
+		t.Fatalf("跳过中间两条：\n got %q\nwant %q", got, want)
+	}
+	// 全被跳过 → 0 字节（与空组同一口径）
+	if got := string(AppendAttrsExcept(nil, rec.Attrs,
+		"llm.model", "llm.tokens_in", "llm.cached", "app.note")); got != "" {
+		t.Fatalf("全部被跳过应产出 0 字节，实得 %q", got)
+	}
+}
+
+// TestAppendAttrsExceptSeparatorPattern 钉住 godoc 里那个**按产出长度**决定
+// 要不要补分隔符的写法：attrs 全被固定列吃掉时整组不写，行尾不能留一段空列。
+//
+// 为什么不能按 `Attrs.Len() > 0` 判空：`Len()` 问的是「组非空」，而这里要问的
+// 是「有可渲染项」——两者在全被固定列消费的记录上刚好相反。
+func TestAppendAttrsExceptSeparatorPattern(t *testing.T) {
+	colKeys := []string{"llm.model", "llm.tokens_in", "llm.cached", "app.note"}
+	render := func(dst []byte, a Attrs, skip ...string) []byte {
+		mark := len(dst)
+		dst = append(dst, lineSep...)
+		dst = AppendAttrsExcept(dst, a, skip...)
+		if len(dst) == mark+len(lineSep) {
+			dst = dst[:mark]
+		}
+		return dst
+	}
+
+	rec := seamRecord()
+	if got := string(render(nil, rec.Attrs, colKeys...)); got != "" {
+		t.Fatalf("全被列吃掉时应整组不写，实得 %q", got)
+	}
+	if got, want := string(render(nil, rec.Attrs, colKeys[:3]...)), ` | app.note="hello world"`; got != want {
+		t.Fatalf("有剩余属性时应补上分隔符：\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestAppendAttrsFloatFormat 浮点是四类标量里**唯一有第二选择**的一类，godoc
+// 因此把口径写死成 `'g', -1, 64`。这条钉住它：宿主按 `'f'` 拼会在同一个值上
+// 写出 `0.000001`，域列于是与同一份 Record 的 attrs 段不同形。
+func TestAppendAttrsFloatFormat(t *testing.T) {
+	var a Attrs
+	Set(&a, "llm.temperature", 1e-06)
+	if got, want := string(AppendAttrs(nil, a)), "llm.temperature=1e-06"; got != want {
+		t.Fatalf("浮点口径变了：got %q, want %q（'f' 会写成 0.000001）", got, want)
+	}
+}
+
+// TestAppendAttrsExceptNoAlloc 变参键名不引入分配——宿主的列键集是静态的，
+// 包级切片摊开即可复用。这是选变参而不是过滤闭包的直接原因（闭包版本要额外
+// 约定「别捕获输出缓冲」）。
+func TestAppendAttrsExceptNoAlloc(t *testing.T) {
+	rec := seamRecord()
+	colKeys := []string{"llm.model", "llm.tokens_in", "llm.cached"}
+	buf := make([]byte, 0, 4096)
+
+	if got := testing.AllocsPerRun(500, func() {
+		buf = AppendAttrsExcept(buf[:0], rec.Attrs, colKeys...)
+	}); got != 0 {
+		t.Fatalf("AppendAttrsExcept（切片摊开）分配 = %v, want 0", got)
+	}
+	if got := testing.AllocsPerRun(500, func() {
+		buf = AppendAttrsExcept(buf[:0], rec.Attrs, "llm.model", "llm.tokens_in")
+	}); got != 0 {
+		t.Fatalf("AppendAttrsExcept（字面量变参）分配 = %v, want 0", got)
+	}
+	// 对照：同形状的 AppendAttrs（口径相同、只差过滤）
+	if got := testing.AllocsPerRun(500, func() {
+		buf = AppendAttrs(buf[:0], rec.Attrs)
+	}); got != 0 {
+		t.Fatalf("AppendAttrs 分配 = %v, want 0", got)
+	}
+	if len(buf) == 0 {
+		t.Fatal("探针没写出内容，量到的不算数")
+	}
+}

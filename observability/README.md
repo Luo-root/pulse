@@ -213,10 +213,12 @@ The exported primitives are **byte-identical** to the built-in layout — `linel
 | `AppendDuration` | Unit-carrying, never rounded: `820ns` / `585.1µs` / `7.62ms` / `1.23s` |
 | `AppendTextValue` | The `k=v` quoting rule (spaces / equals / quotes / control characters) |
 | `AppendAttrs` | A whole attrs group: insertion order + four scalar kinds + the same quoting rule |
+| `AppendAttrsExcept` | The subset form of the same render loop: skip the keys already rendered as fixed columns, append the rest in insertion order — the host-side form of the built-in invariant "attributes the fixed columns cannot hold are never dropped" |
+| Single value (a domain fact read with `Get[T]`) | Same rules as `AppendAttrs`: text via `AppendTextValue`, `int64` via `AppendInt(…, 10)`, **`float64` via `AppendFloat(…, 'g', -1, 64)`** (`'f'` writes `1e-06` as `0.000001`, so the same value no longer matches the attrs group), `bool` via `AppendBool` |
 | `DisplayWidth` + `AppendPadding` | Padding by **display column** (CJK / fullwidth 2 columns, combining marks 0) |
-| Empty group / missing value | **The host decides**: `AppendAttrs` emits 0 bytes for an empty group (add the separator yourself, guarded by `Attrs.Len() > 0`), `AppendTextValue("")` renders `""` (which looks like a value), and the placeholder for a missing column (the built-in uses `-`) is a layout choice — use the `ok` bit of `Get[T]` to tell "absent" from "zero" |
+| Empty group / missing value | **The host decides**: `AppendAttrs` emits 0 bytes for an empty group (add the separator yourself, guarded by `Attrs.Len() > 0`); `AppendAttrsExcept` also emits 0 bytes when every key was skipped, so that path must test the **produced length** instead (`Len() > 0` asks "is the group non-empty", not "is there anything left to render"); `AppendTextValue("")` renders `""` (which looks like a value), and the placeholder for a missing column (the built-in uses `-`) is a layout choice — use the `ok` bit of `Get[T]` to tell "absent" from "zero" |
 
 **When to bring your own egress**: when you need to change the **layout or the colouring** by your own domain semantics. If the default layout is fine and you only need your existing logger or JSON, keep `SlogSink`; if you only need a different destination, change nothing — `NewLineSink(w)` is enough.
 
-These five primitives and `LineRenderer` are part of the **frozen surface** (see Release & Compatibility in the root README): their rules may only change in a minor release. A runnable full example (four columns plus the zero-allocation shape) is `Example_hostRenderer`.
+These six primitives and `LineRenderer` are part of the **frozen surface** (see Release & Compatibility in the root README): their rules may only change in a minor release. A runnable full example (four columns plus the zero-allocation shape) is `Example_hostRenderer`.
 
