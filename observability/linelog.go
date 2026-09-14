@@ -13,10 +13,11 @@ import (
 type LineOption func(*lineOpts)
 
 type lineOpts struct {
-	bufSize int
-	prefix  string
-	color   bool
-	colorAt bool // 显式设过 color；未设 = 按目的地自动判断
+	bufSize  int
+	prefix   string
+	color    bool
+	colorAt  bool // 显式设过 color；未设 = 按目的地自动判断
+	renderer LineRenderer
 }
 
 // WithBufSize 设置行缓冲阈值（字节）。缺省 32 KiB；<= 0 视为编程错误，
@@ -36,6 +37,45 @@ func WithPrefix(text string) LineOption {
 // 转义序列。
 func WithColor(on bool) LineOption {
 	return func(o *lineOpts) { o.color, o.colorAt = on, true }
+}
+
+// WithImmediate 让每条记录写完即落 io.Writer（不攒批）。盯终端时要用它——
+// 缺省 32 KiB 缓冲意味着最后一批可能长时间停在内存里。代价是每条一次
+// writer 调用；缓冲仍复用，热路径的零分配承诺不变。
+//
+// 等价于 WithBufSize(1)（阈值 1 字节 ⇒ 每条都触发写出）：后者是这条语义
+// 的通用旋钮，本选项只是把「行即写」这件事写成名字。
+func WithImmediate() LineOption {
+	return func(o *lineOpts) { o.bufSize = 1 }
+}
+
+// LineRenderer 渲染**行体**：把一条记录追加到 dst 并返回新的 dst。
+//
+// 契约：
+//   - 只产行体——行首标识（WithPrefix，含它的暗淡上色）与结尾换行由
+//     LineSink 负责，它们属于 sink 语义，不属于版式；
+//   - color 是 sink 已经解析好的「当前是否上色」（TTY 判定 + WithColor
+//     覆盖的结果）。渲染器不必自己判断目的地，也不会把 ANSI 写进重定向
+//     到文件的日志里；
+//   - 不缓冲、不写 w——写出时机由 sink 决定（缺省攒批，WithImmediate 每条
+//     即写）；
+//   - 零分配由渲染器自己负责：热路径上每次 Write 都会调它一次，分配一次
+//     就是每条一次。
+//
+// 想让**域事实进列**（HTTP 的方法 / 路径 / 客户端，LLM 的模型 / 用量……）
+// 时提供自己的实现，用本包导出的编码原语（AppendDuration /
+// AppendTextValue / AppendAttrs / AppendPadding / DisplayWidth）保证与内置
+// 版式同形——出口本身不认识任何业务语义，域语义留在宿主手里。默认渲染器
+// 的用法见包文档「宿主自带出口」一节。
+type LineRenderer func(dst []byte, r Record, color bool) []byte
+
+// WithRenderer 替换行体渲染器（缺省是内置列式版式）。传 nil 视为编程错误，
+// 立即 panic。
+func WithRenderer(fn LineRenderer) LineOption {
+	if fn == nil {
+		panic("observability: WithRenderer requires a non-nil LineRenderer")
+	}
+	return func(o *lineOpts) { o.renderer = fn }
 }
 
 const (
@@ -100,7 +140,18 @@ const (
 // 只在目的地是终端时上色：标识与时间暗淡（扫读时不抢注意力）、trace 暗淡、
 // 有 Err 的耗时红色、≥1s 的耗时黄色。**不按 Status 字符串猜语义**——Status 是
 // 各事实归属包自己的词表（`completed` / `stop` / `inactive`…），出口替它们
-// 配色等于把业务语义搬进基座。需要更丰富的上色时，宿主自带 Sink 实现即可。
+// 配色等于把业务语义搬进基座。要按**自己域的**语义上色（或让域事实进列）时，
+// 用 WithRenderer 换行体渲染器，见下面「宿主自带出口」。
+//
+// # 宿主自带出口
+//
+// 上面这套列序是**默认**版式，不是唯一版式。宿主想让域事实进列（HTTP 的
+// 方法 / 路径 / 客户端、LLM 的模型 / 用量……）时用 `WithRenderer` 换掉行体
+// 渲染器，用本包导出的编码原语拼自己的列——出口仍然不认识任何业务语义，
+// 域语义留在宿主手里；`color` 由 sink 解析好交给渲染器，宿主不必自己判断
+// 终端、也不会把 ANSI 写进重定向到文件的日志里。缓冲、Flush、写错误、行首
+// 标识、结尾换行这些**出口语义**由 sink 统一负责，与换不换渲染器无关。
+// 完整示例见包文档与 README 的「宿主自带出口」一节。
 //
 // # 成本
 //
@@ -108,14 +159,16 @@ const (
 // 键排序分配——数字走 `strconv.Append*`，时间走 `AppendFormat`，属性直接读
 // 内部条目（不经 `Range` 的闭包与 `native()` 装箱）。实测（`sink_bench_test.go`，
 // 同一会话）渲染成本约为 `SlogSink` 的 **1/5**，且**零分配**（`SlogSink`
-// 每条 14 allocs）——这是它当默认出口的底气。
+// 每条 14 allocs）——这是它当默认出口的底气。换渲染器不改变这些：热路径仍是
+// 「追加进缓冲」，是否分配取决于渲染器自己（默认渲染器 0 allocs）。
 //
 // # 契约
 //
 //   - **并发安全**：内部一把锁保护缓冲与出口；
 //   - **写错误**记在 Err()（首错为准），不 panic、不阻断后续写入；
 //     错误后的缓冲会被丢弃（不无限增长）；
-//   - **关闭前 Flush()**：未达阈值的最后一批仍在内存里；
+//   - **关闭前 Flush()**：未达阈值的最后一批仍在内存里；要每条即时可见用
+//     WithImmediate()；
 //   - 需要 JSON 结构化输出、或要接宿主既有 logger 时，用 SlogSink。
 type LineSink struct {
 	mu        sync.Mutex
@@ -124,6 +177,7 @@ type LineSink struct {
 	threshold int
 	prefix    string
 	color     bool
+	renderer  LineRenderer
 	err       error
 }
 
@@ -150,6 +204,7 @@ func NewLineSink(w io.Writer, opts ...LineOption) *LineSink {
 		threshold: o.bufSize,
 		prefix:    o.prefix,
 		color:     color,
+		renderer:  o.renderer,
 	}
 }
 
@@ -191,7 +246,11 @@ func (s *LineSink) flushLocked() {
 	s.buf = s.buf[:0]
 }
 
-// appendLine 编码一条记录为完整行（含换行）。列序见 LineSink godoc。
+// appendLine 编码一条记录为完整行（含换行）：行首标识 + 行体 + 换行。
+//
+// 行体交给渲染器（缺省 appendBody，即内置列式版式；WithRenderer 可换）。
+// 标识与换行留在 sink：前者是「哪个服务在说话」的分栏锚点，后者是行式出口
+// 的定义——两者都与版式无关，换渲染器不该影响它们。
 func (s *LineSink) appendLine(dst []byte, r Record) []byte {
 	if s.prefix != "" {
 		// 注意 `painted` 必须先声明再做 `=` 赋值：写成
@@ -205,6 +264,17 @@ func (s *LineSink) appendLine(dst []byte, r Record) []byte {
 		dst = append(dst, lineSep...)
 	}
 
+	if s.renderer != nil {
+		dst = s.renderer(dst, r, s.color)
+	} else {
+		dst = s.appendBody(dst, r)
+	}
+	return append(dst, '\n')
+}
+
+// appendBody 编码内置版式的**行体**（不含标识与换行）。列序见 LineSink
+// godoc：时间 → 状态 → 耗时 → 事件 → 具名段 → attrs → host → err → trace。
+func (s *LineSink) appendBody(dst []byte, r Record) []byte {
 	painted := false
 	dst, painted = s.paint(dst, ansiDim)
 	dst = r.Time.AppendFormat(dst, lineTimeLayout)
@@ -223,8 +293,7 @@ func (s *LineSink) appendLine(dst []byte, r Record) []byte {
 		dst = append(dst, emptyCol...)
 	}
 
-	dst = s.appendNamedFields(dst, r)
-	return append(dst, '\n')
+	return s.appendNamedFields(dst, r)
 }
 
 // appendStatusCol 状态列：左对齐、宽度下限 colStatus。状态是词不是数字
@@ -236,21 +305,21 @@ func (s *LineSink) appendLine(dst []byte, r Record) []byte {
 func (s *LineSink) appendStatusCol(dst []byte, r Record) []byte {
 	if r.Status == "" {
 		dst = append(dst, emptyCol...)
-		return appendPadding(dst, colStatus-displayWidth(emptyCol))
+		return AppendPadding(dst, colStatus-DisplayWidth(emptyCol))
 	}
 	dst = append(dst, r.Status...)
-	return appendPadding(dst, colStatus-displayWidth(r.Status))
+	return AppendPadding(dst, colStatus-DisplayWidth(r.Status))
 }
 
 // appendDurationCol 耗时列：右对齐、带单位。零值（未计时）渲染 `-`——写
 // `0ns` 会被读成「测出来是 0」，与「没有这个事实」不是一件事。
 func (s *LineSink) appendDurationCol(dst []byte, r Record) []byte {
 	if r.Duration == 0 {
-		dst = appendPadding(dst, colDuration-len(emptyCol))
+		dst = AppendPadding(dst, colDuration-len(emptyCol))
 		return append(dst, emptyCol...)
 	}
 	var scratch [16]byte
-	text := appendDuration(scratch[:0], r.Duration)
+	text := AppendDuration(scratch[:0], r.Duration)
 	code := ""
 	if r.Err != nil {
 		code = ansiRed
@@ -260,7 +329,7 @@ func (s *LineSink) appendDurationCol(dst []byte, r Record) []byte {
 	painted := false
 	dst, painted = s.paint(dst, code)
 	// 耗时文本只有 ASCII 数字与 `µ`（两者都是 1 列宽），rune 数 == 显示列数。
-	dst = appendPadding(dst, colDuration-utf8.RuneCount(text))
+	dst = AppendPadding(dst, colDuration-utf8.RuneCount(text))
 	dst = append(dst, text...)
 	return s.unpaint(dst, painted)
 }
@@ -274,34 +343,34 @@ func (s *LineSink) appendNamedFields(dst []byte, r Record) []byte {
 	if r.Source != "" {
 		dst = append(dst, lineSep...)
 		dst = append(dst, "source="...)
-		dst = appendTextValue(dst, string(r.Source))
+		dst = AppendTextValue(dst, string(r.Source))
 	}
 	if r.FiberName != "" {
 		dst = append(dst, lineSep...)
 		dst = append(dst, "fiber="...)
-		dst = appendTextValue(dst, r.FiberName)
+		dst = AppendTextValue(dst, r.FiberName)
 	}
 	if r.From != "" || r.To != "" {
 		dst = append(dst, lineSep...)
 		dst = append(dst, "state="...)
-		dst = appendTextValue(dst, r.From)
+		dst = AppendTextValue(dst, r.From)
 		dst = append(dst, "→"...)
-		dst = appendTextValue(dst, r.To)
+		dst = AppendTextValue(dst, r.To)
 	}
 	if r.LoaderKind != "" {
 		dst = append(dst, lineSep...)
 		dst = append(dst, "loader="...)
-		dst = appendTextValue(dst, r.LoaderKind)
+		dst = AppendTextValue(dst, r.LoaderKind)
 	}
 	if r.EntryID != "" {
 		dst = append(dst, lineSep...)
 		dst = append(dst, "entry="...)
-		dst = appendTextValue(dst, r.EntryID)
+		dst = AppendTextValue(dst, r.EntryID)
 	}
 	if r.PluginName != "" {
 		dst = append(dst, lineSep...)
 		dst = append(dst, "plugin="...)
-		dst = appendTextValue(dst, r.PluginName)
+		dst = AppendTextValue(dst, r.PluginName)
 	}
 	return s.appendTail(dst, r)
 }
@@ -312,19 +381,19 @@ func (s *LineSink) appendNamedFields(dst []byte, r Record) []byte {
 func (s *LineSink) appendTail(dst []byte, r Record) []byte {
 	if r.Attrs.Len() > 0 {
 		dst = append(dst, lineSep...)
-		dst = appendAttrs(dst, r.Attrs)
+		dst = AppendAttrs(dst, r.Attrs)
 	}
 	if r.HostID != "" {
 		dst = append(dst, lineSep...)
 		dst = append(dst, "host="...)
-		dst = appendTextValue(dst, r.HostID)
+		dst = AppendTextValue(dst, r.HostID)
 	}
 	if r.Err != nil {
 		dst = append(dst, lineSep...)
 		painted := false
 		dst, painted = s.paint(dst, ansiRed)
 		dst = append(dst, "err="...)
-		dst = appendTextValue(dst, r.Err.Error())
+		dst = AppendTextValue(dst, r.Err.Error())
 		dst = s.unpaint(dst, painted)
 	}
 	if r.TraceID != "" {
@@ -353,8 +422,12 @@ func (s *LineSink) unpaint(dst []byte, painted bool) []byte {
 	return append(dst, ansiReset...)
 }
 
-// appendAttrs 按**插入序**追加属性组（`k=v k=v`，组内单空格分隔，首条不带
+// AppendAttrs 按**插入序**追加整组属性（`k=v k=v`，组内单空格分隔，首条不带
 // 前导空格——调用方已经补过 ` | ` 分隔符）。
+//
+// 宿主自带出口时直接用它渲染 attrs 段，不必重写「四类标量 + 按需引号」这套
+// 规则；输出与内置版式的 attrs 段逐字节同形。要挑单个事实进域列用
+// `Get[T](a, key)` 取类型化值，再用 AppendTextValue / strconv 拼。
 //
 // 旧实现按 key 字典序输出并为此排序（≤8 个键走栈上插入排序）——但字典序不是
 // 阅读序，出口也排不出来：`http.request.method` 该排在 `http.response.body.size`
@@ -363,17 +436,20 @@ func (s *LineSink) unpaint(dst []byte, painted bool) []byte {
 //
 // 直接遍历内部条目：`Attrs.Range` 的回调是闭包，捕获 dst 会让缓冲逃逸到堆，
 // 且 `native()` 会逐值装箱——两条都足以把「1 alloc/条」变成「每字段 1 alloc」。
-func appendAttrs(dst []byte, a Attrs) []byte {
+//
+// **口径稳定**：插入序、引号规则与标量渲染是各出口共用的一致性资产，改动随
+// minor 发布（见 README 的冻结清单）。
+func AppendAttrs(dst []byte, a Attrs) []byte {
 	for i := range a.entries {
 		if i > 0 {
 			dst = append(dst, ' ')
 		}
 		e := &a.entries[i]
-		dst = appendTextValue(dst, e.key)
+		dst = AppendTextValue(dst, e.key)
 		dst = append(dst, '=')
 		switch e.val.kind {
 		case attrString:
-			dst = appendTextValue(dst, e.val.s)
+			dst = AppendTextValue(dst, e.val.s)
 		case attrInt:
 			dst = strconv.AppendInt(dst, e.val.i, 10)
 		case attrFloat:
@@ -385,18 +461,21 @@ func appendAttrs(dst []byte, a Attrs) []byte {
 	return dst
 }
 
-// displayWidth 返回 s 在终端里占的**显示列**数：CJK / 假名 / 韩文音节 /
+// DisplayWidth 返回 s 在终端里占的**显示列**数：CJK / 假名 / 韩文音节 /
 // 全角形式按 2 列，组合记号与零宽字符按 0 列，C0/C1 控制字符不占列，
-// 其余按 1 列。
+// 其余按 1 列。宿主自带出口时用它算列补齐——配 AppendPadding。
 //
 // 为什么不用 utf8.RuneCountInString：中文状态（「运行中」）是 3 rune 但
 // 占 6 列，按 rune 补齐会把该行后续列整体右推——而状态正是宿主可配的
 // 自由文本（本包 godoc 自己举了「宿主装配横幅那种一整句」的例子）。
 //
-// 表是常见区段的近似（东亚宽度 East Asian Width 的子集）：只为给状态列
-// 补齐而引 golang.org/x/text/width 不值当。覆盖不到的（emoji 变体选择符、
-// 罕用宽字符）按 1 列算，与终端可能差 1 列。
-func displayWidth(s string) int {
+// 表是常见区段的**近似**（东亚宽度 East Asian Width 的子集）：只为列补齐而引
+// golang.org/x/text/width 不值当。覆盖不到的（emoji 变体选择符、罕用宽字符）
+// 按 1 列算，与终端可能差 1 列。
+//
+// **口径稳定**：这张近似表是公开契约的一部分——修正它（比如把 emoji 改判 2 列）
+// 会改变宿主的列对齐结果，因此随 minor 发布。
+func DisplayWidth(s string) int {
 	w := 0
 	for _, r := range s {
 		switch {
@@ -422,7 +501,9 @@ func displayWidth(s string) int {
 	return w
 }
 
-// appendDuration 追加带单位的耗时：`820ns` / `585.1µs` / `7.62ms` / `1.23s`。
+// AppendDuration 追加带单位的耗时：`820ns` / `585.1µs` / `7.62ms` / `1.23s`。
+// 宿主自带出口时用它渲染耗时列——与内置版式同一条口径，不会出现一个出口
+// 写 `7.62ms`、另一个写 `7ms`。
 //
 // 刻意**不取整到毫秒**：旧的 `duration_ms` 把亚毫秒记录写成 0，快慢全看不出来。
 // 单位按量级选，µs 保留一位小数，ms / s 保留两位。
@@ -430,7 +511,9 @@ func displayWidth(s string) int {
 // 全程整数运算（取整 + 补零），**不用 strconv.AppendFloat**：`'f'` 定点格式化走
 // strconv 的十进制大数路径，实测每条多花约 120 ns（占整行渲染成本的三分之一），
 // 换来的只是「999.999µs 进位成 1000.0µs」这种假进位。整数版更快也更老实。
-func appendDuration(dst []byte, d time.Duration) []byte {
+//
+// **口径稳定**：单位选择与小数位数是各出口同形的依据，改动随 minor 发布。
+func AppendDuration(dst []byte, d time.Duration) []byte {
 	switch {
 	case d >= time.Second:
 		dst = strconv.AppendInt(dst, int64(d/time.Second), 10)
@@ -458,9 +541,15 @@ func appendFraction(dst []byte, n int64) []byte {
 	return append(dst, '.', byte('0'+n/10), byte('0'+n%10))
 }
 
-// appendTextValue 追加文本值：含空格 / 等号 / 引号 / 控制字符时按 Go 字符串
-// 字面量加引号（与 slog.TextHandler 的 needsQuoting 精神一致）。
-func appendTextValue(dst []byte, s string) []byte {
+// AppendTextValue 追加文本值：含空格 / 等号 / 引号 / 控制字符时按 Go 字符串
+// 字面量加引号（与 slog.TextHandler 的 needsQuoting 精神一致）；空串也算需要
+// 引号，渲染成 `""`。
+//
+// 宿主自带出口时用它渲染文本事实与键名，保证与内置版式同一条引号规则——
+// 同一段含空格的错误文本不会在一个出口加引号、在另一个不加。
+//
+// **口径稳定**：改动随 minor 发布。
+func AppendTextValue(dst []byte, s string) []byte {
 	if !needsQuoting(s) {
 		return append(dst, s...)
 	}
@@ -480,8 +569,11 @@ func needsQuoting(s string) bool {
 	return false
 }
 
-// appendPadding 追加 n 个空格（n <= 0 时什么都不做）。
-func appendPadding(dst []byte, n int) []byte {
+// AppendPadding 追加 n 个空格（n <= 0 时什么都不做）。与 DisplayWidth 配对做
+// 列补齐：`AppendPadding(dst, width-DisplayWidth(s))`。
+//
+// **口径稳定**：改动随 minor 发布。
+func AppendPadding(dst []byte, n int) []byte {
 	for ; n > 0; n-- {
 		dst = append(dst, ' ')
 	}

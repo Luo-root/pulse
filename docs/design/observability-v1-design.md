@@ -1,6 +1,6 @@
 # Observability v1 设计：kernel typed 旁路事件 + 快照横幅 + Sink
 
-> 状态：Accepted（方案 A，评审定案 2026-08-27；适配下沉修订 2026-09，Issue [#127](https://github.com/Luo-root/pulse/issues/127)——双基座模型：折叠适配从伴生 bridge 下沉至各事实归属包，bridge 包废除；出口版式修订 2026-09-14，Issue [#194](https://github.com/Luo-root/pulse/issues/194)——LineSink 定为默认出口并改列式人读版式，Attrs 改按插入序输出，SlogSink 去掉重复 `time=` 与 `duration_ms` 取整）
+> 状态：Accepted（方案 A，评审定案 2026-08-27；适配下沉修订 2026-09，Issue [#127](https://github.com/Luo-root/pulse/issues/127)——双基座模型：折叠适配从伴生 bridge 下沉至各事实归属包，bridge 包废除；出口版式修订 2026-09-14，Issue [#194](https://github.com/Luo-root/pulse/issues/194)——LineSink 定为默认出口并改列式人读版式，Attrs 改按插入序输出，SlogSink 去掉重复 `time=` 与 `duration_ms` 取整；宿主自带出口修订 2026-09-14，Issue [#198](https://github.com/Luo-root/pulse/issues/198)——导出编码原语 + `WithRenderer` 行体接缝，让业务直接站在 LineSink 上而不必自带出口）
 > 包位置：`observability/`（与 Issue [#16](https://github.com/Luo-root/pulse/issues/16) 同步实现）；观测适配面在 llm / loop / flow 各包（`Observe` / `NewRecordObserver`）
 > 前置：examples/internal/observability 原型已验证运行期桥可行（PR #15）；本篇为其正式化收缩版设计
 > 依赖：observability 本体只 import `kernel`；llm/loop/flow 可 import kernel + observability（双基座租户），全仓无逆向依赖
@@ -87,6 +87,10 @@ type Sink interface {
 ```
 
 内置出口 **LineSink（默认：自带缓冲的行式人读文本，列式版式 `标识 | 时间 | 状态 | 耗时 | 事件 | 具名段 | attrs | host | err | trace`、属性插入序、只在终端上色、零分配）** / SlogSink（接宿主既有 logger 或要 JSON 时用，同一批字段同一顺序，给机器读）/ MemorySink（测试断言）/ MultiSink（扇出）；**AsyncSink 是包装器而非新出口形态**——它包住任一下沉 Sink，只改变投递时机（入队即返回 + 后台单协程 FIFO），队列有界、满时默认阻塞（可丢新），不改变记录形态与字段语义。`Time` 为零时由会输出它的内置出口（LineSink / MemorySink）补 wall clock；SlogSink 不碰 `Time`（时间字段由宿主 handler 给出，避免每条两个 `time=`）。导出器（otel/prometheus）将来以「新增 Sink 实现」方式接入，不动包结构。
+
+**渲染层可替换**（#198，2026-09-14）：上面那套列式版式是**默认实现**，不是唯一版式。宿主想让域事实进列（HTTP 的方法 / 路径 / 客户端，LLM 的模型 / 用量……）时用 `WithRenderer(fn)` 换掉**行体**渲染器（`LineRenderer func(dst []byte, r Record, color bool) []byte`），用导出的编码原语拼自己的列，**不必自带一个 Sink**（原先宿主为此要重写时长格式化、引号规则、列补齐三条规则，约 2/3 与上游同义）。边界：行首标识（`WithPrefix`，含暗淡上色）、结尾换行、缓冲、`Flush`、写错误、颜色判定（TTY + `WithColor`）仍归 sink——它们是**出口语义**，与换不换渲染器无关；`color` 作为入参交给渲染器，宿主因此不必自己探测终端、也不会把 ANSI 写进重定向到文件的日志。域列的定义与上色规则完全由宿主提供，基座仍不认识任何业务语义。
+
+五条编码原语 `AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendPadding` / `DisplayWidth` 是**内置版式的同一实现**（导出而非复制），因此与内置输出逐字节同形；它们与 `LineRenderer` 一起属**冻结面**——口径改动（例如把 `DisplayWidth` 的 emoji 近似改准）会改变宿主出口的字节，须随 minor 并在 Release notes 说明。替代方案（「域列回调 + 关事件列 / 关具名段 / 关 attrs 等布局开关」与「只导出原语、宿主仍自带 Sink」）在 #198 讨论中被否：前者等于让上游长出一套版式 DSL，且宿主的目标版式往往不是默认骨架的子集或超集；后者没有解决「宿主自理缓冲 / 即时性 / 错误处理」的重复。
 
 ### 3.3 kernel 侧新增公开面
 
@@ -179,7 +183,7 @@ otel/prometheus 导出器 · 采样与动态级别 · Web UI · 正式包内业�
 5. Record 表面测试：无 map、装配段在桥记录中零值
 6. examples 回归 + trace_id 桥内四层贯通
 7. race 下并发收敛不丢事件
-8. Attrs 表面测试：Set/Get 四类标量往返、命名标量（~int64 等）兼容、类型不符 ok=false、MarshalJSON 按序、两个出口的 attrs 段按**插入序**且位于具名字段之后（#194 起不再排序）；LineSink 版式契约（列对齐 / 缺值占位 `-` / 耗时带单位不取整 / 终端才上色 / 事实面与 SlogSink 逐项对照）
+8. Attrs 表面测试：Set/Get 四类标量往返、命名标量（~int64 等）兼容、类型不符 ok=false、MarshalJSON 按序、两个出口的 attrs 段按**插入序**且位于具名字段之后（#194 起不再排序）；LineSink 版式契约（列对齐 / 缺值占位 `-` / 耗时带单位不取整 / 终端才上色 / 事实面与 SlogSink 逐项对照）；宿主自带出口接缝（#198）：原语与内置行对应片段**逐字节同形**（耗时列 / attrs 组 / 状态列按显示列补齐，从内置行切分比对）、换渲染器后标识（含上色）与结尾换行仍由 sink 负责且 `color` 判定传入、`WithImmediate()` 写一条即落 writer、宿主渲染器零分配护栏（`AllocsPerRun`）
 9. bridge 全链路（#125）：scripted agent 工具回合记录序列与 attrs 逐条断言；双 scope TraceID 隔离 + Dispose 摘除；HITL 中立（before_tool_call 监听恰一次、拒绝路径记 rejected）；Collector 直写自动携带标识；FlowObserver wait/run 分段（Duration>0）、skip 单条等待、双节点 nodeID 隔离、三家归因锚（llm 同 scope 并发双实例 / loop 并发双 Agent / flow 并发双图，#144）
 
 ## 9. 观测适配下沉（Issue #127，2026-09）

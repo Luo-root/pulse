@@ -181,3 +181,40 @@ Field-count sensitivity (discarded output): `SlogSink` ≈ 0.87 / 1.15 / 1.85 µ
 
 Standing benchmarks: `go test -bench . ./observability/` (`sink_bench_test.go` splits construction → formatting → disk so any egress change can be compared layer by layer). Conclusion: **bottleneck order = unbuffered write syscall ≫ slog formatting > fold/construction > kernel dispatch**.
 
+## Host-provided egress (WithRenderer)
+
+The columnar layout above is the **default**, not the only one. When a host wants **domain facts in columns** (HTTP method / path / client, LLM model / usage, …) it replaces the line-body renderer and builds its own columns from the exported encoding primitives — the egress still knows nothing about any business vocabulary; the domain stays on the host side.
+
+The renderer contract is three lines long:
+
+- **Body only**: the line prefix (`WithPrefix`, including its dim colouring) and the trailing newline are added by the sink — they are sink semantics, not layout.
+- **`color` is the sink's resolved decision** (TTY detection + `WithColor` override): the host never probes the destination itself, and never writes ANSI into a log file that was redirected to disk.
+- **No buffering, no writes to the writer**: the write timing belongs to the sink (batched by default, per-record with `WithImmediate()`).
+
+```go
+render := func(dst []byte, r observability.Record, color bool) []byte {
+	dst = r.Time.AppendFormat(dst, "2006/01/02 - 15:04:05.000")
+	dst = append(dst, " | "...)
+	model, _ := observability.Get[string](r.Attrs, llm.AttrModel) // typed read, no `any`
+	dst = observability.AppendTextValue(dst, model)
+	dst = append(dst, " | "...)
+	return observability.AppendDuration(dst, r.Duration)
+}
+sink := observability.NewLineSink(os.Stdout,
+	observability.WithImmediate(), // watching a terminal: every line lands at once
+	observability.WithRenderer(render))
+```
+
+The exported primitives are **byte-identical** to the built-in layout — `linelog_renderer_test.go` slices the built-in line and compares, rather than relying on convention:
+
+| Primitive | Rule it shares with the built-in layout |
+|---|---|
+| `AppendDuration` | Unit-carrying, never rounded: `820ns` / `585.1µs` / `7.62ms` / `1.23s` |
+| `AppendTextValue` | The `k=v` quoting rule (spaces / equals / quotes / control characters) |
+| `AppendAttrs` | A whole attrs group: insertion order + four scalar kinds + the same quoting rule |
+| `DisplayWidth` + `AppendPadding` | Padding by **display column** (CJK / fullwidth 2 columns, combining marks 0) |
+
+**When to bring your own egress**: when you need to change the **layout or the colouring** by your own domain semantics. If the default layout is fine and you only need your existing logger or JSON, keep `SlogSink`; if you only need a different destination, change nothing — `NewLineSink(w)` is enough.
+
+These five primitives and `LineRenderer` are part of the **frozen surface** (see Release & Compatibility in the root README): their rules may only change in a minor release. A runnable full example (four columns plus the zero-allocation shape) is `Example_hostRenderer`.
+

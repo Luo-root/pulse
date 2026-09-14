@@ -28,6 +28,35 @@
 // 需要接宿主既有 logger、或要 JSON 喂采集器时换 SlogSink（同一批字段、
 // 同一顺序，只是给机器读）。选型与实测见「出口选择」。
 //
+// # 宿主自带出口
+//
+// 上面的列式版式是**默认**的，不是唯一的。宿主想让域事实进列（HTTP 的
+// 方法 / 路径 / 客户端，LLM 的模型 / 用量……）时用 WithRenderer 换掉行体
+// 渲染器，用本包导出的编码原语拼自己的列——出口仍然不认识任何业务语义，
+// 域语义留在宿主手里。
+//
+// 渲染器的契约只有三条：**只产行体**（行首标识与结尾换行由 sink 加）；
+// 拿到的 color 是 sink 解析好的结论（不必自己判终端，也不会把 ANSI 写进
+// 重定向到文件的日志）；不缓冲、不写 w（写出时机归 sink，WithImmediate
+// 控制即时性）。
+//
+//	render := func(dst []byte, r observability.Record, color bool) []byte {
+//		dst = r.Time.AppendFormat(dst, "2006/01/02 - 15:04:05.000")
+//		dst = append(dst, " | "...)
+//		model, _ := observability.Get[string](r.Attrs, llm.AttrModel)
+//		dst = observability.AppendTextValue(dst, model)
+//		dst = append(dst, " | "...)
+//		return observability.AppendDuration(dst, r.Duration)
+//	}
+//	sink := observability.NewLineSink(os.Stdout,
+//		observability.WithImmediate(),
+//		observability.WithRenderer(render))
+//
+// 导出原语（AppendDuration / AppendTextValue / AppendAttrs / AppendPadding /
+// DisplayWidth）与内置版式**同形**：同一条记录在两种版式下，耗时、属性组、
+// 列补齐逐字节一致——一致性由基座保证，宿主只决定「我这个域有哪些列」。
+// 可运行的完整示例（含四列与零分配写法）见 Example_hostRenderer。
+//
 // # TraceID 生成
 //
 // D3 约定 TraceID 由宿主单一生成源注入：宿主每请求调用 NewTraceID
