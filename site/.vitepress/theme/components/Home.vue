@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useData } from 'vitepress'
 
 // 版本号单源：badge / tagline / CTA / Release 链接都引用它——发版只改这一处。
-const VERSION = 'v0.2.3'
+const VERSION = 'v0.2.4'
 const RELEASE_URL = `https://github.com/Luo-root/pulse/releases/tag/${VERSION}`
 
 const { lang } = useData()
@@ -35,7 +35,7 @@ const copy = {
     start2Title: '官方装配路径',
     start2Desc: '要直接落地一个能跑的 Agent，用 host 薄串联包：会话栈、模型 Registry、工具集三向接线一次接好，host.New + DefaultAgent 三行参数起步。',
     ctaTitle: '在开源、可逆、可组合的基座上构建 Agent',
-    ctaDesc: `${VERSION} 已发布——默认出口改成列式人读版式（LineSink），属性改按插入序输出，仓库补齐协作入口（CONTRIBUTING / SECURITY / issue 模板）并把行尾钉死为 LF。`,
+    ctaDesc: `${VERSION} 已发布——宿主可以自带出口：换掉行体渲染器（WithRenderer）并用导出的编码原语拼自己的列，与内置版式逐字节同形。`,
     ctaRelease: `${VERSION} Release`,
     ctaEval: '评测数字',
   },
@@ -64,7 +64,7 @@ const copy = {
     start2Title: 'The official assembly path',
     start2Desc: 'To land a working agent directly, use the thin host package: session stack, model registry and tools are wired in one call — host.New plus DefaultAgent, three parameters to start.',
     ctaTitle: 'Build agents on a reversible, composable foundation',
-    ctaDesc: `${VERSION} is out — the default egress now writes a columnar human-readable line, attrs are emitted in insertion order, and the repository gained its collaboration surface (CONTRIBUTING / SECURITY / issue forms) with line endings pinned to LF.`,
+    ctaDesc: `${VERSION} is out — hosts can bring their own egress: swap the line renderer (WithRenderer) and build your own columns from the exported encoding primitives, byte-for-byte identical to the built-in layout.`,
     ctaRelease: `${VERSION} Release`,
     ctaEval: 'Benchmarks',
   },
