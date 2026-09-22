@@ -65,10 +65,17 @@ Requires **Go 1.25+** — the toolchain downloads itself if it is missing.
 
 ```bash
 go build ./...                                  # compilation
+go vet ./...                                    # static checks
+"$(go env GOROOT)/bin/gofmt" -l $(git ls-files '*.go')  # formatting: empty output = pass
 go test ./...                                   # all tests in the main module
 go test -race -count=1 -skip TestLive ./...     # the regression CI runs on every PR
 cd eval/war && go test -race -count=1 ./...     # nested module: cross-framework comparison suite
 ```
+
+`go vet` and the format check are CI gates, and the format gate goes through
+`$(go env GOROOT)/bin/gofmt` on purpose: a stale `gofmt` on `PATH` cannot parse newer syntax and
+reports the whole tree as unformatted. Its criterion is **non-empty output**, not the exit code —
+`gofmt -l` lists offending files and still exits 0.
 
 `TestLive*` in `llm/openai` and `llm/anthropic` call real provider APIs. They are gated by
 environment variables (`PULSE_OPENAI_*`, `PULSE_ANTHROPIC_*`, `PULSE_MIMO_*`) and skip when
@@ -165,10 +172,16 @@ Pulse 是开源的 Go 库，目前仍在 1.0 之前（`v0.x`）。欢迎贡献�
 
 ```bash
 go build ./...                                  # 编译
+go vet ./...                                    # 静态检查
+"$(go env GOROOT)/bin/gofmt" -l $(git ls-files '*.go')  # 格式：输出为空即通过
 go test ./...                                   # 主 module 全部测试
 go test -race -count=1 -skip TestLive ./...     # CI 每个 PR 跑的回归集
 cd eval/war && go test -race -count=1 ./...     # 嵌套 module：跨框架对比套件
 ```
+
+`go vet` 与格式检查都是 CI 门禁；格式门禁走 `$(go env GOROOT)/bin/gofmt` 是刻意的——`PATH` 上
+可能挂着旧版二进制，解析不了新语法，会把整棵树报成未格式化。它的判据是**输出非空即失败**，
+不是退出码：`gofmt -l` 列完违规文件仍然退出 0。
 
 `llm/openai`、`llm/anthropic` 里的 `TestLive*` 会调用真实 provider：由环境变量
 （`PULSE_OPENAI_*`、`PULSE_ANTHROPIC_*`、`PULSE_MIMO_*`）门控，缺失时自动跳过，因此默认测试集

@@ -23,6 +23,8 @@ empty, write "无 / none" rather than deleting it — a reviewer needs to know i
 <!-- 具体命令 + 观察到的结果。「CI 绿了」是结果，不是测试方案。 -->
 
 - [ ] `go build ./...`
+- [ ] `go vet ./...`
+- [ ] `"$(go env GOROOT)/bin/gofmt" -l $(git ls-files '*.go')` 输出为空 / empty output
 - [ ] `go test -race -count=1 -skip TestLive ./...`
 - [ ] 站点相关改动另跑 `node site/scripts/sync-docs.mjs` 与 `cd site; npm run build`
 
