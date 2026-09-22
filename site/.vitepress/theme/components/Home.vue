@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useData } from 'vitepress'
 
 // 版本号单源：badge / tagline / CTA / Release 链接都引用它——发版只改这一处。
-const VERSION = 'v0.2.4'
+const VERSION = 'v0.2.5'
 const RELEASE_URL = `https://github.com/Luo-root/pulse/releases/tag/${VERSION}`
 
 const { lang } = useData()

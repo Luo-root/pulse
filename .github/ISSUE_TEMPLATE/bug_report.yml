@@ -39,7 +39,7 @@ body:
     attributes:
       label: Pulse version
       description: The release tag you use (see Releases), or the commit if you track main.
-      placeholder: v0.2.4
+      placeholder: v0.2.5
     validations:
       required: true
 
