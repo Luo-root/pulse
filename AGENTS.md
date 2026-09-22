@@ -15,7 +15,7 @@ go test -race -count=1 ./eval/   # eval property tests (main module)
 
 - Requires **Go 1.25.0+** (toolchain auto-downloads if missing).
 - Provider adapter live-API smoke tests (`TestLive*` in `llm/openai`, `llm/anthropic`) are gated by environment variables (`PULSE_OPENAI_*`, `PULSE_ANTHROPIC_*`, `PULSE_MIMO_*`); without credentials they skip automatically.
-- No Makefile or linter config. GitHub Actions CI (`.github/workflows/ci.yml`) runs `go build ./...` plus the `-race` regression above (and the `eval/war` nested module separately) on every PR and on pushes to `main`.
+- No Makefile or linter config. GitHub Actions CI (`.github/workflows/ci.yml`) runs `go build ./...`, `go vet ./...`, a gofmt check (empty output = pass), plus the `-race` regression above (and the `eval/war` nested module separately) on every PR and on pushes to `main`.
 
 ## Repo layout
 
