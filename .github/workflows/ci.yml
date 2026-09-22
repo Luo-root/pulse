@@ -24,6 +24,21 @@ jobs:
           go-version-file: go.mod
       - name: Build
         run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: gofmt
+        # 判据是「输出非空即失败」——`gofmt -l` 列完未格式化文件仍退出 0，只抄命令行
+        # 等于把门禁降级成仪式。gofmt 走工具链显式路径：PATH 上可能是旧版二进制，
+        # 解析不了新语法（全量假阳性）。
+        run: |
+          files="$(git ls-files '*.go')"
+          out="$("$(go env GOROOT)/bin/gofmt" -l $files 2>&1)" || true
+          if [ -n "$out" ]; then
+            echo "gofmt found unformatted files:"
+            echo "$out"
+            exit 1
+          fi
+          echo "gofmt clean: $(echo "$files" | wc -l) file(s)"
       - name: Test
         # 包清单与根 README「构建与测试」节的权威回归命令逐字一致；
         # TestLive 系 live 用例，无凭证时自动跳过。
