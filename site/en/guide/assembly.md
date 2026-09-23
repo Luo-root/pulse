@@ -20,8 +20,8 @@ So there is exactly one criterion for picking a layer: **is what you want cross-
 ## 2. The fastest path
 
 ```go
-k := kernel.New() // 内核归应用所有：你的插件（UI、审批、任务队列…）Use 同一个根
-defer k.Dispose() // 生命周期归调用方，Host 没有 Close
+k := kernel.New() // the kernel is app-owned: your plugins (UI, approval, task queues…) Use the same root
+defer k.Dispose() // the lifetime belongs to the caller; Host has no Close
 
 h, err := host.New(host.Options{
 	Kernel:    k,
@@ -39,7 +39,7 @@ agent, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: 
 if err != nil {
 	panic(err)
 }
-res, err := agent.Run(ctx, llm.UserText("你好"))
+res, err := agent.Run(ctx, llm.UserText("hello"))
 if err != nil {
 	panic(err)
 }
@@ -56,7 +56,7 @@ This assembly does four things: it mounts `llm.Registry` and `toolset.Registry` 
 
 ```go
 k := kernel.New()
-defer k.Dispose() // 逆序还原：Effect 登记的修改在 Dispose 时回滚
+defer k.Dispose() // LIFO unwind: Effect-registered mutations are rolled back at Dispose
 ```
 
 No host needed: when what you are writing is a **host plugin** (Provide a service, subscribe with `kernel.On`, declare dependencies with `kernel.Require`), depend on kernel directly — the host components' service repository is that same root, so your plugins and they see each other.
@@ -64,7 +64,7 @@ No host needed: when what you are writing is a **host plugin** (Provide a servic
 ### llm — provider adapters + named model instances
 
 ```go
-reg := llm.NewRegistry(k) // 拦截事件（before_generate / after_response）的宿主 scope
+reg := llm.NewRegistry(k) // the host scope that intercepts events (before_generate / after_response)
 if err := openai.Register(k, reg); err != nil {
 	panic(err)
 }
@@ -75,7 +75,7 @@ if err := reg.Declare("main", llm.Config{
 }); err != nil {
 	panic(err)
 }
-model, err := reg.Open("main") // observed 包装：每次调用发事件，计量/限流/路由因此都是普通监听插件
+model, err := reg.Open("main") // observed wrapper: every call emits an event, so metering/rate limiting/routing are ordinary listener plugins
 ```
 
 No host needed: for a single **model call** (no ReAct turn, no persistence, no event subscription), a `Registry` + adapter is enough. `host.Options.Providers` / `Models` only write those two steps as declarative fields.
@@ -83,23 +83,23 @@ No host needed: for a single **model call** (no ReAct turn, no persistence, no e
 ### toolset — reversible tool registration
 
 ```go
-if _, err := kernel.Use(k, toolset.Plugin()); err != nil { // Provide pulse.tools，卸载时 Close
+if _, err := kernel.Use(k, toolset.Plugin()); err != nil { // provides pulse.tools, Close on unload
 	panic(err)
 }
-reg, ok := kernel.Get(k, toolset.ServiceKey) // host 装配下与 h.Tools() 是同一个实例
+reg, ok := kernel.Get(k, toolset.ServiceKey) // under the host assembly this is the same instance as h.Tools()
 if !ok {
 	panic("pulse.tools not provided")
 }
 if _, err := reg.Register(k, toolset.Registration{
 	Def: llm.ToolDef{
 		Name:        "lookup",
-		Description: "查一条事实",
+		Description: "look up one fact",
 		Parameters:  json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`),
 	},
 	Fn:     func(ctx context.Context, args json.RawMessage) (string, error) { return "…", nil },
-	Source: "local.lookup",       // 来源稳定名：撤销（DisposeSource）与归因的锚点
-	Risk:   toolset.RiskReadonly, // 必填：Unspecified 会被拒绝，不会静默降级成只读
-	// PreviewFn 可选：执行前只读卡片（HITL 用，见 §五·b）
+	Source: "local.lookup",       // the stable source name: the anchor for revocation (DisposeSource) and attribution
+	Risk:   toolset.RiskReadonly, // required: Unspecified is rejected, never silently downgraded to read-only
+	// PreviewFn optional: the pre-execution read-only card (for HITL, see §5b)
 }); err != nil {
 	panic(err)
 }
@@ -110,13 +110,13 @@ No host needed: when the tools are the host's own assets and do not need to join
 ### observability — Bootstrap + Sink
 
 ```go
-sink := observability.NewLineSink(os.Stdout) // 默认出口：一行一条人读文本（不过 slog）
-defer sink.Flush()                           // 关闭前必须 Flush：最后一批还在缓冲里
+sink := observability.NewLineSink(os.Stdout) // default egress: one human-readable line per record (never through slog)
+defer sink.Flush()                           // Flush before closing (the last batch sits in the buffer)
 
-if _, err := kernel.Use(k, observability.Bootstrap("my-app", sink)); err != nil { // 必须最先 Use
+if _, err := kernel.Use(k, observability.Bootstrap("my-app", sink)); err != nil { // must be Use'd first
 	panic(err)
 }
-// 之后的业务插件：llm.Plugin / toolset.Plugin / 你自己的插件
+// then business plugins: llm.Plugin / toolset.Plugin / your own plugins
 ```
 
 No host needed: for the **assembly-time** trajectory alone (`fiber_state` / `loader_action` transitions + the startup banner), one Bootstrap plugin is enough. What `host.ObserveConfig` adds is the three **request-time** mounts (see §5d).
@@ -124,13 +124,13 @@ No host needed: for the **assembly-time** trajectory alone (`fiber_state` / `loa
 ### memory — session and item stacks
 
 ```go
-sessions := memory.NewMemorySessionStack() // 便捷：进程内（重启即失）
-// sessions, err := memory.NewJSONLSessionStack(dir) // 便捷：JSONL 落盘（blobs + 文件锁 + Flush fsync）
-// st, err := session.NewJSONLStore(dir, /* 选项 */)  // 泛化：先建任意 SessionStore…
-// stack := memory.NewSessionStack(st)               // …再交给门面（恢复策略等都在 store 上）
+sessions := memory.NewMemorySessionStack() // convenience: in-process (lost on restart)
+// sessions, err := memory.NewJSONLSessionStack(dir) // convenience: JSONL on disk (blobs + file lock + Flush fsync)
+// st, err := session.NewJSONLStore(dir, /* options */)  // most general: build any SessionStore first…
+// stack := memory.NewSessionStack(st)               // …then hand it to the facade (recovery policy etc. live on the store)
 
 items := memory.NewMemoryItemStack(assemble.Budget{StableMemoryTokens: 800, RetrievedTokens: 1200})
-// items := memory.NewItemStack(myStore, myMeter, assemble.Budget{…}) // 泛化：注入任意 MemoryStore + 计量
+// items := memory.NewItemStack(myStore, myMeter, assemble.Budget{…}) // most general: inject any MemoryStore + meter
 ```
 
 No host needed: `SessionStack` / `ItemStack` are pure storage surfaces — use them directly for a session-management UI alone, or for a single assembly run to get a context. What host attaches is the "wire them onto a loop turn" part (Surface injects history, append by event).
@@ -140,15 +140,15 @@ No host needed: `SessionStack` / `ItemStack` are pure storage surfaces — use t
 (`model` / `reg` / `k` are the products of the sections above.)
 
 ```go
-agent, err := loop.NewAgent(model, "assistant", // id 随事件与观测发出，供归因
+agent, err := loop.NewAgent(model, "assistant", // the id travels with events and observability records, for attribution
 	loop.WithToolSet(reg.AsToolSet()),
 	loop.WithSystemPrompt("You are a concise assistant."),
-	loop.WithEventScope(k), // 事件派发 scope；宿主直连时是根，host 装配下是每回合派生的请求 scope
+	loop.WithEventScope(k), // event dispatch scope; the root when wiring to the host directly, the per-turn request scope under the host assembly
 )
 if err != nil {
 	panic(err)
 }
-res, err := agent.Run(ctx, nil, llm.UserText("你好")) // history 明着传；本回合产出从 res.Messages 取
+res, err := agent.Run(ctx, nil, llm.UserText("hello")) // history passed explicitly; this turn's product comes from res.Messages
 ```
 
 No host needed: for a single turn with history you manage yourself and no persistence, loop is the most direct. What host adds on top is exactly the three-way wiring — history folded from `Session.Surface()`, persistence happening synchronously on loop events, and a scope that is independent per turn.
@@ -221,7 +221,7 @@ h, err := host.New(host.Options{
 			return err
 		},
 	},
-	Session: memory.NewSessionStack(store), // 泛化构造：store 带策略，门面只收敛构造
+	Session: memory.NewSessionStack(store), // general construction: the store carries the policy, the facade only consolidates construction
 })
 ```
 
@@ -229,10 +229,48 @@ Key points:
 
 - `memory.NewJSONLSessionStack(dir)` is a convenience wrapper and does **not** take a recovery policy; for `RecoverExposePending` use the general constructor `memory.NewSessionStack(session.NewJSONLStore(dir, session.WithRecoverPolicy(...)))`;
 - The policy is **Store-level**, and the default tier's synthesis is **genuinely written back to the log** (destructive) — for "a human must adjudicate" scenarios, carry `RecoverExposePending` from the very first `Open`; otherwise the pending state is already synthesized into an `interrupted` closure at open time;
-- **Cold-recovery adjudication path**: `sess, err := h.SessionStack().Open(ctx, id)`; `errors.Is(err, session.ErrPendingEvents)` means pending state exists (and `Surface()` refuses to project too). Reach the adjudication surface: `r, ok := sess.(session.Recoverable)` →
-  - `r.Pending()` takes a scene snapshot (`PendingState.Calls` carries the call payload from that moment, to resend or to fill in a result by hand);
-  - `r.ResolvePending(ctx, session.ResolvePendingOption{ToolCallID: id, Result: &session.ToolResultPayload{…}})` supplies the **real** result (back to the wait point instead of voiding it);
-  - `Interrupted: true` takes the default interrupted closure; `r.ResolveAsInterrupted(ctx)` voids every pending entry in one shot;
+- **Cold-recovery adjudication**: `Open` **always succeeds** — the sentinel does not live there; what refuses to project while the state is unresolved is **`Surface()` and `Run`** (`ErrPendingEvents`; only `RecoverReject` refuses at `Open`). Read the scene through `session.Recoverable`, adjudicate, then resume:
+
+```go
+sess, err := h.SessionStack().Open(ctx, id) // an unresolved scene does not error here
+if err != nil {
+	panic(err)
+}
+rec, ok := sess.(session.Recoverable) // the adjudication surface only exists on the RecoverExposePending tier
+if !ok {
+	panic("this session stack is not on the RecoverExposePending tier")
+}
+p := rec.Pending() // scene snapshot: calls missing a result (with that moment's payload) + open step/turn
+if len(p.Calls) > 0 {
+	// fill in the **real** result (back to the wait point, not voided); to resend, run the payload again and fill it here
+	if err := rec.ResolvePending(ctx, session.ResolvePendingOption{
+		Result: &session.ToolResultPayload{ToolCallID: p.Calls[0].ToolCallID, Text: "adjudicated by human: approved"},
+	}); err != nil {
+		panic(err)
+	}
+}
+// open step / turn close layer by layer (Interrupted = the default synthesized closure)
+if p.HasOpenStep {
+	if err := rec.ResolvePending(ctx, session.ResolvePendingOption{Interrupted: true}); err != nil {
+		panic(err)
+	}
+}
+if p.HasOpenTurn {
+	if err := rec.ResolvePending(ctx, session.ResolvePendingOption{Interrupted: true}); err != nil {
+		panic(err)
+	}
+}
+if err := sess.Flush(ctx); err != nil { // adjudication is itself a log write: flush once at the end
+	panic(err)
+}
+
+// running a turn before adjudication → the host rejects at Surface (ErrPendingEvents),
+// never feeding an unpaired tool_call to the model; once adjudicated you can resume:
+agent, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main", SessionID: id})
+```
+
+- **One-shot voiding**: `rec.ResolveAsInterrupted(ctx)` is equivalent to the default tier (every pending entry synthesized into a closure); `Interrupted: true` has the same semantics but closes one layer per call;
+- `Pending()`'s `Calls` carry that moment's payload (`ToolCallID` / name / arguments), ready to resend or to fill in a result by hand;
 - **Resuming**: `h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main", SessionID: id})` (a non-empty `SessionID` requires `Options.Session`, otherwise construction errors).
 
 ### b. HITL approval: gate + permission card
@@ -240,22 +278,22 @@ Key points:
 ```go
 a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
 	Name: "main", Model: "main",
-	// (1) 执行前权限卡片：闸门闭包持 h.Tools()，用 toolset 的预览面取卡片。
+	// (1) pre-execution permission card: the gate closure holds h.Tools() and takes the card from toolset's preview surface.
 	ToolGate: func(gctx context.Context, call llm.ToolCall) (bool, string) {
 		card, ok, err := h.Tools().Preview(gctx, call.Name, call.Arguments)
 		if err != nil || !ok {
-			return false, "no preview card" // 没卡片也照问人，绝不自动放行
+			return false, "no preview card" // no card still means ask the human — never auto-allow
 		}
-		// askHuman 是宿主自己的裁决来源（审批 UI / 策略表 / 终端提示）：
-		// 裁决期间就地等在这个 ctx 上——取消与超时随宿主。
+		// askHuman is the host's own adjudication source (approval UI / policy table / terminal prompt):
+		// wait on this ctx in place during adjudication — cancellation and timeouts follow the host.
 		return askHuman(gctx, card), "rejected by approval UI"
 	},
-	// (2) 要**改写**调用（脱敏 / 路由 / 补默认参数）时挂 waterfall：
-	//     BeforeToolCall 是 around 语义，改写 Call 或置 Rejected 短路。
+	// (2) to **rewrite** calls (redaction / routing / filling in defaults), mount a waterfall:
+	//     BeforeToolCall is around semantics: rewrite Call, or set Rejected to short-circuit.
 	ScopeHook: func(scope *kernel.Context) error {
 		_, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
 			func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
-				p.Call.Arguments = sanitize(p.Call.Arguments) // 就地改写；只观察也必须委托 next
+				p.Call.Arguments = sanitize(p.Call.Arguments) // rewrite in place; even observe-only must delegate to next
 				return next(p)
 			})
 		return err
@@ -280,16 +318,16 @@ a, err := h.NewAgent(host.AgentOptions{
 	ContextBuilder: func(ctx context.Context, surface, input []*llm.Message) ([]*llm.Message, error) {
 		in := assemble.AssembleInput{
 			Namespace: []string{"user-42"},
-			Surface:   surface, // 当前会话 surface（无会话时是 RunHistory 的历史）
+			Surface:   surface, // the current session surface (the RunHistory history when there is no session)
 		}
-		if len(input) > 0 { // Run(ctx) 可以不带输入：空 = 只取稳定记忆
-			in.Query = input[len(input)-1].Text() // 本轮输入作检索信号
+		if len(input) > 0 { // Run(ctx) may carry no input: empty = stable memory only
+			in.Query = input[len(input)-1].Text() // this turn's input as the retrieval signal
 		}
 		out, err := items.Assemble(ctx, in)
 		if err != nil {
 			return nil, err
 		}
-		return out.Messages, nil // 稳定前缀 → surface 尾部 → 检索记忆 → injected
+		return out.Messages, nil // stable prefix → surface tail → retrieved memory → injected
 	},
 })
 ```
@@ -307,8 +345,8 @@ The assembled product in this section uses the same calls and fields as the asse
 ### d. Observability egress
 
 ```go
-sink := observability.NewLineSink(os.Stdout) // 默认出口：一行一条人读文本
-defer sink.Flush()                           // 进程退出前必须 Flush
+sink := observability.NewLineSink(os.Stdout) // default egress: one human-readable line per record
+defer sink.Flush()                           // Flush before the process exits
 
 h, err := host.New(host.Options{
 	// ...
@@ -334,13 +372,13 @@ On the host side this path is covered by `TestHostObservePerRequest` (`HostID` l
 ```go
 Tools: []host.ToolSource{
 	func(c *kernel.Context, reg *toolset.Registry) error {
-		// 一次 Sync = 拉 ListTools + 按 NamePrefix 定名登记；掉线时 Detach 整源撤销。
+		// one Sync = fetch ListTools + register each tool under NamePrefix; Detach revokes the whole source when offline.
 		src, err := mcp.NewSource(reg, mcp.Config{
-			ID:          "filesystem",          // Source 元数据固定为 "mcp." + ID
-			Client:      client,                // mcp.Client：官方 go-sdk / mcp-go / 自建适配
-			NamePrefix:  "fs",                  // 非空时模型可见名 = fs_<上游名>
-			DefaultRisk: toolset.RiskReadWrite, // 必填；Unspecified 被拒绝
-			// PreviewFn 覆盖本源全部工具的预览；nil 用默认的 opaque 卡片。
+			ID:          "filesystem",          // Source metadata is always "mcp." + ID
+			Client:      client,                // mcp.Client: the official go-sdk / mcp-go / your own adapter
+			NamePrefix:  "fs",                  // when non-empty the model-visible name = fs_<upstream name>
+			DefaultRisk: toolset.RiskReadWrite, // required; Unspecified is rejected
+			// PreviewFn overrides the preview for every tool in this source; nil uses the default opaque card.
 		})
 		if err != nil {
 			return err
@@ -359,14 +397,14 @@ Key points:
 ### f. Skills
 
 ```go
-loader, err := skills.Open("skills") // 目录下每个含 SKILL.md 的子目录是一个 skill
+loader, err := skills.Open("skills") // every subdirectory containing a SKILL.md is one skill
 if err != nil {
-	panic(err) // 非法 frontmatter 在装配期暴露，不拖到回合中段
+	panic(err) // invalid frontmatter surfaces at assembly time, not mid-turn
 }
 
 h, err := host.New(host.Options{
 	// ...
-	Tools: []host.ToolSource{host.SkillTools(loader)}, // 注册 list_skills / load_skill 两个只读工具
+	Tools: []host.ToolSource{host.SkillTools(loader)}, // registers the two read-only tools list_skills / load_skill
 })
 ```
 
@@ -374,7 +412,19 @@ Key points: **a Skill is a procedure package, not a tool** — `host.SkillTools`
 
 ### Code and compile coverage
 
-`host/guide_recipe_test.go` compiles and genuinely runs this page's **main assembly (§2), sessions (§5a), HITL (§5b) and tool sources (§5e + §5f)** verbatim (the test substitutes a scripted model for the real provider; everything else is verbatim); `§5c` is covered by `TestHostContextBuilderRecipe`, `§5d` by `TestHostObservePerRequest`. The per-package facade snippets in §3 are their minimal shape and are not compiled snippet by snippet — symbols and signatures are checked against each package's source.
+`host/guide_recipe_test.go` compiles and genuinely runs **verbatim** against the Chinese original of this page (`site/guide/assembly.md`): the code blocks here mirror it line for line — only comments and example string literals (such as `"hello"` / `"look up one fact"`) are translated — and every substitution is marked in the test file's header and in code comments:
+
+| Page snippet | Test | Substitutions |
+|---|---|---|
+| §2 main assembly + closing `Run` | `TestSiteAssemblyGuideRecipe` | a scripted model instead of a real provider, `host.X`→`X` (same package), closing `panic`→`t.Fatal` |
+| §5a session assembly + resume by `SessionID` | `TestSiteAssemblyGuideSessionRecipe` | `data/sessions`→`t.TempDir()`, plus a self-built echo source for the assertions (the `builtins.Register` line is kept verbatim, with `Root` pointing at a temp dir) |
+| §5a cold-recovery adjudication snippet | `TestSiteAssemblyGuideRecoveryRecipe` | the crash scene is produced for real (hold at the gate, then close the session handle); `h2` / `id` come from the test |
+| §5b HITL approval | `TestSiteAssemblyGuideHITLRecipe` | `askHuman` / `sanitize` become test closures (the page already marks them as host-owned) |
+| §5e MCP source + §5f skills | `TestSiteAssemblyGuideToolSourceRecipe` | the `mcp.Client` and the skills directory come from the test (`skills.Open(root)` is the same signature, pointed at a temp dir) |
+| §5c assembly seam | `TestHostContextBuilderRecipe` (existing) | — |
+| §5d observability egress | `TestHostObservePerRequest` / `TestHostAttachCollectorBusinessWrite` (existing) | — |
+
+The per-package facade snippets in §3 are **shape only** (their minimal form): symbols and signatures are checked against each package's source, but they are not compiled snippet by snippet.
 
 ## 6. Assembly contract and common pitfalls
 

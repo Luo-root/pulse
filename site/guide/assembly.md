@@ -229,10 +229,48 @@ h, err := host.New(host.Options{
 
 - `memory.NewJSONLSessionStack(dir)` 是便捷封装，**不带**恢复策略；要 `RecoverExposePending` 就走泛化构造 `memory.NewSessionStack(session.NewJSONLStore(dir, session.WithRecoverPolicy(...)))`；
 - 策略是 **Store 级**且默认档的合成会**真实写回日志**（破坏性）——「要让人裁决」的场景从第一次 `Open` 起就得带 `RecoverExposePending`，否则未决在打开时就已被合成为 `interrupted` 闭环；
-- **冷恢复裁决路径**：`sess, err := h.SessionStack().Open(ctx, id)`；`errors.Is(err, session.ErrPendingEvents)` 表示有未决（此时 `Surface()` 也拒绝投影）。拿裁决面：`r, ok := sess.(session.Recoverable)` →
-  - `r.Pending()` 取现场快照（`PendingState.Calls` 带当时的调用载荷，可重发或人工补结果）；
-  - `r.ResolvePending(ctx, session.ResolvePendingOption{ToolCallID: id, Result: &session.ToolResultPayload{…}})` 补**真实**结果（回到等待点而不是作废）；
-  - `Interrupted: true` 走默认中断闭环；`r.ResolveAsInterrupted(ctx)` 一键把全部未决作废；
+- **冷恢复裁决**：`Open` **恒成功**——哨兵不在这一步；未裁决期间拒绝投影的是 **`Surface()` 与 `Run`**（`ErrPendingEvents`；只有 `RecoverReject` 档在 `Open` 就拒）。现场经 `session.Recoverable` 读，裁决完再续跑：
+
+```go
+sess, err := h.SessionStack().Open(ctx, id) // 未决现场不在这里报错
+if err != nil {
+	panic(err)
+}
+rec, ok := sess.(session.Recoverable) // 裁决面只在 RecoverExposePending 档存在
+if !ok {
+	panic("该会话栈不是 RecoverExposePending 档")
+}
+p := rec.Pending() // 现场快照：缺 result 的调用（带当时的载荷）+ 悬空 step/turn
+if len(p.Calls) > 0 {
+	// 补**真实**结果（回到等待点，而不是作废）；要重发就把载荷再跑一遍再填这里
+	if err := rec.ResolvePending(ctx, session.ResolvePendingOption{
+		Result: &session.ToolResultPayload{ToolCallID: p.Calls[0].ToolCallID, Text: "已人工裁决：批准"},
+	}); err != nil {
+		panic(err)
+	}
+}
+// 悬空的 step / turn 逐层闭合（Interrupted = 默认合成闭环）
+if p.HasOpenStep {
+	if err := rec.ResolvePending(ctx, session.ResolvePendingOption{Interrupted: true}); err != nil {
+		panic(err)
+	}
+}
+if p.HasOpenTurn {
+	if err := rec.ResolvePending(ctx, session.ResolvePendingOption{Interrupted: true}); err != nil {
+		panic(err)
+	}
+}
+if err := sess.Flush(ctx); err != nil { // 裁决本身也是写日志：收尾刷一次
+	panic(err)
+}
+
+// 裁决完成前跑回合 → 宿主在 Surface 处拒绝（ErrPendingEvents），
+// 不把 unpaired tool_call 喂给模型；裁决完就能续跑：
+agent, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main", SessionID: id})
+```
+
+- **一键作废**：`rec.ResolveAsInterrupted(ctx)` 等价默认档行为（全部未决合成闭环）；`Interrupted: true` 走同样语义、但一次只闭合一层；
+- `Pending()` 的 `Calls` 带当时的调用载荷（`ToolCallID` / 名称 / 参数），可重发或人工补结果；
 - **续跑**：`h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main", SessionID: id})`（`SessionID` 非空必须有 `Options.Session`，否则构造期报错）。
 
 ### b. HITL 审批：闸门 + 权限卡片
@@ -374,7 +412,19 @@ h, err := host.New(host.Options{
 
 ### 代码与兜底
 
-`host/guide_recipe_test.go` 把本页的**主装配（§二）、会话（§五·a）、HITL（§五·b）、工具来源（§五·e + §五·f）**逐字编译并真跑（测试里用脚本模型顶替真实 provider，其余逐字）；`§五·c` 由 `TestHostContextBuilderRecipe` 覆盖，`§五·d` 由 `TestHostObservePerRequest` 覆盖。§三 各包门面片段是它们的最小形态，未逐段编译——符号与签名按各包源码核对。
+`host/guide_recipe_test.go` 把下面这些片段**逐字编译并真跑**（每处替换都在用例文件头与代码注释里标了）：
+
+| 页面片段 | 用例 | 用例里的替换 |
+|---|---|---|
+| §二 主装配 + `Run` 收尾 | `TestSiteAssemblyGuideRecipe` | provider 换脚本模型、`host.X`→`X`（同一个包）、收尾 `panic`→`t.Fatal` |
+| §五·a 会话装配 + 按 `SessionID` 续跑 | `TestSiteAssemblyGuideSessionRecipe` | `data/sessions`→`t.TempDir()`，并另加一个自建 echo 来源供断言（`builtins.Register` 那行逐字保留，`Root` 换临时目录） |
+| §五·a 冷恢复裁决片段 | `TestSiteAssemblyGuideRecoveryRecipe` | 崩溃现场由「跑到闸门等待点后关会话句柄」真造出来；`h2` / `id` 由用例提供 |
+| §五·b HITL 审批 | `TestSiteAssemblyGuideHITLRecipe` | `askHuman` / `sanitize` 换测试闭包（页面里它们本就是宿主自备） |
+| §五·e MCP 来源 + §五·f 技能 | `TestSiteAssemblyGuideToolSourceRecipe` | `mcp.Client` 与技能目录由测试提供（`skills.Open(root)` 同一签名，换临时目录） |
+| §五·c 组装缝 | `TestHostContextBuilderRecipe`（既有） | —— |
+| §五·d 观测出口 | `TestHostObservePerRequest` / `TestHostAttachCollectorBusinessWrite`（既有） | —— |
+
+§三 各包门面片段是**示意**（最小形态）：符号与签名按各包源码核对，未逐段编译。
 
 ## 六、装配契约与常见坑
 

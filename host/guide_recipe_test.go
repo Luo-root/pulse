@@ -15,17 +15,22 @@ package host
 //  3. 由宿主提供的值改由测试提供：模型声明名（测试宿主声明的是 "stub"）、
 //     会话目录（`t.TempDir()`）、技能目录（临时目录里现写一个 SKILL.md）、
 //     MCP Client（下面的 guideMCPClient）；
-//  4. §五·a 的 Tools 里 `builtins.Register` 换成一个同形态的自建工具：同一个
-//     ToolSource 签名，只是 builtins 需要真实工作区、登记面很大，而这里要证
-//     的是「来源闭包在装配期被调用 + 注册进去的工具真能执行」。
+//  4. §五·a 的 Tools 是两段：页面那行 `builtins.Register(c, reg, builtins.Options{Root: …})`
+//     逐字编译（Root 换成 `t.TempDir()`），另加一个自建 echo 来源供断言用
+//     （要证的是「来源闭包在装配期被调用 + 注册进去的工具真能执行」）；
+//  5. §五·a 的冷恢复裁决片段（`Open` → `Recoverable.Pending` → `ResolvePending`
+//     → `Flush` → 续跑）由 TestSiteAssemblyGuideRecoveryRecipe 逐字编译并真跑；
+//     崩溃现场用「跑到 HITL 等待点后关会话句柄」造出来（与跨包用例同一手法）。
 //
-// 覆盖：§二 主装配、§五·a 会话（JSONL + RecoverExposePending）、§五·b HITL、
-// §五·e MCP 来源、§五·f 技能。§五·c 由 TestHostContextBuilderRecipe 覆盖、
-// §五·d 由 TestHostObservePerRequest 覆盖（本页与 host README 是同一份配方）。
+// 覆盖：§二 主装配、§五·a 会话（JSONL + RecoverExposePending + 冷恢复裁决）、
+// §五·b HITL、§五·e MCP 来源、§五·f 技能。§五·c 由 TestHostContextBuilderRecipe
+// 覆盖、§五·d 由 TestHostObservePerRequest / TestHostAttachCollectorBusinessWrite
+// 覆盖（本页与 host README 是同一份配方）。
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +43,7 @@ import (
 	"github.com/Luo-root/pulse/memory/session"
 	"github.com/Luo-root/pulse/skills"
 	"github.com/Luo-root/pulse/toolset"
+	"github.com/Luo-root/pulse/toolset/builtins"
 	"github.com/Luo-root/pulse/toolset/mcp"
 )
 
@@ -140,8 +146,16 @@ func TestSiteAssemblyGuideSessionRecipe(t *testing.T) {
 			llm.Resp("second"),
 		),
 		func(o *Options) {
-			// ↓↓↓ 页面 §五·a 的 Tools / Session 两段（注册闭包体逐字）↓↓↓
+			// ↓↓↓ 页面 §五·a 的 builtins 闭包逐字（Root 换成测试临时目录）↓↓↓
+			root := t.TempDir()
+			// ↑↑↑ 页面这里写的是 "workspace" ↑↑↑
 			o.Tools = []ToolSource{
+				func(c *kernel.Context, reg *toolset.Registry) error {
+					_, err := builtins.Register(c, reg, builtins.Options{Root: root})
+					return err
+				},
+				// 页面没有这一段：断言用的 echo 来源（证明来源闭包真被调用、
+				// 注册进去的工具真能执行）。
 				func(c *kernel.Context, reg *toolset.Registry) error {
 					_, err := reg.Register(c, toolset.Registration{
 						Def:    llm.ToolDef{Name: "echo", Description: "echo", Parameters: json.RawMessage(`{"type":"object"}`)},
@@ -484,5 +498,164 @@ func TestSiteAssemblyGuideToolSourceRecipe(t *testing.T) {
 	}
 	if !strings.Contains(out, "guide-skill") || !strings.Contains(out, "装配指南示例技能") {
 		t.Fatalf("list_skills = %q", out)
+	}
+}
+
+// TestSiteAssemblyGuideRecoveryRecipe：指南 §五·a 的**冷恢复裁决**片段逐字编译
+// 并真跑——先造一个真崩溃现场（跑到 HITL 等待点后关会话句柄），再用
+// RecoverExposePending 打开、裁决、续跑。顺带把这段最容易写错的 API 语义钉住：
+// **`Open` 恒成功**，哨兵 `ErrPendingEvents` 出现在 `Surface()` / `Run`（不是 `Open`）。
+func TestSiteAssemblyGuideRecoveryRecipe(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	echo := func(c *kernel.Context, reg *toolset.Registry) error {
+		_, err := reg.Register(c, toolset.Registration{
+			Def:    llm.ToolDef{Name: "echo", Description: "echo", Parameters: json.RawMessage(`{"type":"object"}`)},
+			Fn:     func(context.Context, json.RawMessage) (string, error) { return "pong", nil },
+			Source: "guide.echo",
+			Risk:   toolset.RiskReadonly,
+		})
+		return err
+	}
+
+	// ---- 第一段生命周期：跑到 HITL 等待点后「猝死」（关句柄）----
+	stack1, err := memory.NewJSONLSessionStack(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h1 := newTestHost(t,
+		llm.NewScripted(
+			llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{}`)}),
+			llm.Resp("never reached"),
+		),
+		func(o *Options) {
+			o.Session = stack1
+			o.Tools = []ToolSource{echo}
+		})
+	gateEntered := make(chan struct{}, 1)
+	gateRelease := make(chan struct{})
+	gate := func(_ context.Context, call llm.ToolCall) (bool, string) {
+		gateEntered <- struct{}{}
+		<-gateRelease
+		return true, ""
+	}
+	a1, err := h1.DefaultAgent(ctx, DefaultAgentOptions{Name: "main", Model: "stub", ToolGate: gate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := a1.Session().Header().SessionID
+	roundErr := make(chan error, 1)
+	go func() {
+		_, err := a1.Run(ctx, llm.UserText("请调用工具"))
+		roundErr <- err
+	}()
+	<-gateEntered // 已到等待点：assistant(tool_call) 落盘并经 HITL 检查点 Flush
+	if c, ok := a1.Session().(interface{ Close() error }); ok {
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(gateRelease) // 放行闸门，让回合走完（预期因落盘失败而报错）
+	if err := <-roundErr; err == nil {
+		t.Fatal("the round must fail after the persistence sink is gone (fail closed)")
+	}
+
+	// ---- 第二段生命周期：ExposePending 打开 → 裁决 → 续跑 ----
+	store, err := session.NewJSONLStore(dir, session.WithRecoverPolicy(session.RecoverExposePending))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2 := newTestHost(t, llm.NewScripted(llm.Resp("resumed")), func(o *Options) {
+		o.Session = memory.NewSessionStack(store)
+		o.Tools = []ToolSource{echo}
+	})
+
+	// ↓↓↓ 页面 §五·a 的冷恢复裁决片段（h2 / id 由上面提供）↓↓↓
+	sess, err := h2.SessionStack().Open(ctx, id) // 未决现场不在这里报错
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := sess.(session.Recoverable) // 裁决面只在 RecoverExposePending 档存在
+	if !ok {
+		t.Fatal("this policy must expose the adjudication surface")
+	}
+	p := rec.Pending() // 现场快照：缺 result 的调用（带当时的载荷）+ 悬空 step/turn
+	if len(p.Calls) != 1 || p.Calls[0].ToolCallID != "c1" || !p.HasOpenStep || !p.HasOpenTurn {
+		t.Fatalf("pending = %+v, want one call plus an open step and turn", p)
+	}
+	// 「未裁决期间拒绝投影」是 Surface / Run 的行为，不是 Open 的。
+	if _, err := sess.Surface(ctx); !errors.Is(err, session.ErrPendingEvents) {
+		t.Fatalf("Surface before adjudication = %v, want ErrPendingEvents", err)
+	}
+	blocked, err := h2.DefaultAgent(ctx, DefaultAgentOptions{Name: "main", Model: "stub", SessionID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blocked.Run(ctx, llm.UserText("未裁决就想跑")); !errors.Is(err, session.ErrPendingEvents) {
+		t.Fatalf("Run before adjudication = %v, want ErrPendingEvents", err)
+	}
+	if len(p.Calls) > 0 {
+		// 补**真实**结果（回到等待点，而不是作废）；要重发就把载荷再跑一遍再填这里
+		if err := rec.ResolvePending(ctx, session.ResolvePendingOption{
+			Result: &session.ToolResultPayload{ToolCallID: p.Calls[0].ToolCallID, Text: "已人工裁决：批准"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 悬空的 step / turn 逐层闭合（Interrupted = 默认合成闭环）
+	if p.HasOpenStep {
+		if err := rec.ResolvePending(ctx, session.ResolvePendingOption{Interrupted: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if p.HasOpenTurn {
+		if err := rec.ResolvePending(ctx, session.ResolvePendingOption{Interrupted: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sess.Flush(ctx); err != nil { // 裁决本身也是写日志：收尾刷一次
+		t.Fatal(err)
+	}
+	// ↑↑↑ 页面片段结束（页面收尾是「裁决完就能续跑」那两行）↑↑↑
+
+	if left := rec.Pending(); len(left.Calls) != 0 || left.HasOpenStep || left.HasOpenTurn {
+		t.Fatalf("pending after adjudication = %+v, want it cleared", left)
+	}
+	agent, err := h2.DefaultAgent(ctx, DefaultAgentOptions{Name: "main", Model: "stub", SessionID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if c, ok := agent.Session().(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+	})
+	res, err := agent.Run(ctx, llm.UserText("继续"))
+	if err != nil {
+		t.Fatalf("resumed round: %v", err)
+	}
+	if res.Final.Text() != "resumed" {
+		t.Fatalf("resumed final = %q", res.Final.Text())
+	}
+	// 裁决补的是**真实**结果：它进了 surface，不是被当成没发生。
+	surface, err := agent.Session().Surface(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range surface {
+		for _, part := range m.Parts {
+			if part.ToolResultValue == nil {
+				continue
+			}
+			for _, c := range part.ToolResultValue.Content {
+				if strings.Contains(c.Text, "已人工裁决：批准") {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the adjudicated result must be part of the resumed history")
 	}
 }
