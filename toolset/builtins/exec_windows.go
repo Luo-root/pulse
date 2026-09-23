@@ -19,8 +19,8 @@ func buildShellCommand(ctx context.Context, command string) *exec.Cmd {
 	)
 }
 
-// setupBackgroundProcess：Windows 不设进程组；整树杀走 taskkill /T。
-func setupBackgroundProcess(cmd *exec.Cmd) {}
+// setupProcessTree：Windows 不设进程组；整树杀走 taskkill /T。
+func setupProcessTree(cmd *exec.Cmd) {}
 
 // killTree 杀整个进程树（含包装 shell 起的子进程）。
 func killTree(pid int) error {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,10 @@ import (
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/toolset"
 )
+
+// execIOWait 是命令退出后等 I/O 管道收尾的上限（exec.Cmd.WaitDelay）：脱离进程
+// 组的后代若顶着 stdout/stderr 不退，Wait 不再无限期挂着。
+const execIOWait = 5 * time.Second
 
 // defaultChildEnvKeys 是 exec / 后台 job 子进程的默认继承白名单：常见命令
 // 运行必需的平台键（产品参数，不是行业标准）。宿主用 Options.ExecEnv 追加，
@@ -186,6 +191,20 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 	cmd := buildShellCommand(runCtx, p.Command)
 	cmd.Dir = cwd
 	cmd.Env = childEnv(e.opt)
+	// 前台命令也要整树收尾：默认 Cancel 只杀包装 shell（powershell / sh），它拉起
+	// 的子进程会成孤儿，继续占端口 / 工作区。整树杀不可用的平台（killTree 报错）
+	// 退回默认的只杀直接子进程。
+	cmd.Cancel = func() error {
+		if err := killTree(cmd.Process.Pid); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+	// 杀完之后不再无限等 I/O：孙进程若顶着管道赖着不退，Wait 在 execIOWait 后
+	// 关闭管道并返回 ErrWaitDelay，工具调用不会挂在超时之后。
+	cmd.WaitDelay = execIOWait
+	setupProcessTree(cmd)
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -195,13 +214,25 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 	dur := time.Since(start)
 
 	exitCode := 0
+	stalledIO := false
 	if err != nil {
-		if runCtx.Err() != nil {
-			return "", fmt.Errorf("builtins/exec: timeout after %s: %w", timeout, runCtx.Err())
+		if ctxErr := runCtx.Err(); ctxErr != nil {
+			// 取消与超时是两回事：取消来自宿主（用户按停 / 上层放弃），超时才是
+			// 我们打的 deadline。分类只看 ctx 错误链，别用「err 是否匹配 ctxErr」
+			// 反推——两种情形的错误链都可能带上 ctxErr。
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				return "", fmt.Errorf("builtins/exec: timeout after %s (process tree killed): %w", timeout, ctxErr)
+			}
+			return "", fmt.Errorf("builtins/exec: canceled (process tree killed): %w", ctxErr)
 		}
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		stalledIO = errors.Is(err, exec.ErrWaitDelay)
+		switch {
+		case errors.As(err, &ee):
 			exitCode = ee.ExitCode()
-		} else {
+		case stalledIO:
+			// 进程已退出、没拿到退出码：只是有子进程顶着 I/O 管道不放。
+		default:
 			return "", fmt.Errorf("builtins/exec: %w", err)
 		}
 	}
@@ -226,6 +257,9 @@ func (e *env) execCmd(ctx context.Context, args json.RawMessage) (string, error)
 	b.WriteString(combined)
 	if combined != "" && !strings.HasSuffix(combined, "\n") {
 		b.WriteByte('\n')
+	}
+	if stalledIO {
+		fmt.Fprintf(&b, "\n[note: the command exited but its I/O pipes stayed open for %s — a detached child may still be running]\n", execIOWait)
 	}
 	return b.String(), nil
 }

@@ -177,7 +177,7 @@ func (t *jobTable) launch(ctx context.Context, command, cwd string, env []string
 	cmd := buildShellCommand(runCtx, command)
 	cmd.Dir = cwd
 	cmd.Env = env
-	setupBackgroundProcess(cmd)
+	setupProcessTree(cmd)
 
 	t.mu.Lock()
 	running := 0

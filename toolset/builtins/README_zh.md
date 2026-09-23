@@ -29,13 +29,13 @@ defer dispose()
 | `ls`/`glob`/`grep` | **先收集并稳定排序再切页**；超限 trailer 带 `after` 游标 |
 | `edit`/`write`(覆盖) | **同进程须先 `read`**；mtime 更新则 stale 拒绝；`edit` 默认唯一匹配 |
 | `apply_patch` | 多文件 Add/Update/Delete（V4A 文本协议）；**先 verify 再写**：全部 hunk 过（上下文锚点、read-before-write、WriteRoots）才落盘，一败全不写。Update/Delete 同样须先 `read`；CRLF 归一还原；NUL 拒绝；`*** End Patch` 后残留内容报错；Add 无法表达空文件（至少一行）。不做 `*** Move to:` rename、fuzzy 匹配、二进制 patch |
-| `exec` | **Windows = PowerShell**；Unix = `sh -c`；timeout + 输出头尾截断；**env 白名单**（默认仅继承平台必需键，`ExecEnv` 追加键名、`ExecEnvInheritAll` 显式恢复全量——宿主 secret 不在列表内就不进子进程）；RiskDangerous。`background:true` 起长命令 job：立即返回 `job_id`，不受 timeout、不随请求取消 |
+| `exec` | **Windows = PowerShell**；Unix = `sh -c`；timeout + 输出头尾截断；**env 白名单**（默认仅继承平台必需键，`ExecEnv` 追加键名、`ExecEnvInheritAll` 显式恢复全量——宿主 secret 不在列表内就不进子进程）；RiskDangerous。超时与请求取消都**整树收尾**（Windows `taskkill /T /F`，Unix 进程组 SIGKILL；无进程组 API 的平台退回只杀包装 shell），两种结束的文案分开（`timeout after …` / `canceled`）；命令退出后 I/O 管道最多再等 `execIOWait`（5s），脱离进程组的后代不会把工具调用挂住——期间管道未关会在结果尾部注明。`background:true` 起长命令 job：立即返回 `job_id`，不受 timeout、不随请求取消 |
 | `job_output` | 按**全局字节偏移**读 job 增量合流输出 + status（`running`/`exited exit_code=N`/`killed`）；环形缓冲（`MaxExecBytes`）超限丢头并回报 `dropped`；超限 trailer `pass offset=N` 续读 |
 | `job_kill` | 整树杀：Windows `taskkill /T /F`，Unix 进程组 SIGKILL；等进程真正退出才返回；已退出的 job 报错。**dispose / scope Dispose 都杀全部活 job**（独立 Effect，宿主忘显式 dispose 也兜底）；`MaxJobs`（默认 16）限并发；done job 超 `2*MaxJobs` 按创建序淘汰最旧。`background` 与 `timeout_seconds` 同给时 timeout 被忽略 |
 | `web_fetch` | http(s) GET → 抽文本 → 按行 `offset`/`limit`（默认 limit=`ReadLimit`）；超 `MaxLineRunes` 的行截断加 `…`（与 `read` 同口径）。超限 trailer `pass offset=N`；每次续读再 GET。拦 file/ftp/data、NUL 二进制、云 metadata；**Dial 时**对实际解析 IP 再检一次（防 redirect / DNS rebinding），连已检 IP 而非主机名。私网默认允许（`BlockPrivate` 才拒）。不是渲染后的浏览器 DOM |
 | `web_search` | 默认可注入 `Searcher`；nil 则 DuckDuckGo Lite（HTML 解析，可能被反爬）；默认后端读响应体上限 `DefaultSearchBodyBytes`（1 MiB），注入自己的 `Searcher` 后不适用 |
 | `question` | 向人提问；需 `Asker`。**不是** HITL 批准 |
-| `glob`/`grep` | **按目录名跳过 `.git` / `node_modules` / `vendor`**（工具描述里已写明，模型不会被「明明存在却 no matches」误导；目前无开关）；此外 P0 **不**应用 `.gitignore`（显式）；非法正则返回 error |
+| `glob`/`grep` | **按目录名跳过 `.git` / `node_modules` / `vendor`**（工具描述里已写明，模型不会被「明明存在却 no matches」误导；目前无开关）；此外 P0 **不**应用 `.gitignore`（显式）；非法正则 / 非法 `glob` 过滤器都返回 error；`grep` 命中行按 `MaxLineRunes` 截断（同 `read`），单行超长（>1 MiB）或不可读的路径**在结果尾部如实列出**（明细默认 5 条，超出只报数量）——「搜不到」与「没搜」不混为一谈 |
 | Source | `builtins.<name>`；`Register` 返回的 `dispose()` 可逆 |
 
 ## 三层边界（约束的归属，#157）

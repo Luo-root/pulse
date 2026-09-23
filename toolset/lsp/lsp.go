@@ -35,7 +35,8 @@ type Options struct {
 	// Servers 映射文件扩展名 → server 启动命令，如 {".go": "gopls"}。必填非空。
 	// 命令按空格分词，不支持引号路径。
 	Servers map[string]string
-	// Timeout 是单个 LSP 请求（含 initialize）的超时。默认 30s。
+	// Timeout 是单次 lsp 调用的上限：initialize 握手、每次请求，以及
+	// didOpen/didChange 同步帧与收尾都算在内。默认 30s。
 	Timeout time.Duration
 	// DiagWindow 是 diagnostics 等待 server push 的窗口。默认 3s。
 	DiagWindow time.Duration
@@ -302,12 +303,13 @@ func (e *env) lspTool(ctx context.Context, args json.RawMessage) (string, error)
 	if err != nil {
 		return "", err
 	}
-	if err := srv.ensureOpen(ctx, abs, ext); err != nil {
-		return "", err
-	}
-
+	// 同步帧（didOpen / didChange）也走 Timeout：server 不读 stdin 时它不是
+	// 「不算请求」的旁路，写不进去就是这次调用失败。
 	ctx2, cancel := context.WithTimeout(ctx, e.m.opt.Timeout)
 	defer cancel()
+	if err := srv.ensureOpen(ctx2, abs, ext); err != nil {
+		return "", err
+	}
 
 	switch p.Op {
 	case "diagnostics":
