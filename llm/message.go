@@ -57,9 +57,13 @@ type ImageSource struct {
 
 // ToolCall 是一次工具调用请求（由模型发起）。
 type ToolCall struct {
-	ID        string          // 调用标识，回传结果时引用
-	Name      string          // 工具名
-	Arguments json.RawMessage // 参数 JSON
+	ID   string // 调用标识，回传结果时引用
+	Name string // 工具名
+	// Arguments 是参数 JSON。**不保证是合法 JSON**：适配器把供应商给的参数
+	// 串原样透传（只把空串补成 {}），词汇表不做校验——合法性由各消费方自己
+	// 兜底：工具实现按普通参数错误回传（模型据此自我修正），落盘路径见
+	// memory/session 的 MessagePayload 与 host 的落盘契约。
+	Arguments json.RawMessage
 }
 
 // ToolResult 是一次工具调用的执行结果（回传给模型）。

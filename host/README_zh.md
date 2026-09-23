@@ -87,6 +87,8 @@ a, err := h.NewAgent(host.AgentOptions{
 
 error / cancel 路径同样落盘：loop 的 `turn_end` 无论何种方式结束都会发出，已发生的产出与输入保留在日志里，闭合事件记 `interrupted`——副作用已经出去了，就不能当没发生。
 
+**模型给的参数不保证是合法 JSON**：适配器把供应商的 tool-call 参数串原样透传（只把空串补成 `{}`），而 `json.RawMessage` 的 `MarshalJSON` 对非法 JSON 直接报错——落盘 fail closed 会把「一个坏参数」升级成「整个回合失败」，把工具侧本来容错的路径（工具按普通参数错误回传 `IsError`，模型据此纠正重发）在装配层掐掉。host 在落盘前做**无损兜底**：非法参数按**原文**编码成一个 JSON 字符串（读侧 `json.Unmarshal` 回 `string` 即得原文；唯一例外是原文含非法 UTF-8 字节，JSON 文本承载不了，按规范替换为 U+FFFD），而**发给工具与后续请求的仍是原文**——兜底只改落盘那份副本，合法参数逐字原样通过。代价只有一处：日志里那一条的 `arguments` 形态从对象漂成字符串，据此重建的请求也还原不出对象形态。`tool.called` 沿用「畸形留空」（该事件的 codec 只收合法 JSON），参数以 `message.assistant` 为准。
+
 无会话宿主构造的 Agent 退化为纯透传；`RunHistory` 显式传 history 的通道保留（旁路注入），有会话时被 Surface 取代。装了 `ContextBuilder` 时，顺序是 **Surface → ContextBuilder → loop**：组装产物才作为 history 发给模型。
 
 ## 流式文本增量
@@ -197,9 +199,9 @@ a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
 - **kernel 注入制**：host 不私建内核——`Options.Kernel` 必填，应用的其他插件 Use 到同一个 kernel 即可与 host 组件共享服务仓库与事件总线；kernel 生命周期归调用方（Dispose 归你），Host 没有 Close；
 - 模型/工具/观测/会话全部显式 opt-in：不传就没有；
 - host.New 失败只返回 error、不做 Dispose 兜底：已挂载组件留在 kernel 上随调用方 Dispose 统一回收（失败通常是配置错误，修正后重来即可）；
-- 落盘 fail closed：回合内任何 append 失败中断回合并报错，其余 panic（模型适配器 / onDelta / 其他监听器）原样重抛不吞（`appendFail` 私有载荷识别）；日志停在与真实一致处，重开由冷恢复合成闭合；输入只接受 user 消息，其余角色构造期/回合前显式拒绝；
+- 落盘 fail closed：回合内任何 append 失败中断回合并报错（模型给的**坏参数**不在此列——落盘前已按原文兜底，见「落盘契约」），其余 panic（模型适配器 / onDelta / 其他监听器）原样重抛不吞（`appendFail` 私有载荷识别）；日志停在与真实一致处，重开由冷恢复合成闭合；输入只接受 user 消息，其余角色构造期/回合前显式拒绝；
 - 会话落盘是明文（JSONL 文件即密钥面），路径宿主拥有。
 
 ## 测试
 
-`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + 不设回调照常跑通 + panic 原样上抛）、步数上限（带会话：落盘闭合 + 可续跑）、便捷路径的 ScopeHook、上下文组装缝（产物字面进请求 + 失败在模型调用前中止）、会话 header 归属（`TestHostDefaultAgentSessionHeaderAgentID`），以及两条 HITL 配方（waterfall 改写调用、闸门取权限卡片）；另有四条护栏：闸门**后序**语义（卡片看到的就是将执行的那份，`TestHostToolGateSeesRewrittenCall`）及其短路分支（内层已拒则整段跳过闸门、reason 取内层那句，`TestHostToolGateSkippedWhenInnerRejected`）、两条构造路径旋钮同名同型（`TestHostOptionsKnobParity`，反射比对）、README 组装配方逐字可编译可运行（`TestHostContextBuilderRecipe`，含空 input 档）；再加五条：内核服务键可取回同一实例 + Dispose 后 `closed` 守卫（`TestHostRegistryServiceKeysOnKernel`）、请求 scope 上的业务直写器（`TestHostAttachCollectorBusinessWrite`）、`tool.called` 先于闸门落盘（`TestHostToolCalledBeforeGate`）、审计事件 `request.route` / `request.usage` 的顺序与取值（`TestHostRequestUsageAndRoute`）、空 reason 的兜底文案归 loop（`TestHostGateEmptyReasonFallsBackToLoopText`）、多步回合 `request.route` 取最后一次服务模型（`TestHostRequestRouteLastWinsAcrossSteps`）、`tool.called` 对畸形参数的纵深防御（`TestTurnRecorderDropsMalformedToolArguments`）。
+`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + 不设回调照常跑通 + panic 原样上抛）、步数上限（带会话：落盘闭合 + 可续跑）、便捷路径的 ScopeHook、上下文组装缝（产物字面进请求 + 失败在模型调用前中止）、会话 header 归属（`TestHostDefaultAgentSessionHeaderAgentID`），以及两条 HITL 配方（waterfall 改写调用、闸门取权限卡片）；另有四条护栏：闸门**后序**语义（卡片看到的就是将执行的那份，`TestHostToolGateSeesRewrittenCall`）及其短路分支（内层已拒则整段跳过闸门、reason 取内层那句，`TestHostToolGateSkippedWhenInnerRejected`）、两条构造路径旋钮同名同型（`TestHostOptionsKnobParity`，反射比对）、README 组装配方逐字可编译可运行（`TestHostContextBuilderRecipe`，含空 input 档）；再加五条：内核服务键可取回同一实例 + Dispose 后 `closed` 守卫（`TestHostRegistryServiceKeysOnKernel`）、请求 scope 上的业务直写器（`TestHostAttachCollectorBusinessWrite`）、`tool.called` 先于闸门落盘（`TestHostToolCalledBeforeGate`）、审计事件 `request.route` / `request.usage` 的顺序与取值（`TestHostRequestUsageAndRoute`）、空 reason 的兜底文案归 loop（`TestHostGateEmptyReasonFallsBackToLoopText`）、多步回合 `request.route` 取最后一次服务模型（`TestHostRequestRouteLastWinsAcrossSteps`）、`tool.called` 对畸形参数的纵深防御（`TestTurnRecorderDropsMalformedToolArguments`）、非法 JSON 工具参数的无损兜底（回合照常闭合 + 工具与后续请求拿到的仍是原文 + 落盘那份原文可复原，`TestHostMalformedToolArgumentsDoNotKillTurn` / `TestPersistablePartsMalformedArgumentsLossless`）。

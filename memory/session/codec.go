@@ -99,6 +99,12 @@ func (r *Registry) lookup(t EventType) (entry codecEntry, known bool) {
 // MessagePayload 是 message.user / message.assistant 的载荷：消息内容块
 // 原样序列化（含 PartToolCall / PartReasoning；llm.Part 各字段均可无损
 // JSON roundtrip，ImageData 走 base64）。
+//
+// 一处例外落在写入方：tool-call 参数不是合法 JSON 时（适配器原样透传
+// 供应商给的串，见 llm.ToolCall.Arguments），json.RawMessage 的 MarshalJSON
+// 直接报错、整条事件写不进去——写入方须先把该参数的原文编码成 JSON 字符串
+// 再落盘（原文可逐字复原），别让一个坏参数中断回合。官方装配层在 host 的
+// turnRecorder；事件格式本身不变（仍是 Part 的原样序列化）。
 type MessagePayload struct {
 	Parts []llm.Part `json:"parts"`
 }
