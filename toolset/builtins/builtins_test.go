@@ -520,6 +520,10 @@ func TestSymlinkCycleFailsFast(t *testing.T) {
 // 必须解析到真实落点——只做 Abs 的话，解析后的真实路径与未解析前缀永远对
 // 不上（withinRoot 必然失败），读写全被判越界。macOS 的 /tmp、/var 都是
 // 链接（t.TempDir() 落在 /var/folders/…），CI 只跑 ubuntu 看不见这一档。
+//
+// 「解析 Root」与「守住牢笼」是一对：解析只许把口径对齐到真实落点，不许
+// 把边界放宽——所以这里同时钉住越界仍被拒（`..` 逃逸、Root 内链接指向
+// Root 外），否则「让读写能用」会被做成「不再 confined」。
 func TestRootItselfSymlinked(t *testing.T) {
 	base := t.TempDir()
 	real := filepath.Join(base, "real")
@@ -532,9 +536,24 @@ func TestRootItselfSymlinked(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(real, "secret", "s.txt"), []byte("s\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Root 之外的对照物：`..` 逃逸与链接逃逸都要落到这里，但都不许落成。
+	if err := os.WriteFile(filepath.Join(base, "outside.txt"), []byte("outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := filepath.Join(base, "outside-dir")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 本用例**第一次**建链接必须是这一处：没有 symlink 权限的平台
+	// （Windows 非管理员 / 未开开发者模式）要在这里整条跳过。后面的
+	// os.Symlink 都排在它之后，走 t.Fatal 是对的——到那一步说明平台支持。
 	rootLink := filepath.Join(base, "root-link")
 	if err := os.Symlink(real, rootLink); err != nil {
 		t.Skipf("symlink not permitted: %v", err)
+	}
+	// Root 内部的链接指向 Root 外：confine* 判的必须是解析后的落点。
+	if err := os.Symlink(outsideDir, filepath.Join(real, "escape")); err != nil {
+		t.Fatal(err)
 	}
 	// ForbidRead 也用链接路径给出：canonRoot 不解析它的话，禁读前缀与解析后
 	// 的真实路径对不上，secret 会被读出来。
@@ -557,6 +576,23 @@ func TestRootItselfSymlinked(t *testing.T) {
 	}
 	if msg := callErr(t, reg, "read", map[string]any{"path": "secret/s.txt"}); !strings.Contains(msg, "forbid-read") {
 		t.Fatalf("a symlinked ForbidRead prefix must still forbid, got %s", msg)
+	}
+
+	// 边界仍要守住：解析 Root 只对齐口径，不放宽牢笼。
+	if msg := callErr(t, reg, "read", map[string]any{"path": "../outside.txt"}); !strings.Contains(msg, "escapes Root") {
+		t.Fatalf("read must still escape-check against the resolved Root, got %s", msg)
+	}
+	if msg := callErr(t, reg, "write", map[string]any{"path": "../new-outside.txt", "content": "x"}); !strings.Contains(msg, "outside WriteRoots") {
+		t.Fatalf("write must still refuse targets outside the resolved Root, got %s", msg)
+	}
+	if msg := callErr(t, reg, "write", map[string]any{"path": "escape/new.txt", "content": "x"}); !strings.Contains(msg, "outside WriteRoots") {
+		t.Fatalf("a link inside Root pointing outside must be refused, got %s", msg)
+	}
+	if _, err := os.Stat(filepath.Join(base, "new-outside.txt")); !os.IsNotExist(err) {
+		t.Fatalf("escape via .. must not create files outside Root: err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("escape via an inner link must not create files outside Root: err=%v", err)
 	}
 }
 
