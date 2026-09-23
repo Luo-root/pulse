@@ -12,32 +12,11 @@ import (
 	"github.com/openai/openai-go/v3/responses"
 )
 
-// 适配层一次性打通的 MIME 家族：调用方只给 PartImage / PartCustom，
-// 不再在使用处按供应商手写线格式。官方不认的块（video_url /
-// input_video）用 Override 发出，兼容网关能吃就吃，官方端点
-// 会 bad_request——不静默丢弃。
-const (
-	mediaImage = "image"
-	mediaVideo = "video"
-	mediaAudio = "audio"
-	mediaPDF   = "pdf"
-)
-
-func classifyMIME(mediaType string) string {
-	mt := strings.ToLower(strings.TrimSpace(mediaType))
-	switch {
-	case strings.HasPrefix(mt, "image/"):
-		return mediaImage
-	case strings.HasPrefix(mt, "video/"):
-		return mediaVideo
-	case strings.HasPrefix(mt, "audio/"):
-		return mediaAudio
-	case mt == "application/pdf":
-		return mediaPDF
-	default:
-		return ""
-	}
-}
+// MIME 家族判定与家族常量归 llm 词表（llm.ClassifyMIME /
+// llm.MediaImage…）：两个 adapter 共用同一份前缀定义。本包只决定
+// 各家族走哪条线格式——调用方只给 PartImage / PartCustom，不在使用处
+// 按供应商手写；官方不认的块（video_url / input_video）用 Override
+// 发出，兼容网关能吃就吃，官方端点会 bad_request——不静默丢弃。
 
 // mediaRef 把内联字节或 URL 归一为线格式引用（data URI 或原 URL）。
 func mediaRef(provider string, data []byte, mediaType, rawURL string) (string, error) {

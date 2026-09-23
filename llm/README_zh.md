@@ -128,7 +128,7 @@ type Error struct {
 
 ## 观测适配
 
-`Observe(scope, cfg)` 把运行期事实折叠进观测信封写宿主 Sink：after_response → `llm.generate_finished`（模型名、token 用量与实例身份进 Attrs，key 契约见 `llm/obs.go`）；计时取事件载荷携带的 `Started` 锚点（拦截包装在 waterfall 链后、inner 调用前记录），不订阅 before_generate。scope 必须与 `llm.WithEventScope` 相同；同一 scope 重复调用 = 双监听双记录（godoc 警告）。详见 `observe.go` 与 `docs/design/observability-v1-design.md` §9。
+`Observe(scope, cfg)` 把运行期事实折叠进观测信封写宿主 Sink：after_response → `llm.generate_finished`（模型名、token 用量与实例身份进 Attrs，key 契约见 `llm/obs.go`）；计时取事件载荷携带的 `Started` 锚点（拦截包装在 waterfall 链后、inner 调用前记录，`Generate` 与 `Stream` **同一锚点位置**）——Duration 计的是「从调用入口到收尾」，含流式首字节前的建流往返，两条路径可比；不订阅 before_generate。scope 必须与 `llm.WithEventScope` 相同；同一 scope 重复调用 = 双监听双记录（godoc 警告）。详见 `observe.go` 与 `docs/design/observability-v1-design.md` §9。
 
 ## 注册中心
 
@@ -219,11 +219,13 @@ TTS（Completions）：`req.Audio = &llm.AudioOutput{Voice: "alloy", Format: "wa
 | `PartKind` 六个常量 | 块类型，见上文表 |
 | `Part` | Kind 决定哪个指针/字符串有效 |
 | `MediaContent` / `ImageSource` | 开放模态 / 图像：Data 优先，否则 URL；MediaType 必填 |
+| `ClassifyMIME` / 四个 `MediaFamily` 常量 | MIME 家族（`MediaImage` / `MediaVideo` / `MediaAudio` / `MediaPDF`）；两个 adapter 共用**同一份**定义。不认识的 MIME → `""`（调用方报 `bad_request`） |
 | `ToolCall` / `ToolResult` | 模型发起的调用；回传结果（`IsError` 让模型自我修正） |
 | `Message` | `Role + Parts`；可选 `Name`（多角色，provider 不支持则忽略） |
 | `Text` / `Reasoning` / `ImageURL` / `ImageData` / `Media` / `MediaURL` / `Call` / `Result` / `ResultParts` | 块构造器。`Result` = 单文本成功；`ResultParts` 可带 `isError` 与多块 |
 | `System` / `User` / `UserText` / `Assistant` / `AssistantText` / `ToolMessage` | 消息构造器 |
 | `(*Message).Text` | 拼接全部 `PartText`（不含 reasoning），换行连接 |
+| `JoinText` | `Message.Text` 背后那条**唯一**的「`[]Part` → 字符串」规则；adapter 转换消息与工具结果内容也走它 |
 | `(*Message).ReasoningText` | 拼接思维链；无则 `""` |
 | `(*Message).ToolCalls` | 本条全部 tool_call |
 | `(*Message).Clone` | 顶层深拷贝，Part 内指针共享（消息按不可变约定） |

@@ -88,7 +88,7 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 		switch msg.Role {
 		case llm.RoleSystem:
 			// Responses 的系统提示走顶层 instructions 字段。
-			instructions = append(instructions, joinText(msg.Parts))
+			instructions = append(instructions, llm.JoinText(msg.Parts))
 
 		case llm.RoleAssistant:
 			var texts []string
@@ -166,7 +166,7 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 						OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 							CallID: tr.ToolCallID,
 							Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
-								OfString: param.NewOpt(joinText(tr.Content)),
+								OfString: param.NewOpt(llm.JoinText(tr.Content)),
 							},
 						},
 					})
@@ -332,9 +332,9 @@ func (m *responsesModel) convertCustomPart(p *llm.Part) (responses.ResponseInput
 	if p.Media == nil {
 		return empty, unsupportedPart(m.provider, llm.RoleUser, p.Kind)
 	}
-	kind := classifyMIME(p.Media.MediaType)
+	kind := llm.ClassifyMIME(p.Media.MediaType)
 	switch kind {
-	case mediaImage:
+	case llm.MediaImage:
 		ref, err := mediaRef(m.provider, p.Media.Data, p.Media.MediaType, p.Media.URL)
 		if err != nil {
 			return empty, err
@@ -342,7 +342,7 @@ func (m *responsesModel) convertCustomPart(p *llm.Part) (responses.ResponseInput
 		return responses.ResponseInputContentUnionParam{
 			OfInputImage: &responses.ResponseInputImageParam{ImageURL: param.NewOpt(ref)},
 		}, nil
-	case mediaPDF:
+	case llm.MediaPDF:
 		file := responses.ResponseInputFileParam{
 			Filename: param.NewOpt(mediaFilename(p.Media, "document.pdf")),
 		}
@@ -354,7 +354,7 @@ func (m *responsesModel) convertCustomPart(p *llm.Part) (responses.ResponseInput
 			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil, "PDF 块既无 Data 也无 URL")
 		}
 		return responses.ResponseInputContentUnionParam{OfInputFile: &file}, nil
-	case mediaVideo:
+	case llm.MediaVideo:
 		ref, err := mediaRef(m.provider, p.Media.Data, p.Media.MediaType, p.Media.URL)
 		if err != nil {
 			return empty, err
@@ -366,7 +366,7 @@ func (m *responsesModel) convertCustomPart(p *llm.Part) (responses.ResponseInput
 			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, err, "序列化 input_video 失败")
 		}
 		return part, nil
-	case mediaAudio:
+	case llm.MediaAudio:
 		ref, err := mediaRef(m.provider, p.Media.Data, p.Media.MediaType, p.Media.URL)
 		if err != nil {
 			return empty, err
