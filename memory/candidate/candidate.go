@@ -16,6 +16,10 @@ import (
 )
 
 // PipelineKey 是 memory/candidate 的 kernel 服务键（memory/* 先例）。
+//
+// 消费方是**宿主自己的插件**：Provide 方=建候选管线的一方，审批面插件经
+// kernel.Get 取它列 Pending、做 Approve/Reject（面板是宿主的，见 memory
+// README「宿主装配桥接点」）。库内零消费是有意的。
 var PipelineKey = kernel.NewServiceKey[*Pipeline]("memory.candidate")
 
 // 审批标记（追加在批准版 SourceRefs 尾部——store audit 的 generic

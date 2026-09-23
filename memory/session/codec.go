@@ -105,6 +105,11 @@ type MessagePayload struct {
 
 // ToolCalledPayload 是 tool.called 的载荷。该事件 log-only，仅供 HITL/
 // 时序/崩溃检测当「调用已发生」的审计锚点，不进 surface。
+//
+// 写入方是装配层（官方 = host 的 turnRecorder）：**先于**审批与执行落盘，
+// 于是「日志里有 called 没有 result」就是真实的「调用发生了、还没收尾」。
+// 载荷是模型**发起**的调用，内层监听器的改写只影响执行（工具实际收到的
+// 参数看 tool.result 的回执）；被拒绝的调用同样记一条。
 type ToolCalledPayload struct {
 	ToolCallID string          `json:"toolCallID"`
 	Name       string          `json:"name"`
@@ -138,6 +143,10 @@ type RequestHeaderPayload struct {
 
 // RequestRoutePayload 是 request.route 的载荷：本回合路由标识。P2-B 的
 // token usage / meter 是另立事件族，不塞进这里。
+//
+// 写入方是装配层（官方 = host 的 turnRecorder）：一回合一条，Model 记
+// **实际服务**本回合的模型标识（adapter 从响应回填；未回填时退声明名），
+// 与 request.header 的声明名可能不同——网关 / 回退场景即路由审计。
 type RequestRoutePayload struct {
 	Model string `json:"model"`
 }
@@ -174,8 +183,9 @@ type CompactionCheckpointPayload struct {
 
 // RequestUsagePayload 是 request.usage 的载荷（Ignorable，log-only 审计）：
 // 具名字段对齐 llm.TokenUsage，禁整包 Metadata（map）与 API key。
-// 写入方是 session→loop 的装配层桥（接线票）——从 llm.Response.Usage
-// 折出；本包与 compaction 都不产生它（都不 import loop）。
+// 写入方是装配层（官方 = host 的 turnRecorder）：从 `loop.TurnEnd.Usage`
+// 折出**全回合累计**（含缓存命中——§13.2 缓存命中率归因的数据源）；
+// 本包与 compaction 都不产生它（都不 import loop）。
 type RequestUsagePayload struct {
 	Model             string `json:"model"`
 	InputTokens       int    `json:"inputTokens,omitempty"`

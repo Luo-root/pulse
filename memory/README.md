@@ -127,7 +127,7 @@ Internal dependency layering (arrows only point downward):
 
 Dependency rules (review verdicts, non-negotiable):
 
-- **kernel does not import memory, loop does not import memory** — memory is a capability seam / plugin attached to `kernel.Context` (service keys belong to the `memory/*` packages: `SessionStoreKey` / `MemoryStoreKey` / `ContextAssemblerKey` / `VectorIndexKey` / `PipelineKey` / `ReflectorKey`); the assembly layer hands `session.Surface()` to `loop.Run`.
+- **kernel does not import memory, loop does not import memory** — memory is a capability seam / plugin attached to `kernel.Context` (service keys belong to the `memory/*` packages: `SessionStoreKey` / `MemoryStoreKey` / `ContextAssemblerKey` / `VectorIndexKey` / `PipelineKey` / `ReflectorKey`); the assembly layer hands `session.Surface()` to `loop.Run`. These keys are an **external convention**: the provider side is whoever owns the capability, the consumer side is your own plugins; **zero in-library consumers is deliberate** (memory packages wire each other by concrete types), so do not read them as "provide it and it is wired up".
 - **store does not know index exists** (index → store is one-way) — the index is a derivative; the writer is responsible for calling `Upsert/Remove` after store writes; deleting the index loses no canonical data.
 - **assemble's production path does not import index** (§17 resolution 4, four-interface decoupling) — the vector path is wired by the assembly layer through the `DefaultAssembler.Semantic` function seam; E2E stitching exists only in tests.
 - **memory/* does not import observability** — observability is a side channel: components expose return values/snapshots (`ReflectionResult`, `Metrics()`, `Counted.Metrics()`), and the bridge is built by the assembly layer (same precedent as `request.usage`).
@@ -156,7 +156,9 @@ The glue that the memory layer deliberately does not do all belongs to the assem
 | Bridge point | Owner | Notes |
 |---|---|---|
 | `session.Surface()` → `loop.Run` history | assembly layer | loop does not import memory |
-| `request.header` / `request.usage` event writing | assembly layer | the system+ToolDef+model trio and token usage get logged (Ignorable but must be emitted) |
+| `request.header` / `request.route` / `request.usage` event writing | assembly layer | the system+ToolDef+model trio, the model that **actually served** the turn (adapter-filled, falls back to the declared name), and the turn's accumulated tokens get logged (Ignorable but must be emitted); the official writer is `host`'s turnRecorder |
+| `tool.called` event writing | assembly layer | the "the call happened" anchor (HITL / timing / crash detection), written **before** approval and execution; rejected calls are recorded too (the rejection itself shows up as an IsError `tool.result`) |
+| `Provide` / `Get` of the six `memory/*` service keys | host / application plugins | zero in-library consumers (deliberate, see the dependency rules above): the official `host` assembly injects by `Options` and does not look them up |
 | `index.VectorIndex` → `assemble.Semantic` | assembly layer | production path decoupled, see the assemble README "Wiring the vector path" |
 | `index.Upsert/Remove` after store writes | assembly layer/writer | the cost of one-way imports; a missed call only affects recall (Rebuild can recover) |
 | `ReflectionResult` / the three `Metrics()` → observability surface | assembly layer | memory does not import observability |

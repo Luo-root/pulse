@@ -12,6 +12,10 @@ import (
 )
 
 // ReflectorKey 是 memory/reflection 的 kernel 服务键（memory/* 先例）。
+//
+// 消费方是**宿主自己的调度插件**：Provide 方=建 reflector 的一方，宿主自己
+// 起的后台循环/定时器（本包不带循环，见「反思默认关」）经 kernel.Get 取它
+// 跑 Reflect。库内零消费是有意的。
 var ReflectorKey = kernel.NewServiceKey[*Reflector]("memory.reflection")
 
 // Options 是 Reflector 装配项。

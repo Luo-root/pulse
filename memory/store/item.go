@@ -13,6 +13,12 @@ import (
 
 // MemoryStoreKey 是 memory/store 的 kernel 服务键（对齐 toolset.ServiceKey
 // 先例：service key 归 memory/* 各包）。
+//
+// 消费方是**宿主自己的插件**：Provide 方=新建 store 的一方，应用的其他插件
+// 经 kernel.Get 在插件树里发现它（例：应用自己的检索/装配插件要拿 store
+// 做写后 Upsert）。库内零消费是**有意**的——memory 包之间用具体类型直连，
+// 官方 host 装配也不经键取用（订阅关系由 Options 显式注入），所以别把这个
+// 键当成「Provide 进去就自动接线」。
 var MemoryStoreKey = kernel.NewServiceKey[MemoryStore]("memory.store")
 
 // MemoryKind 是记忆的领域类别：open string + 已知常量（宿主可定义自己的
