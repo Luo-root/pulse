@@ -148,23 +148,23 @@ Contract:
 
 ## The complete HITL recipe (permission cards / argument sanitising / cancellation)
 
-`ToolGate` is the **minimal** mount (`func(llm.ToolCall) (bool, string)`: approve or reject, no ctx). The three richer jobs go through `ScopeHook`, which is available on both construction paths and receives this round's request scope:
+`ToolGate` is the **minimal** HITL mount (`func(ctx context.Context, call llm.ToolCall) (bool, string)`: approve or reject; the ctx is the one passed to `Run` — wait for the human on it, cancellation and deadlines follow the host). Jobs that need to **rewrite** a call go through `ScopeHook`, which is available on both construction paths and receives this round's request scope:
 
 ```go
 a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
     Name: "main", Model: "main",
     // (1) Pre-execution permission card: the gate closure holds h.Tools() and
     //     computes the card from toolset's preview surface.
-    ToolGate: func(call llm.ToolCall) (bool, string) {
-        card, ok, err := h.Tools().Preview(ctx, call.Name, call.Arguments)
+    ToolGate: func(gctx context.Context, call llm.ToolCall) (bool, string) {
+        card, ok, err := h.Tools().Preview(gctx, call.Name, call.Arguments)
         if err != nil || !ok {
             return false, "no preview; ask the human" // no card still means ask — never auto-allow
         }
-        showToHuman(card)                              // card.Subject / card.Action / card.Kind…
-        return askHuman(card), "rejected by approval UI"
+        showToHuman(card)                                      // card.Subject / card.Action / card.Kind…
+        return askHuman(gctx, card), "rejected by approval UI" // wait on gctx: cancellation follows the host
     },
-    // (2) Argument sanitising / (3) cancellation: mount your own
-    //     before_tool_call waterfall on the request scope.
+    // (2) Argument sanitising: mount your own before_tool_call waterfall on
+    //     the request scope.
     ScopeHook: func(scope *kernel.Context) error {
         _, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
             func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
@@ -181,8 +181,10 @@ Key points:
 - **Cards**: `toolset.Registry.Preview(ctx, name, args)` returns `(Preview, ok, err)`; `ok=false` means the tool is unregistered or registered no `PreviewFn` — treat it as "empty preview, HITL should still ask", never as a pass;
 - **Order (approved = executed)**: the gate mounts on the `before_tool_call` chain (the `tool.called` pass-through ring from the session recorder sits outside it — see "three-way wiring") and runs **post-order** — it lets the inner ring run first (`ScopeHook` rewrites apply there), then approves the **final** call. loop executes the tool only after the whole chain returns, so the card shows exactly what will run and the gate does not need to re-run `sanitize`. Two flip sides worth knowing: (a) the gate does not see the pre-rewrite call — for that, observe `llm.after_model` or `loop.tool_finished`; (b) **inner hooks have already run when the gate decides**, so a rejection cannot undo their side effects (logs, audit rows, sanitising bookkeeping) — anything that must not happen *at all* for a rejected call belongs in the executor (the tool implementation), not in a hook. When an inner hook already set `Rejected`, the gate is skipped entirely and the human is not asked twice, with the inner hook's reason reaching the model;
 - **Rewriting**: `BeforeToolCall` is around-semantics — rewrite `Call.Name` / `Call.Arguments` in place, or set `Rejected` to short-circuit (loop's waterfall contract);
-- **Cancellation**: the waterfall runs on loop's request goroutine, so wait for the human with your own ctx (the one passed to `Run`). `ToolGate` carrying no ctx is deliberate (it stays the minimal mount); the complete form owns its ctx;
+- **Cancellation and deadlines**: the gate and the waterfall both run on loop's request goroutine and both receive the ctx the host passed to `Run` — wait for the human on it and cancellation/deadlines follow the host, with no second ctx to thread yourself (`TestHostToolGateReceivesRunContext` pins value propagation and the deadline case);
 - Both construction paths work: `ScopeHook` is on `NewAgent` and `DefaultAgent` alike.
+
+**Migration**: `ToolGate` carried no ctx through v0.2.x and does from the next minor on — add a leading parameter to the old form (`func(ctx context.Context, call llm.ToolCall)`; write `_` if the gate does not need it).
 
 ## Zero new abstractions
 
@@ -190,7 +192,7 @@ Every `AgentOptions.X` knob below has a **same-named, same-typed twin** on `Defa
 
 - `host.Provider` = `func(*kernel.Context, *llm.Registry) error` — `openai.Register` / `anthropic.Register` convert directly;
 - `host.ToolSource` = `func(*kernel.Context, *toolset.Registry) error` — wrap `builtins.Register` (and its Options) in a closure; `host.SkillTools(loader)` is also a ToolSource (the skill catalog/loading read-only pair);
-- `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)` — the tool-execution gate (the post-order ring on the before_tool_call waterfall — it approves the final, rewritten call); approval UIs / policy engines plug into DefaultAgent through it; an empty `reason` has exactly **one** fallback owner (loop's `rejected by policy`) — the model sees that text, and host no longer mints a second default wording;
+- `host.ToolGate` = `func(ctx context.Context, call llm.ToolCall) (approved bool, reason string)` — the tool-execution gate (the post-order ring on the before_tool_call waterfall — it approves the final, rewritten call; the ctx is the one passed to `Run`); approval UIs / policy engines plug into DefaultAgent through it; an empty `reason` has exactly **one** fallback owner (loop's `rejected by policy`) — the model sees that text, and host no longer mints a second default wording;
 - `AgentOptions.ScopeHook` = `func(*kernel.Context) error` — called with the per-Run request scope: subscribe to loop/llm events yourself via `kernel.On` / `kernel.OnWaterfall` (Local dispatch is scope-local; mounting on the host root hears nothing);
 - `AgentOptions.OnDelta` = `func(text string)` — loop's text-delta callback (the `RunStream` onDelta); streaming UIs plug in here;
 - `AgentOptions.ContextBuilder` = `func(ctx, surface, input) ([]*llm.Message, error)` — the per-round context-assembly seam (where `memory/assemble` lands);
@@ -206,4 +208,4 @@ Every `AgentOptions.X` knob below has a **same-named, same-typed twin** on `Defa
 
 ## Tests
 
-`go test -race ./host/` — dedicated acceptance tests for the stateless passthrough, the three-way wiring (Surface role sequence / lifecycle closure / request.header audit / second-round history injection), tool-call-logged-before-execution, the HITL checkpoint Flush (exactly one per `after_model` step), error-path persistence with zero synthesis on reopen, SessionID resume, ToolGate rejection, ScopeHook subscription, per-request TraceIDs, streaming text deltas (both construction paths, the unset-callback round, panic propagation), the step cap (with a session: persisted closure **and** resumable), ScopeHook on the convenience path, the context-assembly seam (the assembled product reaching the request literally, and failures aborting before the model call), session-header attribution (`TestHostDefaultAgentSessionHeaderAgentID`), and both HITL recipes (rewriting a call from a waterfall, taking a permission card from the gate). Four further guards: the gate's **post-order** semantics (the card sees the very call that will execute — `TestHostToolGateSeesRewrittenCall`) along with its short-circuit branch (an inner rejection skips the gate and keeps the inner reason — `TestHostToolGateSkippedWhenInnerRejected`), knob name/type parity across the two Options (`TestHostOptionsKnobParity`, reflection-based), and the README assembly recipe compiled and executed verbatim (`TestHostContextBuilderRecipe`, including the empty-input case). Five more: the kernel service keys resolving to the very same instances plus the `closed` guard after Dispose (`TestHostRegistryServiceKeysOnKernel`), the in-request business writer (`TestHostAttachCollectorBusinessWrite`), `tool.called` landing before the gate (`TestHostToolCalledBeforeGate`), the ordering and values of the `request.route` / `request.usage` audit events (`TestHostRequestUsageAndRoute`), and the empty-reason fallback belonging to loop (`TestHostGateEmptyReasonFallsBackToLoopText`), the last-wins served model in a multi-step turn (`TestHostRequestRouteLastWinsAcrossSteps`), and `tool.called`'s defence-in-depth for malformed arguments (`TestTurnRecorderDropsMalformedToolArguments`).
+`go test -race ./host/` — dedicated acceptance tests for the stateless passthrough, the three-way wiring (Surface role sequence / lifecycle closure / request.header audit / second-round history injection), tool-call-logged-before-execution, the HITL checkpoint Flush (exactly one per `after_model` step), error-path persistence with zero synthesis on reopen, SessionID resume, ToolGate rejection, ScopeHook subscription, per-request TraceIDs, streaming text deltas (both construction paths, the unset-callback round, panic propagation), the step cap (with a session: persisted closure **and** resumable), ScopeHook on the convenience path, the context-assembly seam (the assembled product reaching the request literally, and failures aborting before the model call), session-header attribution (`TestHostDefaultAgentSessionHeaderAgentID`), and both HITL recipes (rewriting a call from a waterfall, taking a permission card from the gate). Four further guards: the gate's **post-order** semantics (the card sees the very call that will execute — `TestHostToolGateSeesRewrittenCall`) along with its short-circuit branch (an inner rejection skips the gate and keeps the inner reason — `TestHostToolGateSkippedWhenInnerRejected`), knob name/type parity across the two Options (`TestHostOptionsKnobParity`, reflection-based), and the README assembly recipe compiled and executed verbatim (`TestHostContextBuilderRecipe`, including the empty-input case). Five more: the kernel service keys resolving to the very same instances plus the `closed` guard after Dispose (`TestHostRegistryServiceKeysOnKernel`), the in-request business writer (`TestHostAttachCollectorBusinessWrite`), `tool.called` landing before the gate (`TestHostToolCalledBeforeGate`), the ordering and values of the `request.route` / `request.usage` audit events (`TestHostRequestUsageAndRoute`), and the empty-reason fallback belonging to loop (`TestHostGateEmptyReasonFallsBackToLoopText`), the last-wins served model in a multi-step turn (`TestHostRequestRouteLastWinsAcrossSteps`), and `tool.called`'s defence-in-depth for malformed arguments (`TestTurnRecorderDropsMalformedToolArguments`), and the gate's ctx being the very ctx passed to `Run` (value propagation plus waiting out a deadline inside the gate — `TestHostToolGateReceivesRunContext`).

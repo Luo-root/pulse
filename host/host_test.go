@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
@@ -577,7 +578,7 @@ func TestHostToolGateRejects(t *testing.T) {
 	})
 	a, err := h.DefaultAgent(ctx, DefaultAgentOptions{
 		Name: "gated", Model: "stub",
-		ToolGate: func(call llm.ToolCall) (bool, string) { return false, "not allowed" },
+		ToolGate: func(_ context.Context, call llm.ToolCall) (bool, string) { return false, "not allowed" },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1110,7 +1111,7 @@ func TestHostToolGatePreviewRecipe(t *testing.T) {
 	var hadCard bool
 	a, err := h.NewAgent(AgentOptions{
 		Name: "previewed", Model: model, ModelName: "stub", ToolSet: h.Tools().AsToolSet(),
-		ToolGate: func(call llm.ToolCall) (bool, string) {
+		ToolGate: func(_ context.Context, call llm.ToolCall) (bool, string) {
 			p, ok, err := h.Tools().Preview(ctx, call.Name, call.Arguments)
 			if err != nil {
 				t.Fatalf("preview: %v", err)
@@ -1188,7 +1189,7 @@ func TestHostToolGateSeesRewrittenCall(t *testing.T) {
 				})
 			return err
 		},
-		ToolGate: func(call llm.ToolCall) (bool, string) {
+		ToolGate: func(_ context.Context, call llm.ToolCall) (bool, string) {
 			gated = string(call.Arguments)
 			return false, "needs approval"
 		},
@@ -1244,7 +1245,7 @@ func TestHostToolGateSkippedWhenInnerRejected(t *testing.T) {
 				})
 			return err
 		},
-		ToolGate: func(llm.ToolCall) (bool, string) {
+		ToolGate: func(_ context.Context, _ llm.ToolCall) (bool, string) {
 			gateCalls++
 			return true, ""
 		},
@@ -1545,7 +1546,7 @@ func TestHostToolCalledBeforeGate(t *testing.T) {
 	var calledSeenByGate bool
 	a, err := h.NewAgent(AgentOptions{
 		Name: "hitl", Model: model, ModelName: "stub", ToolSet: tools, Session: sess,
-		ToolGate: func(llm.ToolCall) (bool, string) {
+		ToolGate: func(_ context.Context, _ llm.ToolCall) (bool, string) {
 			envs, err := sess.Events(ctx, 0)
 			if err != nil {
 				return false, "needs approval"
@@ -1700,7 +1701,7 @@ func TestHostGateEmptyReasonFallsBackToLoopText(t *testing.T) {
 	})
 	a, err := h.NewAgent(AgentOptions{
 		Name: "no-reason", Model: model, ModelName: "stub", ToolSet: tools,
-		ToolGate: func(llm.ToolCall) (bool, string) { return false, "" },
+		ToolGate: func(_ context.Context, _ llm.ToolCall) (bool, string) { return false, "" },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1842,5 +1843,89 @@ func TestTurnRecorderDropsMalformedToolArguments(t *testing.T) {
 	}
 	if len(called.Arguments) != 0 {
 		t.Fatalf("arguments = %s, want them dropped (the codec rejects invalid JSON)", called.Arguments)
+	}
+}
+
+// TestHostToolGateReceivesRunContext：#227——闸门是**带 ctx 的一等形态**：
+// 拿到的就是调用方传给 Run 的那个 ctx（值 / 取消 / 超时随宿主），等人工裁决
+// 就地等，不必再自挂一条 waterfall 只为拿 ctx。
+func TestHostToolGateReceivesRunContext(t *testing.T) {
+	type gateKey struct{}
+	ctx := context.WithValue(context.Background(), gateKey{}, "round-42")
+	tools := loop.NewMemToolSet()
+	if err := tools.Register(
+		llm.ToolDef{Name: "echo", Description: "echo", Parameters: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, json.RawMessage) (string, error) { return "ok", nil }); err != nil {
+		t.Fatal(err)
+	}
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+
+	// ① 值随宿主：闸门拿到的 ctx 就是传给 Run 的那个。
+	var seen context.Context
+	a, err := h.NewAgent(AgentOptions{
+		Name: "ctx", ModelName: "stub", ToolSet: tools,
+		Model: llm.NewScripted(
+			llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{}`)}),
+			llm.Resp("done"),
+		),
+		ToolGate: func(gctx context.Context, call llm.ToolCall) (bool, string) {
+			seen = gctx
+			return false, "needs approval"
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, llm.User(llm.Text("go"))); err != nil {
+		t.Fatal(err)
+	}
+	if seen == nil {
+		t.Fatal("the gate never ran")
+	}
+	if v, _ := seen.Value(gateKey{}).(string); v != "round-42" {
+		t.Fatalf("gate ctx value = %q, want the ctx passed to Run", v)
+	}
+
+	// ② 超时随宿主：审批人坐在对面就地等裁决，Run 的 ctx 一过期闸门立刻可用
+	// （闸门里不 sleep、不自己造 ctx；5s 兜底只为不让变异探针挂死 CI）。
+	var toolText string
+	a2, err := h.NewAgent(AgentOptions{
+		Name: "ctx-deadline", ModelName: "stub", ToolSet: tools,
+		Model: llm.NewScripted(
+			llm.RespToolCalls(llm.ToolCall{ID: "c2", Name: "echo", Arguments: json.RawMessage(`{}`)}),
+			llm.Resp("late"),
+		),
+		ToolGate: func(gctx context.Context, call llm.ToolCall) (bool, string) {
+			select {
+			case <-gctx.Done():
+				return false, "gate saw " + gctx.Err().Error()
+			case <-time.After(5 * time.Second):
+				return false, "gate ctx never closed"
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	res, err := a2.Run(runCtx, llm.User(llm.Text("go")))
+	if err == nil {
+		t.Fatal("a round whose ctx expired while the gate waited must surface as an error")
+	}
+	for _, m := range res.Messages {
+		for _, p := range m.Parts {
+			if p.ToolResultValue == nil {
+				continue
+			}
+			for _, c := range p.ToolResultValue.Content {
+				toolText += c.Text
+			}
+		}
+	}
+	if !strings.Contains(toolText, "gate saw context deadline exceeded") {
+		t.Fatalf("tool result = %q, want the gate to have observed the host ctx expiring", toolText)
 	}
 }

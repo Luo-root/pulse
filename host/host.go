@@ -49,7 +49,14 @@ type ToolSource func(c *kernel.Context, reg *toolset.Registry) error
 // 的挂载点）：返回 approved=false 即拒绝本次执行——模型收到 IsError
 // 结果（含 reason），工具不会运行。审批 UI / 策略引擎经此接入
 // DefaultAgent，这是 HITL 的最小官方挂点。
-type ToolGate func(call llm.ToolCall) (approved bool, reason string)
+//
+// ctx 就是调用方传给 Run 的那个（带本回合的取消 / 超时 / 值）：等人工
+// 裁决就地 `<-ctx.Done()` 即可，不必为了拿 ctx 另挂 waterfall。闸门挂在
+// before_tool_call 链上取**后序**，看到的已是改写链跑完的最终调用——
+// 「批准的 = 执行的」由构造保证（顺序与两处代价见 README「完整 HITL
+// 配方」）。reason 为空时模型看到的兜底文案由 loop 给出（"rejected by
+// policy"），host 不自造第二套默认文本。
+type ToolGate func(ctx context.Context, call llm.ToolCall) (approved bool, reason string)
 
 // ObserveConfig 观测装配。Sink 为 nil = 不装观测（零开销）。
 type ObserveConfig struct {
@@ -187,7 +194,8 @@ type AgentOptions struct {
 	Session session.Session
 	// System 是系统提示词；空 = 无。
 	System string
-	// ToolGate 是工具执行闸门（nil = 不设防，所有调用直接执行）。
+	// ToolGate 是工具执行闸门（nil = 不设防，所有调用直接执行）；闸门
+	// 拿到的 ctx 是传给 Run 的那个。
 	ToolGate ToolGate
 	// ScopeHook 是请求级 scope 的进阶挂点：每次 Run 派生请求 scope 后、
 	// 回合开始前调用——应用经 kernel.On / kernel.OnWaterfall 在请求
@@ -264,7 +272,8 @@ type DefaultAgentOptions struct {
 	// JSONL 默认档合成闭环，RecoverExposePending 档未决挂 Recoverable
 	// 由宿主裁决）；空 = 新建会话。宿主未接 Options.Session 时非空报错。
 	SessionID string
-	// ToolGate 是工具执行闸门（nil = 不设防）。
+	// ToolGate 是工具执行闸门（nil = 不设防）；语义与
+	// AgentOptions.ToolGate 相同（含 ctx 来源）。
 	ToolGate ToolGate
 	// OnDelta 是文本增量回调，语义与 AgentOptions.OnDelta 相同。
 	OnDelta func(text string)
@@ -487,8 +496,9 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 	// （ScopeHook 挂的改写在这一段生效），再拿最终调用去审批，于是
 	// 「批准的」与「执行的」由构造保证是同一份（顺序说明见 README
 	// 「完整 HITL 配方」）。loop 在整条 waterfall 返回之后才真正执行
-	// 工具，所以后序审批仍然先于执行。拒绝即短路，模型收到带 reason 的
-	// IsError 结果。
+	// 工具，所以后序审批仍然先于执行。闸门拿到的 ctx 是调用方传给 Run
+	// 的那个（取消 / 超时随宿主）：等人批就地等在这个 ctx 上。拒绝即
+	// 短路，模型收到带 reason 的 IsError 结果。
 	if a.gate != nil {
 		if _, err := kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
 			func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
@@ -496,7 +506,7 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 				if out.Rejected { // 内层已拒（策略 / 改写钩子），不再打扰人
 					return out
 				}
-				if ok, reason := a.gate(out.Call); !ok {
+				if ok, reason := a.gate(ctx, out.Call); !ok {
 					// reason 为空时**不在这里自造文案**：空 reason 的兜底
 					// 只有一个所有者（loop 的 "rejected by policy"），
 					// 否则同一字段按路径产生两套默认文本。
