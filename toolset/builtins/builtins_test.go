@@ -544,13 +544,16 @@ func TestRootItselfSymlinked(t *testing.T) {
 	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Root 内部的链接指向 Root 外：confine* 判的必须是解析后的落点。
-	if err := os.Symlink(outsideDir, filepath.Join(real, "escape")); err != nil {
-		t.Fatal(err)
-	}
+	// 本用例**第一次**建链接必须是这一处：没有 symlink 权限的平台
+	// （Windows 非管理员 / 未开开发者模式）要在这里整条跳过。后面的
+	// os.Symlink 都排在它之后，走 t.Fatal 是对的——到那一步说明平台支持。
 	rootLink := filepath.Join(base, "root-link")
 	if err := os.Symlink(real, rootLink); err != nil {
 		t.Skipf("symlink not permitted: %v", err)
+	}
+	// Root 内部的链接指向 Root 外：confine* 判的必须是解析后的落点。
+	if err := os.Symlink(outsideDir, filepath.Join(real, "escape")); err != nil {
+		t.Fatal(err)
 	}
 	// ForbidRead 也用链接路径给出：canonRoot 不解析它的话，禁读前缀与解析后
 	// 的真实路径对不上，secret 会被读出来。
