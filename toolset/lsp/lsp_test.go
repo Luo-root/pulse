@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,7 +36,10 @@ func newFakeConn() *fakeConn {
 	return &fakeConn{out: make(chan []byte, 64)}
 }
 
-func (c *fakeConn) Send(body []byte) error {
+func (c *fakeConn) Send(ctx context.Context, body []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	c.sent = append(c.sent, append([]byte(nil), body...))
 	c.mu.Unlock()
@@ -425,9 +430,9 @@ type failSendConn struct {
 	err  error
 }
 
-func (c failSendConn) Send([]byte) error     { return c.err }
-func (c failSendConn) Recv() ([]byte, error) { return c.base.Recv() }
-func (c failSendConn) Close() error          { return c.base.Close() }
+func (c failSendConn) Send(context.Context, []byte) error { return c.err }
+func (c failSendConn) Recv() ([]byte, error)              { return c.base.Recv() }
+func (c failSendConn) Close() error                       { return c.base.Close() }
 
 // TestServerMarksDeadWhenSendFails：#216 review 建议 1——`call` 与 `notify`
 // 的 Send 失败是两条新增的标死路径（README 承诺「连接一断即标死」的 Send
@@ -456,11 +461,114 @@ func TestServerMarksDeadWhenSendFails(t *testing.T) {
 		conn: failSendConn{base: baseNotify, err: boom},
 		kill: func() {},
 	})
-	if err := s2.notify("initialized", struct{}{}); err == nil {
+	if err := s2.notify(context.Background(), "initialized", struct{}{}); err == nil {
 		t.Fatal("notify must fail when Send fails")
 	}
 	if !s2.unusable() {
 		t.Fatal("a failed notify Send must mark the server unusable")
+	}
+}
+
+// stallAfterConn 是「server 收下握手后就不再读 stdin」的 frameConn：含 mark 的帧
+// 永不写完，只等 ctx。写侧真实现（管道写满）无法注入，用它钉调用面的上限。
+type stallAfterConn struct {
+	*fakeConn
+	mark []byte
+}
+
+func (c stallAfterConn) Send(ctx context.Context, body []byte) error {
+	if bytes.Contains(body, c.mark) {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return c.fakeConn.Send(ctx, body)
+}
+
+// TestStdioConnSendBoundedByContext：#250——写端是管道，server 不读 stdin 时写会
+// 永远挂着。Send 必须由 ctx 兜底（notify 与收尾路径没有请求帧可等，ctx 是唯一上限）。
+func TestStdioConnSendBoundedByContext(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+	defer pw.Close()
+	conn := newStdioConn(pw, pr) // 读端没人读：写满缓冲区后阻塞
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := conn.Send(ctx, make([]byte, 1<<20)); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want deadline exceeded, got %v", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("Send must return when ctx is done, took %s", d)
+	}
+}
+
+// TestEnsureOpenBoundedByTimeout：#250——同步帧（didOpen）也在 Timeout 覆盖内：
+// server 收下握手后不再读 stdin 时，工具按 Timeout 报错，而不是挂在那里。
+func TestEnsureOpenBoundedByTimeout(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "hello.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs := newFakeServer()
+	fs.handle = func(f rpcFrame) {
+		if f.Method == "initialize" {
+			fs.reply(f, map[string]any{"capabilities": map[string]any{}})
+		}
+	}
+	orig := spawnServer
+	spawnServer = func(ctx context.Context, command, dir string) (*serverProcess, error) {
+		return &serverProcess{
+			conn: stallAfterConn{fakeConn: fs.conn, mark: []byte("textDocument/didOpen")},
+			kill: func() { fs.killed.Add(1) },
+		}, nil
+	}
+	t.Cleanup(func() { spawnServer = orig })
+
+	reg, cleanup := lspSetup(t, lspOptions(root, func(o *Options) { o.Timeout = 300 * time.Millisecond }))
+	defer cleanup()
+
+	start := time.Now()
+	msg := lspCallErr(t, reg, map[string]any{"op": "diagnostics", "path": "hello.go"})
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("the didOpen write must be bounded by Timeout, took %s", d)
+	}
+	if !strings.Contains(msg, "didOpen") || !strings.Contains(msg, "deadline exceeded") {
+		t.Fatalf("want a didOpen deadline error, got %s", msg)
+	}
+}
+
+// TestSpawnReapsProcess：#250——spawn 后必须 Wait（回收 stdin 管道父端、进程句柄
+// 与 os/exec 的 ctx 监视协程）。判据：反复 spawn + 收尾之后 goroutine 数回落。
+func TestSpawnReapsProcess(t *testing.T) {
+	command := "true"
+	if runtime.GOOS == "windows" {
+		command = "cmd /c exit"
+	}
+	base := runtime.NumGoroutine()
+	for i := 0; i < 8; i++ {
+		sp, err := spawnServer(context.Background(), command, t.TempDir())
+		if err != nil {
+			t.Fatalf("spawn: %v", err)
+		}
+		sp.kill()
+		_ = sp.conn.Close()
+	}
+	// 进程退出 → Wait 归还，给调度留时间；不靠固定 sleep 判死。
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		runtime.GC()
+		if n := runtime.NumGoroutine(); n <= base+2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines grew from %d to %d across 8 spawn/kill cycles (Wait must reap)",
+				base, runtime.NumGoroutine())
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

@@ -3,6 +3,7 @@ package builtins_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -287,6 +288,162 @@ func TestExecTimeout(t *testing.T) {
 	msg := callErr(t, reg, "exec", map[string]any{"command": cmd, "timeout_seconds": 1})
 	if !strings.Contains(msg, "timeout") {
 		t.Fatalf("want timeout, got %s", msg)
+	}
+}
+
+// waitForFile 轮询等路径出现（把「命令已起来」当同步点，不靠 sleep 撞时序）。
+func waitForFile(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestGrepLongLineReported：#249——含超长行的文件会让 bufio.Scanner 在该行停止，
+// 其后的匹配全部消失，必须如实报出（返回裸 "(no matches)" 就是漏检静默）。
+func TestGrepLongLineReported(t *testing.T) {
+	root := t.TempDir()
+	_, reg, cleanup := setup(t, builtins.Options{Root: root})
+	defer cleanup()
+
+	big := filepath.Join(root, "big.txt")
+	body := strings.Repeat("x", (1<<20)+1024) + "\nneedle here\n"
+	if err := os.WriteFile(big, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := call(t, reg, "grep", map[string]any{"pattern": "needle"})
+	if strings.TrimSpace(out) == "(no matches)" {
+		t.Fatalf("long-line skip must not be silent, got %q", out)
+	}
+	for _, want := range []string{"big.txt", "a line exceeds", "matches inside them are unknown"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("want %q in %q", want, out)
+		}
+	}
+
+	// 短文件里的同样内容仍要能找到（跳过只针对那一个文件，不炸整次搜索）。
+	if err := os.WriteFile(filepath.Join(root, "small.txt"), []byte("needle here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = call(t, reg, "grep", map[string]any{"pattern": "needle"})
+	if !strings.Contains(out, "small.txt:1:needle here") {
+		t.Fatalf("small.txt match missing: %q", out)
+	}
+	if !strings.Contains(out, "big.txt") {
+		t.Fatalf("skip note must survive a non-empty match list: %q", out)
+	}
+}
+
+// TestGrepBadGlob：#249——非法 glob 过滤器返回错误，而不是静默 "(no matches)"。
+func TestGrepBadGlob(t *testing.T) {
+	root := t.TempDir()
+	_, reg, cleanup := setup(t, builtins.Options{Root: root})
+	defer cleanup()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	msg := callErr(t, reg, "grep", map[string]any{"pattern": "needle", "glob": "["})
+	if !strings.Contains(msg, "bad glob filter") {
+		t.Fatalf("want bad glob error, got %s", msg)
+	}
+}
+
+// TestGrepClipsLongMatchLine：#249——命中行按 MaxLineRunes 截断（与 read 同口径），
+// 单条命中不能把 1 MiB 塞进上下文。
+func TestGrepClipsLongMatchLine(t *testing.T) {
+	root := t.TempDir()
+	_, reg, cleanup := setup(t, builtins.Options{Root: root, MaxLineRunes: 40})
+	defer cleanup()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"),
+		[]byte("needle "+strings.Repeat("y", 500)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := call(t, reg, "grep", map[string]any{"pattern": "needle"})
+	if !strings.Contains(out, "…") || strings.Contains(out, strings.Repeat("y", 100)) {
+		t.Fatalf("match line must be clipped, got %q", out)
+	}
+}
+
+// TestExecTimeoutKillsTree：#249——前台超时必须整树收尾：包装 shell 拉起的孙进程
+// 也要死。判据是孙进程自己写的记号（它 +5s 才写，「活过来」与「活下来」各一个）。
+func TestExecTimeoutKillsTree(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("tree-kill probe drives PowerShell Start-Process (Windows only)")
+	}
+	root := t.TempDir()
+	_, reg, cleanup := setup(t, builtins.Options{Root: root, ExecTimeout: 15 * time.Second})
+	defer cleanup()
+
+	alive := filepath.Join(root, "grandchild-alive.txt")
+	survived := filepath.Join(root, "grandchild-survived.txt")
+	// 孙进程脚本落成文件：多一层引号嵌套（Go 串 → PowerShell → 内层 -Command）极易写错，
+	// 用 -File 把内层命令变成「单个路径参数」。
+	script := filepath.Join(root, "grandchild.ps1")
+	body := fmt.Sprintf("Set-Content -LiteralPath '%s' -Value alive\nStart-Sleep -Seconds 5\nSet-Content -LiteralPath '%s' -Value survived\n", alive, survived)
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := fmt.Sprintf("Start-Process powershell -ArgumentList '-NoProfile','-NonInteractive','-File','%s' -WindowStyle Hidden; Start-Sleep -Seconds 30", script)
+
+	msg := callErr(t, reg, "exec", map[string]any{"command": cmd, "timeout_seconds": 3})
+	if !strings.Contains(msg, "timeout") {
+		t.Fatalf("want timeout, got %s", msg)
+	}
+	if !waitForFile(alive, 5*time.Second) {
+		t.Skip("grandchild never started before the timeout (machine too slow) — inconclusive")
+	}
+	// 孙进程若活着，它会在 +5s 落 survived；整树杀成功就该永远等不到。
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(survived); err == nil {
+			t.Fatalf("grandchild survived the timeout: %s exists", survived)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// TestExecCancelIsNotTimeout：#249——宿主取消不能被报成 timeout（两者错误链都可能
+// 带上 ctx 错误，分类只看 ctx 错误链本身）。
+func TestExecCancelIsNotTimeout(t *testing.T) {
+	root := t.TempDir()
+	_, reg, cleanup := setup(t, builtins.Options{Root: root, ExecTimeout: 30 * time.Second})
+	defer cleanup()
+
+	ready := filepath.Join(root, "ready.txt")
+	var cmd string
+	if runtime.GOOS == "windows" {
+		cmd = "Set-Content -LiteralPath ready.txt -Value ok; Start-Sleep -Seconds 20"
+	} else {
+		cmd = "touch ready.txt; sleep 20"
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		// 等命令真起来再取消（就绪文件当同步点）。
+		if waitForFile(ready, 10*time.Second) {
+			cancel()
+		}
+	}()
+
+	b, err := json.Marshal(map[string]any{"command": cmd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reg.AsToolSet().Execute(ctx, llm.ToolCall{ID: "t1", Name: "exec", Arguments: b})
+	if err == nil {
+		t.Fatal("want an error from the canceled command")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled run must wrap context.Canceled, got %v", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("canceled run must not be reported as timeout, got %v", err)
 	}
 }
 

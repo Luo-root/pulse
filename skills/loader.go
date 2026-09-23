@@ -279,7 +279,24 @@ func safeJoin(skillDir, rel string) (string, error) {
 	if joinedAbs != skillAbs && !strings.HasPrefix(joinedAbs, skillAbs+sep) {
 		return "", fmt.Errorf("skills: path escapes skill directory")
 	}
-	return joinedAbs, nil
+	// 词法校验挡不住符号链接：skill 目录内的链接可以指向目录外，读出任意外部
+	// 文件（与 toolset/lsp 的 resolveUnderRoot 同一判据）。终态校验**两侧都
+	// 解析**——skill 目录路径本身可能含链接段（宿主把 skills 根投放到别处），
+	// 只解析请求侧会把正常文件误判成逃逸。解析失败（目标不存在 / 链接循环 /
+	// 中途无权限）不在此报错：这些情形 os.ReadFile 同样读不到，保留既有错误
+	// 分类。边界：解析与随后的 ReadFile 之间仍有 TOCTOU 窗口（链接在两次调用
+	// 之间被改写）；skill 目录由宿主投放、非并发改写场景，不引入逐级
+	// O_NOFOLLOW 打开。
+	realDir, dirErr := filepath.EvalSymlinks(skillAbs)
+	realJoined, joinErr := filepath.EvalSymlinks(joinedAbs)
+	if dirErr != nil || joinErr != nil {
+		return joinedAbs, nil
+	}
+	if realJoined != realDir && !strings.HasPrefix(realJoined, realDir+sep) {
+		return "", fmt.Errorf("skills: path escapes skill directory via symlink: %s -> %s", clean, realJoined)
+	}
+	// 返回解析后的终态路径：调用方的打开不再经过链接。
+	return realJoined, nil
 }
 
 var _ Loader = (*FSLoader)(nil)

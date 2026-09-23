@@ -36,6 +36,7 @@ var spawnServer = func(ctx context.Context, command, dir string) (*serverProcess
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// 进程生命周期不跟调用请求走（握手后要长期驻留），只在收尾时树杀。
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	cmd := buildServerCommand(runCtx, command)
 	cmd.Dir = dir
@@ -45,20 +46,31 @@ var spawnServer = func(ctx context.Context, command, dir string) (*serverProcess
 		cancel()
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	// stdout 用自建管道而不是 cmd.StdoutPipe：StdoutPipe 约定「读完才可 Wait」，
+	// 而这里的 Wait 与 readLoop 并发——自建管道下 Wait 不会关掉我们正在读的端。
+	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		cancel()
 		return nil, err
 	}
+	cmd.Stdout = stdoutW
 	errBuf := &cappedBuffer{max: stderrRingBytes}
 	cmd.Stderr = errBuf
 	if err := cmd.Start(); err != nil {
 		cancel()
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
 		return nil, err
 	}
+	// 父进程不持有写端：子进程退出（含被树杀）后 readLoop 立刻拿到 EOF。
+	_ = stdoutW.Close()
 	pid := cmd.Process.Pid
+	// Wait 必须被调用：它回收 stdin 管道父端、Windows 进程句柄，并结束 os/exec
+	// 为 runCtx 起的 ctx 监视协程（runCtx 来自 WithoutCancel，永不取消，协程只能
+	// 靠 Wait 退出）——否则每次 spawn（含自愈重建）都漏一份。
+	go func() { _ = cmd.Wait() }()
 	return &serverProcess{
-		conn: newStdioConn(stdin, stdout),
+		conn: newStdioConn(stdin, stdoutR),
 		kill: func() {
 			if err := killTree(pid); err != nil {
 				cancel()
@@ -253,6 +265,8 @@ func (s *server) readLoop() {
 	for {
 		body, err := s.sp.conn.Recv()
 		if err != nil {
+			// 本循环是唯一读方：退出即关读端，父进程不留管道 fd。
+			_ = s.sp.conn.Close()
 			s.markDead()
 			return
 		}
@@ -342,7 +356,7 @@ func (s *server) call(ctx context.Context, method string, params interface{}) (j
 	if err != nil {
 		return nil, err
 	}
-	if err := s.sp.conn.Send(body); err != nil {
+	if err := s.sp.conn.Send(ctx, body); err != nil {
 		s.markDead() // 管道已破：别让后续调用继续打到这个连接上
 		return nil, fmt.Errorf("lsp: %s: send %s: %w", s.lang, method, err)
 	}
@@ -363,14 +377,14 @@ func (s *server) call(ctx context.Context, method string, params interface{}) (j
 	}
 }
 
-func (s *server) notify(method string, params interface{}) error {
+func (s *server) notify(ctx context.Context, method string, params interface{}) error {
 	body, err := json.Marshal(rpcRequest{JSONRPC: "2.0", Method: method, Params: params})
 	if err != nil {
 		return err
 	}
-	if err := s.sp.conn.Send(body); err != nil {
+	if err := s.sp.conn.Send(ctx, body); err != nil {
 		s.markDead()
-		return err
+		return fmt.Errorf("lsp: %s: notify %s: %w", s.lang, method, err)
 	}
 	return nil
 }
@@ -380,7 +394,7 @@ func (s *server) initialize(ctx context.Context, root string) error {
 	if _, err := s.call(ctx, "initialize", initializeParams{RootURI: fileURI(root)}); err != nil {
 		return err
 	}
-	return s.notify("initialized", struct{}{})
+	return s.notify(ctx, "initialized", struct{}{})
 }
 
 // ensureOpen 首次访问发 didOpen；之后每次调用比对磁盘内容 hash，
@@ -421,7 +435,7 @@ func (s *server) ensureOpen(ctx context.Context, abs, ext string) error {
 	s.mu.Unlock()
 
 	if st == nil {
-		if err := s.notify("textDocument/didOpen", didOpenParams{
+		if err := s.notify(ctx, "textDocument/didOpen", didOpenParams{
 			TextDocument: textDocumentItem{
 				URI:        uri,
 				LanguageID: langID(ext),
@@ -437,7 +451,7 @@ func (s *server) ensureOpen(ctx context.Context, abs, ext string) error {
 		return nil
 	}
 
-	if err := s.notify("textDocument/didChange", didChangeParams{
+	if err := s.notify(ctx, "textDocument/didChange", didChangeParams{
 		TextDocument:   versionedTextDocID{URI: uri, Version: st.version},
 		ContentChanges: []contentChange{{Text: string(content)}},
 	}); err != nil {
@@ -631,7 +645,7 @@ func (s *server) shutdownAndKill() {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	_, _ = s.call(ctx, "shutdown", nil) // 已 closed 则忽略
-	_ = s.notify("exit", nil)
+	_ = s.notify(ctx, "exit", nil)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
