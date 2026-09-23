@@ -10,6 +10,13 @@ type ToolDef struct {
 	Name        string
 	Description string
 	// Parameters 是工具参数的 JSON Schema。nil 表示无参工具。
+	//
+	// 写入方义务：非 nil 时必须是**合法 JSON**——两个内置适配器在组包时
+	// `json.Unmarshal` 到对象，坏字节会以 [ErrBadRequest] 拒绝；官方工具
+	// 注册面（[github.com/Luo-root/pulse/toolset] 的 Register）在登记期
+	// 就拒绝它（fail fast），[github.com/Luo-root/pulse/host] 的 NewAgent
+	// 对被注入的 `loop.ToolSet` 在装配期同判——自实现的 ToolSet 同样逃不
+	// 掉，不要指望下游兜。
 	Parameters json.RawMessage
 }
 

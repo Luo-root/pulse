@@ -47,12 +47,15 @@ agent, err := loop.NewAgent(model, "react",
 ## Contract highlights
 
 - **Primary key** = `Def.Name` (globally flat-unique); conflicts fail, no silent renaming.
+- **`Def.Parameters`** (the model-visible parameter schema) must be **valid JSON** when non-empty — rejected at registration (`parameters is not valid JSON`), never deferred to persistence or request building. The criterion stops at "valid JSON": "must be a JSON **object**" is the adapter's call at request-build time (`ErrBadRequest`), and JSON Schema's boolean form (`true`) is legal on its own. A broken schema left in place kills the whole round at the `request.header` write (fail closed), with the error pointing at the session and the model never called once.
 - **`DisposeSource(source)`** revokes in bulk by source; guessing the source from a Name prefix is forbidden.
 - **`AsToolSet()`** is a live view; the Definitions snapshot for a given turn is taken once by loop at the start of Run.
 - **`LookupMeta`** lets HITL/policies look up Source/Risk; a miss should fail closed.
 - **`PreviewFn` / `LookupPreview` / `Preview`**: optional read-only pre-execution card (W2). loop does not alter it; HITL does its own Lookup. No PreviewFn = empty preview; the human is still asked according to Risk. The identity fields of `Preview()` (Tool/Source/Risk) come from the **same snapshot** as the PreviewFn — a concurrent revoke can never yield a card that is `ok=true` with an empty Source and a zero Risk.
 - **Card field semantics**: `FileChange.Added/Removed` always count by the **positional interval outside the common prefix/suffix** (large files use the same convention, only the diff text is omitted and flagged `Truncated`) — multiset counting reports a whole-file rotation as 0, which makes "escalate approval on change size" policies fail open; `NetworkChange.HostClass` is one of `public|private|metadata|unknown`, decided from the **literal** address, with hostnames always `unknown` (no DNS in preview: nothing may produce external traffic before a human approves). It is a hint, not a security boundary.
 - **Dependencies**: `toolset` → `loop`; `loop` does not import `toolset`. `MemToolSet` remains available for unit tests without a kernel.
+
+**Migration**: a malformed `Def.Parameters` (invalid JSON) used to register fine; from the next minor on **`Register` rejects it outright** (`toolset: tool "x": parameters is not valid JSON`) — under the official assembly it was guaranteed to blow up anyway, only at the `request.header` write and with the error pointing at the session. Correctly written schemas are unaffected; sources that assemble a schema from external bytes (a host-written MCP `Client` adapter, say) should validate inside their own `ListTools` or produce it with `json.Marshal`.
 
 ## MCP source
 

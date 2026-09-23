@@ -1,6 +1,7 @@
 package toolset
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -103,8 +104,12 @@ func (r *Registry) Close() {
 
 // Register 在 scope 上登记可逆工具。
 //
-// 校验失败（空名 / nil Fn / 空 Source / RiskUnspecified / 同名冲突 / 已 Close）
-// 时立即返回 error，不登记 Effect。
+// 校验失败（空名 / nil Fn / 空 Source / RiskUnspecified / `Def.Parameters`
+// 非合法 JSON / 同名冲突 / 已 Close）时立即返回 error，不登记 Effect。
+//
+// 参数 Schema 这一条是**装配期**的义务：`Def.Parameters` 由应用写死，
+// 坏字节不该等到落盘或组包时才炸（注册期就能报清楚，与两个适配器
+// 「参数 Schema 不是合法 JSON 对象」的 `ErrBadRequest` 同一语义）。
 //
 // 成功时返回的 dispose 撤销「这一次」登记（幂等）；scope.Dispose 也会
 // 通过 Effect 栈触发同一撤销。MCP 掉线应优先 [DisposeSource]，或由
@@ -147,6 +152,14 @@ func validateRegistration(reg Registration) error {
 	case RiskReadonly, RiskReadWrite, RiskDangerous:
 	default:
 		return fmt.Errorf("toolset: tool %q: unknown risk %v", reg.Def.Name, reg.Risk)
+	}
+	// 参数 Schema 必须是合法 JSON：坏字节若放过去，官方装配（host + 会话）
+	// 会在 request.header 落盘处 fail-closed 打死整轮，且错误指向 session，
+	// 把适配器准备的 ErrBadRequest 盖掉。空 = 无参工具（合法）。
+	// 只判「合法 JSON」，不判「是对象」——后者由适配器在组包时给出干净的
+	// ErrBadRequest，且 JSON Schema 的布尔形态（`true`）是合法的。
+	if len(reg.Def.Parameters) > 0 && !json.Valid(reg.Def.Parameters) {
+		return fmt.Errorf("toolset: tool %q: parameters is not valid JSON", reg.Def.Name)
 	}
 	return nil
 }

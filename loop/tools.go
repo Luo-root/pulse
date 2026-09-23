@@ -16,6 +16,9 @@ import (
 // 契约：
 //   - Definitions 的返回顺序稳定（同一次 Run 内多次调用结果一致），
 //     供组装 GenerateRequest.Tools；
+//   - Definitions 里每个声明的 Parameters 非空时必须是合法 JSON（写入方
+//     义务）：官方注册面（toolset.Registry）在登记期即拒，host 对被注入
+//     的 ToolSet 在装配期同判——自实现者同样要守住这条；
 //   - Execute 返回非 nil error 视为工具执行失败——loop 会把错误文本
 //     作为 IsError 结果回传给模型，模型可据此自我修正，回合不中断；
 //   - Execute 必须尊重 ctx 取消；panic 由 loop 恢复为失败结果，
