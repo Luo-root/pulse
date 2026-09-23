@@ -107,7 +107,9 @@ type MessagePayload struct {
 // 时序/崩溃检测当「调用已发生」的审计锚点，不进 surface。
 //
 // 写入方是装配层（官方 = host 的 turnRecorder）：**先于**审批与执行落盘，
-// 于是「日志里有 called 没有 result」就是真实的「调用发生了、还没收尾」。
+// 于是活进程里读日志就能看到「调用发生了、还没收尾」。注意这不额外增强
+// 崩溃耐久——JSONL 只保证 Flush 点之前（HITL 检查点在 assistant 落盘后），
+// 掉电时本条可能还在缓冲；崩溃现场的分辨仍以已刷盘的 assistant 为判据。
 // 载荷是模型**发起**的调用，内层监听器的改写只影响执行（工具实际收到的
 // 参数看 tool.result 的回执）；被拒绝的调用同样记一条。
 type ToolCalledPayload struct {

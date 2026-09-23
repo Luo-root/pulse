@@ -157,7 +157,7 @@ The glue that the memory layer deliberately does not do all belongs to the assem
 |---|---|---|
 | `session.Surface()` → `loop.Run` history | assembly layer | loop does not import memory |
 | `request.header` / `request.route` / `request.usage` event writing | assembly layer | the system+ToolDef+model trio, the model that **actually served** the turn (adapter-filled, falls back to the declared name), and the turn's accumulated tokens get logged (Ignorable but must be emitted); the official writer is `host`'s turnRecorder |
-| `tool.called` event writing | assembly layer | the "the call happened" anchor (HITL / timing / crash detection), written **before** approval and execution; rejected calls are recorded too (the rejection itself shows up as an IsError `tool.result`) |
+| `tool.called` event writing | assembly layer | the "the call happened" anchor (HITL / timing), written **before** approval and execution; rejected calls are recorded too (the rejection itself shows up as an IsError `tool.result`). Durability follows the file-wide Flush discipline and adds no crash durability — on a crash, telling "a tool_call without a result" apart still rests on the flushed assistant |
 | `Provide` / `Get` of the six `memory/*` service keys | host / application plugins | zero in-library consumers (deliberate, see the dependency rules above): the official `host` assembly injects by `Options` and does not look them up |
 | `index.VectorIndex` → `assemble.Semantic` | assembly layer | production path decoupled, see the assemble README "Wiring the vector path" |
 | `index.Upsert/Remove` after store writes | assembly layer/writer | the cost of one-way imports; a missed call only affects recall (Rebuild can recover) |

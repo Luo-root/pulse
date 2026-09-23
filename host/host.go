@@ -482,11 +482,13 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 	}
 
 	// 工具闸门（HITL 最小挂点）：注册在请求 scope 的 before_tool_call
-	// waterfall 首环，但取**后序**——先让内层链跑完（ScopeHook 挂的改写
-	// 在这一段生效），再拿最终调用去审批，于是「批准的」与「执行的」由
-	// 构造保证是同一份（顺序说明见 README「完整 HITL 配方」）。loop 在
-	// 整条 waterfall 返回之后才真正执行工具，所以后序审批仍然先于执行。
-	// 拒绝即短路，模型收到带 reason 的 IsError 结果。
+	// waterfall 上——更外层还有落盘监听的 tool.called 环（只透传，见
+	// turnRecorder），本闸门在它内侧并取**后序**：先让内层链跑完
+	// （ScopeHook 挂的改写在这一段生效），再拿最终调用去审批，于是
+	// 「批准的」与「执行的」由构造保证是同一份（顺序说明见 README
+	// 「完整 HITL 配方」）。loop 在整条 waterfall 返回之后才真正执行
+	// 工具，所以后序审批仍然先于执行。拒绝即短路，模型收到带 reason 的
+	// IsError 结果。
 	if a.gate != nil {
 		if _, err := kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
 			func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
@@ -563,8 +565,9 @@ type appendFail struct{ err error }
 //	loop.step_start      → step.started（上一步未闭合则先补 step.ended——
 //	                       loop 无显式 step_end：一步的终点即下一步起点）
 //	loop.after_model     → message.assistant（**先于**工具执行与 HITL 落盘）
-//	loop.before_tool_call→ tool.called（**先于**审批与执行落盘——HITL/时序/
-//	                       崩溃检测的「调用已发生」锚点）
+//	loop.before_tool_call→ tool.called（**先于**审批与执行落盘——HITL/时序
+//	                       的「调用已发生」锚点；持久性同全文件口径：只保证
+//	                       Flush 点之前，见下）
 //	loop.after_tool_call → tool.result（含被闸门拒绝的调用，IsError）
 //	loop.turn_end        → request.route + request.usage + step.ended + turn.ended
 //	                       （completed / max_steps 记 completed；canceled /
@@ -645,16 +648,21 @@ func (r *turnRecorder) mount(scope *kernel.Context) error {
 
 	// 本监听排在请求 scope 的 before_tool_call 链首（mount 早于闸门与
 	// ScopeHook 的注册）——先落「调用已发生」，再委托内层跑改写与审批，
-	// 因此日志里的先后与真实先后一致（崩溃现场可分辨「未调用」与
-	// 「调用了但没结果」）。被拒绝的调用同样记：拒绝本身由 tool.result
-	// 的 IsError 呈现。载荷是**模型发起**的调用：内层监听器的改写只影响
-	// 执行，工具实际收到的参数以 tool.result 为准。
+	// 因此日志里的先后与真实先后一致。**持久性不额外加强**：JSONL 只保证
+	// Flush 点之前，而唯一的刷点是 after_model 的 HITL 检查点，掉电时这条
+	// 可能还在缓冲——崩溃现场分辨「有 tool_call 没结果」靠的是已刷盘的
+	// assistant，本事件的价值是活进程与闸门问人期间的审计锚点。被拒绝的
+	// 调用同样记：拒绝本身由 tool.result 的 IsError 呈现。载荷是**模型
+	// 发起**的调用：内层监听器的改写只影响执行，工具实际收到的参数以
+	// tool.result 为准。
 	if _, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
 		func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
+			// 畸形参数留空（codec 拒非法 JSON）——纵深防御：host 的完整
+			// 路径上非法参数会先卡在 assistant 消息落盘（根因见 #235）。
 			var args json.RawMessage
 			if json.Valid(p.Call.Arguments) {
 				args = p.Call.Arguments
-			} // 畸形参数留空：不因为模型的坏参数把落盘打成 panic（codec 拒非法 JSON）
+			}
 			r.append(session.EventToolCalled, session.ToolCalledPayload{
 				ToolCallID: p.Call.ID, Name: p.Call.Name, Arguments: args,
 			}, nil)
