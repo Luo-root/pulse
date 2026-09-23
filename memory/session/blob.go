@@ -27,6 +27,11 @@ type blobRef struct {
 // 落盘（内容寻址：同字节同 sha，已存在则去重复用）。非 message 类型或
 // 不含超限字节的 payload 原样返回。调用方保证 blobsDir 可写。
 //
+// 唯一调用点是 jsonlSession.writeLineLocked——内存态恒为还原形态，本函数
+// 是「内存 → 落盘」的单向转换。已是引用形态的输入（Data 为空）原样通过，
+// 所以调用方必须给还原形态，字节才会物化进目标 blobs 目录（Fork 与导入
+// seed 的 blob 重建都依赖这条）。
+//
 // 禁止静默丢字节：超限字节必须完整写入 blob 文件，否则返回错误。
 func encodeBlobs(payload json.RawMessage, blobsDir string) (json.RawMessage, error) {
 	if len(payload) == 0 {
@@ -68,7 +73,8 @@ func encodeBlobs(payload json.RawMessage, blobsDir string) (json.RawMessage, err
 }
 
 // decodeBlobs 是 encodeBlobs 的逆操作：把 blob 引用还原为内联字节。
-// 引用指向的 blob 缺失 = 加载错误（fail closed），不降级为空内容。
+// 唯一调用点是 loadOpened（磁盘行 → 内存态还原形态）。引用指向的 blob
+// 缺失 = 加载错误（fail closed），不降级为空内容。
 func decodeBlobs(payload json.RawMessage, blobsDir string) (json.RawMessage, error) {
 	if len(payload) == 0 {
 		return payload, nil

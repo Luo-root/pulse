@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Luo-root/pulse/llm"
@@ -22,7 +23,11 @@ import (
 //	{root}/{sessionID}/header.json    会话头（FormatVersion 不兼容拒绝加载）
 //	{root}/{sessionID}/events.jsonl   事件日志，每行一条 EventEnvelope，append-only
 //	{root}/{sessionID}/blobs/{sha256} 超限内联字节（内容寻址）
-//	{root}/{sessionID}/lock           文件锁（O_EXCL 原子创建）
+//	{root}/{sessionID}/lock           文件锁（O_EXCL 原子创建，内容含持有者 token）
+//
+// **两态约定**：内存态恒为还原形态（内联字节完整；Surface / Events / Fork
+// seed / 导出都用它），引用形态只出现在磁盘行上——转换点是 writeLineLocked
+// （内存 → 磁盘）与 loadOpened（磁盘 → 内存）。
 //
 // JSONL 为明文：文件即密钥面、路径宿主拥有；P2-A 不做加密。
 // 删除会话 = 删整个目录（会话不是 MemoryItem，不适用 Supersede/Revoke）。
@@ -33,7 +38,11 @@ const defaultLockStale = time.Hour
 // jsonlOption 配置 JSONLStore。
 type jsonlOption func(*JSONLStore)
 
-// JSONLStale 设置 stale 锁阈值。
+// JSONLStale 设置 stale 锁阈值：锁文件 mtime 距今超过该时长即视为持有者
+// 已崩溃（进程崩溃不会清锁文件），其后 Open 会抢占它。默认 1h
+// （defaultLockStale）。Flush 兼作心跳（touch 锁文件 mtime），长命会话只要
+// 定期 Flush 就不会被误抢占；从不 Flush 且持有超过阈值的会话可能被另一
+// 进程接管。d <= 0 忽略（保持默认）。
 func JSONLStale(d time.Duration) jsonlOption {
 	return func(s *JSONLStore) {
 		if d > 0 {
@@ -89,7 +98,8 @@ type JSONLStore struct {
 }
 
 // jsonlSession 是 Session 的 JSONL 实现：内存态复用 memSession（同一把
-// 写锁、同一套校验链），每条 Append 同步落盘；Flush 才 fsync。
+// 写锁、同一套校验链），每条 Append 同步落盘；Flush 才 fsync。内存态
+// payload 恒为还原形态（见 buildEnvelopeLocked）。
 type jsonlSession struct {
 	*memSession
 	dir     string
@@ -171,17 +181,10 @@ func (s *JSONLStore) createSession(header SessionHeader, seed []EventEnvelope) (
 		store:      s,
 		release:    release,
 	}
-	// Fork seed：逐条落盘（保持原 Seq/Time；文件存引用形态，内存态持有
-	// 还原形态）。
+	// Fork seed：逐条落盘（保持原 Seq/Time）。走与 Append 同一条路径——
+	// 引用替换在 writeLineLocked 内发生，seed 引用的字节因此物化进子会话
+	// 自己的 blobs 目录；内存态持有还原形态。
 	for _, env := range seed {
-		if isMessageEvent(env.Type) {
-			encoded, err := encodeBlobs(env.Data, sess.blobsDir())
-			if err != nil {
-				f.Close()
-				return fail(err)
-			}
-			env.Data = encoded
-		}
 		if err := sess.writeLineLocked(env); err != nil {
 			f.Close()
 			return fail(err)
@@ -400,10 +403,7 @@ func (s *jsonlSession) appendLocked(draft EventDraft) (EventEnvelope, error) {
 	if err != nil {
 		return EventEnvelope{}, err
 	}
-	env, err := s.buildEnvelopeLocked(draft.Type, draft.Data, ignorable, draft.Surface)
-	if err != nil {
-		return EventEnvelope{}, err
-	}
+	env := s.buildEnvelopeLocked(draft.Type, draft.Data, ignorable, draft.Surface)
 	if err := s.writeLineLocked(env); err != nil {
 		return EventEnvelope{}, err
 	}
@@ -452,7 +452,8 @@ func (s *jsonlSession) Flush(ctx context.Context) error {
 }
 
 // Fork 实现 Session：切点校验与内存版同口径（组中间拒绝），子会话连同
-// seed 事件一起落盘（引用形态），血缘写进子 header。
+// seed 事件一起落盘——seed 是内存态的还原形态，blob 字节因此在写子会话
+// 时物化进它自己的 blobs 目录（子会话跨进程可开）；血缘写进子 header。
 func (s *jsonlSession) Fork(ctx context.Context, atSeq uint64) (Session, error) {
 	s.mu.Lock()
 	if s.deleted.Load() {
@@ -509,29 +510,20 @@ func (s *jsonlSession) closeHandles() {
 }
 
 // appendSyntheticLocked 是冷恢复路径的合成写：构造信封 + 落盘 + 内存追加，
-// 全程持有 s.mu（loadOpened 持锁调用）。data 为还原形态（合成 payload
-// 无内联字节，encodeBlobs 恒为原样）。
+// 全程持有 s.mu（loadOpened 持锁调用）。
 func (s *jsonlSession) appendSyntheticLocked(draft EventDraft) (EventEnvelope, error) {
-	env, err := s.buildEnvelopeLocked(draft.Type, draft.Data, false, draft.Surface)
-	if err != nil {
-		return EventEnvelope{}, err
-	}
+	env := s.buildEnvelopeLocked(draft.Type, draft.Data, false, draft.Surface)
 	if err := s.writeLineLocked(env); err != nil {
 		return EventEnvelope{}, err
 	}
 	return s.appendEnvelopeLocked(env), nil
 }
 
-// buildEnvelopeLocked 构造完整信封：Seq 取当前最大 +1；message 类型做
-// blob 引用替换（文件存引用形态）。
-func (s *jsonlSession) buildEnvelopeLocked(typ EventType, data json.RawMessage, ignorable bool, surface *SurfaceIntent) (EventEnvelope, error) {
-	if isMessageEvent(typ) {
-		encoded, err := encodeBlobs(data, s.blobsDir())
-		if err != nil {
-			return EventEnvelope{}, err
-		}
-		data = encoded
-	}
+// buildEnvelopeLocked 构造完整信封：Seq 取当前最大 +1。payload 原样入内存
+// ——**内存态恒为还原形态**（与 Open 的 blob 还原同口径），引用形态只在
+// 落盘时由 writeLineLocked 换出。因此当回合的 Surface / Events / Fork seed
+// / ExportSession 拿到的都是与「重开」一致的完整 payload。
+func (s *jsonlSession) buildEnvelopeLocked(typ EventType, data json.RawMessage, ignorable bool, surface *SurfaceIntent) EventEnvelope {
 	return EventEnvelope{
 		Seq:       s.seq + 1,
 		Time:      time.Now(),
@@ -539,11 +531,15 @@ func (s *jsonlSession) buildEnvelopeLocked(typ EventType, data json.RawMessage, 
 		Data:      data,
 		Ignorable: ignorable,
 		Surface:   surface,
-	}, nil
+	}
 }
 
 // writeLineLocked 把信封追加为一行 JSON（行尾换行；完整的行 = 成功
 // append 的判定标准：无换行的尾行视为撕裂，恢复时丢弃）。
+//
+// 这里是**唯一的落盘形态转换点**：message payload 的超限内联字节换成 blob
+// 引用，并把字节写进 blobs/{sha256}（内容寻址去重）。调用方持有的信封与
+// 内存态保持还原形态（见 buildEnvelopeLocked）。
 //
 // 跨进程 Delete 防护：Unix 写已 unlink 的句柄、Windows 借
 // FILE_SHARE_DELETE 删除打开中的文件，都会让句柄写入**静默成功**
@@ -558,6 +554,13 @@ func (s *jsonlSession) writeLineLocked(env EventEnvelope) error {
 	}
 	if s.f == nil {
 		return ErrSessionClosed
+	}
+	if isMessageEvent(env.Type) {
+		encoded, err := encodeBlobs(env.Data, s.blobsDir())
+		if err != nil {
+			return err
+		}
+		env.Data = encoded
 	}
 	line, err := json.Marshal(env)
 	if err != nil {
@@ -627,17 +630,17 @@ func loadEvents(path string) ([]EventEnvelope, int64, error) {
 
 // acquireSessionLock 用 O_CREATE|O_EXCL 原子创建锁文件（单写者的文件锁
 // 兜底）。锁被持有且未过期 → ErrWriterBusy（fail-fast，不阻塞等待）；
-// 残留锁超过 stale 阈值 → 抢占（删除重建）。返回的 release 删除锁文件，
-// 幂等。
+// 残留锁超过 stale 阈值 → 抢占（删除重建）。返回的 release 只删**自己
+// 这一次持有**的锁（按 token 认领，见 releaseLock），幂等。
 func acquireSessionLock(path string, stale time.Duration) (func(), error) {
-	release := func() { os.Remove(path) }
+	token := newLockToken()
 	for attempt := 0; attempt < 2; attempt++ {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
-			info, _ := json.Marshal(lockInfo{PID: os.Getpid(), AcquiredAt: time.Now()})
+			info, _ := json.Marshal(lockInfo{PID: os.Getpid(), Token: token, AcquiredAt: time.Now()})
 			f.Write(info)
 			f.Close()
-			return release, nil
+			return func() { releaseLock(path, token) }, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
 			return nil, fmt.Errorf("session: create lock: %w", err)
@@ -651,9 +654,35 @@ func acquireSessionLock(path string, stale time.Duration) (func(), error) {
 	return nil, fmt.Errorf("%w: lock %s contended", ErrWriterBusy, path)
 }
 
-// lockInfo 是锁文件内容：holder 与获取时间（stale 判定依据）。
+// lockSeq 给同进程内多次持锁递增序号：纳秒时间戳在时钟回拨或极短间隔下
+// 不保证唯一，token 必须不撞。
+var lockSeq atomic.Uint64
+
+// newLockToken 生成一次持锁的唯一标识。
+func newLockToken() string {
+	return fmt.Sprintf("%d-%d-%d", os.Getpid(), time.Now().UnixNano(), lockSeq.Add(1))
+}
+
+// releaseLock 只在锁文件仍是本次持有时删除它。stale 抢占之后，旧持有者的
+// Close 读到的是别人的 token（或锁已被重建）——此时**不删**：删掉新持有者
+// 的锁会让第三个写者随即打开同一 events.jsonl，单写者保证失效。
+func releaseLock(path, token string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // 锁已不在：不重建、不报错（释放幂等）
+	}
+	var info lockInfo
+	if json.Unmarshal(data, &info) != nil || info.Token != token {
+		return // 已被抢占：这不是自己那把锁
+	}
+	os.Remove(path)
+}
+
+// lockInfo 是锁文件内容：holder、本次持有的 token 与获取时间（stale 判定
+// 依据）。
 type lockInfo struct {
 	PID        int       `json:"pid"`
+	Token      string    `json:"token"`
 	AcquiredAt time.Time `json:"acquiredAt"`
 }
 

@@ -29,18 +29,20 @@ reg := sess.Registry()                          // 事件 codec 环境（FoldTra
 - `Open` is cold recovery (there is no separate Recover method): unclosed turn/step and unpaired ToolCall get synthesized closure events that are **genuinely written back to the log** before folding; live sessions are never cold-patched; recovery is idempotent.
 - **Recovery policy is selectable (#158)**: `NewJSONLStore(dir, WithRecoverPolicy(p))` — `RecoverSyntheticInterrupted` (default; the behavior above, unchanged); `RecoverExposePending` (**no synthesis** — the pending state hangs off the session handle: `Pending()` reports ToolCalls missing results (with Name/Arguments) and dangling step/turn, and the host adjudicates via `ResolvePending` (supply the real result / close explicitly) or `ResolveAsInterrupted` (one-shot default synthesis) — the tier for HITL wait-point recovery; **while pending, `Surface()` refuses to project** and returns `ErrPendingEvents` — mid-flight state is for the host to see, and an unpaired tool call fed to the model is a bad request); `RecoverReject` (any pending state rejects Open with `ErrPendingEvents`). Reach the adjudication surface via the `sess.(session.Recoverable)` type assertion (`Pending` / `ResolvePending` / `ResolveAsInterrupted`) — like `Close`, it is a JSONL extension that stays out of the `Session` interface; adjudication writes go through the same validation chain as Append (append first, mutate the in-memory pending set after success, validate inputs up front, never persist unknown targets); **resolve calls do not `Flush` themselves** — the write lands in the page cache, so a power cut / SIGKILL right after adjudication can lose the decision; call `sess.Flush(ctx)` after resolving (the contract is unchanged: crashes only guarantee everything before the last Flush point).
 - The JSONL implementation additionally provides `Close() error` (use via type assertion): releases the file lock and handle; idempotent.
+- **Two-form contract**: the in-memory payload is always the **restored form** (inline bytes complete); the `blob:` reference form exists only in on-disk lines — `Surface` / `Events` / `Fork` seed / `ExportSession` all see the full bytes, so the same session is byte-identical between "the live turn" and "after reopen". The only conversion points are `writeLineLocked` (memory → disk) and `Open` (disk → memory).
+- **Lock ownership**: the `lock` file carries a holder token, and `Close` removes only **its own acquisition** — after a stale preemption the old holder's release no longer deletes the new holder's lock (which would let a third writer in and break the single-writer guarantee).
 
 ## The two backends
 
 | | MemoryStore | JSONLStore |
 |---|---|---|
 | Flush | successful no-op (semantic placeholder) | `f.Sync()`; a crash is only guaranteed up to the Flush point |
-| Single writer | in-process lock (concurrent Create on the same ID: exactly one wins) | in-process lock + file lock (`O_EXCL`, stale preemption, `Flush` doubles as heartbeat) |
+| Single writer | in-process lock (concurrent Create on the same ID: exactly one wins) | in-process lock + file lock (`O_EXCL`, stale preemption at 1h by default (tunable via `JSONLStale`), `Flush` doubles as heartbeat) |
 | Torn-write recovery | not applicable (no file) | a trailing line without a newline is dropped and physically truncated; mid-file bad line / seq chain break → `ErrCorruptLog` |
 | Persisted header | — | synchronously rewritten after writing `compaction.checkpoint` (FormatVersion raised to 2) |
 | List | in-memory sort + cursor | scans `{root}/*/header.json` + cursor |
 
-JSONL on-disk layout: `{root}/{sessionID}/header.json` + `events.jsonl` (one envelope per line) + `blobs/{sha256}` (inline byte overflow above 32KiB, content-addressed dedup, sha self-verification; a missing or tampered blob is `ErrCorruptLog`) + `lock`. **JSONL is plaintext: the file is the secret surface, paths are host-owned.** The `blob:` URL prefix is reserved by this package; host-provided `blob:` URLs must switch schemes.
+JSONL on-disk layout: `{root}/{sessionID}/header.json` + `events.jsonl` (one envelope per line; message payloads stored in **blob reference form**) + `blobs/{sha256}` (inline byte overflow above 32KiB, content-addressed dedup, sha self-verification; a missing or tampered blob is `ErrCorruptLog`) + `lock` (carries the holder token). **JSONL is plaintext: the file is the secret surface, paths are host-owned.** The `blob:` URL prefix is reserved by this package; host-provided `blob:` URLs must switch schemes.
 
 ## Export and import (migration fidelity)
 
@@ -77,7 +79,7 @@ The message family carries one more **shape obligation** on the writer: when too
 | Sentinel | Meaning |
 |---|---|
 | `ErrSessionExists` / `ErrSessionNotFound` | Create hits an existing ID (second writer rejected) / Open, Delete on a nonexistent session |
-| `ErrWriterBusy` | file lock held (fail-fast; preemptible after the stale threshold) |
+| `ErrWriterBusy` | file lock held (fail-fast; preemptible once the lock mtime exceeds the `JSONLStale` threshold (1h by default); after preemption the old holder's release does not affect the new holder) |
 | `ErrUnknownEvent` / `ErrUnknownRequired` | writing an unknown required event / the log contains an unknown required event at recovery |
 | `ErrSurfaceNotAllowed` / `ErrReplaceNotSupported` / `ErrReplaceRange` | non-surface type carrying Surface / Replace type not registered / window reversed, out of range, or creating pairing orphans |
 | `ErrCorruptLog` | persisted log corrupt (mid-file bad line, seq chain break, blob missing / checksum mismatch) |
