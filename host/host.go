@@ -177,6 +177,18 @@ type AgentOptions struct {
 	// scope 上订阅 loop / llm 事件（loop/llm 是 EmitLocal 派发，只本
 	// scope 可见，挂宿主根收不到）。返回 error 中止本次回合。
 	ScopeHook func(scope *kernel.Context) error
+	// OnDelta 接收本回合的 assistant 文本增量（流式 UI 用）；nil =
+	// 不回调。
+	//
+	// 回调在 Run 的调用栈上**同步**执行：loop 在单个 goroutine 里
+	// 串行派发文本增量，所以不必加锁；但它属请求路径，别在里面长
+	// 时间阻塞（那会挡住整个回合）。取消经 Run 的 ctx，回调签名不
+	// 带 ctx——需要感知取消时在回调里读自己的状态。
+	//
+	// panic 原样上抛（与模型适配器 panic 同等对待，host 不吞不标，
+	// 见 README「安全默认」）。只想让某次回调失败而不中断回合，自
+	// 己在回调内兜。
+	OnDelta func(text string)
 }
 
 // DefaultAgentOptions 是便捷实例化参数：模型按声明名从宿主 Registry 解析，
@@ -194,6 +206,8 @@ type DefaultAgentOptions struct {
 	SessionID string
 	// ToolGate 是工具执行闸门（nil = 不设防）。
 	ToolGate ToolGate
+	// OnDelta 是文本增量回调，语义与 AgentOptions.OnDelta 相同。
+	OnDelta func(text string)
 }
 
 // NewAgent 是 agent 的**最泛化构造**：全参数注入——model 可以是任意
@@ -222,6 +236,7 @@ func (h *Host) NewAgent(opt AgentOptions) (*Agent, error) {
 		sess:      opt.Session,
 		gate:      opt.ToolGate,
 		scopeHook: opt.ScopeHook,
+		onDelta:   opt.OnDelta,
 	}, nil
 }
 
@@ -260,6 +275,7 @@ func (h *Host) DefaultAgent(ctx context.Context, opt DefaultAgentOptions) (*Agen
 		System:    opt.System,
 		ModelName: opt.Model,
 		ToolGate:  opt.ToolGate,
+		OnDelta:   opt.OnDelta,
 	})
 }
 
@@ -305,6 +321,7 @@ type Agent struct {
 	sess      session.Session
 	gate      ToolGate
 	scopeHook func(scope *kernel.Context) error
+	onDelta   func(text string)
 }
 
 // Run 执行一个回合。input 是本回合的用户输入（user 消息；多条时按序）。
@@ -420,7 +437,7 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 				res, err = nil, fmt.Errorf("host: session append: %w", af.err)
 			}
 		}()
-		res, err = la.RunStream(ctx, nil, history, input...)
+		res, err = la.RunStream(ctx, a.onDelta, history, input...)
 	}()
 	return res, err // error 路径 res 可能非 nil（canceled/error 的部分产出；日志已由 turn_end 监听闭合）
 }

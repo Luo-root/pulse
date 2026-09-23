@@ -49,6 +49,7 @@ a, err := h.NewAgent(host.AgentOptions{
     Session:   mySession,           // nil = no session persistence
     System:    "...",
     ToolGate:  myApproval,          // tool-execution gate (minimal HITL mount); nil = unguarded
+    OnDelta:   onText,              // text deltas (streaming UI); nil = no callback
 })
 ```
 
@@ -66,12 +67,33 @@ Error / cancel paths persist too: loop emits `turn_end` on every exit; what alre
 
 An Agent built on a session-less host degrades to a pure passthrough; the `RunHistory` explicit-history channel remains (side-channel injection) and is superseded by Surface when a session exists.
 
+## Streaming text deltas
+
+`AgentOptions.OnDelta` / `DefaultAgentOptions.OnDelta` pass `loop.Agent.RunStream`'s onDelta through — the **only token-level text exit** (`llm.EventTextDelta` is fed to that callback alone and never reaches the event bus; what the bus carries is step-level and whole-response-level).
+
+```go
+a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
+    Name: "main", Model: "main",
+    OnDelta: func(text string) { sendToUI(text) }, // one call per delta
+})
+res, err := a.Run(ctx, llm.User(llm.Text("...")))  // still blocking: the round is over when it returns
+```
+
+Contract:
+
+- The callback runs **synchronously** on `Run`'s call stack (loop dispatches deltas serially from one goroutine, so no locking is needed), but it is part of the request path — never block in it for long; hand off to your UI quickly;
+- Cancellation goes through `Run`'s ctx; the callback carries no ctx (same as loop);
+- A panic propagates untouched — host neither swallows nor relabels it (see "Safe defaults");
+- Streaming is **not a bypass**: session persistence, observability and the gate all still apply, and `Run` still returns the full `*loop.Result`;
+- Assistant **text** only: reasoning deltas and tool-call argument deltas are transport-level fragments consumed by each adapter's own state machine, which assembles them into `llm.Reasoning` parts and `ToolCall`s delivered once with the response (for token-level reasoning, take the model from `h.Models()` and drive `Stream` yourself).
+
 ## Zero new abstractions
 
 - `host.Provider` = `func(*kernel.Context, *llm.Registry) error` — `openai.Register` / `anthropic.Register` convert directly;
 - `host.ToolSource` = `func(*kernel.Context, *toolset.Registry) error` — wrap `builtins.Register` (and its Options) in a closure; `host.SkillTools(loader)` is also a ToolSource (the skill catalog/loading read-only pair);
 - `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)` — the tool-execution gate (mount point of the before_tool_call waterfall); approval UIs / policy engines plug into DefaultAgent through it;
 - `AgentOptions.ScopeHook` = `func(*kernel.Context) error` — called with the per-Run request scope: subscribe to loop/llm events yourself via `kernel.On` / `kernel.OnWaterfall` (Local dispatch is scope-local; mounting on the host root hears nothing);
+- `AgentOptions.OnDelta` = `func(text string)` — loop's text-delta callback (the `RunStream` onDelta); streaming UIs plug in here;
 - Other advanced assembly (custom services, host-level plugins) goes through `h.Kernel()` / `h.Models()` / `h.Tools()` with each package's native semantics — host hides nothing.
 
 ## Safe defaults
@@ -84,4 +106,4 @@ An Agent built on a session-less host degrades to a pure passthrough; the `RunHi
 
 ## Tests
 
-`go test -race ./host/` — dedicated acceptance tests for the stateless passthrough, the three-way wiring (Surface role sequence / lifecycle closure / request.header audit / second-round history injection), tool-call-logged-before-execution, the HITL checkpoint Flush (exactly one per `after_model` step), error-path persistence with zero synthesis on reopen, SessionID resume, ToolGate rejection, ScopeHook subscription, and per-request TraceIDs.
+`go test -race ./host/` — dedicated acceptance tests for the stateless passthrough, the three-way wiring (Surface role sequence / lifecycle closure / request.header audit / second-round history injection), tool-call-logged-before-execution, the HITL checkpoint Flush (exactly one per `after_model` step), error-path persistence with zero synthesis on reopen, SessionID resume, ToolGate rejection, ScopeHook subscription, per-request TraceIDs, and streaming text deltas (both construction paths, the nil-callback no-op, panic propagation).

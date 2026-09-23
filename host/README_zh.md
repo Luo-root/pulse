@@ -47,6 +47,7 @@ a, err := h.NewAgent(host.AgentOptions{
     Session:   mySession,           // nil = 无会话持久化
     System:    "...",
     ToolGate:  myApproval,          // 工具执行闸门（HITL 最小挂点）；nil = 不设防
+    OnDelta:   onText,              // 文本增量（流式 UI）；nil = 不回调
 })
 ```
 
@@ -64,12 +65,33 @@ error / cancel 路径同样落盘：loop 的 `turn_end` 无论何种方式结束
 
 无会话宿主构造的 Agent 退化为纯透传；`RunHistory` 显式传 history 的通道保留（旁路注入），有会话时被 Surface 取代。
 
+## 流式文本增量
+
+`AgentOptions.OnDelta` / `DefaultAgentOptions.OnDelta` 是 `loop.Agent.RunStream` 的 onDelta 透传——**唯一的 token 级文本出口**（`llm.EventTextDelta` 只喂这个回调，不上事件总线；总线上的 loop/llm 事件是步骤级与整响应级）。
+
+```go
+a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
+    Name: "main", Model: "main",
+    OnDelta: func(text string) { sendToUI(text) }, // 逐段文本
+})
+res, err := a.Run(ctx, llm.User(llm.Text("...")))  // 仍是阻塞调用：返回时回合已结束
+```
+
+契约：
+
+- 回调在 `Run` 的调用栈上**同步**执行（loop 在单 goroutine 里串行派发，不必加锁），但它属请求路径——别在里面长时间阻塞，要转交 UI 就尽快入队或扇出；
+- 取消经 `Run` 的 ctx；回调签名不带 ctx（与 loop 一致）；
+- panic 原样上抛，host 不吞不标（同「安全默认」）；
+- 流式**不是旁路**：会话落盘、观测、闸门照旧，`Run` 仍返回完整 `*loop.Result`；
+- 只有 assistant **文本**增量：思维链增量与工具调用参数增量是传输层分片，由各适配器自己的状态机拼成 `llm.Reasoning` part 与 `ToolCall`，随响应一次性到达（要 token 级思维链，用 `h.Models()` 取模型自己 `Stream`）。
+
 ## 零新抽象
 
 - `host.Provider` = `func(*kernel.Context, *llm.Registry) error`——`openai.Register` / `anthropic.Register` 直接转换；
 - `host.ToolSource` = `func(*kernel.Context, *toolset.Registry) error`——`builtins.Register` 用闭包携带 Options；`host.SkillTools(loader)` 也是 ToolSource（skills 短表/加载只读工具对）；
 - `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)`——工具执行闸门（before_tool_call waterfall 的挂载点），审批 UI / 策略引擎经此接入 DefaultAgent；
 - `AgentOptions.ScopeHook` = `func(*kernel.Context) error`——每次 Run 派生请求 scope 后调用：应用经 `kernel.On` / `kernel.OnWaterfall` 在请求 scope 上自行订阅 loop/llm 事件（Local 派发只本 scope 可见，挂宿主根收不到）；
+- `AgentOptions.OnDelta` = `func(text string)`——loop 的文本增量回调（`RunStream` 的 onDelta），流式 UI 经此接入；
 - 其余进阶装配（自定义服务、宿主级插件）经 `h.Kernel()` / `h.Models()` / `h.Tools()` 用各包原生语义——host 不藏内核。
 
 ## 安全默认
@@ -82,4 +104,4 @@ error / cancel 路径同样落盘：loop 的 `turn_end` 无论何种方式结束
 
 ## 测试
 
-`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID，各有验收测试。
+`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + nil 回调不变 + panic 原样上抛），各有验收测试。

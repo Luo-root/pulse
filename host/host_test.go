@@ -708,3 +708,140 @@ func TestSkillToolsSource(t *testing.T) {
 		t.Fatalf("skill tool defs = %+v", defs)
 	}
 }
+
+// deltaModel 把一次响应拆成多段文本增量发出——ScriptedModel 只发一段
+// （llm/mock.go），验「逐段到达」需要多段。
+type deltaModel struct {
+	deltas []string
+}
+
+func (m *deltaModel) Generate(_ context.Context, _ *llm.GenerateRequest) (*llm.Response, error) {
+	return llm.Resp(strings.Join(m.deltas, "")), nil
+}
+
+func (m *deltaModel) Stream(ctx context.Context, _ *llm.GenerateRequest) (<-chan llm.StreamEvent, error) {
+	out := make(chan llm.StreamEvent, len(m.deltas)+1)
+	go func() {
+		defer close(out)
+		for _, d := range m.deltas {
+			select {
+			case out <- llm.StreamEvent{Kind: llm.EventTextDelta, Text: d}:
+			case <-ctx.Done():
+				out <- llm.StreamEvent{Kind: llm.EventError, Err: ctx.Err()}
+				return
+			}
+		}
+		out <- llm.StreamEvent{Kind: llm.EventDone, Response: llm.Resp(strings.Join(m.deltas, ""))}
+	}()
+	return out, nil
+}
+
+// TestHostAgentStreamsDeltas：#211——loop 的 onDelta 经 AgentOptions 透传：
+// 多段增量按序到达、拼接与 Result.Final 一致；且流式不是旁路，会话落盘的
+// 三向接线照旧（assistant 进 surface，回合闭合）。
+func TestHostAgentStreamsDeltas(t *testing.T) {
+	ctx := context.Background()
+	model := &deltaModel{deltas: []string{"你", "好", "呀"}}
+	sess, err := memory.NewMemorySessionStack().Create(ctx, session.SessionHeader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil // 全注入：不依赖宿主声明的模型
+	})
+	var got []string
+	a, err := h.NewAgent(AgentOptions{
+		Name: "streamer", Model: model, ModelName: "delta-model", Session: sess,
+		OnDelta: func(text string) { got = append(got, text) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, llm.User(llm.Text("打个招呼")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0] != "你" || got[1] != "好" || got[2] != "呀" {
+		t.Fatalf("deltas = %q, want 三段按序", got)
+	}
+	if want := strings.Join(got, ""); res.Final == nil || res.Final.Text() != want {
+		t.Fatalf("final = %+v, want %q", res.Final, want)
+	}
+	surface, err := sess.Surface(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(surface) == 0 {
+		t.Fatal("surface empty: streaming must not bypass session persistence")
+	}
+	last := surface[len(surface)-1]
+	if last.Role != llm.RoleAssistant || last.Text() != "你好呀" {
+		t.Fatalf("surface tail = %+v", last)
+	}
+}
+
+// TestHostDefaultAgentStreamsDeltas：便捷路径同样带 onDelta——否则
+// 「高级旋钮在便捷路径丢失」这个问题会被原样复制一份。
+func TestHostDefaultAgentStreamsDeltas(t *testing.T) {
+	ctx := context.Background()
+	h := newTestHost(t, &deltaModel{deltas: []string{"a", "b"}}, nil)
+	var got []string
+	a, err := h.DefaultAgent(ctx, DefaultAgentOptions{
+		Name: "conv", Model: "stub",
+		OnDelta: func(text string) { got = append(got, text) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, llm.User(llm.Text("hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "") != "ab" || res.Final.Text() != "ab" {
+		t.Fatalf("deltas = %q, final = %q", got, res.Final.Text())
+	}
+}
+
+// TestHostOnDeltaNilUnchanged：nil 回调 = 行为与透传前一致（不回调、
+// 不报错、结果照常返回）。
+func TestHostOnDeltaNilUnchanged(t *testing.T) {
+	ctx := context.Background()
+	h := newTestHost(t, llm.NewScripted(llm.Resp("plain")), nil)
+	a, err := h.DefaultAgent(ctx, DefaultAgentOptions{Name: "plain", Model: "stub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, llm.User(llm.Text("hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Final.Text() != "plain" {
+		t.Fatalf("final = %q", res.Final.Text())
+	}
+}
+
+// TestHostOnDeltaPanicPropagates：回调 panic 原样上抛——host 只把
+// appendFail 转成 error，其余 panic 不吞不标（README「安全默认」）。
+func TestHostOnDeltaPanicPropagates(t *testing.T) {
+	ctx := context.Background()
+	h := newTestHost(t, llm.NewScripted(llm.Resp("hi")), nil)
+	a, err := h.DefaultAgent(ctx, DefaultAgentOptions{
+		Name: "boom", Model: "stub",
+		OnDelta: func(string) { panic("delta exploded") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("onDelta panic must propagate out of Run")
+		}
+		if s, ok := r.(string); !ok || s != "delta exploded" {
+			t.Fatalf("panic payload = %#v", r)
+		}
+	}()
+	if _, err := a.Run(ctx, llm.User(llm.Text("hi"))); err != nil {
+		t.Fatalf("Run returned error instead of panicking: %v", err)
+	}
+}
