@@ -457,13 +457,16 @@ func (s *server) ensureOpen(ctx context.Context, abs, ext string) error {
 // 的 failPending 唤不醒它——不查的话，server 在等待窗口内猝死会被报成
 // 「0 个诊断 / may still be indexing」这个**成功的软结果**，宿主按「没诊断 =
 // 干净」决策就误判了（这正是 #216 要消除的「没有任何告警」）。
+//
+// 但存活检查必须**排在结果读取之后**（#230）：「server 推完这一版诊断、随即
+// 猝死」时 s.diags 已经 received，先判死会把一份**已经拿到的有效事实**丢掉，
+// 宿主只能再调一次（重建 server 重拿）。三条出口因此都对：已就绪 → 返回诊断；
+// 未就绪 + 死 → 报 connection closed（保守方向不变）；未就绪 + 活 → 轮询到
+// deadline。
 func (s *server) diagnostics(ctx context.Context, abs string, window time.Duration) (string, error) {
 	uri := fileURI(abs)
 	deadline := time.Now().Add(window)
 	for {
-		if s.unusable() {
-			return "", fmt.Errorf("lsp: server %s connection closed", s.lang)
-		}
 		s.mu.Lock()
 		st := s.diags[uri]
 		if st != nil && st.received {
@@ -472,6 +475,9 @@ func (s *server) diagnostics(ctx context.Context, abs string, window time.Durati
 			return formatDiags(abs, items), nil
 		}
 		s.mu.Unlock()
+		if s.unusable() {
+			return "", fmt.Errorf("lsp: server %s connection closed", s.lang)
+		}
 		if time.Now().After(deadline) {
 			return fmt.Sprintf("%s: no diagnostics reported within %s (server may still be indexing)", abs, window), nil
 		}

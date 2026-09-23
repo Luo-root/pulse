@@ -375,6 +375,50 @@ func TestLSPDiagnosticsReportsDeadServer(t *testing.T) {
 	}
 }
 
+// TestLSPDiagnosticsKeepsResultPushedRightBeforeDeath：#230——「server 推完这一版
+// 诊断、随即猝死」时不能把已经拿到的那份事实丢掉：存活检查先读后判，命中即返回。
+// 与上一条配对：始终不推诊断 + 猝死仍然要报 connection closed（保守方向不变）。
+func TestLSPDiagnosticsKeepsResultPushedRightBeforeDeath(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "hello.go")
+	if err := os.WriteFile(file, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri := fileURI(file)
+	fs := newFakeServer()
+	fs.handle = func(f rpcFrame) {
+		switch f.Method {
+		case "initialize":
+			fs.reply(f, map[string]any{"capabilities": map[string]any{}})
+		case "textDocument/didOpen":
+			// 先推一版诊断，随即猝死——两帧同一方向、同一 channel，
+			// 客户端按序处理，所以「已 received」必然先于「标死」。
+			fs.notify("textDocument/publishDiagnostics", publishDiagParams{
+				URI: uri,
+				Diagnostics: []rawDiag{{
+					Range:    lsRange{Start: lsPosition{Line: 0, Character: 3}},
+					Severity: 1,
+					Message:  "pushed then died",
+					Source:   "fakegopls",
+				}},
+			})
+			close(fs.conn.out)
+		}
+	}
+	injectFake(t, fs, nil)
+
+	reg, cleanup := lspSetup(t, lspOptions(root, func(o *Options) { o.DiagWindow = 2 * time.Second }))
+	defer cleanup()
+
+	out := lspCall(t, reg, map[string]any{"op": "diagnostics", "path": "hello.go"})
+	if !strings.Contains(out, "1 diagnostic(s)") || !strings.Contains(out, "pushed then died") {
+		t.Fatalf("must return the diagnostics received before the server died, got %q", out)
+	}
+	if strings.Contains(out, "connection closed") {
+		t.Fatalf("must not report the server as dead while a received result is available: %q", out)
+	}
+}
+
 // failSendConn 是 Send 恒失败的 frameConn：钉住「管道已破」这条标死路径。
 type failSendConn struct {
 	base *fakeConn
