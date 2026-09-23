@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/Luo-root/pulse/llm"
 	"github.com/Luo-root/pulse/loop"
 	"github.com/Luo-root/pulse/memory"
+	"github.com/Luo-root/pulse/memory/assemble"
 	"github.com/Luo-root/pulse/memory/session"
 	"github.com/Luo-root/pulse/observability"
 	"github.com/Luo-root/pulse/toolset"
@@ -802,9 +804,10 @@ func TestHostDefaultAgentStreamsDeltas(t *testing.T) {
 	}
 }
 
-// TestHostOnDeltaNilUnchanged：nil 回调 = 行为与透传前一致（不回调、
-// 不报错、结果照常返回）。
-func TestHostOnDeltaNilUnchanged(t *testing.T) {
+// TestHostOnDeltaUnsetRoundOK：不设 OnDelta = 正常回合仍然跑通（不回调、
+// 不报错、结果照常返回）。名字不承诺「逐字节与透传前一致」——那条测不到，
+// 行为不变由 nil 分支的读码保证。
+func TestHostOnDeltaUnsetRoundOK(t *testing.T) {
 	ctx := context.Background()
 	h := newTestHost(t, llm.NewScripted(llm.Resp("plain")), nil)
 	a, err := h.DefaultAgent(ctx, DefaultAgentOptions{Name: "plain", Model: "stub"})
@@ -848,7 +851,8 @@ func TestHostOnDeltaPanicPropagates(t *testing.T) {
 
 // TestHostMaxStepsStopsTurn：#2——单回合步数上限经 AgentOptions 透传给
 // loop（此前 host 造出来的 Agent 无法设上限）。超限不是错误：Result 以
-// StoppedBy=max_steps 如实返回，回合照常闭合。
+// StoppedBy=max_steps 如实返回，**回合照常落盘闭合、会话照常可续跑**——
+// 这正是 godoc 承诺、也最容易被误信的一条，所以在带会话的真实装配上钉。
 func TestHostMaxStepsStopsTurn(t *testing.T) {
 	ctx := context.Background()
 	tools := loop.NewMemToolSet()
@@ -862,8 +866,12 @@ func TestHostMaxStepsStopsTurn(t *testing.T) {
 	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
 		o.Providers, o.Models = nil, nil
 	})
+	sess, err := memory.NewMemorySessionStack().Create(ctx, session.SessionHeader{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	a, err := h.NewAgent(AgentOptions{
-		Name: "bounded", Model: model, ModelName: "stub", ToolSet: tools, MaxSteps: 2,
+		Name: "bounded", Model: model, ModelName: "stub", ToolSet: tools, Session: sess, MaxSteps: 2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -874,6 +882,32 @@ func TestHostMaxStepsStopsTurn(t *testing.T) {
 	}
 	if res.StoppedBy != loop.StopMaxSteps || res.Steps != 2 {
 		t.Fatalf("stopped_by=%v steps=%d, want max_steps / 2", res.StoppedBy, res.Steps)
+	}
+	// 落盘闭合：这一轮的消息真的进了 surface（不是空日志）。
+	surface, err := sess.Surface(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(surface) == 0 {
+		t.Fatal("a max_steps turn must still be persisted (surface is empty)")
+	}
+	// 会话可续跑：换一个直接收尾的模型走同一会话，下一轮正常完成。
+	h2 := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	a2, err := h2.NewAgent(AgentOptions{
+		Name: "bounded", Model: llm.NewScripted(llm.Resp("second")), ModelName: "stub",
+		ToolSet: tools, Session: sess, MaxSteps: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2, err := a2.Run(ctx, llm.User(llm.Text("again")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.StoppedBy != loop.StopCompleted || res2.Final.Text() != "second" {
+		t.Fatalf("second turn stopped_by=%v final=%q, want completed / second", res2.StoppedBy, res2.Final.Text())
 	}
 }
 
@@ -1115,5 +1149,159 @@ func TestHostToolGatePreviewRecipe(t *testing.T) {
 	}
 	if !seen {
 		t.Fatal("model must receive the rejection reason as an IsError result")
+	}
+}
+
+// TestHostToolGateSeesRewrittenCall：闸门的**顺序**契约——取后序，审批的是
+// 改写后的最终调用（「批准的 = 执行的」由构造保证），而不是改写前的原始
+// 参数；闸门拒绝时，那条被改写过的调用同样不得执行。
+//
+// 顺序写错正是「批准 A、执行 B」的来源：卡片展示闸门看到的参数，工具跑
+// 链尾的参数，两者必须同一份。
+func TestHostToolGateSeesRewrittenCall(t *testing.T) {
+	ctx := context.Background()
+	executed := false
+	tools := loop.NewMemToolSet()
+	if err := tools.Register(
+		llm.ToolDef{Name: "echo", Description: "echo", Parameters: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, json.RawMessage) (string, error) {
+			executed = true
+			return "ok", nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	model := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{"text":"raw"}`)}),
+		llm.Resp("done"),
+	)
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	var gated string
+	a, err := h.NewAgent(AgentOptions{
+		Name: "ordered", Model: model, ModelName: "stub", ToolSet: tools,
+		ScopeHook: func(scope *kernel.Context) error {
+			_, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
+				func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
+					p.Call.Arguments = json.RawMessage(`{"text":"sanitized"}`)
+					return next(p)
+				})
+			return err
+		},
+		ToolGate: func(call llm.ToolCall) (bool, string) {
+			gated = string(call.Arguments)
+			return false, "needs approval"
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, llm.User(llm.Text("go"))); err != nil {
+		t.Fatal(err)
+	}
+	if gated != `{"text":"sanitized"}` {
+		t.Fatalf("gate saw %s, want the rewritten call (post-order)", gated)
+	}
+	if executed {
+		t.Fatal("rejected call must not execute")
+	}
+}
+
+// TestHostContextBuilderRecipe：README「上下文组装缝」那段官方配方逐字
+// 落到可编译、可运行的用例上（没人编译的文档片段正是字段名写错还能躺在
+// 文档里的原因），并覆盖「空 input」这一档——`Run(ctx)` 不带输入是合法
+// 调用，配方里那句判空就是为它写的。
+func TestHostContextBuilderRecipe(t *testing.T) {
+	ctx := context.Background()
+	items := memory.NewMemoryItemStack(assemble.Budget{StableMemoryTokens: 800, RetrievedTokens: 1200})
+	recipe := func(ctx context.Context, surface, input []*llm.Message) ([]*llm.Message, error) {
+		in := assemble.AssembleInput{
+			Namespace: []string{"user-42"},
+			Surface:   surface,
+		}
+		if len(input) > 0 {
+			in.Query = input[len(input)-1].Text()
+		}
+		out, err := items.Assemble(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		return out.Messages, nil
+	}
+
+	// 空 input：直接取 input[len(input)-1] 会 index out of range。
+	if _, err := recipe(ctx, nil, nil); err != nil {
+		t.Fatalf("empty input must be legal for the recipe: %v", err)
+	}
+
+	// 真跑一回合：组装产物进请求，本轮 input 仍是最后一条。
+	cap := &captureModel{inner: llm.NewScripted(llm.Resp("ok"))}
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	a, err := h.NewAgent(AgentOptions{
+		Name: "recipe", Model: cap, ModelName: "stub", ContextBuilder: recipe,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, llm.User(llm.Text("hello"))); err != nil {
+		t.Fatal(err)
+	}
+	if cap.last == nil {
+		t.Fatal("model was not called")
+	}
+	if n := len(cap.last.Messages); n != 1 || cap.last.Messages[0].Text() != "hello" {
+		t.Fatalf("model request = %d messages, first = %q", n, cap.last.Messages[0].Text())
+	}
+}
+
+// TestHostOptionsKnobParity：两条构造路径的旋钮必须**同名同型**——往
+// AgentOptions 加旋钮却忘了 DefaultAgentOptions，就是 #211 里 #3 的复刻，
+// 而且不会有任何测试变红（那 4 个字段当初正是靠手工转写补上的）。这里把
+// 「来源类字段」以外的集合机械化比对，让这类遗漏由测试拦住而不是靠人记得。
+func TestHostOptionsKnobParity(t *testing.T) {
+	// 两端本来就不同的「来源」解析项：模型 / 工具集 / 会话的来源不同。
+	onlyAgent := map[string]bool{"Model": true, "ModelName": true, "ToolSet": true, "Session": true}
+	onlyDefault := map[string]bool{"Model": true, "SessionID": true}
+
+	knobs := func(v any, exclude map[string]bool) map[string]string {
+		tp := reflect.TypeOf(v)
+		out := make(map[string]string, tp.NumField())
+		for i := range tp.NumField() {
+			f := tp.Field(i)
+			if exclude[f.Name] {
+				continue
+			}
+			out[f.Name] = f.Type.String()
+		}
+		return out
+	}
+
+	fromAgent := knobs(AgentOptions{}, onlyAgent)
+	fromDefault := knobs(DefaultAgentOptions{}, onlyDefault)
+	// 反射扫空 = 护栏本身失效（放它过去等于没有护栏）。
+	if len(fromAgent) == 0 || len(fromDefault) == 0 {
+		t.Fatal("knob scan produced nothing — this guard would be vacuous")
+	}
+	for _, name := range []string{"Name", "System", "ToolGate", "ScopeHook", "OnDelta", "MaxSteps", "ContextBuilder"} {
+		if _, ok := fromAgent[name]; !ok {
+			t.Errorf("AgentOptions.%s missing from the scan — exclusion sets drifted", name)
+		}
+	}
+	for name, typ := range fromAgent {
+		got, ok := fromDefault[name]
+		if !ok {
+			t.Errorf("AgentOptions.%s has no same-named knob on DefaultAgentOptions (the convenience path silently loses it)", name)
+			continue
+		}
+		if got != typ {
+			t.Errorf("%s type differs across paths: AgentOptions=%s DefaultAgentOptions=%s", name, typ, got)
+		}
+	}
+	for name := range fromDefault {
+		if _, ok := fromAgent[name]; !ok {
+			t.Errorf("DefaultAgentOptions.%s has no same-named knob on AgentOptions", name)
+		}
 	}
 }

@@ -199,17 +199,29 @@ type AgentOptions struct {
 	// 与本轮 input，返回真正作为 history 发给模型的序列；本轮 input 仍
 	// 原样追加在其后。
 	//
+	// 三条契约：
+	//
+	//   - **input 可能为空**（`Run(ctx)` 不带输入是合法调用）：取「本轮
+	//     检索信号」前先判空，别直接 `input[len(input)-1]`；空 = 只取
+	//     稳定记忆（assemble.AssembleInput.Query 的空语义）。
+	//   - **组装产物不落盘**：返回的序列只作为本次请求的 history，不进
+	//     会话 surface——召回的记忆每轮都要重新注入，下一次 Surface()
+	//     也不会把它带回来（与 memory/assemble §8.3「检索块不持久化」
+	//     一致）。
+	//   - **组装发生在请求 scope 之外**（派生 scope 之前，见 run）：在
+	//     组装里做的事不带本回合 TraceID；要观测就用自己的 tracer。
+	//
 	// 组装器不认识 host，缝在宿主这一侧（典型接线）：
 	//
 	//	items := memory.NewMemoryItemStack(assemble.Budget{})
 	//	h.NewAgent(host.AgentOptions{
 	//		// ...
 	//		ContextBuilder: func(ctx context.Context, surface, input []*llm.Message) ([]*llm.Message, error) {
-	//			out, err := items.Assemble(ctx, assemble.AssembleInput{
-	//				Namespace: []string{"user-42"},
-	//				Surface:   surface,
-	//				Query:     input[len(input)-1].Text(),
-	//			})
+	//			in := assemble.AssembleInput{Namespace: []string{"user-42"}, Surface: surface}
+	//			if len(input) > 0 {
+	//				in.Query = input[len(input)-1].Text()
+	//			}
+	//			out, err := items.Assemble(ctx, in)
 	//			if err != nil {
 	//				return nil, err
 	//			}
@@ -445,17 +457,25 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 	}
 
 	// 工具闸门（HITL 最小挂点）：注册在请求 scope 的 before_tool_call
-	// waterfall 首环——拒绝即短路，模型收到带 reason 的 IsError 结果。
+	// waterfall 首环，但取**后序**——先让内层链跑完（ScopeHook 挂的改写
+	// 在这一段生效），再拿最终调用去审批，于是「批准的」与「执行的」由
+	// 构造保证是同一份（顺序说明见 README「完整 HITL 配方」）。loop 在
+	// 整条 waterfall 返回之后才真正执行工具，所以后序审批仍然先于执行。
+	// 拒绝即短路，模型收到带 reason 的 IsError 结果。
 	if a.gate != nil {
 		if _, err := kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
 			func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
-				if ok, reason := a.gate(p.Call); !ok {
+				out := next(p)
+				if out.Rejected { // 内层已拒（策略 / 改写钩子），不再打扰人
+					return out
+				}
+				if ok, reason := a.gate(out.Call); !ok {
 					if reason == "" {
 						reason = "rejected by tool gate"
 					}
-					return &loop.BeforeToolCall{Call: p.Call, Rejected: true, RejectReason: reason}
+					return &loop.BeforeToolCall{Call: out.Call, Rejected: true, RejectReason: reason}
 				}
-				return next(p)
+				return out
 			}); err != nil {
 			return nil, fmt.Errorf("host: tool gate: %w", err)
 		}

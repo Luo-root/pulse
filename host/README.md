@@ -93,19 +93,22 @@ Contract:
 `AgentOptions.ContextBuilder` / `DefaultAgentOptions.ContextBuilder` is the per-round assembly seam — **the official landing point for long-term memory (`memory/assemble`'s budgeted assembly and retrieval) and context trimming**:
 
 ```go
-items := memory.NewMemoryItemStack(assemble.Budget{StableTokens: 800, RetrievedTokens: 1200})
+items := memory.NewMemoryItemStack(assemble.Budget{StableMemoryTokens: 800, RetrievedTokens: 1200})
 a, err := h.NewAgent(host.AgentOptions{
     // ...
     ContextBuilder: func(ctx context.Context, surface, input []*llm.Message) ([]*llm.Message, error) {
-        out, err := items.Assemble(ctx, assemble.AssembleInput{
+        in := assemble.AssembleInput{
             Namespace: []string{"user-42"},
-            Surface:   surface,                    // the current session surface
-            Query:     input[len(input)-1].Text(), // this round's input as the retrieval signal
-        })
+            Surface:   surface, // the current session surface
+        }
+        if len(input) > 0 {     // Run(ctx) may carry no input: empty = stable memory only
+            in.Query = input[len(input)-1].Text() // this round's input as the retrieval signal
+        }
+        out, err := items.Assemble(ctx, in)
         if err != nil {
             return nil, err
         }
-        return out.Messages, nil                   // stable prefix → surface tail → retrieved → injected
+        return out.Messages, nil // stable prefix → surface tail → retrieved → injected
     },
 })
 ```
@@ -113,9 +116,12 @@ a, err := h.NewAgent(host.AgentOptions{
 Contract:
 
 - `surface` is the folded `session.Surface()` when a session is attached, or the history passed to `RunHistory` otherwise;
-- `input` is this round's input (user messages, already validated); the returned slice becomes the history handed to loop, and **this round's input is still appended after it** — the builder owns everything *before* the current message;
+- `input` is this round's input (user messages, already validated) and **may be empty** (`Run(ctx)` without input is legal) — guard before reading the last message instead of writing `input[len(input)-1]` straight away; the returned slice becomes the history handed to loop, and **this round's input is still appended after it** — the builder owns everything *before* the current message;
+- **the assembled slice is not persisted**: it goes to the model only and never enters the session surface — recalled memory must be re-injected every round and will not come back from the next `Surface()` (matches `memory/assemble` §8.3 "retrieved blocks are not persisted");
+- **assembly runs outside the request scope** (before `Derive()`), so work done inside the builder carries no TraceID of this round — observe it with your own tracer (ctx is in hand, and the seam lives host-side);
 - returning an error **aborts the round before any model call** (a half-built context is never sent);
-- nil = no assembly (same behaviour as not setting it); the assembler does not know host — the seam lives host-side, and `host` never imports `memory/assemble`.
+- nil = no assembly (same behaviour as not setting it); the assembler does not know host — the seam lives host-side, and `host` never imports `memory/assemble`;
+- this recipe is compile-checked by `TestHostContextBuilderRecipe`, which uses the snippet above verbatim (a doc snippet nobody compiles is exactly how a wrong field name survives).
 
 ## The complete HITL recipe (permission cards / argument sanitising / cancellation)
 
@@ -150,15 +156,18 @@ a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
 Key points:
 
 - **Cards**: `toolset.Registry.Preview(ctx, name, args)` returns `(Preview, ok, err)`; `ok=false` means the tool is unregistered or registered no `PreviewFn` — treat it as "empty preview, HITL should still ask", never as a pass;
-- **Rewriting**: `BeforeToolCall` is around-semantics — rewrite `Call.Name` / `Call.Arguments` in place, or set `Rejected` to short-circuit (loop's waterfall contract);
+- **Order (approved = executed)**: the gate mounts on the **outermost** ring of the `before_tool_call` chain but runs **post-order** — it lets the inner ring run first (`ScopeHook` rewrites apply there), then approves the **final** call. loop executes the tool only after the whole chain returns, so the card shows exactly what will run and the gate does not need to re-run `sanitize`. The flip side: the gate does not see the pre-rewrite call — for that, observe `llm.after_model` or `loop.tool_finished`;
+- **Rewriting**: `BeforeToolCall` is around-semantics — rewrite `Call.Name` / `Call.Arguments` in place, or set `Rejected` to short-circuit (loop's waterfall contract); when an inner hook already set `Rejected`, the gate does not bother the human;
 - **Cancellation**: the waterfall runs on loop's request goroutine, so wait for the human with your own ctx (the one passed to `Run`). `ToolGate` carrying no ctx is deliberate (it stays the minimal mount); the complete form owns its ctx;
 - Both construction paths work: `ScopeHook` is on `NewAgent` and `DefaultAgent` alike.
 
 ## Zero new abstractions
 
+Every `AgentOptions.X` knob below has a **same-named, same-typed twin** on `DefaultAgentOptions` (a mechanical guard, `TestHostOptionsKnobParity`: adding a knob to only one side turns the test red); the two paths differ only in *where things come from* — a ready `ChatModel` vs a declared name, and an explicit ToolSet / Session vs the host defaults.
+
 - `host.Provider` = `func(*kernel.Context, *llm.Registry) error` — `openai.Register` / `anthropic.Register` convert directly;
 - `host.ToolSource` = `func(*kernel.Context, *toolset.Registry) error` — wrap `builtins.Register` (and its Options) in a closure; `host.SkillTools(loader)` is also a ToolSource (the skill catalog/loading read-only pair);
-- `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)` — the tool-execution gate (mount point of the before_tool_call waterfall); approval UIs / policy engines plug into DefaultAgent through it;
+- `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)` — the tool-execution gate (outermost ring of the before_tool_call waterfall, run **post-order** — it approves the final, rewritten call); approval UIs / policy engines plug into DefaultAgent through it;
 - `AgentOptions.ScopeHook` = `func(*kernel.Context) error` — called with the per-Run request scope: subscribe to loop/llm events yourself via `kernel.On` / `kernel.OnWaterfall` (Local dispatch is scope-local; mounting on the host root hears nothing);
 - `AgentOptions.OnDelta` = `func(text string)` — loop's text-delta callback (the `RunStream` onDelta); streaming UIs plug in here;
 - `AgentOptions.ContextBuilder` = `func(ctx, surface, input) ([]*llm.Message, error)` — the per-round context-assembly seam (where `memory/assemble` lands);
@@ -174,4 +183,4 @@ Key points:
 
 ## Tests
 
-`go test -race ./host/` — dedicated acceptance tests for the stateless passthrough, the three-way wiring (Surface role sequence / lifecycle closure / request.header audit / second-round history injection), tool-call-logged-before-execution, the HITL checkpoint Flush (exactly one per `after_model` step), error-path persistence with zero synthesis on reopen, SessionID resume, ToolGate rejection, ScopeHook subscription, per-request TraceIDs, streaming text deltas (both construction paths, the nil-callback no-op, panic propagation), the step cap, ScopeHook on the convenience path, the context-assembly seam (the assembled product reaching the request literally, and failures aborting before the model call), and both HITL recipes (rewriting a call from a waterfall, taking a permission card from the gate).
+`go test -race ./host/` — dedicated acceptance tests for the stateless passthrough, the three-way wiring (Surface role sequence / lifecycle closure / request.header audit / second-round history injection), tool-call-logged-before-execution, the HITL checkpoint Flush (exactly one per `after_model` step), error-path persistence with zero synthesis on reopen, SessionID resume, ToolGate rejection, ScopeHook subscription, per-request TraceIDs, streaming text deltas (both construction paths, the unset-callback round, panic propagation), the step cap (with a session: persisted closure **and** resumable), ScopeHook on the convenience path, the context-assembly seam (the assembled product reaching the request literally, and failures aborting before the model call), and both HITL recipes (rewriting a call from a waterfall, taking a permission card from the gate). Three further guards: the gate's **post-order** semantics (the card sees the very call that will execute — `TestHostToolGateSeesRewrittenCall`), knob name/type parity across the two Options (`TestHostOptionsKnobParity`, reflection-based), and the README assembly recipe compiled and executed verbatim (`TestHostContextBuilderRecipe`, including the empty-input case).
