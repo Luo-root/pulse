@@ -36,6 +36,29 @@ res, err := a.Run(ctx, llm.User(llm.Text("user input")))
 a2, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main", SessionID: id})
 ```
 
+Everything the assembly produces lives in the **kernel service repository** (host loads it through the official plugin path, not bare constructors): what `kernel.Get` returns for `llm.ServiceKey` (`"pulse.llm"`) and `toolset.ServiceKey` (`"pulse.tools"`) is the very same instance as `h.Models()` / `h.Tools()`, and the registries' lifetime belongs to the kernel (closed on `k.Dispose()`, so the `closed` guard actually fires) — your own plugins can therefore register tools the way the `toolset` README shows:
+
+```go
+models, _ := kernel.Get(k, llm.ServiceKey)     // == h.Models()
+tools, ok := kernel.Get(k, toolset.ServiceKey) // == h.Tools()
+```
+
+With `Observe.Sink` configured, each request scope also carries `observability.CollectorKey` (a scope-local binding): business plugins / `ScopeHook` write observations straight from the request, and those records share the request's TraceID with the loop/llm records (the D10 business entry point):
+
+```go
+a, err := h.NewAgent(host.AgentOptions{
+    // ...
+    ScopeHook: func(scope *kernel.Context) error {
+        c, ok := kernel.Get(scope, observability.CollectorKey) // the request-scoped writer
+        if !ok {
+            return nil // no Sink configured, no collector
+        }
+        c.Write("order.created", "ok") // lands in the host Sink with this request's TraceID
+        return nil
+    },
+})
+```
+
 ## Base constructor + convenience wrappers (the unified assembly layering)
 
 `NewAgent` is the **most general construction**: everything injected — the model can come from any `llm.ChatModel` source (Registry output, stubs, host-custom), ToolSet / Session are explicit, and nothing depends on the host's default assembly:
@@ -61,7 +84,7 @@ a, err := h.NewAgent(host.AgentOptions{
 On a session-equipped host, every `Run` performs:
 
 1. **Before the round**: `session.Surface()` folds into the history passed to loop — callers no longer maintain history themselves; a pending session (`RecoverExposePending`) is rejected here — resolve via `session.Recoverable` first. The recovery policy plugs in through the general constructor: `memory.NewSessionStack(session.NewJSONLStore(dir, session.WithRecoverPolicy(...)))` — the `memory.NewJSONLSessionStack(dir)` convenience does not take a policy;
-2. **During the round**: records are appended **synchronously** on loop events — `turn.started` → `request.header` → input messages → `step.started` → assistant (**before** tool execution and HITL approval) → **`Flush` (HITL checkpoint)** → `tool.result` → `step.ended` → `turn.ended`. A JSONL `Append` only writes, it does not fsync, and crashes only guarantee everything before the last Flush — so the assistant row is flushed right after it is written: on power loss / SIGKILL the adjudication scene (the unpaired tool call) is already on disk. Only this one point is flushed, never every event. Model-visible means logged: every model-visible fact is in the log the moment it happens; if the process dies at any execution point (mid-tool, awaiting approval, model failure), the log stops at the real scene — this path is the official source of cold recovery (#158);
+2. **During the round**: records are appended **synchronously** on loop events — `turn.started` → `request.header` → input messages → `step.started` → assistant (**before** tool execution and HITL approval) → **`Flush` (HITL checkpoint)** → `tool.called` (**before** approval and execution; rejected calls are recorded too) → `tool.result` → (when the turn closes) `request.route` + `request.usage` → `step.ended` → `turn.ended`. A JSONL `Append` only writes, it does not fsync, and crashes only guarantee everything before the last Flush — so the assistant row is flushed right after it is written: on power loss / SIGKILL the adjudication scene (the unpaired tool call) is already on disk. Only this one point is flushed, never every event. `request.route` records the model that **actually served** the turn (adapter-filled, falling back to `ModelName`), `request.usage` the turn's accumulated tokens (cache hits included). Model-visible means logged: every model-visible fact is in the log the moment it happens; if the process dies at any execution point (mid-tool, awaiting approval, model failure), the log stops at the real scene — this path is the official source of cold recovery (#158);
 3. **Per-round scope**: each Run derives an isolated request scope from the host kernel (the observability bridge / ToolGate / ScopeHook all mount there), disposed when the round ends — loop/llm dispatch is Local, so agents on the same host never crosstalk.
 
 Error / cancel paths persist too: loop emits `turn_end` on every exit; what already happened stays in the log and the closure is recorded as `interrupted` — side effects that already went out are not treated as never-happened.
@@ -167,7 +190,7 @@ Every `AgentOptions.X` knob below has a **same-named, same-typed twin** on `Defa
 
 - `host.Provider` = `func(*kernel.Context, *llm.Registry) error` — `openai.Register` / `anthropic.Register` convert directly;
 - `host.ToolSource` = `func(*kernel.Context, *toolset.Registry) error` — wrap `builtins.Register` (and its Options) in a closure; `host.SkillTools(loader)` is also a ToolSource (the skill catalog/loading read-only pair);
-- `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)` — the tool-execution gate (outermost ring of the before_tool_call waterfall, run **post-order** — it approves the final, rewritten call); approval UIs / policy engines plug into DefaultAgent through it;
+- `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)` — the tool-execution gate (outermost ring of the before_tool_call waterfall, run **post-order** — it approves the final, rewritten call); approval UIs / policy engines plug into DefaultAgent through it; an empty `reason` has exactly **one** fallback owner (loop's `rejected by policy`) — the model sees that text, and host no longer mints a second default wording;
 - `AgentOptions.ScopeHook` = `func(*kernel.Context) error` — called with the per-Run request scope: subscribe to loop/llm events yourself via `kernel.On` / `kernel.OnWaterfall` (Local dispatch is scope-local; mounting on the host root hears nothing);
 - `AgentOptions.OnDelta` = `func(text string)` — loop's text-delta callback (the `RunStream` onDelta); streaming UIs plug in here;
 - `AgentOptions.ContextBuilder` = `func(ctx, surface, input) ([]*llm.Message, error)` — the per-round context-assembly seam (where `memory/assemble` lands);
@@ -183,4 +206,4 @@ Every `AgentOptions.X` knob below has a **same-named, same-typed twin** on `Defa
 
 ## Tests
 
-`go test -race ./host/` — dedicated acceptance tests for the stateless passthrough, the three-way wiring (Surface role sequence / lifecycle closure / request.header audit / second-round history injection), tool-call-logged-before-execution, the HITL checkpoint Flush (exactly one per `after_model` step), error-path persistence with zero synthesis on reopen, SessionID resume, ToolGate rejection, ScopeHook subscription, per-request TraceIDs, streaming text deltas (both construction paths, the unset-callback round, panic propagation), the step cap (with a session: persisted closure **and** resumable), ScopeHook on the convenience path, the context-assembly seam (the assembled product reaching the request literally, and failures aborting before the model call), session-header attribution (`TestHostDefaultAgentSessionHeaderAgentID`), and both HITL recipes (rewriting a call from a waterfall, taking a permission card from the gate). Four further guards: the gate's **post-order** semantics (the card sees the very call that will execute — `TestHostToolGateSeesRewrittenCall`) along with its short-circuit branch (an inner rejection skips the gate and keeps the inner reason — `TestHostToolGateSkippedWhenInnerRejected`), knob name/type parity across the two Options (`TestHostOptionsKnobParity`, reflection-based), and the README assembly recipe compiled and executed verbatim (`TestHostContextBuilderRecipe`, including the empty-input case).
+`go test -race ./host/` — dedicated acceptance tests for the stateless passthrough, the three-way wiring (Surface role sequence / lifecycle closure / request.header audit / second-round history injection), tool-call-logged-before-execution, the HITL checkpoint Flush (exactly one per `after_model` step), error-path persistence with zero synthesis on reopen, SessionID resume, ToolGate rejection, ScopeHook subscription, per-request TraceIDs, streaming text deltas (both construction paths, the unset-callback round, panic propagation), the step cap (with a session: persisted closure **and** resumable), ScopeHook on the convenience path, the context-assembly seam (the assembled product reaching the request literally, and failures aborting before the model call), session-header attribution (`TestHostDefaultAgentSessionHeaderAgentID`), and both HITL recipes (rewriting a call from a waterfall, taking a permission card from the gate). Four further guards: the gate's **post-order** semantics (the card sees the very call that will execute — `TestHostToolGateSeesRewrittenCall`) along with its short-circuit branch (an inner rejection skips the gate and keeps the inner reason — `TestHostToolGateSkippedWhenInnerRejected`), knob name/type parity across the two Options (`TestHostOptionsKnobParity`, reflection-based), and the README assembly recipe compiled and executed verbatim (`TestHostContextBuilderRecipe`, including the empty-input case). Five more: the kernel service keys resolving to the very same instances plus the `closed` guard after Dispose (`TestHostRegistryServiceKeysOnKernel`), the in-request business writer (`TestHostAttachCollectorBusinessWrite`), `tool.called` landing before the gate (`TestHostToolCalledBeforeGate`), the ordering and values of the `request.route` / `request.usage` audit events (`TestHostRequestUsageAndRoute`), and the empty-reason fallback belonging to loop (`TestHostGateEmptyReasonFallsBackToLoopText`).

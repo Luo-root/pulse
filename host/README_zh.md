@@ -34,6 +34,29 @@ res, err := a.Run(ctx, llm.User(llm.Text("用户输入")))
 a2, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main", SessionID: id})
 ```
 
+装配产出的能力都挂在**内核服务仓库**上（host 走官方插件路径装载，不是裸构造）：`llm.ServiceKey`（`"pulse.llm"`）与 `toolset.ServiceKey`（`"pulse.tools"`）经 `kernel.Get` 取回的，就是 `h.Models()` / `h.Tools()` 同一实例；注册中心的生命周期归内核（`k.Dispose()` 时关闭，`closed` 守卫生效），所以应用自己的插件可以照 `toolset` README 那样登记工具：
+
+```go
+models, _ := kernel.Get(k, llm.ServiceKey)     // == h.Models()
+tools, ok := kernel.Get(k, toolset.ServiceKey) // == h.Tools()
+```
+
+装了 `Observe.Sink` 时，每个请求 scope 上还绑了 `observability.CollectorKey`（作用域局部绑定）：业务插件 / `ScopeHook` 在请求内直写观测，写出的记录与 loop/llm 的记录是同一条 TraceID（D10 的业务观测入口）：
+
+```go
+a, err := h.NewAgent(host.AgentOptions{
+    // ...
+    ScopeHook: func(scope *kernel.Context) error {
+        c, ok := kernel.Get(scope, observability.CollectorKey) // 请求 scope 上取直写器
+        if !ok {
+            return nil // 没装 Sink 就没有
+        }
+        c.Write("order.created", "ok") // 进宿主 Sink，带本请求 TraceID
+        return nil
+    },
+})
+```
+
 ## 基础构造 + 便捷封装（全库统一的装配分层）
 
 `NewAgent` 是**最泛化构造**：全参数注入——model 可以是任意 `llm.ChatModel` 来源（Registry 产出、stub、宿主自定义），ToolSet / Session 显式传入，不依赖宿主的默认装配：
@@ -59,7 +82,7 @@ a, err := h.NewAgent(host.AgentOptions{
 `host.Agent` 在有会话的宿主上，每个 `Run` 完成：
 
 1. **回合前**：`session.Surface()` 折影为 history 传给 loop——调用方不再自己维护历史；未决会话（`RecoverExposePending` 档）在此拒绝，经 `session.Recoverable` 裁决后再跑。恢复策略经通用构造接入：`memory.NewSessionStack(session.NewJSONLStore(dir, session.WithRecoverPolicy(...)))`——`memory.NewJSONLSessionStack(dir)` 便捷封装不接策略；
-2. **回合中**：按 loop 事件**同步**落盘——`turn.started` → `request.header` → 输入消息 → `step.started` → assistant（**先于**工具执行与 HITL 审批）→ **`Flush`（HITL 检查点）** → `tool.result` → `step.ended` → `turn.ended`。JSONL 的 `Append` 只 write 不 fsync，崩溃只保证 Flush 点之前——`after_model` 落盘 assistant 后立刻刷一次，掉电/强杀时裁决现场（unpaired tool_call）已在磁盘上；只此一点刷，不逐条刷。model-visible means logged：模型可见的每一步在发生时即已入日志，进程死在任意执行点（工具执行中、审批等待中、模型调用失败），日志都停在真实现场——冷恢复（#158）的官方来源就是这条路径；
+2. **回合中**：按 loop 事件**同步**落盘——`turn.started` → `request.header` → 输入消息 → `step.started` → assistant（**先于**工具执行与 HITL 审批）→ **`Flush`（HITL 检查点）** → `tool.called`（**先于**审批与执行，被拒绝的调用也记）→ `tool.result` →（回合收尾时）`request.route` + `request.usage` → `step.ended` → `turn.ended`。JSONL 的 `Append` 只 write 不 fsync，崩溃只保证 Flush 点之前——`after_model` 落盘 assistant 后立刻刷一次，掉电/强杀时裁决现场（unpaired tool_call）已在磁盘上；只此一点刷，不逐条刷。`request.route` 记本回合**实际服务**的模型（adapter 从响应回填，未回填退 `ModelName`），`request.usage` 记全回合累计 token（含缓存命中）。model-visible means logged：模型可见的每一步在发生时即已入日志，进程死在任意执行点（工具执行中、审批等待中、模型调用失败），日志都停在真实现场——冷恢复（#158）的官方来源就是这条路径；
 3. **回合级 scope**：每回合从宿主 kernel 派生独立请求 scope（观测桥 / ToolGate / ScopeHook 都挂它），用毕即毁——loop/llm 是 Local 派发，同宿主多 Agent 互不串扰。
 
 error / cancel 路径同样落盘：loop 的 `turn_end` 无论何种方式结束都会发出，已发生的产出与输入保留在日志里，闭合事件记 `interrupted`——副作用已经出去了，就不能当没发生。
@@ -163,7 +186,7 @@ a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
 
 - `host.Provider` = `func(*kernel.Context, *llm.Registry) error`——`openai.Register` / `anthropic.Register` 直接转换；
 - `host.ToolSource` = `func(*kernel.Context, *toolset.Registry) error`——`builtins.Register` 用闭包携带 Options；`host.SkillTools(loader)` 也是 ToolSource（skills 短表/加载只读工具对）；
-- `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)`——工具执行闸门（before_tool_call waterfall 的最外环、取后序——审批的是改写后的最终调用），审批 UI / 策略引擎经此接入 DefaultAgent；
+- `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)`——工具执行闸门（before_tool_call waterfall 的最外环、取后序——审批的是改写后的最终调用），审批 UI / 策略引擎经此接入 DefaultAgent；空 `reason` 的兜底文案**只有一处**（loop 的 `rejected by policy`），闸门不给理由时模型看到的就是它——host 不再自造第二套默认文本；
 - `AgentOptions.ScopeHook` = `func(*kernel.Context) error`——每次 Run 派生请求 scope 后调用：应用经 `kernel.On` / `kernel.OnWaterfall` 在请求 scope 上自行订阅 loop/llm 事件（Local 派发只本 scope 可见，挂宿主根收不到）；
 - `AgentOptions.OnDelta` = `func(text string)`——loop 的文本增量回调（`RunStream` 的 onDelta），流式 UI 经此接入；
 - `AgentOptions.ContextBuilder` = `func(ctx, surface, input) ([]*llm.Message, error)`——每回合的上下文组装缝（`memory/assemble` 的落点）；
@@ -179,4 +202,4 @@ a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
 
 ## 测试
 
-`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + 不设回调照常跑通 + panic 原样上抛）、步数上限（带会话：落盘闭合 + 可续跑）、便捷路径的 ScopeHook、上下文组装缝（产物字面进请求 + 失败在模型调用前中止）、会话 header 归属（`TestHostDefaultAgentSessionHeaderAgentID`），以及两条 HITL 配方（waterfall 改写调用、闸门取权限卡片）；另有四条护栏：闸门**后序**语义（卡片看到的就是将执行的那份，`TestHostToolGateSeesRewrittenCall`）及其短路分支（内层已拒则整段跳过闸门、reason 取内层那句，`TestHostToolGateSkippedWhenInnerRejected`）、两条构造路径旋钮同名同型（`TestHostOptionsKnobParity`，反射比对）、README 组装配方逐字可编译可运行（`TestHostContextBuilderRecipe`，含空 input 档）。
+`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + 不设回调照常跑通 + panic 原样上抛）、步数上限（带会话：落盘闭合 + 可续跑）、便捷路径的 ScopeHook、上下文组装缝（产物字面进请求 + 失败在模型调用前中止）、会话 header 归属（`TestHostDefaultAgentSessionHeaderAgentID`），以及两条 HITL 配方（waterfall 改写调用、闸门取权限卡片）；另有四条护栏：闸门**后序**语义（卡片看到的就是将执行的那份，`TestHostToolGateSeesRewrittenCall`）及其短路分支（内层已拒则整段跳过闸门、reason 取内层那句，`TestHostToolGateSkippedWhenInnerRejected`）、两条构造路径旋钮同名同型（`TestHostOptionsKnobParity`，反射比对）、README 组装配方逐字可编译可运行（`TestHostContextBuilderRecipe`，含空 input 档）；再加五条：内核服务键可取回同一实例 + Dispose 后 `closed` 守卫（`TestHostRegistryServiceKeysOnKernel`）、请求 scope 上的业务直写器（`TestHostAttachCollectorBusinessWrite`）、`tool.called` 先于闸门落盘（`TestHostToolCalledBeforeGate`）、审计事件 `request.route` / `request.usage` 的顺序与取值（`TestHostRequestUsageAndRoute`）、空 reason 的兜底文案归 loop（`TestHostGateEmptyReasonFallsBackToLoopText`）。

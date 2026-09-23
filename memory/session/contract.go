@@ -169,6 +169,11 @@ type Session interface {
 
 // SessionStoreKey 是 memory/session 的 kernel 服务键（对齐 toolset.ServiceKey
 // 先例：service key 归 memory/* 各包，kernel 不 import memory）。
+//
+// 消费方是**宿主自己的插件**：Provide 方=建会话栈的一方，会话管理 / 冷恢复
+// 裁决的插件经 kernel.Get 取它 List / Open（例：未决会话的裁决 UI）。官方
+// host 装配不经键取用——host 由 Options.Session 显式接收会话栈，用具体类型；
+// 库内零消费是有意的。
 var SessionStoreKey = kernel.NewServiceKey[SessionStore]("memory.session.store")
 
 // 恢复合成事件使用的固定 reason / 文案（§9.3：固定文案，如 interrupted）。

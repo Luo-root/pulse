@@ -13,11 +13,19 @@ import (
 )
 
 // ContextAssemblerKey 是 memory/assemble 的 kernel 服务键。
+//
+// 消费方是**宿主自己的插件**：Provide 方=装配组装器的一方，应用的回合编排
+// 插件经 kernel.Get 取组装器做上下文构建（host 的 ContextBuilder 缝同理）。
+// 库内零消费是有意的——官方 host 装配不经键取用（组装器由宿主显式注入）。
 var ContextAssemblerKey = kernel.NewServiceKey[ContextAssembler]("memory.assemble")
 
 // TokenCounter 计量一段消息的 token 量（宿主注入精确计数或估算；nil 时
 // DefaultAssembler 用字符/4 估算）。不 import compaction——meter 复用
 // 由装配层接线票决定。
+//
+// 典型接线：把 `compaction.CharMeter{}` 的方法值直接传进来——
+// `assemble.NewDefaultAssembler(st, compaction.CharMeter{}.Tokens, budget)`
+// （本包不 import compaction，所以这层适配写在装配层）。
 type TokenCounter func(msgs []*llm.Message) int
 
 // Budget 是按类配置的预算（§8.1：不是只给一个 max messages）。零值字段

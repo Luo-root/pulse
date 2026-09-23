@@ -68,6 +68,20 @@ go test -race -run TestPropertySessionTornRecovery -v ./eval/
 
 竞品对照：HITL 审批普遍停在「中断等输入」；「拒绝作为一等结果回传 + 副作用零执行」的 property 口径无公开对应物。
 
+### 5. 检索链路接线样例（memory/index + memory/assemble + memory/compaction）— `TestPropertyHybridRetrievalChain` / `TestPropertyPressureDrivesCompaction`
+
+不是 §5.2 四主题之一，而是 D2 链路的**回归锁**（审计票 #224 第 3 条）：`Semantic` seam 与 `Pressure` 此前在仓库里没有可执行消费点，改签名不会有生产编译错误提醒——这两组样例把「库内的缝真的接得起来」变成可跑、可回放的断言，只 import 公开 API。
+
+| # | 不变式 | 说明 |
+|---|---|---|
+| H1 | 混合召回双向对照 | 同一 store / 预算 / 查询下，真实 `MemIndex` 经 `Semantic` seam 接进装配器时，「字面不相交但语义近」的 item 进产物；不接 seam（nil）时它进不去，而关键词命中项两次都在——证明是向量路携带 |
+| H2 | 融合分数被消费 | 接缝时产物顺序 = 融合分降序（关键词双路 > 语义单路 > 正交干扰项）——`[]ScoredHit` 拆 items/scores 拆错或形状不符会被打散顺序 |
+| H3 | namespace 透传 | 跨 namespace 的语义近 item 不进产物（seam 必须把 `AssembleInput.Namespace` 交给向量路的先过滤） |
+| P6 | 压力闸双向 | `Pressure` 是严格大于：等于阈值 → false，且宿主不压缩、会话事件零新增 |
+| P7 | 压缩真降压力 | 超阈值 → 两侧判定相反、`Compact` 真跑（+4 事件、全量 `Replaced`），surface 节点与 token 双降，同一阈值重判回落为 false |
+
+竞品对照：hybrid 召回（keyword ∪ semantic + 融合排序）与压力驱动压缩在框架里通常各自为政、靠适配层手工接线；「缝接得起来」本身极少被写成 CI 断言。
+
 ## 可复现性
 
 - 所有随机序列由 `math/rand/v2` PCG 驱动，seed = 固定基值 + 测试名散列（CI 与本地一致）；

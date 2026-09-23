@@ -125,7 +125,7 @@ memory/reflection     → kernel, llm, memory/candidate, memory/store
 
 依赖规则（评审定案，不可违反）：
 
-- **kernel 不 import memory，loop 不 import memory**——memory 是 capability seam / plugin 接入 `kernel.Context`（service key 归 `memory/*` 各包：`SessionStoreKey` / `MemoryStoreKey` / `ContextAssemblerKey` / `VectorIndexKey` / `PipelineKey` / `ReflectorKey`）；装配层把 `session.Surface()` 交给 `loop.Run`。
+- **kernel 不 import memory，loop 不 import memory**——memory 是 capability seam / plugin 接入 `kernel.Context`（service key 归 `memory/*` 各包：`SessionStoreKey` / `MemoryStoreKey` / `ContextAssemblerKey` / `VectorIndexKey` / `PipelineKey` / `ReflectorKey`）；装配层把 `session.Surface()` 交给 `loop.Run`。这些键是**对外约定**：Provide 方=能力实现者，消费方=宿主自己的插件；**库内零消费是有意的**（memory 包之间用具体类型直连），别把它当成「Provide 进去就自动接线」。
 - **store 不知道 index 存在**（index → store 单向）——索引是派生物，写入方负责 store 写后调 `Upsert/Remove`；删除 index 不损失 canonical。
 - **assemble 生产路径不 import index**（§17 决议 4 四接口解耦）——向量路经 `DefaultAssembler.Semantic` 函数 seam 由装配层接线；E2E 缝合仅在测试。
 - **memory/* 不 import observability**——观测是旁路：组件暴露返回值/快照（`ReflectionResult`、`Metrics()`、`Counted.Metrics()`），桥由装配层做（`request.usage` 同先例）。
@@ -154,7 +154,9 @@ memory 层刻意不做的胶水，全部归装配层/宿主——官方装配实
 | 桥接点 | 归属 | 说明 |
 |---|---|---|
 | `session.Surface()` → `loop.Run` history | 装配层 | loop 不 import memory |
-| `request.header` / `request.usage` 事件写入 | 装配层 | system+ToolDef+model 三样与 token usage 落日志（Ignorable 但必须发） |
+| `request.header` / `request.route` / `request.usage` 事件写入 | 装配层 | system+ToolDef+model 三样、本回合**实际服务**的模型（adapter 回填，未回填退声明名）、全回合累计 token 落日志（Ignorable 但必须发）；官方写入方是 `host` 的 turnRecorder |
+| `tool.called` 事件写入 | 装配层 | 「调用已发生」锚点（HITL / 时序 / 崩溃检测），**先于**审批与执行落盘；被拒绝的调用同样记（拒绝由 `tool.result` 的 IsError 呈现） |
+| 六个 `memory/*` service key 的 Provide / Get | 宿主 / 应用插件 | 库内零消费（有意，见上「依赖规则」）：官方 `host` 装配按 `Options` 显式注入，不经键取用 |
 | `index.VectorIndex` → `assemble.Semantic` | 装配层 | 生产路径解耦，见 assemble README「接入向量路」 |
 | store 写后 `index.Upsert/Remove` | 装配层/写入方 | import 单向的代价；漏调只影响召回（Rebuild 可兜底） |
 | `ReflectionResult`/三处 `Metrics()` → 观测面 | 装配层 | memory 不 import observability |

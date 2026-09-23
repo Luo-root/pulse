@@ -66,7 +66,7 @@ dst, err := session.ImportSession(ctx, dstStore, &stream)
 | 未知扩展 + `Ignorable=true` | 写入并 fold 跳过 |
 | 未知 + flag 默认 false | **Append 即拒绝**（fail closed） |
 
-Ignorable ≠ 可以不记：`request.header` 仍必须由写入方发（system + ToolDef + model 三样），写入方是 session→loop 的装配层桥。
+Ignorable ≠ 可以不记：`request.header`（system + ToolDef + model 三样）、`request.route`（本回合**实际服务**的模型）与 `request.usage`（全回合累计 token）都必须由写入方发；写入方是装配层（官方 = `host` 的 turnRecorder）。`tool.called` 同属装配层职责：**先于**审批与执行落盘，「调用已发生」的锚点。
 
 ## 常见错误
 

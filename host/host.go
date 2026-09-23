@@ -123,7 +123,18 @@ func New(opt Options) (*Host, error) {
 		}
 		h.sink, h.hostID = opt.Observe.Sink, id
 	}
-	reg := llm.NewRegistry(c)
+	// 两个注册中心走**官方插件路径**（与上面的 observability.Bootstrap 同形）：
+	// Provide 到内核服务仓库、再 Get 取回——这样 README 教的
+	// kernel.Get(c, llm.ServiceKey) / kernel.Get(c, toolset.ServiceKey) 在
+	// host 装配下真的成立，注册中心的生命周期也归内核（Dispose 时 Close，
+	// closed 守卫不再永不触发）。
+	if _, err := kernel.Use(c, llm.Plugin()); err != nil {
+		return nil, fmt.Errorf("host: llm registry: %w", err)
+	}
+	reg, ok := kernel.Get(c, llm.ServiceKey)
+	if !ok {
+		return nil, fmt.Errorf("host: service %q not provided", llm.ServiceKey.Name())
+	}
 	for i, p := range opt.Providers {
 		if p == nil {
 			continue
@@ -139,7 +150,13 @@ func New(opt Options) (*Host, error) {
 	}
 	h.models = reg
 
-	tr := toolset.NewRegistry()
+	if _, err := kernel.Use(c, toolset.Plugin()); err != nil {
+		return nil, fmt.Errorf("host: tool registry: %w", err)
+	}
+	tr, ok := kernel.Get(c, toolset.ServiceKey)
+	if !ok {
+		return nil, fmt.Errorf("host: service %q not provided", toolset.ServiceKey.Name())
+	}
 	for i, src := range opt.Tools {
 		if src == nil {
 			continue
@@ -302,10 +319,8 @@ func (h *Host) DefaultAgent(ctx context.Context, opt DefaultAgentOptions) (*Agen
 	if err != nil {
 		return nil, fmt.Errorf("host: open model %q: %w", opt.Model, err)
 	}
-	var toolSet loop.ToolSet
-	if h.tools != nil {
-		toolSet = h.tools.AsToolSet()
-	}
+	// h.tools 由 New 装配保证非 nil（插件取不回即装配失败）——不是可空字段。
+	toolSet := h.tools.AsToolSet()
 	var sess session.Session
 	if opt.SessionID != "" && h.session == nil {
 		return nil, fmt.Errorf("host: session id %q requires Options.Session (none configured)", opt.SessionID)
@@ -443,6 +458,13 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 	// 观测桥（宿主装配了 Sink 时）：每请求独立 TraceID，HostID 承接宿主。
 	if a.sink != nil {
 		cfg := observability.ObserveConfig{Sink: a.sink, HostID: a.hostID, TraceID: observability.NewTraceID()}
+		// 业务直写入口：AttachCollector 把 Collector 局部绑到本请求 scope，
+		// 业务插件 / ScopeHook 经 kernel.Get(scope, observability.CollectorKey)
+		// 取到它直写观测（D10 / #125 的官方入口）。挂在本层是本层持有请求
+		// scope 生命周期；三处同一个 cfg，同一 TraceID。
+		if _, err := observability.AttachCollector(reqScope, cfg); err != nil {
+			return nil, fmt.Errorf("host: attach collector: %w", err)
+		}
 		if err := llm.Observe(reqScope, cfg); err != nil {
 			return nil, fmt.Errorf("host: llm observe: %w", err)
 		}
@@ -473,9 +495,9 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 					return out
 				}
 				if ok, reason := a.gate(out.Call); !ok {
-					if reason == "" {
-						reason = "rejected by tool gate"
-					}
+					// reason 为空时**不在这里自造文案**：空 reason 的兜底
+					// 只有一个所有者（loop 的 "rejected by policy"），
+					// 否则同一字段按路径产生两套默认文本。
 					return &loop.BeforeToolCall{Call: out.Call, Rejected: true, RejectReason: reason}
 				}
 				return out
@@ -541,9 +563,12 @@ type appendFail struct{ err error }
 //	loop.step_start      → step.started（上一步未闭合则先补 step.ended——
 //	                       loop 无显式 step_end：一步的终点即下一步起点）
 //	loop.after_model     → message.assistant（**先于**工具执行与 HITL 落盘）
+//	loop.before_tool_call→ tool.called（**先于**审批与执行落盘——HITL/时序/
+//	                       崩溃检测的「调用已发生」锚点）
 //	loop.after_tool_call → tool.result（含被闸门拒绝的调用，IsError）
-//	loop.turn_end        → step.ended + turn.ended（completed / max_steps 记
-//	                       completed；canceled / error 记 interrupted）
+//	loop.turn_end        → request.route + request.usage + step.ended + turn.ended
+//	                       （completed / max_steps 记 completed；canceled /
+//	                       error 记 interrupted）
 //
 // 失败语义（fail closed）：任何 append 失败 = panic 中断回合——日志停在
 // 与真实一致的状态（重开由冷恢复合成闭合），Run 经 recover 转回 error。
@@ -556,13 +581,17 @@ type turnRecorder struct {
 
 	turnID string // 当前回合的会话事件 ID（"turn-<unixnano>"）
 	stepID string // 当前未闭合 step 的 ID；空 = 无未闭合 step
+	// servedModel 是本回合 adapter 回填的**实际服务模型标识**（可能不同于
+	// 声明名：网关/回退场景即路由事实），回合开始时清空。
+	servedModel string
 }
 
-// mount 在请求 scope 上注册五个事件监听。
+// mount 在请求 scope 上注册六个事件监听。
 func (r *turnRecorder) mount(scope *kernel.Context) error {
 	if _, err := kernel.On(scope, loop.EventTurnStart, func(p *loop.TurnStart) {
 		r.turnID = fmt.Sprintf("turn-%d", time.Now().UnixNano())
 		r.stepID = ""
+		r.servedModel = ""
 		// turn.started 开括号：此后任何失败都留下可冷恢复的未决现场。
 		r.append(session.EventTurnStarted, session.LifecyclePayload{ID: r.turnID}, nil)
 		// request.header 审计：system / 工具声明快照 / model（重放与续跑锚点）。
@@ -599,6 +628,11 @@ func (r *turnRecorder) mount(scope *kernel.Context) error {
 		// 先于工具执行与 HITL 审批落盘：进程死在等待批准时，日志已含
 		// tool_call——ExposePending 裁决的官方来源。
 		r.appendMessage(session.EventMessageAssistant, p.Response.Message)
+		// 路由事实：adapter 回填的实际模型标识（流式适配器允许为零值，
+		// 那时退回声明名——request.route 的 codec 要求 model 非空）。
+		if p.Response != nil && p.Response.Model != "" {
+			r.servedModel = p.Response.Model
+		}
 		// HITL 检查点：assistant（含 tool_call）落盘后立即 Flush——
 		// JSONL 的 Append 只 write 不 fsync，崩溃只保证 Flush 点之前；
 		// 掉电/强杀时裁决现场必须在磁盘上。只在这一点刷，不逐条刷。
@@ -606,6 +640,26 @@ func (r *turnRecorder) mount(scope *kernel.Context) error {
 			panic(appendFail{err: err})
 		}
 	}); err != nil {
+		return err
+	}
+
+	// 本监听排在请求 scope 的 before_tool_call 链首（mount 早于闸门与
+	// ScopeHook 的注册）——先落「调用已发生」，再委托内层跑改写与审批，
+	// 因此日志里的先后与真实先后一致（崩溃现场可分辨「未调用」与
+	// 「调用了但没结果」）。被拒绝的调用同样记：拒绝本身由 tool.result
+	// 的 IsError 呈现。载荷是**模型发起**的调用：内层监听器的改写只影响
+	// 执行，工具实际收到的参数以 tool.result 为准。
+	if _, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
+		func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
+			var args json.RawMessage
+			if json.Valid(p.Call.Arguments) {
+				args = p.Call.Arguments
+			} // 畸形参数留空：不因为模型的坏参数把落盘打成 panic（codec 拒非法 JSON）
+			r.append(session.EventToolCalled, session.ToolCalledPayload{
+				ToolCallID: p.Call.ID, Name: p.Call.Name, Arguments: args,
+			}, nil)
+			return next(p)
+		}); err != nil {
 		return err
 	}
 
@@ -627,6 +681,21 @@ func (r *turnRecorder) mount(scope *kernel.Context) error {
 		if p.StoppedBy != loop.StopCompleted && p.StoppedBy != loop.StopMaxSteps {
 			reason = session.ReasonInterrupted
 		}
+		// 调用环境与计量（Ignorable 但**必须发**，写入方就是这一层）：
+		// route 记本回合实际服务的模型（adapter 未回填时退声明名），
+		// usage 记全回合累计 token（含缓存命中——§13.2 缓存命中率归因的
+		// 唯一数据源）。两条都排在闭合事件之前：它们描述本回合。
+		model := r.servedModel
+		if model == "" {
+			model = r.a.modelName
+		}
+		r.append(session.EventRequestRoute, session.RequestRoutePayload{Model: model}, nil)
+		r.append(session.EventRequestUsage, session.RequestUsagePayload{
+			Model:             model,
+			InputTokens:       p.Usage.InputTokens,
+			OutputTokens:      p.Usage.OutputTokens,
+			CachedInputTokens: p.Usage.CachedInputTokens,
+		}, nil)
 		if r.stepID != "" {
 			r.append(session.EventStepEnded, session.LifecyclePayload{ID: r.stepID, Reason: reason}, nil)
 			r.stepID = ""

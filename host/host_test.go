@@ -1276,7 +1276,7 @@ func TestHostToolGateSkippedWhenInnerRejected(t *testing.T) {
 	if !strings.Contains(result, "inner policy says no") {
 		t.Fatalf("model must receive the inner reason, got %q", result)
 	}
-	if strings.Contains(result, "rejected by tool gate") {
+	if strings.Contains(result, "rejected by policy") {
 		t.Fatalf("host fallback text must not override the inner reason, got %q", result)
 	}
 }
@@ -1403,5 +1403,327 @@ func TestHostDefaultAgentSessionHeaderAgentID(t *testing.T) {
 	}
 	if got := a.Session().Header().AgentID; got != "writer-A" {
 		t.Fatalf("header.AgentID = %q, want %q", got, "writer-A")
+	}
+}
+
+// TestHostRegistryServiceKeysOnKernel：#223——host 的模型/工具注册中心走
+// 官方插件路径（kernel.Use + kernel.Get）：README 教的
+// kernel.Get(c, llm.ServiceKey) / kernel.Get(c, toolset.ServiceKey) 在 host
+// 装配下取得到，取到的就是 Host.Models()/Tools()；注册中心的生命周期归内核
+// ——Dispose 之后 closed 守卫生效（裸构造时它永不触发）。
+func TestHostRegistryServiceKeysOnKernel(t *testing.T) {
+	k := kernel.New()
+	h, err := New(Options{
+		Kernel:    k,
+		Providers: []Provider{scriptedProvider(llm.NewScripted(llm.Resp("unused")))},
+		Models:    []ModelDecl{{Name: "stub", Config: llm.Config{Provider: "stub", Model: "test-model"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, ok := kernel.Get(k, llm.ServiceKey)
+	if !ok || models != h.Models() {
+		t.Fatalf("kernel.Get(llm.ServiceKey) = %v, ok=%v; want Host.Models()", models, ok)
+	}
+	tools, ok := kernel.Get(k, toolset.ServiceKey)
+	if !ok || tools != h.Tools() {
+		t.Fatalf("kernel.Get(toolset.ServiceKey) = %v, ok=%v; want Host.Tools()", tools, ok)
+	}
+	// 外部插件经同一服务键登记工具（toolset README 的写法）：host 的聚合
+	// 视图随之可见——这正是「宿主与应用插件共享服务仓库」的验收点。
+	if _, err := tools.Register(k, toolset.Registration{
+		Def:    llm.ToolDef{Name: "late", Description: "registered through the kernel service"},
+		Fn:     func(context.Context, json.RawMessage) (string, error) { return "ok", nil },
+		Source: "test.late",
+		Risk:   toolset.RiskReadonly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if defs := h.Tools().AsToolSet().Definitions(); len(defs) != 1 || defs[0].Name != "late" {
+		t.Fatalf("definitions = %+v, want the tool registered via the service key", defs)
+	}
+	// 内核销毁 = 插件卸载：注册中心关闭。closed 守卫在换一个活 scope 后
+	// 仍要拦下登记（证明关闭是注册中心自身的状态，不只是作用域没了）。
+	k.Dispose()
+	k2 := kernel.New()
+	t.Cleanup(k2.Dispose)
+	if _, err := tools.Register(k2, toolset.Registration{
+		Def:    llm.ToolDef{Name: "after-dispose", Description: "x"},
+		Fn:     func(context.Context, json.RawMessage) (string, error) { return "ok", nil },
+		Source: "test.after",
+		Risk:   toolset.RiskReadonly,
+	}); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("err = %v, want a closed-registry error after kernel Dispose", err)
+	}
+}
+
+// TestHostAttachCollectorBusinessWrite：#223——host 装观测桥时把 Collector
+// 局部绑到请求 scope：业务插件 / ScopeHook 经 CollectorKey 取到它直写观测
+// （D10 / #125 的官方业务入口），写得进宿主 Sink，且与 loop/llm 记录同一条
+// TraceID（同一请求一条 trace）。
+func TestHostAttachCollectorBusinessWrite(t *testing.T) {
+	ctx := context.Background()
+	sink := &observability.MemorySink{}
+	h := newTestHost(t, llm.NewScripted(llm.Resp("ok")), func(o *Options) {
+		o.Observe = ObserveConfig{HostID: "collector-host", Sink: sink}
+	})
+	var gotCollector bool
+	var writeErr error
+	a, err := h.NewAgent(AgentOptions{
+		Name: "biz", Model: llm.NewScripted(llm.Resp("ok")), ModelName: "stub",
+		ScopeHook: func(scope *kernel.Context) error {
+			c, ok := kernel.Get(scope, observability.CollectorKey)
+			if !ok || c == nil {
+				return nil // 断言放外面：hook 里只记事实
+			}
+			gotCollector = true
+			c.WriteAttrs("order.created", "ok", func(attr *observability.Attrs) {
+				observability.Set(attr, "order.id", "o-1")
+			})
+			return writeErr
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, llm.User(llm.Text("go"))); err != nil {
+		t.Fatal(err)
+	}
+	if !gotCollector {
+		t.Fatal("CollectorKey must be attached to the request scope when a Sink is configured")
+	}
+	var bizTrace string
+	turnTrace := map[string]bool{}
+	for _, r := range sink.Snapshot() {
+		switch r.Event {
+		case "order.created":
+			bizTrace = r.TraceID
+		case loop.EventTurnFinished:
+			turnTrace[r.TraceID] = true
+		}
+	}
+	if bizTrace == "" {
+		t.Fatal("business write must land in the host Sink")
+	}
+	if !turnTrace[bizTrace] {
+		t.Fatalf("business write trace %q must be the request trace (loop records: %v)", bizTrace, turnTrace)
+	}
+}
+
+// TestHostToolCalledBeforeGate：#224——tool.called 在**闸门（人批）之前**落盘：
+// 闸门被问到时日志里已经有这条「调用已发生」锚点（崩溃/强杀现场靠它区分
+// 「没调用」与「调用了但没结果」），且被拒绝的调用同样有 called——拒绝本身
+// 由 tool.result 的 IsError 呈现。
+func TestHostToolCalledBeforeGate(t *testing.T) {
+	ctx := context.Background()
+	stack, err := memory.NewJSONLSessionStack(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := stack.Create(ctx, session.SessionHeader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if c, ok := sess.(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+	})
+	tools := loop.NewMemToolSet()
+	if err := tools.Register(
+		llm.ToolDef{Name: "echo", Description: "echo"},
+		func(context.Context, json.RawMessage) (string, error) { return "ok", nil }); err != nil {
+		t.Fatal(err)
+	}
+	model := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{"text":"hi"}`)}),
+		llm.Resp("done"),
+	)
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	var calledSeenByGate bool
+	a, err := h.NewAgent(AgentOptions{
+		Name: "hitl", Model: model, ModelName: "stub", ToolSet: tools, Session: sess,
+		ToolGate: func(llm.ToolCall) (bool, string) {
+			envs, err := sess.Events(ctx, 0)
+			if err != nil {
+				return false, "needs approval"
+			}
+			for _, e := range envs {
+				if e.Type == session.EventToolCalled {
+					calledSeenByGate = true
+				}
+			}
+			return false, "needs approval"
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, llm.User(llm.Text("go"))); err != nil {
+		t.Fatal(err)
+	}
+	if !calledSeenByGate {
+		t.Fatal("tool.called must already be on disk when the gate asks the human")
+	}
+	envs, err := sess.Events(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var called *session.ToolCalledPayload
+	var rejected bool
+	for _, e := range envs {
+		switch e.Type {
+		case session.EventToolCalled:
+			var p session.ToolCalledPayload
+			if err := json.Unmarshal(e.Data, &p); err != nil {
+				t.Fatal(err)
+			}
+			called = &p
+		case session.EventToolResult:
+			var p session.ToolResultPayload
+			if err := json.Unmarshal(e.Data, &p); err != nil {
+				t.Fatal(err)
+			}
+			if p.ToolCallID == "c1" && p.IsError {
+				rejected = true
+			}
+		}
+	}
+	if called == nil || called.ToolCallID != "c1" || called.Name != "echo" || string(called.Arguments) != `{"text":"hi"}` {
+		t.Fatalf("tool.called = %+v", called)
+	}
+	if !rejected {
+		t.Fatal("a rejected call must still show up as an IsError tool.result")
+	}
+}
+
+// TestHostRequestUsageAndRoute：#224——装配层补齐两个「Ignorable 但必须发」
+// 的审计事件：request.usage（全回合累计 token，§13.2 缓存命中率归因的唯一
+// 数据源）与 request.route（本回合实际服务的模型：adapter 回填则记它，未回填
+// 退声明名）。两条都排在闭合事件之前。
+func TestHostRequestUsageAndRoute(t *testing.T) {
+	ctx := context.Background()
+	served := llm.Resp("done")
+	served.Model = "stub-2026-01-01" // adapter 回填的实际路由
+	served.Usage = llm.TokenUsage{InputTokens: 11, OutputTokens: 5, CachedInputTokens: 3}
+	nodecl := llm.Resp("again") // 不填 Model：退回声明名
+	h := newTestHost(t, llm.NewScripted(served, nodecl), func(o *Options) {
+		o.Session, _ = memory.NewJSONLSessionStack(t.TempDir())
+	})
+	a, err := h.DefaultAgent(ctx, DefaultAgentOptions{Name: "audit", Model: "stub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if c, ok := a.Session().(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+	})
+	if _, err := a.Run(ctx, llm.User(llm.Text("one"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, llm.User(llm.Text("two"))); err != nil {
+		t.Fatal(err)
+	}
+	envs, err := a.Session().Events(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var routes []string
+	var usage []session.RequestUsagePayload
+	var routeIdx, usageIdx []int
+	ended := -1
+	for i, e := range envs {
+		switch e.Type {
+		case session.EventRequestRoute:
+			var p session.RequestRoutePayload
+			if err := json.Unmarshal(e.Data, &p); err != nil {
+				t.Fatal(err)
+			}
+			routes = append(routes, p.Model)
+			routeIdx = append(routeIdx, i)
+		case session.EventRequestUsage:
+			var p session.RequestUsagePayload
+			if err := json.Unmarshal(e.Data, &p); err != nil {
+				t.Fatal(err)
+			}
+			usage = append(usage, p)
+			usageIdx = append(usageIdx, i)
+		case session.EventTurnEnded:
+			if ended < 0 {
+				ended = i
+			}
+		}
+	}
+	if len(routes) != 2 || routes[0] != "stub-2026-01-01" || routes[1] != "stub" {
+		t.Fatalf("routes = %v, want [stub-2026-01-01 stub] (served model, then declared fallback)", routes)
+	}
+	if len(usage) != 2 {
+		t.Fatalf("usage events = %d, want one per turn", len(usage))
+	}
+	if usage[0].Model != "stub-2026-01-01" || usage[0].InputTokens != 11 ||
+		usage[0].OutputTokens != 5 || usage[0].CachedInputTokens != 3 {
+		t.Fatalf("usage[0] = %+v, want the accumulated turn usage with the served model", usage[0])
+	}
+	if usage[1].InputTokens != 0 || usage[1].Model != "stub" {
+		t.Fatalf("usage[1] = %+v, want zero tokens under the declared model", usage[1])
+	}
+	if ended < 0 {
+		t.Fatal("turn.ended must be recorded")
+	}
+	if len(routeIdx) != 2 || len(usageIdx) != 2 ||
+		!(routeIdx[0] < usageIdx[0] && usageIdx[0] < ended) {
+		t.Fatalf("first-turn order: route@%v usage@%v turn.ended@%d (审计事件必须排在闭合事件之前)",
+			routeIdx, usageIdx, ended)
+	}
+}
+
+// TestHostGateEmptyReasonFallsBackToLoopText：#223——空 reason 的兜底文案只有
+// 一个所有者（loop 的 "rejected by policy"）：闸门拒绝但不给理由时，模型收到
+// 的就是那一套，host 不再自造第二套默认文本。
+func TestHostGateEmptyReasonFallsBackToLoopText(t *testing.T) {
+	ctx := context.Background()
+	tools := loop.NewMemToolSet()
+	if err := tools.Register(
+		llm.ToolDef{Name: "echo", Description: "echo"},
+		func(context.Context, json.RawMessage) (string, error) { return "ok", nil }); err != nil {
+		t.Fatal(err)
+	}
+	model := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{}`)}),
+		llm.Resp("done"),
+	)
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	a, err := h.NewAgent(AgentOptions{
+		Name: "no-reason", Model: model, ModelName: "stub", ToolSet: tools,
+		ToolGate: func(llm.ToolCall) (bool, string) { return false, "" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, llm.User(llm.Text("go")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result string
+	for _, m := range res.Messages {
+		for _, p := range m.Parts {
+			if p.Kind != llm.PartToolResult || p.ToolResultValue == nil {
+				continue
+			}
+			for _, c := range p.ToolResultValue.Content {
+				result = c.Text
+			}
+		}
+	}
+	if !strings.Contains(result, "rejected by policy") {
+		t.Fatalf("model must receive the loop fallback text, got %q", result)
+	}
+	if strings.Contains(result, "rejected by tool gate") {
+		t.Fatalf("host must not mint a second fallback wording, got %q", result)
 	}
 }

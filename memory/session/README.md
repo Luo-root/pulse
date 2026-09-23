@@ -68,7 +68,7 @@ Each `EventType` binds payload validation and classification in the `Registry`; 
 | Unknown extension + `Ignorable=true` | written and skipped by fold |
 | Unknown + flag defaulting false | **rejected at Append** (fail closed) |
 
-Ignorable ≠ optional to record: `request.header` must still be emitted by the writer (the system + ToolDef + model trio); the writer is the assembly-layer bridge from session→loop.
+Ignorable ≠ optional to record: `request.header` (the system + ToolDef + model trio), `request.route` (the model that **actually served** the turn) and `request.usage` (turn-accumulated tokens) must all be emitted by the writer; the writer is the assembly layer (officially `host`'s turnRecorder). `tool.called` is likewise an assembly-layer duty, written **before** approval and execution as the "the call happened" anchor.
 
 ## Common errors
 

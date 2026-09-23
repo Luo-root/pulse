@@ -18,6 +18,10 @@ const defaultTopK = 8
 
 // VectorIndexKey 是 memory/index 的 kernel 服务键（对齐
 // toolset.ServiceKey 先例：service key 归 memory/* 各包）。
+//
+// 消费方是**宿主自己的装配代码**：Provide 方=建索引的一方，把它接进
+// `assemble.DefaultAssembler.Semantic` 的装配层经 kernel.Get 取索引——那条
+// 缝上装配层不 import 本包（见 assemble「接入向量路」）。库内零消费是有意的。
 var VectorIndexKey = kernel.NewServiceKey[VectorIndex]("memory.index.vector")
 
 // EmbeddingProvider 是向量嵌入的宿主注入 seam：把一批文本映到向量。

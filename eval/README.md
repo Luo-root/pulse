@@ -70,6 +70,20 @@ Competitor landscape: Supersede/Revoke lifecycles + taint levels + an approval s
 
 Competitor landscape: HITL approval generally stops at "interrupt and wait for input"; "rejection as a first-class returned result + zero side effects" has no public property-suite equivalent.
 
+### 5. Wiring samples for the retrieval chain (memory/index + memory/assemble + memory/compaction) — `TestPropertyHybridRetrievalChain` / `TestPropertyPressureDrivesCompaction`
+
+Not a fifth §5.2 theme but a **regression lock** for the D2 chain (audit ticket #224, item 3): the `Semantic` seam and `Pressure` previously had no executable consumer anywhere in the repo, so a signature change produced no production compile error — these samples turn "the seams inside the library really connect" into runnable, replayable assertions using public APIs only.
+
+| # | Invariant | Description |
+|---|---|---|
+| H1 | Hybrid recall, two-way control | With one store / budget / query, a real `MemIndex` wired into the assembler through the `Semantic` seam lets a lexically-disjoint yet semantically-near item into the product; with the seam off (nil) it does not appear, while the keyword hit appears in both runs — the vector path carries it |
+| H2 | Fusion scores are consumed | With the seam on, product order is fusion-score descending (double-path keyword > semantic-only > orthogonal decoy) — splitting `[]ScoredHit` into items/scores wrongly or a shape mismatch scrambles the order |
+| H3 | Namespace pass-through | A semantically-near item in another namespace never enters the product (the seam must hand `AssembleInput.Namespace` to the filter-before-recall path) |
+| P6 | Pressure gate, two-way | `Pressure` is strictly greater: at the threshold → false, and the host compacts nothing (zero new session events) |
+| P7 | Compaction really relieves pressure | Above the threshold the two verdicts disagree, `Compact` really runs (+4 events, full-window `Replaced`), surface nodes and tokens both drop, and re-checking the same threshold falls back to false |
+
+Competitor landscape: hybrid recall (keyword ∪ semantic with fusion ranking) and pressure-driven compaction are usually separate pieces glued together by an adapter layer; "the seams connect" is rarely asserted in CI at all.
+
 ## Reproducibility
 
 - All random sequences are driven by `math/rand/v2` PCG, seeded from a fixed base + test-name hash (identical in CI and locally);
