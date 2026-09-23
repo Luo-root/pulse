@@ -1579,3 +1579,48 @@ func TestLiveMimoASR(t *testing.T) {
 	}
 	t.Logf("ASR OK: %q (期望含 %q)", truncate(text, 60), target)
 }
+
+// TestRejectsInvalidToolSchema：#241——「Parameters 必须是合法 JSON **对象**」
+// 这条判据的归属层是适配器（工具注册期只判「合法 JSON」），而这两条分支
+// 此前**零测试覆盖**。两档都钉：字节坏了（Unmarshal 直接失败）与合法 JSON
+// 但不是对象（`42`）；两者都必须以 ErrBadRequest 收场，且**不发请求**。
+func TestRejectsInvalidToolSchema(t *testing.T) {
+	adapters := []struct {
+		name  string
+		build func(t *testing.T, reached *bool) llm.ChatModel
+	}{
+		{"completions", func(t *testing.T, reached *bool) llm.ChatModel {
+			return newCompletionsTest(t, func(http.ResponseWriter, *http.Request) { *reached = true })
+		}},
+		{"responses", func(t *testing.T, reached *bool) llm.ChatModel {
+			return newResponsesTest(t, func(http.ResponseWriter, *http.Request) { *reached = true })
+		}},
+	}
+	schemas := []struct {
+		name string
+		raw  string
+	}{
+		{"truncated object", `{"type":"object"`},
+		{"valid JSON but not an object", `42`},
+	}
+	for _, ad := range adapters {
+		for _, sc := range schemas {
+			t.Run(ad.name+"/"+sc.name, func(t *testing.T) {
+				reached := false
+				m := ad.build(t, &reached)
+				req := llm.NewRequest(llm.UserText("hi"))
+				req.Tools = []llm.ToolDef{{Name: "broken", Parameters: json.RawMessage(sc.raw)}}
+				_, err := m.Generate(context.Background(), req)
+				if llm.KindOf(err) != llm.ErrBadRequest {
+					t.Fatalf("kind = %v, want ErrBadRequest (err=%v)", llm.KindOf(err), err)
+				}
+				if !strings.Contains(err.Error(), "工具 broken 的参数 Schema 不是合法 JSON 对象") {
+					t.Fatalf("err = %v, want the tool-named schema message", err)
+				}
+				if reached {
+					t.Fatal("a rejected schema must not reach the wire")
+				}
+			})
+		}
+	}
+}

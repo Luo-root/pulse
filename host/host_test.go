@@ -2195,3 +2195,41 @@ func TestHostMalformedToolArgumentsSurviveReopen(t *testing.T) {
 		t.Fatalf("recovered = %q, want the raw text verbatim (%q)", recovered, raw)
 	}
 }
+
+// TestHostRejectsInvalidToolSchemaAtAssembly：#241——坏参数 Schema 在**装配期**
+// 就被工具注册面拒绝（`host.New` 返回错误），不再等到回合开始时的
+// `request.header` 落盘才炸——那时错误指向 session、模型一次都不会被调用，
+// 适配器准备好的 `ErrBadRequest` 也被盖掉。
+func TestHostRejectsInvalidToolSchemaAtAssembly(t *testing.T) {
+	k := kernel.New()
+	defer k.Dispose()
+	_, err := New(Options{
+		Kernel:    k,
+		Providers: []Provider{scriptedProvider(llm.NewScripted(llm.Resp("unused")))},
+		Models:    []ModelDecl{{Name: "stub", Config: llm.Config{Provider: "stub", Model: "test-model"}}},
+		Tools: []ToolSource{
+			func(c *kernel.Context, reg *toolset.Registry) error {
+				_, err := reg.Register(c, toolset.Registration{
+					Def: llm.ToolDef{
+						Name:        "broken",
+						Description: "broken",
+						Parameters:  json.RawMessage(`{"type":"object"`), // 非法 JSON
+					},
+					Fn:     func(context.Context, json.RawMessage) (string, error) { return "x", nil },
+					Source: "test.broken",
+					Risk:   toolset.RiskReadonly,
+				})
+				return err
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("a broken tool schema must be rejected at assembly, not at the first round")
+	}
+	if !strings.Contains(err.Error(), "parameters is not valid JSON") {
+		t.Fatalf("assembly err = %v, want the parameters rejection (not a session/persistence error)", err)
+	}
+	if !strings.Contains(err.Error(), "tool source[0]") {
+		t.Fatalf("assembly err = %v, want the offending source index", err)
+	}
+}

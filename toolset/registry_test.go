@@ -76,6 +76,28 @@ func TestRegisterRejectsInvalid(t *testing.T) {
 			},
 			sub: "unknown risk",
 		},
+		{
+			// #241：坏 Schema 若放过去，官方装配会在 request.header 落盘处
+			// fail-closed 打死整轮，且错误指向 session（模型一次都不会被调用）。
+			name: "parameters is not valid JSON",
+			reg: toolset.Registration{
+				Def:    llm.ToolDef{Name: "a", Parameters: json.RawMessage(`{"type":"object"`)},
+				Fn:     echoFn("x"),
+				Source: "local",
+				Risk:   toolset.RiskReadonly,
+			},
+			sub: "parameters is not valid JSON",
+		},
+		{
+			name: "parameters is a truncated array",
+			reg: toolset.Registration{
+				Def:    llm.ToolDef{Name: "a", Parameters: json.RawMessage(`[{"type"`)},
+				Fn:     echoFn("x"),
+				Source: "local",
+				Risk:   toolset.RiskReadonly,
+			},
+			sub: "parameters is not valid JSON",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,6 +107,47 @@ func TestRegisterRejectsInvalid(t *testing.T) {
 			}
 			if len(r.AsToolSet().Definitions()) != 0 {
 				t.Fatal("invalid register must not leave tools")
+			}
+		})
+	}
+}
+
+// TestRegisterParametersShape 钉住 #241 这条新校验的**边界**：空 = 无参工具；
+// 合法 JSON（含**不是对象**的形态）放行——「必须是 JSON 对象」这一判据留在
+// 适配器组包时（它的 ErrBadRequest 文案更准，且 JSON Schema 的布尔形态
+// `true` 本身合法），注册期只管「字节能不能安全落盘 / 下发给 provider」。
+func TestRegisterParametersShape(t *testing.T) {
+	host := kernel.New()
+	defer host.Dispose()
+	r := toolset.NewRegistry()
+
+	cases := []struct {
+		sub  string
+		tool string
+		raw  json.RawMessage
+	}{
+		{sub: "nil means no-arg", tool: "p1", raw: nil},
+		{sub: "object schema", tool: "p2", raw: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`)},
+		{sub: "boolean schema is legal JSON Schema", tool: "p3", raw: json.RawMessage(`true`)},
+		{sub: "non-object is the adapter's call", tool: "p4", raw: json.RawMessage(`42`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sub, func(t *testing.T) {
+			dispose, err := r.Register(host, toolset.Registration{
+				Def:    llm.ToolDef{Name: tc.tool, Parameters: tc.raw},
+				Fn:     echoFn("x"),
+				Source: "local.params",
+				Risk:   toolset.RiskReadonly,
+			})
+			if err != nil {
+				t.Fatalf("Register(%s): %v", tc.tool, err)
+			}
+			defer dispose()
+			defs := r.AsToolSet().Definitions()
+			for _, d := range defs {
+				if d.Name == tc.tool && string(d.Parameters) != string(tc.raw) {
+					t.Fatalf("%s parameters = %s, want them passed through verbatim", tc.tool, d.Parameters)
+				}
 			}
 		})
 	}
