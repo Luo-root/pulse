@@ -2008,3 +2008,105 @@ func TestHostMalformedToolArgumentsDoNotKillTurn(t *testing.T) {
 		t.Fatal("the round must close in the log with turn.ended/completed")
 	}
 }
+
+// TestHostMalformedToolArgumentsSurviveReopen：#235 的**跨重开**形态——坏参数
+// 落盘后，之后任何「从日志重建的请求」拿到的都是那个 JSON 字符串（合法参数
+// 不受影响），读侧解回来仍是原文。文档里写下的代价由这条用例守着：形态一旦
+// 换成别的编码，它必须红。
+func TestHostMalformedToolArgumentsSurviveReopen(t *testing.T) {
+	const raw = `{"text":`
+	ctx := context.Background()
+	stack, err := memory.NewJSONLSessionStack(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo := func(c *kernel.Context, reg *toolset.Registry) error {
+		_, err := reg.Register(c, toolset.Registration{
+			Def: llm.ToolDef{Name: "echo", Description: "echo", Parameters: json.RawMessage(`{"type":"object"}`)},
+			Fn: func(_ context.Context, args json.RawMessage) (string, error) {
+				var v map[string]any
+				if err := json.Unmarshal(args, &v); err != nil {
+					return "", fmt.Errorf("echo: bad arguments: %w", err)
+				}
+				return "ok", nil
+			},
+			Source: "test.echo",
+			Risk:   toolset.RiskReadonly,
+		})
+		return err
+	}
+
+	// ---- 第一段生命周期：坏参数回合照常闭合，然后关句柄（模拟进程退出）----
+	first := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c9", Name: "echo", Arguments: json.RawMessage(raw)}),
+		llm.Resp("first"),
+	)
+	h1 := newTestHost(t, first, func(o *Options) {
+		o.Session = stack
+		o.Tools = []ToolSource{echo}
+	})
+	a1, err := h1.DefaultAgent(ctx, DefaultAgentOptions{Name: "t", Model: "stub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a1.Run(ctx, llm.UserText("go"))
+	if err != nil {
+		t.Fatalf("a malformed argument must not kill the round: %v", err)
+	}
+	if res.StoppedBy != loop.StopCompleted {
+		t.Fatalf("stoppedBy = %q, want completed", res.StoppedBy)
+	}
+	id := a1.Session().Header().SessionID
+	if c, ok := a1.Session().(interface{ Close() error }); ok {
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// ---- 第二段生命周期：新宿主按 SessionID 续跑，看重建的请求里那份参数 ----
+	cap := &captureModel{inner: llm.NewScripted(llm.Resp("second"))}
+	h2 := newTestHost(t, cap, func(o *Options) { o.Session = stack })
+	a2, err := h2.DefaultAgent(ctx, DefaultAgentOptions{Name: "t", Model: "stub", SessionID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if c, ok := a2.Session().(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+	})
+	res2, err := a2.Run(ctx, llm.UserText("again"))
+	if err != nil {
+		t.Fatalf("the resumed round must run: %v", err)
+	}
+	if res2.Final.Text() != "second" {
+		t.Fatalf("resumed final = %q", res2.Final.Text())
+	}
+	if cap.last == nil {
+		t.Fatal("the resumed round never reached the model")
+	}
+	var seen []string
+	for _, m := range cap.last.Messages {
+		for _, p := range m.Parts {
+			if p.ToolCallValue != nil {
+				seen = append(seen, string(p.ToolCallValue.Arguments))
+			}
+		}
+	}
+	if len(seen) != 1 {
+		t.Fatalf("rebuilt request carries %d tool calls, want 1", len(seen))
+	}
+	if seen[0] == raw {
+		t.Fatalf("rebuilt arguments = %q, want the persisted JSON string (the documented drift)", seen[0])
+	}
+	if !json.Valid([]byte(seen[0])) {
+		t.Fatalf("rebuilt arguments = %q, want a valid JSON value", seen[0])
+	}
+	var recovered string
+	if err := json.Unmarshal([]byte(seen[0]), &recovered); err != nil {
+		t.Fatalf("recover raw text from %q: %v", seen[0], err)
+	}
+	if recovered != raw {
+		t.Fatalf("recovered = %q, want the raw text verbatim (%q)", recovered, raw)
+	}
+}

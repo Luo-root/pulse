@@ -749,8 +749,10 @@ func (r *turnRecorder) appendMessage(t session.EventType, m *llm.Message) {
 // 兜底方式：把该参数的**原文**编码成一个 JSON 字符串——原文逐字可复原
 // （读侧 json.Unmarshal 回 string 即可）。唯一例外是原文含非法 UTF-8 字节：
 // JSON 文本承载不了非法字节，按 JSON 规范替换为 U+FFFD。代价只有一处：
-// 日志里那一条的 arguments 形态从「对象」漂成「字符串」，据此重建的请求
-// 也还原不出对象形态——这是「如实落盘」与「不打断回合」之间的取舍。
+// 日志里那一条的 arguments 形态从「对象」漂成「字符串」——据此重建的请求
+// （含冷恢复 `PendingState.Calls` 的重发路径）拿到的也是这个字符串形态，
+// 还原不出对象形态；读侧 json.Unmarshal 回 string 即得原文。这是「如实
+// 落盘」与「不打断回合」之间的取舍。
 //
 // 副本语义：不改动 loop 手里的消息——发给工具与后续请求的**仍是原文**。
 // 合法 JSON 的参数逐字原样通过，不做任何归一化。
