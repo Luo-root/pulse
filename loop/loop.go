@@ -19,9 +19,15 @@ const (
 	// StopMaxSteps：达到 MaxSteps 上限被安全阀打断（err 为 nil，
 	// Result 如实返回最后状态）。
 	StopMaxSteps StopReason = "max_steps"
-	// StopCanceled：ctx 取消（Run 同时返回 ctx.Err()）。
+	// StopCanceled：调用方**取消**（context.Canceled）——回合开始前已取消，
+	// 或模型调用进行中被取消（流式 UI 点「停止」正是这一刻）。
+	//
+	// ctx 超时（context.DeadlineExceeded）不算取消：它记 StopError，与模型层
+	// 把超时归类为可重试的 ErrNetwork（而非 ErrCanceled）一致。注意取消与超时
+	// 两种情形 Run 返回的错误都可能满足 errors.Is(err, ctx.Err())（超时亦然），
+	// 不要用它反推 StoppedBy。
 	StopCanceled StopReason = "canceled"
-	// StopError：基础设施失败（模型调用失败、流异常终止）；
+	// StopError：基础设施失败（模型调用失败、流异常终止、ctx 超时）；
 	// Run 同时返回包装后的错误。
 	StopError StopReason = "error"
 )
@@ -121,6 +127,25 @@ func waterfallOf[P any](scope *kernel.Context, k kernel.EventKey[P], payload P) 
 	return kernel.WaterfallLocal(scope, k, payload)
 }
 
+// stopReasonFor 归类回合的**非正常终止**：调用方取消 → canceled，其余 →
+// error。三条退出路径共用同一判据——步骤边界的 ctx 检查、模型调用的直接
+// 错误、流中的 EventError。
+//
+// 取消与超时都可能是 ctx.Err()，但只有取消算 canceled：模型层同样把超时
+// 归类为可重试的 ErrNetwork，而不是 ErrCanceled（适配器只在 ctx 取消时
+// 产出 ErrCanceled）。判据因此落在**错误链的分类**上，而不是「err 能否
+// 匹配 ctx.Err()」或 ctx 的当前状态——宁可把恰好在取消同时发生的真实失败
+// 记成 error，也不把真实失败洗成取消。
+//
+// 取消的两种错误形状都认：真适配器用 llm.ErrCanceled 包 ctx.Err()，极简
+// 模型（含 llm.NewScripted）直接回 ctx.Err()。
+func stopReasonFor(err error) StopReason {
+	if llm.KindOf(err) == llm.ErrCanceled || errors.Is(err, context.Canceled) {
+		return StopCanceled
+	}
+	return StopError
+}
+
 // Run 执行一个回合（非流式便捷入口，等价于不带 onDelta 的 RunStream）。
 func (a *Agent) Run(ctx context.Context, history []*llm.Message, input ...*llm.Message) (*Result, error) {
 	return a.RunStream(ctx, nil, history, input...)
@@ -172,7 +197,9 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 
 	for step := 1; ; step++ {
 		if err := ctx.Err(); err != nil {
-			res.StoppedBy = StopCanceled
+			// 与另两处出口同一判据：只有调用方**取消**记 canceled，
+			// ctx 超时不算（模型层同样把超时归为 ErrNetwork）。
+			res.StoppedBy = stopReasonFor(err)
 			return res, err
 		}
 		if a.maxSteps > 0 && step > a.maxSteps {
@@ -188,7 +215,7 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 		// 才能只听到本请求（禁止只改 Local(reg.ctx)）。
 		ch, err := a.model.Stream(llm.WithEventScope(ctx, a.scope), req)
 		if err != nil {
-			res.StoppedBy = StopError
+			res.StoppedBy = stopReasonFor(err)
 			return res, fmt.Errorf("loop: step %d: %w", step, err)
 		}
 		var resp *llm.Response
@@ -199,7 +226,11 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 					onDelta(ev.Text)
 				}
 			case llm.EventError:
-				res.StoppedBy = StopError
+				// 取消不止发生在步骤边界：模型调用进行中的取消由模型
+				// 以 EventError 收尾，真适配器把它分类为 llm.ErrCanceled。
+				// 这类不是基础设施失败——否则用户点「停止」会被计入
+				// 宿主错误率（观测 Status 直接取 StoppedBy）。
+				res.StoppedBy = stopReasonFor(ev.Err)
 				return res, fmt.Errorf("loop: step %d: %w", step, ev.Err)
 			case llm.EventDone:
 				resp = ev.Response

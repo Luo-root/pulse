@@ -285,7 +285,7 @@ node := flow.NewNode(
 |---|---|
 | Recovery | 内建且不可关闭。`Run` panic 会转为节点错误，取消整图。 |
 | `Timeout(d)` | 覆盖等待输入和节点执行；超时会取消该节点的 `RunCtx`，因此能打断 `Get` / `WaitAll`。 |
-| `Retry(attempts, delay)` | 对内层执行错误重试；`attempts <= 0` 归一为 1。等待输入阶段的取消不重试。 |
+| `Retry(attempts, delay)` | 对内层执行错误重试；`attempts <= 0` 归一为 1。等待输入阶段的取消不重试；输入被**跳过**时同样不重试——跳过是到达，不是失败。 |
 
 `RunCtx.Fork()` 只派生可取消 context，**共享**声明权限和写入记录；它不是独立写入事务。自定义切面可通过 `rc.Context()` 获取当前 context。
 

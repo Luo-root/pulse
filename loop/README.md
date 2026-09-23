@@ -75,8 +75,10 @@ type Result struct {
 |---|---|---|
 | `completed` | nil | the model no longer calls tools |
 | `max_steps` | nil | the safety valve cut in, **not an error** |
-| `canceled` | `ctx.Err()` | the caller canceled |
-| `error` | non-nil | model call failed / stream terminated abnormally |
+| `canceled` | matches `ctx.Err()` via `errors.Is` | the caller canceled (`context.Canceled`) — before the call, or mid-call (streaming UI "stop") |
+| `error` | non-nil | model call failed / stream terminated abnormally / ctx deadline expired |
+
+A ctx **timeout** (`context.DeadlineExceeded`) is **not** `canceled`: it is reported as `error`, matching the model layer, which classifies timeouts as retryable network errors. Both cases can satisfy `errors.Is(err, ctx.Err())`, so never infer `StoppedBy` from that.
 
 All exit paths send exactly one `turn_end` via `defer`. `Messages` carries **what has already happened** (it may still be nil, `len==0`, if canceled before the first step). Tool execution failure is never escalated to `StopError`: the error text goes back to the model as an `IsError` tool result, and the turn continues.
 

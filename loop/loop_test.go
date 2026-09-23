@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
@@ -209,7 +210,14 @@ func TestEventTraceRestoresExecution(t *testing.T) {
 	a := newTestAgent(t, model, tools, scope)
 	tr := attachTrace(t, scope)
 
-	if _, err := a.Run(context.Background(), nil, llm.UserText("go")); err != nil {
+	// turn_start 承诺了两个事实（README 事件表）：本轮新增输入 + 已有历史。
+	var starts []TurnStart
+	if _, err := kernel.On(scope, EventTurnStart, func(p *TurnStart) { starts = append(starts, *p) }); err != nil {
+		t.Fatal(err)
+	}
+
+	history := []*llm.Message{llm.UserText("earlier"), llm.AssistantText("reply")}
+	if _, err := a.Run(context.Background(), history, llm.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
 	want := strings.Join([]string{
@@ -224,6 +232,15 @@ func TestEventTraceRestoresExecution(t *testing.T) {
 	}, " | ")
 	if got := tr.joined(); got != want {
 		t.Fatalf("trace mismatch:\n got: %s\nwant: %s", got, want)
+	}
+	if len(starts) != 1 || len(starts[0].Input) != 1 || len(starts[0].History) != 2 {
+		t.Fatalf("turn_start = %+v, want 1 input + 2 history", starts)
+	}
+	if starts[0].History[0] != history[0] || starts[0].History[1] != history[1] {
+		t.Fatal("turn_start history must be the caller's history, not a copy or the turn's own messages")
+	}
+	if starts[0].Input[0].Text() != "go" {
+		t.Fatalf("turn_start input = %q, want the turn's new input", starts[0].Input[0].Text())
 	}
 }
 
@@ -475,6 +492,186 @@ func TestContextCancelFailsRun(t *testing.T) {
 	if len(ends) != 1 || ends[0] != StopCanceled {
 		t.Fatalf("turn_end events = %v, want exactly one canceled", ends)
 	}
+}
+
+// cancelMidStreamModel 模拟「模型调用进行中被取消」：先给一段文本增量，
+// 等调用方取消后以 EventError 收尾。adapterErr 决定错误形状——真适配器
+// 是 llm.ErrCanceled 包装 ctx.Err()，极简模型（llm.NewScripted 同形）
+// 直接回 ctx.Err()。
+type cancelMidStreamModel struct{ adapterErr bool }
+
+func (m *cancelMidStreamModel) Generate(context.Context, *llm.GenerateRequest) (*llm.Response, error) {
+	return nil, errors.New("Generate is not used by RunStream")
+}
+
+func (m *cancelMidStreamModel) Stream(ctx context.Context, _ *llm.GenerateRequest) (<-chan llm.StreamEvent, error) {
+	out := make(chan llm.StreamEvent, 4)
+	out <- llm.StreamEvent{Kind: llm.EventTextDelta, Text: "partial"}
+	go func() {
+		defer close(out)
+		<-ctx.Done() // 增量已被消费：取消就发生在这一次模型调用进行中
+		err := ctx.Err()
+		if m.adapterErr {
+			err = llm.NewError(llm.ErrCanceled, "test", 0, err, "调用方取消")
+		}
+		out <- llm.StreamEvent{Kind: llm.EventError, Err: err}
+	}()
+	return out, nil
+}
+
+// 流中取消（先收到增量、再点「停止」）：模型以 EventError 收尾，仍须记
+// StoppedBy=canceled——否则用户主动停止会被观测计成宿主错误率。
+func TestStreamCancelMidCallIsCanceled(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		adapterErr bool
+	}{
+		{"adapter_shape", true}, // 真适配器：llm.ErrCanceled 包 ctx.Err()
+		{"bare_ctx_err", false}, // 极简模型：裸 ctx.Err()
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scope := kernel.New()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var ends []StopReason
+			if _, err := kernel.On(scope, EventTurnEnd, func(p *TurnEnd) {
+				ends = append(ends, p.StoppedBy)
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			a := newTestAgent(t, &cancelMidStreamModel{adapterErr: tc.adapterErr}, nil, scope)
+
+			var deltas []string
+			res, err := a.RunStream(ctx, func(text string) {
+				deltas = append(deltas, text)
+				cancel()
+			}, nil, llm.UserText("q"))
+
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("err = %v, want context.Canceled in the chain", err)
+			}
+			if res.StoppedBy != StopCanceled {
+				t.Fatalf("stoppedBy = %s, want canceled (a user stop must not count as an error)", res.StoppedBy)
+			}
+			if len(ends) != 1 || ends[0] != StopCanceled {
+				t.Fatalf("turn_end = %v, want exactly one canceled", ends)
+			}
+			if len(deltas) != 1 || deltas[0] != "partial" {
+				t.Fatalf("deltas = %v, want the partial text received before the cancel", deltas)
+			}
+		})
+	}
+}
+
+// cancelBeforeStreamModel：取消落在「请求发出」这一刻——Stream 直接返回
+// 错误、流尚未开始（OpenAI 适配器的 NewStreaming 同形：请求同步发出）。
+type cancelBeforeStreamModel struct{ cancel context.CancelFunc }
+
+func (m *cancelBeforeStreamModel) Generate(context.Context, *llm.GenerateRequest) (*llm.Response, error) {
+	return nil, errors.New("Generate is not used by RunStream")
+}
+
+func (m *cancelBeforeStreamModel) Stream(ctx context.Context, _ *llm.GenerateRequest) (<-chan llm.StreamEvent, error) {
+	m.cancel()
+	return nil, llm.NewError(llm.ErrCanceled, "test", 0, ctx.Err(), "调用方取消")
+}
+
+// 取消落在「模型调用刚开始」：Stream 直接以错误返回（一个事件都没有），
+// 同样不算基础设施失败。
+func TestStreamCancelBeforeEventsIsCanceled(t *testing.T) {
+	scope := kernel.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var ends []StopReason
+	if _, err := kernel.On(scope, EventTurnEnd, func(p *TurnEnd) { ends = append(ends, p.StoppedBy) }); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newTestAgent(t, &cancelBeforeStreamModel{cancel: cancel}, nil, scope)
+	res, err := a.Run(ctx, nil, llm.UserText("q"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled in the chain", err)
+	}
+	if res.StoppedBy != StopCanceled {
+		t.Fatalf("stoppedBy = %s, want canceled (a cancel landing on the request is not a failure)", res.StoppedBy)
+	}
+	if len(ends) != 1 || ends[0] != StopCanceled {
+		t.Fatalf("turn_end = %v, want exactly one canceled", ends)
+	}
+}
+
+// deadlineMidStreamModel：流中 ctx 超时——先推增量，等 deadline 到期后以
+// 适配器的超时形状收尾（mapError 把 DeadlineExceeded 映射为 ErrNetwork）。
+type deadlineMidStreamModel struct{}
+
+func (deadlineMidStreamModel) Generate(context.Context, *llm.GenerateRequest) (*llm.Response, error) {
+	return nil, errors.New("Generate is not used by RunStream")
+}
+
+func (deadlineMidStreamModel) Stream(ctx context.Context, _ *llm.GenerateRequest) (<-chan llm.StreamEvent, error) {
+	out := make(chan llm.StreamEvent, 4)
+	out <- llm.StreamEvent{Kind: llm.EventTextDelta, Text: "partial"}
+	go func() {
+		defer close(out)
+		<-ctx.Done() // deadline 到期
+		out <- llm.StreamEvent{Kind: llm.EventError, Err: llm.NewError(
+			llm.ErrNetwork, "test", 0, context.DeadlineExceeded, "请求超时")}
+	}()
+	return out, nil
+}
+
+// ctx 超时**不算**取消：三处出口口径一致都记 error（与模型层把超时归类为
+// ErrNetwork 一致），且判据不看 ctx 状态——即便此刻 ctx 确实已过期。
+func TestDeadlineIsNotCanceled(t *testing.T) {
+	t.Run("step_boundary", func(t *testing.T) {
+		scope := kernel.New()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		defer cancel()
+		<-ctx.Done() // 确定性：等 deadline 真的过期，让步骤边界看到它
+
+		var ends []StopReason
+		if _, err := kernel.On(scope, EventTurnEnd, func(p *TurnEnd) { ends = append(ends, p.StoppedBy) }); err != nil {
+			t.Fatal(err)
+		}
+		a := newTestAgent(t, llm.NewScripted(llm.Resp("x")), nil, scope)
+
+		res, err := a.Run(ctx, nil, llm.UserText("q"))
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+		}
+		if res.StoppedBy != StopError {
+			t.Fatalf("stoppedBy = %s, want error (a deadline is not a caller cancel)", res.StoppedBy)
+		}
+		if len(ends) != 1 || ends[0] != StopError {
+			t.Fatalf("turn_end = %v, want exactly one error", ends)
+		}
+	})
+
+	t.Run("mid_stream", func(t *testing.T) {
+		scope := kernel.New()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+
+		var ends []StopReason
+		if _, err := kernel.On(scope, EventTurnEnd, func(p *TurnEnd) { ends = append(ends, p.StoppedBy) }); err != nil {
+			t.Fatal(err)
+		}
+		a := newTestAgent(t, deadlineMidStreamModel{}, nil, scope)
+
+		res, err := a.Run(ctx, nil, llm.UserText("q"))
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want context.DeadlineExceeded in the chain", err)
+		}
+		if res.StoppedBy != StopError {
+			t.Fatalf("stoppedBy = %s, want error (a timeout is not a caller cancel)", res.StoppedBy)
+		}
+		if len(ends) != 1 || ends[0] != StopError {
+			t.Fatalf("turn_end = %v, want exactly one error", ends)
+		}
+	})
 }
 
 // 基础设施失败（模型错误）→ StoppedBy=error、err 非 nil、turn_end 闭合。

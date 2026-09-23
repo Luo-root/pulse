@@ -308,6 +308,49 @@ func TestAspectConcurrentNextCalledOnce(t *testing.T) {
 	}
 }
 
+// 跳过不是失败：输入被跳过时 Retry 必须立即返回，不得重跑整段
+// 「等输入 + 执行」——否则白等 (attempts-1) × delay，内层切面
+// （观测/埋点/记账）也被重复执行。
+func TestRetryDoesNotRerunSkippedNode(t *testing.T) {
+	in := NewKey[string]("retry.skip.in")
+	out := NewKey[string]("retry.skip.out")
+	const delay = 300 * time.Millisecond
+
+	g := mustNew(t, context.Background(), "test", WithAspects(Retry(3, delay)))
+	if err := SkipSeed(g, in); err != nil {
+		t.Fatal(err)
+	}
+
+	var runs, inner atomic.Int32
+	mustAdd(t, g, NewNode("down", Requires(in), Provides(out), func(rc *RunCtx) error {
+		runs.Add(1) // 断言在主 goroutine 上做（节点跑在自己的 goroutine 里）
+		return nil
+	}, AspectFunc(func(rc *RunCtx, next func(*RunCtx) error) error {
+		inner.Add(1)
+		return next(rc)
+	})))
+
+	start := time.Now()
+	if err := g.Run(); err != nil {
+		t.Fatalf("a skip is not a failure: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if got := inner.Load(); got != 1 {
+		t.Fatalf("inner aspect ran %d times, want 1 (a skipped input must not be retried)", got)
+	}
+	if got := runs.Load(); got != 0 {
+		t.Fatalf("node Run ran %d times, want 0 when its input is skipped", got)
+	}
+	if elapsed >= delay {
+		t.Fatalf("skip path took %v, want no retry delay (Retry must not add attempts-1 waits)", elapsed)
+	}
+	rc := inspect(g)
+	if _, ok, skipped, err := TryGet(rc, out); err != nil || ok || !skipped {
+		t.Fatalf("out = ok=%v skipped=%v err=%v, want skipped", ok, skipped, err)
+	}
+}
+
 func TestEmptyNodeIDRejected(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
 	err := g.Add(NewNode("", nil, Provides(kA), func(rc *RunCtx) error { return nil }))
