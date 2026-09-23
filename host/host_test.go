@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -1800,10 +1801,10 @@ func TestHostRequestRouteLastWinsAcrossSteps(t *testing.T) {
 // TestTurnRecorderDropsMalformedToolArguments：#224——tool.called 的载荷守卫：
 // 参数不是合法 JSON 时留空（omitempty），不让 codec 拒绝、把落盘打成 panic。
 //
-// 注意这是**纵深防御**：host 的完整路径上，非法参数会先卡在 assistant 消息
-// 落盘（`message.assistant` 原样序列化 Part，`json.RawMessage` 拒非法 JSON），
-// 轮不到这里——根因（适配器把模型给的参数串原样透传，不保证是合法 JSON）
-// 单独开票跟踪。本用例直接跑请求 scope 的 before_tool_call 链，把守卫本身钉住。
+// 这是**纵深防御**，不是那条路径的解法：坏参数已由 assistant 消息按原文存档
+// （persistableParts，见 #235），本事件是时序锚点，参数以 message.assistant
+// 为准，故不在这里重复承载第二种形态。本用例直接跑请求 scope 的
+// before_tool_call 链，把守卫本身钉住。
 func TestTurnRecorderDropsMalformedToolArguments(t *testing.T) {
 	ctx := context.Background()
 	sess, err := memory.NewMemorySessionStack().Create(ctx, session.SessionHeader{})
@@ -1842,5 +1843,270 @@ func TestTurnRecorderDropsMalformedToolArguments(t *testing.T) {
 	}
 	if len(called.Arguments) != 0 {
 		t.Fatalf("arguments = %s, want them dropped (the codec rejects invalid JSON)", called.Arguments)
+	}
+}
+
+// TestPersistablePartsMalformedArgumentsLossless：#235 的兜底形状——非法 JSON
+// 参数按**原文**编码成 JSON 字符串（读侧解回来就是原文），合法参数逐字原样
+// 通过；两者都不改动源消息（loop 手里那份仍是原文，见副本语义）。
+func TestPersistablePartsMalformedArgumentsLossless(t *testing.T) {
+	const raw = `{"text":`
+	src := []llm.Part{
+		llm.Text("hi"),
+		llm.Call(llm.ToolCall{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{"a":1}`)}),
+		llm.Call(llm.ToolCall{ID: "c9", Name: "echo", Arguments: json.RawMessage(raw)}),
+	}
+	// 根因先钉住：原样序列化必然失败——否则本用例会退化成空断言。
+	if _, err := json.Marshal(session.MessagePayload{Parts: src}); err == nil {
+		t.Fatal("sanity: json.RawMessage must reject invalid JSON, else the fallback has no reason to exist")
+	}
+
+	out := persistableParts(src)
+	if len(out) != len(src) {
+		t.Fatalf("len(out) = %d, want %d", len(out), len(src))
+	}
+	if got := string(out[1].ToolCallValue.Arguments); got != `{"a":1}` {
+		t.Fatalf("valid arguments = %s, want them passed through verbatim", got)
+	}
+	encoded := out[2].ToolCallValue.Arguments
+	if string(encoded) == raw || !json.Valid(encoded) {
+		t.Fatalf("encoded arguments = %s, want a valid JSON value different from the raw text", encoded)
+	}
+	var recovered string
+	if err := json.Unmarshal(encoded, &recovered); err != nil {
+		t.Fatalf("recover raw text from %s: %v", encoded, err)
+	}
+	if recovered != raw {
+		t.Fatalf("recovered = %q, want the raw text verbatim (%q)", recovered, raw)
+	}
+	if got := string(src[2].ToolCallValue.Arguments); got != raw {
+		t.Fatalf("source arguments mutated: %s (the fallback must work on a copy)", got)
+	}
+	if _, err := json.Marshal(session.MessagePayload{Parts: out}); err != nil {
+		t.Fatalf("marshal payload after fallback: %v", err)
+	}
+}
+
+// TestHostMalformedToolArgumentsDoNotKillTurn：#235——模型给出非法 JSON 工具
+// 参数时，官方装配路径（host + 会话）不再在落盘处 fail closed 打死整个回合：
+//
+//  1. 工具照常执行、按普通参数错误回传 IsError（模型据此可以纠正重发）；
+//  2. 发给工具与后续请求的**仍是原文**（兜底只作用于落盘那份副本）；
+//  3. 落盘那份是原文的 JSON 字符串（原文逐字可复原）；
+//  4. 回合在日志里正常闭合（turn.ended / completed）。
+func TestHostMalformedToolArgumentsDoNotKillTurn(t *testing.T) {
+	const raw = `{"text":`
+	ctx := context.Background()
+	sess, err := memory.NewMemorySessionStack().Create(ctx, session.SessionHeader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := loop.NewMemToolSet()
+	var toolArgs []byte
+	if err := tools.Register(llm.ToolDef{Name: "echo", Description: "echo"},
+		func(_ context.Context, args json.RawMessage) (string, error) {
+			toolArgs = append([]byte(nil), args...)
+			var v map[string]any
+			if err := json.Unmarshal(args, &v); err != nil {
+				return "", fmt.Errorf("echo: bad arguments: %w", err)
+			}
+			return "ok", nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	model := &captureModel{inner: llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c9", Name: "echo", Arguments: json.RawMessage(raw)}),
+		llm.Resp("done"),
+	)}
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	a, err := h.NewAgent(AgentOptions{Name: "t", Model: model, ModelName: "stub", ToolSet: tools, Session: sess})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, llm.User(llm.Text("go")))
+	if err != nil {
+		t.Fatalf("a malformed argument must not kill the round: %v", err)
+	}
+	if res.StoppedBy != loop.StopCompleted {
+		t.Fatalf("stoppedBy = %q, want completed", res.StoppedBy)
+	}
+	if string(toolArgs) != raw {
+		t.Fatalf("tool received %q, want the raw arguments verbatim (%q)", toolArgs, raw)
+	}
+
+	// 第二次模型调用看到的历史里，tool-call 参数仍是原文（不是落盘那串
+	// 字符串形态）——落盘兜底只动副本，不改 loop 手里的消息。
+	if res.Steps != 2 {
+		t.Fatalf("steps = %d, want 2 (second call proves what the model sees)", res.Steps)
+	}
+	if model.last == nil {
+		t.Fatal("the round never reached the model")
+	}
+	var sent []string
+	for _, m := range model.last.Messages {
+		for _, p := range m.Parts {
+			if p.ToolCallValue != nil {
+				sent = append(sent, string(p.ToolCallValue.Arguments))
+			}
+		}
+	}
+	if len(sent) != 1 || sent[0] != raw {
+		t.Fatalf("second request tool-call arguments = %q, want the raw text (%q)", sent, raw)
+	}
+
+	envs, err := sess.Events(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		persisted string
+		closed    bool
+		isErr     bool
+	)
+	for _, e := range envs {
+		switch e.Type {
+		case session.EventMessageAssistant:
+			var p session.MessagePayload
+			if err := json.Unmarshal(e.Data, &p); err != nil {
+				t.Fatal(err)
+			}
+			for _, part := range p.Parts {
+				if part.ToolCallValue == nil {
+					continue
+				}
+				var s string
+				if err := json.Unmarshal(part.ToolCallValue.Arguments, &s); err != nil {
+					t.Fatalf("persisted arguments = %s, want the raw text as a JSON string: %v", part.ToolCallValue.Arguments, err)
+				}
+				persisted = s
+			}
+		case session.EventToolResult:
+			var p session.ToolResultPayload
+			if err := json.Unmarshal(e.Data, &p); err != nil {
+				t.Fatal(err)
+			}
+			if p.ToolCallID == "c9" && p.IsError {
+				isErr = true
+			}
+		case session.EventTurnEnded:
+			var p session.LifecyclePayload
+			if err := json.Unmarshal(e.Data, &p); err != nil {
+				t.Fatal(err)
+			}
+			closed = p.Reason == session.ReasonCompleted
+		}
+	}
+	if persisted != raw {
+		t.Fatalf("persisted arguments decoded to %q, want the raw text (%q)", persisted, raw)
+	}
+	if !isErr {
+		t.Fatal("the tool failure must reach the model as an IsError result")
+	}
+	if !closed {
+		t.Fatal("the round must close in the log with turn.ended/completed")
+	}
+}
+
+// TestHostMalformedToolArgumentsSurviveReopen：#235 的**跨重开**形态——坏参数
+// 落盘后，之后任何「从日志重建的请求」拿到的都是那个 JSON 字符串（合法参数
+// 不受影响），读侧解回来仍是原文。文档里写下的代价由这条用例守着：形态一旦
+// 换成别的编码，它必须红。
+func TestHostMalformedToolArgumentsSurviveReopen(t *testing.T) {
+	const raw = `{"text":`
+	ctx := context.Background()
+	stack, err := memory.NewJSONLSessionStack(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo := func(c *kernel.Context, reg *toolset.Registry) error {
+		_, err := reg.Register(c, toolset.Registration{
+			Def: llm.ToolDef{Name: "echo", Description: "echo", Parameters: json.RawMessage(`{"type":"object"}`)},
+			Fn: func(_ context.Context, args json.RawMessage) (string, error) {
+				var v map[string]any
+				if err := json.Unmarshal(args, &v); err != nil {
+					return "", fmt.Errorf("echo: bad arguments: %w", err)
+				}
+				return "ok", nil
+			},
+			Source: "test.echo",
+			Risk:   toolset.RiskReadonly,
+		})
+		return err
+	}
+
+	// ---- 第一段生命周期：坏参数回合照常闭合，然后关句柄（模拟进程退出）----
+	first := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c9", Name: "echo", Arguments: json.RawMessage(raw)}),
+		llm.Resp("first"),
+	)
+	h1 := newTestHost(t, first, func(o *Options) {
+		o.Session = stack
+		o.Tools = []ToolSource{echo}
+	})
+	a1, err := h1.DefaultAgent(ctx, DefaultAgentOptions{Name: "t", Model: "stub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a1.Run(ctx, llm.UserText("go"))
+	if err != nil {
+		t.Fatalf("a malformed argument must not kill the round: %v", err)
+	}
+	if res.StoppedBy != loop.StopCompleted {
+		t.Fatalf("stoppedBy = %q, want completed", res.StoppedBy)
+	}
+	id := a1.Session().Header().SessionID
+	if c, ok := a1.Session().(interface{ Close() error }); ok {
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// ---- 第二段生命周期：新宿主按 SessionID 续跑，看重建的请求里那份参数 ----
+	cap := &captureModel{inner: llm.NewScripted(llm.Resp("second"))}
+	h2 := newTestHost(t, cap, func(o *Options) { o.Session = stack })
+	a2, err := h2.DefaultAgent(ctx, DefaultAgentOptions{Name: "t", Model: "stub", SessionID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if c, ok := a2.Session().(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+	})
+	res2, err := a2.Run(ctx, llm.UserText("again"))
+	if err != nil {
+		t.Fatalf("the resumed round must run: %v", err)
+	}
+	if res2.Final.Text() != "second" {
+		t.Fatalf("resumed final = %q", res2.Final.Text())
+	}
+	if cap.last == nil {
+		t.Fatal("the resumed round never reached the model")
+	}
+	var seen []string
+	for _, m := range cap.last.Messages {
+		for _, p := range m.Parts {
+			if p.ToolCallValue != nil {
+				seen = append(seen, string(p.ToolCallValue.Arguments))
+			}
+		}
+	}
+	if len(seen) != 1 {
+		t.Fatalf("rebuilt request carries %d tool calls, want 1", len(seen))
+	}
+	if seen[0] == raw {
+		t.Fatalf("rebuilt arguments = %q, want the persisted JSON string (the documented drift)", seen[0])
+	}
+	if !json.Valid([]byte(seen[0])) {
+		t.Fatalf("rebuilt arguments = %q, want a valid JSON value", seen[0])
+	}
+	var recovered string
+	if err := json.Unmarshal([]byte(seen[0]), &recovered); err != nil {
+		t.Fatalf("recover raw text from %q: %v", seen[0], err)
+	}
+	if recovered != raw {
+		t.Fatalf("recovered = %q, want the raw text verbatim (%q)", recovered, raw)
 	}
 }

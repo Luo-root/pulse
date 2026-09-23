@@ -526,7 +526,8 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 	for _, acc := range calls {
 		args := acc.args.String()
 		if args == "" {
-			// 无参调用：词汇表要求 Arguments 为合法 JSON。
+			// 无参调用：空串不是合法 JSON，补 {}（适配器只补这一档；
+			// 供应商给的串原样透传——见 llm.ToolCall.Arguments）。
 			args = "{}"
 		}
 		msg.Parts = append(msg.Parts, llm.Call(llm.ToolCall{ID: acc.id, Name: acc.name, Arguments: json.RawMessage(args)}))

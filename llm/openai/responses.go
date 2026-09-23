@@ -525,6 +525,8 @@ func mapResponsesResponse(resp *responses.Response) (*llm.Message, llm.FinishRea
 		case responses.ResponseFunctionToolCall:
 			args := v.Arguments
 			if args == "" {
+				// 无参调用：空串不是合法 JSON，补 {}（适配器只补这一档；
+				// 供应商给的串原样透传——见 llm.ToolCall.Arguments）。
 				args = "{}"
 			}
 			msg.Parts = append(msg.Parts, llm.Call(llm.ToolCall{
