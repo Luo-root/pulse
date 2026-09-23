@@ -230,6 +230,116 @@ func lspOptions(root string, extra func(*Options)) Options {
 
 // ---- 用例 ----
 
+// TestLSPRestartsAfterServerDeath：#216——语言服务器自行退出（配置、OOM、
+// 锁文件）是常态，缓存里不能留死连接：下一次调用必须摘掉它、兜底收尾进程树、
+// 重新 spawn 并成功。既有用例只覆盖「启动/握手失败下次重试」。
+//
+// 测试里的「死亡」= 关掉 fake conn 的接收端（Recv 返回 io.EOF，等价于进程
+// 退出）。为了不靠 sleep 猜时序，先让一个 fake 不回帧的请求挂在那里，关连接
+// 后它会以「connection closed」返回——那一刻 readLoop 已经把这个 server 标
+// 死，之后的断言才是确定性的。
+func TestLSPRestartsAfterServerDeath(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "hello.go")
+	if err := os.WriteFile(file, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri := fileURI(file)
+
+	orig := spawnServer
+	var mu sync.Mutex
+	var fakes []*fakeServer
+	var kills atomic.Int32
+	spawnServer = func(ctx context.Context, command, dir string) (*serverProcess, error) {
+		fs := newFakeServer()
+		fs.handle = func(f rpcFrame) {
+			switch f.Method {
+			case "initialize":
+				fs.reply(f, map[string]any{"capabilities": map[string]any{}})
+			case "textDocument/didOpen":
+				fs.notify("textDocument/publishDiagnostics", publishDiagParams{URI: uri})
+			}
+			// textDocument/references 故意不回帧：用它把调用挂住当死亡信号。
+		}
+		mu.Lock()
+		fakes = append(fakes, fs)
+		mu.Unlock()
+		return &serverProcess{conn: fs.conn, kill: func() { kills.Add(1) }}, nil
+	}
+	t.Cleanup(func() { spawnServer = orig })
+
+	reg, cleanup := lspSetup(t, lspOptions(root, nil))
+	defer cleanup()
+
+	if out := lspCall(t, reg, map[string]any{"op": "diagnostics", "path": "hello.go"}); !strings.Contains(out, "diagnostic(s)") {
+		t.Fatalf("first call must work before the server dies: %q", out)
+	}
+
+	// 挂住一个请求：它进入 pending 后，关连接才会把等待者唤醒。
+	dead := make(chan error, 1)
+	go func() {
+		b, err := json.Marshal(map[string]any{"op": "references", "path": "hello.go"})
+		if err != nil {
+			dead <- err
+			return
+		}
+		_, err = reg.AsToolSet().Execute(context.Background(), llm.ToolCall{
+			ID: "t2", Name: "lsp", Arguments: b,
+		})
+		dead <- err
+	}()
+
+	mu.Lock()
+	first := fakes[0]
+	mu.Unlock()
+	if !waitForMethod(first, "textDocument/references") {
+		t.Fatal("the pending request was never sent")
+	}
+	close(first.conn.out) // server 自行退出
+
+	select {
+	case err := <-dead:
+		if err == nil || !strings.Contains(err.Error(), "closed") {
+			t.Fatalf("a pending request must fail with a connection-closed error, got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pending request never returned after the server died")
+	}
+
+	// 自愈：下一次调用必须重建并成功，且死 server 已被收尾（树杀兜底）。
+	out := lspCall(t, reg, map[string]any{"op": "diagnostics", "path": "hello.go"})
+	if !strings.Contains(out, "diagnostic(s)") {
+		t.Fatalf("the tool must recover after the server died: %q", out)
+	}
+	mu.Lock()
+	n := len(fakes)
+	mu.Unlock()
+	if n != 2 {
+		t.Fatalf("a dead server must be replaced by exactly one new spawn, spawns=%d", n)
+	}
+	if k := kills.Load(); k < 1 {
+		t.Fatalf("the dead server's process tree must be reaped, kills=%d", k)
+	}
+}
+
+// waitForMethod 等 fake 记录到某个方法帧（记录发生在 Send 内，即 pending 已
+// 登记之后）。
+func waitForMethod(fs *fakeServer, name string) bool {
+	t0 := time.Now()
+	for {
+		for _, m := range fs.methodSequence() {
+			if m == name {
+				return true
+			}
+		}
+		if time.Since(t0) > 5*time.Second {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestLSPDiagnosticsFlow：诊断流转 + 协议序（initialize → initialized → didOpen）。
 func TestLSPDiagnosticsFlow(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "hello.go")

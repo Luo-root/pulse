@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Luo-root/pulse/kernel"
@@ -105,5 +106,81 @@ func TestPreviewRender(t *testing.T) {
 	s := p.Render()
 	if !strings.Contains(s, "+1/-1") || !strings.Contains(s, "a.txt") {
 		t.Fatalf("%s", s)
+	}
+}
+
+// TestPreviewIdentityUnderConcurrentDispose：#215-3——卡片的三样身份事实
+// （Tool / Source / Risk）必须与 PreviewFn 出自**同一份快照**。
+//
+// 分两次查（先 LookupPreview 再 LookupMeta）会在中间被撤销撕开，产出
+// 「ok=true 但 Source 空、Risk 零值」的卡片，再被 ActionFromRisk 兜成
+// execute：把零值当低风险放行的策略（switch risk { case ReadWrite,
+// Dangerous: 问人; default: 放行 }）因此被绕过，LookupMeta 的 fail-closed
+// 语义也在卡片路径上丢掉。
+func TestPreviewIdentityUnderConcurrentDispose(t *testing.T) {
+	host := kernel.New()
+	defer host.Dispose()
+	r := toolset.NewRegistry()
+
+	register := func() func() {
+		d, err := r.Register(host, toolset.Registration{
+			Def:    llm.ToolDef{Name: "q", Description: "q"},
+			Fn:     echoFn("ok"),
+			Source: "local.q",
+			Risk:   toolset.RiskDangerous,
+			PreviewFn: func(context.Context, json.RawMessage) (toolset.Preview, error) {
+				return toolset.Preview{
+					Kind:    toolset.KindOpaque,
+					Subject: "q",
+					Opaque:  &toolset.OpaqueChange{Summary: "q"},
+				}, nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			register()()
+		}
+	}()
+
+	var bad int
+	var sample toolset.Preview
+	for i := 0; i < 50000; i++ {
+		p, ok, err := r.Preview(context.Background(), "q", nil)
+		if err != nil {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("Preview: %v", err)
+		}
+		if !ok {
+			continue
+		}
+		if p.Source == "" || p.Risk != toolset.RiskDangerous {
+			bad++
+			if bad == 1 {
+				sample = p
+			}
+		}
+	}
+	close(stop)
+	wg.Wait()
+
+	if bad != 0 {
+		t.Fatalf("ok=true 的卡片带着零值身份字段 %d 次；样本 source=%q risk=%v action=%s",
+			bad, sample.Source, sample.Risk, sample.Action)
 	}
 }

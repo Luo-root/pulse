@@ -50,7 +50,7 @@ func (e *env) previewWebFetch(_ context.Context, args json.RawMessage) (toolset.
 		Kind:    toolset.KindNetwork,
 		Action:  toolset.ActionNetwork,
 		Subject: u.String(),
-		Network: &toolset.NetworkChange{Method: http.MethodGet, URL: u.String(), HostClass: "http"},
+		Network: &toolset.NetworkChange{Method: http.MethodGet, URL: u.String(), HostClass: hostClassOf(u.Host)},
 	}, nil
 }
 

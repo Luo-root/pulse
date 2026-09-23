@@ -29,6 +29,15 @@ const (
 	ActionExecute = "execute"
 	// ActionNetwork 出网。
 	ActionNetwork = "network"
+
+	// HostClassPublic 目标是公开地址。
+	HostClassPublic = "public"
+	// HostClassPrivate 目标是私网 / 环回 / 本地名。
+	HostClassPrivate = "private"
+	// HostClassMetadata 目标是云 metadata / link-local。
+	HostClassMetadata = "metadata"
+	// HostClassUnknown 无法在不产生外部流量的前提下判定（域名一律归这里）。
+	HostClassUnknown = "unknown"
 )
 
 // Preview 是执行前给人看的权限卡片（三层：身份 / 主体 / 效果）。
@@ -67,9 +76,18 @@ type CommandChange struct {
 
 // NetworkChange 是 network kind 的效果。
 type NetworkChange struct {
-	Method    string
-	URL       string
-	HostClass string // public|private|metadata
+	Method string
+	URL    string
+	// HostClass 是目标主机的类别，取值见 HostClass* 常量。
+	//
+	// 它按**字面地址**判定：IP 字面量由 netguard 的判据分出 metadata /
+	// private / public，localhost 与 *.localhost 是 private，**域名一律
+	// unknown**——PreviewFn 在**人批之前**执行，解析域名等于让未获准的动作
+	// 先产生外部流量（DNS 本身可当信道）。真实落点的拦截在连接时按解析结果
+	// 做（builtins 的 guardedDial / checkHost），HostClass 只是卡片上的提示，
+	// 不是安全边界：别写「case HostClassPublic: 免问」这种把域名当公开地址
+	// 放行的策略。
+	HostClass string
 }
 
 // OpaqueChange 是 opaque kind 的效果。
@@ -108,11 +126,23 @@ func (r *Registry) LookupPreview(name string) (PreviewFn, bool) {
 // ok=false：未登记或没有 PreviewFn（空预览，HITL 仍应问人）。
 // PreviewFn 返回 error：ok=true 但 err!=nil，HITL 不得因此放行。
 func (r *Registry) Preview(ctx context.Context, name string, args json.RawMessage) (Preview, bool, error) {
-	fn, ok := r.LookupPreview(name)
-	if !ok {
+	if r == nil || name == "" {
 		return Preview{}, false, nil
 	}
-	src, risk, _ := r.LookupMeta(name)
+	// 一次 RLock 取全量身份字段：分两次查（先 LookupPreview 再 LookupMeta）
+	// 中间可以被 Dispose / DisposeSource 撕开，得到「ok=true 但 Source 空、
+	// Risk 零值」的卡片，再被 ActionFromRisk 兜成 execute——把零值当低风险
+	// 放行的策略因此被绕过，LookupMeta 的 fail-closed 语义也在卡片路径上
+	// 丢掉。
+	r.mu.RLock()
+	e, ok := r.tools[name]
+	if !ok || e.preview == nil {
+		r.mu.RUnlock()
+		return Preview{}, false, nil
+	}
+	fn, src, risk := e.preview, e.source, e.risk
+	r.mu.RUnlock()
+
 	p, err := fn(ctx, args)
 	if err != nil {
 		return Preview{}, true, err
