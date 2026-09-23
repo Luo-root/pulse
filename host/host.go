@@ -667,8 +667,10 @@ func (r *turnRecorder) mount(scope *kernel.Context) error {
 	// tool.result 为准。
 	if _, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
 		func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
-			// 畸形参数留空（codec 拒非法 JSON）——纵深防御：host 的完整
-			// 路径上非法参数会先卡在 assistant 消息落盘（根因见 #235）。
+			// 畸形参数留空：codec 要求 tool.called.arguments 是合法 JSON
+			// （validateToolCalled），而这份坏参数已经由 assistant 消息按
+			// **原文**存档了（persistableParts）——本事件是时序锚点，参数
+			// 以 message.assistant 为准，不在这里重复承载第二种形态。
 			var args json.RawMessage
 			if json.Valid(p.Call.Arguments) {
 				args = p.Call.Arguments
@@ -736,13 +738,48 @@ func (r *turnRecorder) append(t session.EventType, payload any, surface *session
 	}
 }
 
-// appendMessage 落盘一条消息（user / assistant，surface append）。
+// appendMessage 落盘一条消息（user / assistant，surface append）。内容块先
+// 过 persistableParts：模型给的参数不保证是合法 JSON（适配器原样透传，
+// 见 llm.ToolCall.Arguments），原样落盘会让 json.RawMessage 的 MarshalJSON
+// 报错，把一个坏参数升级成整回合失败（#235）。
 func (r *turnRecorder) appendMessage(t session.EventType, m *llm.Message) {
 	parts := m.Parts
 	if parts == nil {
 		parts = []llm.Part{}
 	}
-	r.append(t, session.MessagePayload{Parts: parts}, &session.SurfaceIntent{Op: session.SurfaceAppend})
+	r.append(t, session.MessagePayload{Parts: persistableParts(parts)}, &session.SurfaceIntent{Op: session.SurfaceAppend})
+}
+
+// persistableParts 返回可无损落盘的 parts **副本**：tool-call 参数不是合法
+// JSON 时（供应商给出截断 / 半截的串），json.RawMessage 的 MarshalJSON 直接
+// 报错——那个错误落在 append 上，被 fail closed 解读成「落盘坏了」而中断
+// 回合，模型连「工具报错 → 重发」的自纠正路径都拿不到。工具执行侧本来就能
+// 容错（工具按普通参数错误回传 IsError），差异只由装配层引入（#235）。
+//
+// 兜底方式：把该参数的**原文**编码成一个 JSON 字符串——原文逐字可复原
+// （读侧 json.Unmarshal 回 string 即可）。唯一例外是原文含非法 UTF-8 字节：
+// JSON 文本承载不了非法字节，按 JSON 规范替换为 U+FFFD。代价只有一处：
+// 日志里那一条的 arguments 形态从「对象」漂成「字符串」——据此重建的请求
+// （含冷恢复 `PendingState.Calls` 的重发路径）拿到的也是这个字符串形态，
+// 还原不出对象形态；读侧 json.Unmarshal 回 string 即得原文。这是「如实
+// 落盘」与「不打断回合」之间的取舍。
+//
+// 副本语义：不改动 loop 手里的消息——发给工具与后续请求的**仍是原文**。
+// 合法 JSON 的参数逐字原样通过，不做任何归一化。
+func persistableParts(parts []llm.Part) []llm.Part {
+	out := make([]llm.Part, len(parts))
+	copy(out, parts)
+	for i := range out {
+		call := out[i].ToolCallValue
+		if call == nil || len(call.Arguments) == 0 || json.Valid(call.Arguments) {
+			continue
+		}
+		encoded, _ := json.Marshal(string(call.Arguments)) // 不可达错误：string 编码永不失败
+		dup := *call                                       // 复制一份，原消息不动
+		dup.Arguments = encoded
+		out[i].ToolCallValue = &dup
+	}
+	return out
 }
 
 // Session 返回本 agent 的会话句柄（导出/导入、Recoverable 裁决、直读

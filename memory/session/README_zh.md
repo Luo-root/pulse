@@ -68,6 +68,8 @@ dst, err := session.ImportSession(ctx, dstStore, &stream)
 
 Ignorable ≠ 可以不记：`request.header`（system + ToolDef + model 三样）、`request.route`（本回合**实际服务**的模型）与 `request.usage`（全回合累计 token）都必须由写入方发；写入方是装配层（官方 = `host` 的 turnRecorder）。`tool.called` 同属装配层职责：**先于**审批与执行落盘，「调用已发生」的锚点。
 
+消息族另有一条**形状义务**落在写入方：tool-call 参数不是合法 JSON 时（适配器把供应商给的串原样透传，见 `llm.ToolCall.Arguments`），先把原文编码成 JSON 字符串再落盘——否则 `json.RawMessage` 的 `MarshalJSON` 直接报错、整条事件写不进去（详见 `MessagePayload` godoc）。
+
 ## 常见错误
 
 | 哨兵 | 语义 |
