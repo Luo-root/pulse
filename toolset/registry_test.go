@@ -144,10 +144,18 @@ func TestRegisterParametersShape(t *testing.T) {
 			}
 			defer dispose()
 			defs := r.AsToolSet().Definitions()
+			found := false
 			for _, d := range defs {
-				if d.Name == tc.tool && string(d.Parameters) != string(tc.raw) {
+				if d.Name != tc.tool {
+					continue
+				}
+				found = true
+				if string(d.Parameters) != string(tc.raw) {
 					t.Fatalf("%s parameters = %s, want them passed through verbatim", tc.tool, d.Parameters)
 				}
+			}
+			if !found {
+				t.Fatalf("%s missing from Definitions()", tc.tool)
 			}
 		})
 	}

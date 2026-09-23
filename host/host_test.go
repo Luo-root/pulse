@@ -2233,3 +2233,77 @@ func TestHostRejectsInvalidToolSchemaAtAssembly(t *testing.T) {
 		t.Fatalf("assembly err = %v, want the offending source index", err)
 	}
 }
+
+// TestHostRejectsInvalidInjectedToolSetSchema：注入的 loop.ToolSet（官方
+// MemToolSet 或自实现）不经过 toolset.Registry 的登记期校验——同一条判据
+// 在 NewAgent 装配期兜住。否则坏声明要等回合开始时的 request.header 落盘
+// 才炸：错误指向 session、模型一次都不会被调用、适配器的 ErrBadRequest 也
+// 被盖住。边界与登记期一致：只判「合法 JSON」，`true` / `42` 这类合法但
+// **不是对象**的声明放行——那是适配器组包时的判据。
+func TestHostRejectsInvalidInjectedToolSetSchema(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		sub     string
+		defs    []llm.ToolDef
+		wantErr bool
+	}{
+		{
+			sub:     "truncated object",
+			defs:    []llm.ToolDef{{Name: "broken", Parameters: json.RawMessage(`{"type":"object"`)}},
+			wantErr: true,
+		},
+		{
+			sub:     "truncated array",
+			defs:    []llm.ToolDef{{Name: "broken", Parameters: json.RawMessage(`[{"type"`)}},
+			wantErr: true,
+		},
+		{sub: "nil means no-arg", defs: []llm.ToolDef{{Name: "p1"}}},
+		{sub: "boolean schema is legal JSON", defs: []llm.ToolDef{{Name: "p2", Parameters: json.RawMessage(`true`)}}},
+		{sub: "non-object is the adapter's call", defs: []llm.ToolDef{{Name: "p3", Parameters: json.RawMessage(`42`)}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sub, func(t *testing.T) {
+			mem := loop.NewMemToolSet()
+			for _, d := range tc.defs {
+				if err := mem.Register(d, func(context.Context, json.RawMessage) (string, error) { return "x", nil }); err != nil {
+					t.Fatalf("MemToolSet.Register: %v", err)
+				}
+			}
+			// 两条注入路径同判：官方内存实现与自实现接口。
+			for _, set := range []loop.ToolSet{mem, injectedToolSet{defs: tc.defs}} {
+				h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), nil)
+				sess, err := memory.NewMemorySessionStack().Create(ctx, session.SessionHeader{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				a, err := h.NewAgent(AgentOptions{
+					Name: "t", Model: llm.NewScripted(llm.Resp("unused")), ModelName: "stub",
+					ToolSet: set, Session: sess,
+				})
+				if tc.wantErr {
+					if err == nil {
+						t.Fatalf("%T: NewAgent accepted a declaration that is not valid JSON", set)
+					}
+					if !strings.Contains(err.Error(), "parameters is not valid JSON") {
+						t.Fatalf("%T: err = %v, want the parameters rejection (not a session/persistence error)", set, err)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatalf("%T: NewAgent: %v", set, err)
+				}
+				if a == nil {
+					t.Fatalf("%T: nil agent without error", set)
+				}
+			}
+		})
+	}
+}
+
+// injectedToolSet 是自实现的 loop.ToolSet（不经过 toolset.Registry）：
+// Definitions 原样返回填进去的声明，用来走「自实现注入」这条缝。
+type injectedToolSet struct{ defs []llm.ToolDef }
+
+func (s injectedToolSet) Definitions() []llm.ToolDef { return s.defs }
+
+func (s injectedToolSet) Execute(context.Context, llm.ToolCall) (string, error) { return "x", nil }

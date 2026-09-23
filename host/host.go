@@ -188,7 +188,9 @@ type AgentOptions struct {
 	// 方法填声明名）。接会话时**必填**——request.header codec 要求 Model
 	// 非空，构造期校验，不留到回合中段才失败。
 	ModelName string
-	// ToolSet 是本 agent 的工具集；nil = 无工具（纯对话回合）。
+	// ToolSet 是本 agent 的工具集；nil = 无工具（纯对话回合）。任意
+	// loop.ToolSet 实现（含自实现）都由 NewAgent 在装配期做声明校验：
+	// Parameters 非空时必须是合法 JSON，坏声明当场拒绝。
 	ToolSet loop.ToolSet
 	// Session 是本 agent 的会话（三向接线目标）；nil = 无会话持久化。
 	Session session.Session
@@ -291,6 +293,10 @@ type DefaultAgentOptions struct {
 // llm.ChatModel 来源（Registry 产出、stub、宿主自定义），ToolSet / Session
 // 显式传入（nil = 无工具 / 无会话持久化），不依赖宿主的默认装配。宿主
 // 在这里只提供生命周期容器与三向接线。
+//
+// 装配期校验：Model / Name 必填、接会话时 ModelName 必填，以及注入
+// ToolSet 的**工具声明**（Parameters 非空时必须是合法 JSON）——官方注册
+// 面在登记期就拒，自实现 ToolSet 由这里兜住，坏声明不进运行期。
 func (h *Host) NewAgent(opt AgentOptions) (*Agent, error) {
 	if opt.Model == nil {
 		return nil, fmt.Errorf("host: model is required (inject any llm.ChatModel)")
@@ -300,6 +306,16 @@ func (h *Host) NewAgent(opt AgentOptions) (*Agent, error) {
 	}
 	if opt.Session != nil && opt.ModelName == "" {
 		return nil, fmt.Errorf("host: model name is required with a session (request.header audit records it)")
+	}
+	// 注入的 ToolSet 不经过 toolset.Registry 的登记期校验——这里补同一条判据
+	// （装配期 fail fast）：坏声明否则要等回合开始时的 request.header 落盘才
+	// 炸，错误指向 session，模型一次都不会被调用。
+	if opt.ToolSet != nil {
+		for _, d := range opt.ToolSet.Definitions() {
+			if len(d.Parameters) > 0 && !json.Valid(d.Parameters) {
+				return nil, fmt.Errorf("host: tool %q: parameters is not valid JSON", d.Name)
+			}
+		}
 	}
 	return &Agent{
 		kernel:    h.ctx,
