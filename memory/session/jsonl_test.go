@@ -717,3 +717,76 @@ func closeJSONL(t *testing.T, s Session) {
 		t.Fatal(err)
 	}
 }
+
+// TestJSONLCreateAcceptsCompactedVersion：Create 与 Open / 内存版共用同一条
+// 版本闸门——v2（CompactedVersion）header 可被显式重建（此前 JSONL 侧只收
+// v1，同一接口两实现语义分叉）；越界版本仍拒。
+func TestJSONLCreateAcceptsCompactedVersion(t *testing.T) {
+	store := newJSONLStore(t)
+	ctx := t.Context()
+	sess, err := store.Create(ctx, SessionHeader{SessionID: "v2", FormatVersion: CompactedVersion})
+	if err != nil {
+		t.Fatalf("create with CompactedVersion: %v", err)
+	}
+	if got := sess.Header().FormatVersion; got != CompactedVersion {
+		t.Fatalf("FormatVersion = %d, want %d", got, CompactedVersion)
+	}
+	closeJSONL(t, sess)
+	if _, err := store.Create(ctx, SessionHeader{FormatVersion: CompactedVersion + 1}); !errors.Is(err, ErrFormatVersion) {
+		t.Fatalf("err = %v, want ErrFormatVersion", err)
+	}
+}
+
+// TestJSONLBlobCorruptSentinels：blob 缺失与 checksum 不符都归 ErrCorruptLog
+// ——宿主的损坏告警只需 errors.Is(err, ErrCorruptLog) 一条口径，不会被误分类
+// 成「调用方 payload 形状错误」（ErrPayloadInvalid）。
+func TestJSONLBlobCorruptSentinels(t *testing.T) {
+	store := newJSONLStore(t)
+	ctx := t.Context()
+	sess, err := store.Create(ctx, SessionHeader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := make([]byte, blobInlineLimit+1)
+	for i := range big {
+		big[i] = byte(i % 251)
+	}
+	if _, err := sess.Append(ctx, EventDraft{
+		Type:    EventMessageUser,
+		Data:    mustJSONPayload(t, MessagePayload{Parts: []llm.Part{llm.ImageData("application/octet-stream", big)}}),
+		Surface: &SurfaceIntent{Op: SurfaceAppend},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Header().SessionID
+	closeJSONL(t, sess)
+	blobs := filepath.Join(store.root, id, "blobs")
+	entries, err := os.ReadDir(blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("blob files = %d, want 1", len(entries))
+	}
+	blobPath := filepath.Join(blobs, entries[0].Name())
+
+	// 篡改：同长度不同字节 → 内容寻址自校验不符。
+	raw, err := os.ReadFile(blobPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[0] ^= 0xff
+	if err := os.WriteFile(blobPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Open(ctx, id); !errors.Is(err, ErrCorruptLog) {
+		t.Fatalf("checksum mismatch: err = %v, want ErrCorruptLog", err)
+	}
+	// 缺失：引用还在、文件没了。
+	if err := os.Remove(blobPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Open(ctx, id); !errors.Is(err, ErrCorruptLog) {
+		t.Fatalf("missing blob: err = %v, want ErrCorruptLog", err)
+	}
+}

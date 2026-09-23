@@ -9,7 +9,8 @@ P2-B 压缩层：token meter、§9.1 八步压缩事务。
 rep, err := compaction.Compact(ctx, sess, compaction.Options{
     Engine:    &compaction.LLMSummarizer{Model: model, ModelName: "gpt-test"},
     Meter:     compaction.CharMeter{},   // nil 用默认 CharMeter
-    ModelName: "gpt-test",
+    ModelName: "gpt-test",               // 记进 compaction.started；summarized 的 Model 由 Engine 提供，空则回落到它
+    SummaryBudgetTokens: 1024,           // 摘要目标预算（提示词参考值）；0 = 不限
     // Window: &[2]int{0, 9},  // 选区；nil = 全量
 })
 // rep.Replaced      = 被替代窗口的 source event seqs

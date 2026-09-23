@@ -386,7 +386,7 @@ func TestSQLitePutImport(t *testing.T) {
 	}
 
 	dst := newSQLiteStore(t)
-	report, err := ImportItems(ctx, dst, items)
+	report, err := ImportItems(ctx, dst, items, ImportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestSQLitePutImport(t *testing.T) {
 		t.Fatalf("revoked/untrusted not preserved: %+v", got2)
 	}
 
-	again, err := ImportItems(ctx, dst, items)
+	again, err := ImportItems(ctx, dst, items, ImportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

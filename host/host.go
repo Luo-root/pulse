@@ -312,7 +312,10 @@ func (h *Host) DefaultAgent(ctx context.Context, opt DefaultAgentOptions) (*Agen
 	}
 	if h.session != nil {
 		if opt.SessionID == "" {
-			sess, err = h.session.Create(ctx, session.SessionHeader{})
+			// AgentID 由 host 填（它持有 agent 名；多 agent 共享一个会话目录
+			// 时 header 可区分归属）。Workspace / AgentPreset 没有自动生产者
+			// ——需要它们时用 NewAgent + 宿主自建会话显式传入 header。
+			sess, err = h.session.Create(ctx, session.SessionHeader{AgentID: opt.Name})
 		} else {
 			sess, err = h.session.Open(ctx, opt.SessionID)
 		}

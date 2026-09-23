@@ -136,15 +136,18 @@ func writeBlob(blobsDir string, data []byte) (string, error) {
 	return sha, nil
 }
 
+// readBlob 读回内容寻址的 blob。缺失或 sha 与字节不符都是**持久日志损坏**
+// （ErrCorruptLog，与中部坏行 / seq 断链同一分类），不是调用方 payload 形状
+// 错误——宿主的损坏告警分支按 errors.Is(err, ErrCorruptLog) 一条口径即可覆盖。
 func readBlob(blobsDir, sha string) ([]byte, error) {
 	data, err := os.ReadFile(filepath.Join(blobsDir, sha))
 	if err != nil {
-		return nil, fmt.Errorf("%w: blob %s missing or unreadable", ErrPayloadInvalid, sha)
+		return nil, fmt.Errorf("%w: blob %s missing or unreadable", ErrCorruptLog, sha)
 	}
 	// 内容寻址自校验：sha 与字节不符说明文件被外部篡改。
 	sum := sha256.Sum256(data)
 	if hex.EncodeToString(sum[:]) != sha {
-		return nil, fmt.Errorf("%w: blob %s checksum mismatch", ErrPayloadInvalid, sha)
+		return nil, fmt.Errorf("%w: blob %s checksum mismatch", ErrCorruptLog, sha)
 	}
 	return data, nil
 }

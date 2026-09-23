@@ -38,7 +38,7 @@ reg := sess.Registry()                          // 事件 codec 环境（FoldTra
 | 持久 header | — | 写 `compaction.checkpoint` 后同步重写（FormatVersion 抬 2） |
 | List | 内存排序 + 游标 | 扫描 `{root}/*/header.json` + 游标 |
 
-JSONL 落盘布局：`{root}/{sessionID}/header.json` + `events.jsonl`（每行一条信封）+ `blobs/{sha256}`（>32KiB 内联字节溢出，内容寻址去重、sha 自校验、缺失即加载错误）+ `lock`。**JSONL 为明文：文件即密钥面、路径宿主拥有。** `blob:` URL 前缀为本包保留，宿主自带 `blob:` URL 需换 scheme。
+JSONL 落盘布局：`{root}/{sessionID}/header.json` + `events.jsonl`（每行一条信封）+ `blobs/{sha256}`（>32KiB 内联字节溢出，内容寻址去重、sha 自校验；缺失 / 篡改归 `ErrCorruptLog`）+ `lock`。**JSONL 为明文：文件即密钥面、路径宿主拥有。** `blob:` URL 前缀为本包保留，宿主自带 `blob:` URL 需换 scheme。
 
 ## 导出与导入（迁移保真）
 
@@ -76,7 +76,7 @@ Ignorable ≠ 可以不记：`request.header` 仍必须由写入方发（system 
 | `ErrWriterBusy` | 文件锁被持有（fail-fast；stale 阈值后可抢占） |
 | `ErrUnknownEvent` / `ErrUnknownRequired` | 写入未知 required / 恢复时日志含未知 required |
 | `ErrSurfaceNotAllowed` / `ErrReplaceNotSupported` / `ErrReplaceRange` | 非 surface 类型带 Surface / Replace 类型未注册 / 窗口反向、越界或造成 pairing 孤儿 |
-| `ErrCorruptLog` | 持久日志损坏（中部坏行、seq 断链、blob checksum 不符） |
+| `ErrCorruptLog` | 持久日志损坏（中部坏行、seq 断链、blob 缺失 / checksum 不符） |
 | `ErrForkSplitToolGroup` / `ErrForkBadAt` | Fork 切在 tool 组中间 / 切点越界 |
 | `ErrFormatVersion` | header 版本不兼容（只认 1 与 2，不猜测迁移） |
 | `ErrSeedUnsupported` | 导入目标 store 未实现 Seeder（不做静默重编号降级） |

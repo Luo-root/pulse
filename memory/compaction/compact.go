@@ -27,8 +27,13 @@ type Options struct {
 	// Meter 估算 token（nil 用 CharMeter）——写进 summarized 的审计依据
 	// 与 Pressure 判定共用。
 	Meter Meter
-	// ModelName 记进审计（summarized payload 的 Model 字段）。
+	// ModelName 记进 compaction.started 的 Model；summarized 的 Model 由
+	// Engine 提供（res.Model 为空时回落到这里的值，审计不出现空模型名）。
 	ModelName string
+	// SummaryBudgetTokens 是摘要的目标预算（提示词参考值，不构成硬保证）：
+	// >0 时透传进 SummarizeInput.BudgetTokens——LLMSummarizer 用它设
+	// MaxTokens；0 = 不限制。
+	SummaryBudgetTokens int
 	// Window 是选区（fold 后 surface 的 0-based 消息下标，含端点）；
 	// nil = 全量。窗口切在 tool 组中间会被预检拒绝（整组移动，§9.3）。
 	Window *[2]int
@@ -53,6 +58,11 @@ type Report struct {
 func Compact(ctx context.Context, sess session.Session, opts Options) (Report, error) {
 	if opts.Engine == nil {
 		return Report{}, fmt.Errorf("compaction: engine is required")
+	}
+	if opts.Meter == nil {
+		// godoc / README 承诺的默认值：nil 用 CharMeter——审计 InputTokens
+		// 与 Pressure 判定共用同一把尺子（不是「nil = 不计量」）。
+		opts.Meter = CharMeter{}
 	}
 	events, err := sess.Events(ctx, 0)
 	if err != nil {
@@ -91,21 +101,29 @@ func Compact(ctx context.Context, sess session.Session, opts Options) (Report, e
 		return Report{}, fmt.Errorf("compaction %s: append started: %w", id, err)
 	}
 	// 2–3. summarize；失败即停在未闭合状态（审计可见，不假装完成）。
-	res, err := opts.Engine.Summarize(ctx, SummarizeInput{Messages: window})
+	res, err := opts.Engine.Summarize(ctx, SummarizeInput{
+		Messages:     window,
+		BudgetTokens: opts.SummaryBudgetTokens,
+	})
 	if err != nil {
 		return Report{}, fmt.Errorf("compaction %s: %w", id, err)
 	}
 	inTok := res.Usage.InputTokens
 	outTok := res.Usage.OutputTokens
-	if meter := opts.Meter; meter != nil && inTok == 0 {
-		inTok = meter.Tokens(window)
+	if inTok == 0 {
+		inTok = opts.Meter.Tokens(window)
+	}
+	// 审计模型名不空：Engine 没报就用调用方声明的（两者都空才留空）。
+	model := res.Model
+	if model == "" {
+		model = opts.ModelName
 	}
 	// 4. summarized：记录摘要模型、usage 与来源。
 	if _, err := sess.Append(ctx, session.EventDraft{
 		Type: session.EventCompactionSummarized,
 		Data: mustJSON(session.CompactionStatusPayload{
 			ID:           id,
-			Model:        res.Model,
+			Model:        model,
 			InputTokens:  inTok,
 			OutputTokens: outTok,
 			SourceRefs:   cloneSeqs(windowSources),

@@ -51,6 +51,10 @@
 // ErrImportUnsupported，不做静默降级——时间域被重置的「迁移成功」比
 // 失败更糟。
 //
+// namespace 重映射走显式 ImportOptions.NamespaceRemap（命中即挪层级，
+// 冲突探测与「同 ID 已存在」判定落在目标位置；未命中 / 未给一律原样，
+// 不做前缀 / 部分替换）。
+//
 // 设计全貌见 docs/design/memory-layer-research-and-v2-design.md §6.5/
 // §10/§13.1/§7.4；实现票 #76（C1）、C2（SQLite+FTS）、C3（Assembler）、
 // #152（导出/导入）。

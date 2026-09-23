@@ -57,7 +57,8 @@ Active/Pending ──Revoke──▶ Revoked（终态；reason 走 store 审计�
 
 ```go
 items, err := store.ExportItems(ctx, src, store.MemoryQuery{Namespace: ns}) // IncludeInactive forced
-report, err := store.ImportItems(ctx, dst, items)
+report, err := store.ImportItems(ctx, dst, items, store.ImportOptions{})
+// store.ImportOptions{NamespaceRemap: map[string]string{"tenant:a": "tenant:b"}}  // cross-level migration
 // report.Imported / report.Skipped / report.Conflicts []store.Conflict
 ```
 
@@ -65,7 +66,8 @@ report, err := store.ImportItems(ctx, dst, items)
 - The target store supports import only by implementing the optional `ImportStore` interface (`PutImport`); both official implementations (memory/SQLite) do. If unsupported it returns `ErrImportUnsupported`, **never a silent downgrade** — an item's bi-temporal domain (KnownAt/CreatedAt/UpdatedAt) and Revision being reset is a "successful migration" worse than failure.
 - Idempotent three-way branch: per-item Get probe — missing → PutImport; present with identical content → Skipped; present with different content → Conflict (first writer wins, no overwrite). A per-item validation failure (validate still runs) lands in Conflicts and the batch continues.
 - **Taint is preserved as-is**: import must not launder trust levels or bypass the promotion gate.
-- Typical scenarios: dev → production migration, memory distribution, cold backups. Not done: namespace remapping, supersede-chain rebuilding (§7.4).
+- Typical scenarios: dev → production migration, memory distribution, cold backups. Not done: format downgrades, incremental sync, supersede-chain rebuilding (§7.4).
+- **Namespace remapping goes through the explicit `ImportOptions.NamespaceRemap`** (both sides are `/`-joined canonical namespaces): a hit moves the item to the target level and the "same ID exists" check follows it there (still refused, never overwritten); a miss or an absent map leaves the item untouched — no prefix / partial substitution; a map value with an empty element is rejected with an honest reason.
 
 ## Error quick reference
 

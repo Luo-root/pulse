@@ -55,7 +55,8 @@ Active/Pending ──Revoke──▶ Revoked（终态；reason 走 store 审计�
 
 ```go
 items, err := store.ExportItems(ctx, src, store.MemoryQuery{Namespace: ns}) // 强制 IncludeInactive
-report, err := store.ImportItems(ctx, dst, items)
+report, err := store.ImportItems(ctx, dst, items, store.ImportOptions{})
+// store.ImportOptions{NamespaceRemap: map[string]string{"tenant:a": "tenant:b"}}  // 跨层级搬迁
 // report.Imported / report.Skipped / report.Conflicts []store.Conflict
 ```
 
@@ -63,7 +64,8 @@ report, err := store.ImportItems(ctx, dst, items)
 - 目标 store 实现可选接口 `ImportStore`（`PutImport`）才支持导入；两个官方实现（内存/SQLite）都支持。未实现返回 `ErrImportUnsupported`，**不做静默降级**——item 携带的双时态时间域（KnownAt/CreatedAt/UpdatedAt）与 Revision 被重置的「迁移成功」比失败更糟。
 - 幂等三分支：逐条 Get 探测——不存在 → PutImport；已存在且内容一致 → Skipped；已存在且不同 → Conflict（先到先得，不覆盖）。单条校验失败（validate 照跑）记入 Conflicts 继续，不中断整单。
 - **taint 原样保留**：导入不得洗白信任级、绕过 promotion gate。
-- 典型场景：开发期 → 生产搬迁、记忆库分发、冷备。不做：namespace 重映射、Supersede 链重建（§7.4）。
+- 典型场景：开发期 → 生产搬迁、记忆库分发、冷备。不做：格式降级、增量同步、Supersede 链重建（§7.4）。
+- **namespace 重映射走显式 `ImportOptions.NamespaceRemap`**（键 / 值都是 `/` 连接的 canonical namespace）：命中即把 item 挪到目标层级，「同 ID 已存在」的判定随之落在目标位置（仍拒绝、不覆盖）；未命中或未给一律原样，不做前缀 / 部分替换；映射值含空元素即拒并如实报 reason。
 
 ## 错误速查
 

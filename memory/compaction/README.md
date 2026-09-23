@@ -10,9 +10,10 @@ Core invariant — **compaction is a transaction, not deletion**: the raw log on
 ```go
 rep, err := compaction.Compact(ctx, sess, compaction.Options{
     Engine:    &compaction.LLMSummarizer{Model: model, ModelName: "gpt-test"},
-    Meter:     compaction.CharMeter{},   // nil 用默认 CharMeter
-    ModelName: "gpt-test",
-    // Window: &[2]int{0, 9},  // 选区；nil = 全量
+    Meter:     compaction.CharMeter{},   // nil falls back to CharMeter
+    ModelName: "gpt-test",               // recorded in compaction.started; summarized.Model comes from the Engine, falling back to this
+    SummaryBudgetTokens: 1024,           // target summary budget (prompt-side reference); 0 = unlimited
+    // Window: &[2]int{0, 9},  // window selection; nil = all
 })
 // rep.Replaced      = 被替代窗口的 source event seqs
 // rep.CheckpointSeq = compaction.checkpoint 事件的 Seq（新节点的溯源锚点）
