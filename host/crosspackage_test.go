@@ -75,7 +75,7 @@ func TestHostCrossPackageHITLRecovery(t *testing.T) {
 	// ToolGate 阻塞在等待点：进入即报到，放行才继续（模拟审批人坐在对面）。
 	gateEntered := make(chan struct{}, 1)
 	gateRelease := make(chan struct{})
-	gate := func(call llm.ToolCall) (bool, string) {
+	gate := func(_ context.Context, call llm.ToolCall) (bool, string) {
 		gateEntered <- struct{}{}
 		<-gateRelease
 		return true, ""

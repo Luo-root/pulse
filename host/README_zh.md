@@ -148,21 +148,21 @@ a, err := h.NewAgent(host.AgentOptions{
 
 ## 完整 HITL 配方（权限卡片 / 参数净化 / 取消）
 
-`ToolGate` 是**最小**挂点（`func(llm.ToolCall) (bool, string)`：批准或拒绝，不带 ctx）。三件更完整的事走 `ScopeHook`——它在两条构造路径上都可用，拿到的就是本回合的请求 scope：
+`ToolGate` 是 HITL 的**最小**挂点（`func(ctx context.Context, call llm.ToolCall) (bool, string)`：批准或拒绝；ctx 就是传给 `Run` 的那个——要等人工裁决就地等它，取消 / 超时随宿主）。需要**改写调用**的场景走 `ScopeHook`——它在两条构造路径上都可用，拿到的就是本回合的请求 scope：
 
 ```go
 a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
     Name: "main", Model: "main",
     // ① 执行前权限卡片：闸门闭包持 h.Tools()，用 toolset 的预览面现算卡片。
-    ToolGate: func(call llm.ToolCall) (bool, string) {
-        card, ok, err := h.Tools().Preview(ctx, call.Name, call.Arguments)
+    ToolGate: func(gctx context.Context, call llm.ToolCall) (bool, string) {
+        card, ok, err := h.Tools().Preview(gctx, call.Name, call.Arguments)
         if err != nil || !ok {
             return false, "no preview; ask the human" // 拿不到卡片也要问人，别默认放行
         }
-        showToHuman(card)                              // card.Subject / card.Action / card.Kind…
-        return askHuman(card), "rejected by approval UI"
+        showToHuman(card)                                     // card.Subject / card.Action / card.Kind…
+        return askHuman(gctx, card), "rejected by approval UI" // 等裁决就用 gctx：取消 / 超时随宿主
     },
-    // ② 参数净化 / ③ 取消：在请求 scope 上自挂 before_tool_call waterfall。
+    // ② 参数净化：在请求 scope 上自挂 before_tool_call waterfall。
     ScopeHook: func(scope *kernel.Context) error {
         _, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
             func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
@@ -179,8 +179,10 @@ a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
 - **卡片**：`toolset.Registry.Preview(ctx, name, args)` 返回 `(Preview, ok, err)`；`ok=false` 表示工具未登记或没登记 `PreviewFn`——按「空预览，HITL 仍应问人」处理，别当成放行；
 - **顺序（批准的 = 执行的）**：闸门挂在 `before_tool_call` 链上（更外层还有落盘的那条 `tool.called` 透传环，见「三向接线」），并取**后序**——先让链跑完内层（`ScopeHook` 挂的改写在这一段生效），再拿**最终**调用去取卡片审批；loop 在整条链返回之后才真正执行工具。所以卡片上看到的就是即将执行的那一份，闸门里不必再跑一遍 `sanitize`。两处代价要知道：①闸门看不到「改写前」的原始调用——要留原始调用请观察 `llm.after_model` 或 `loop.tool_finished`；②**闸门裁决时内层钩子已经跑过了**，拒绝并不能撤销它们已经发生的副作用（日志、审计行、净化记账）——需要「被拒就完全不发生」的工作应放在执行器（工具实现）里，而不是钩子里。内层已置 `Rejected` 时闸门整段跳过，人不会被打扰两次，模型拿到的是内层那句 reason；
 - **改写**：`BeforeToolCall` 是 around 语义，可就地改 `Call.Name` / `Call.Arguments`，也可置 `Rejected` 短路（loop 的 waterfall 契约）；
-- **取消**：waterfall 跑在 loop 的请求 goroutine 上，用你自己的 ctx（传给 `Run` 的那个）等人工裁决即可。`ToolGate` 不带 ctx 是刻意的（保持最小挂点），完整形态的 ctx 归宿主；
+- **取消与超时**：闸门与 waterfall 都跑在 loop 的请求 goroutine 上，拿到的都是宿主传给 `Run` 的那个 ctx——等人工裁决就地等它，取消 / 超时随宿主，不必自己再转一手（`TestHostToolGateReceivesRunContext` 钉住值传播与超时两条）；
 - 两条构造路径都能用：`ScopeHook` 在 `NewAgent` 与 `DefaultAgent` 上都有。
+
+**迁移**：`ToolGate` 在 v0.2.x 不带 ctx，下一 minor 起带——旧写法加个首参即可（`func(ctx context.Context, call llm.ToolCall)`；不用 ctx 的闸门写 `_`）。
 
 ## 零新抽象
 
@@ -188,7 +190,7 @@ a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
 
 - `host.Provider` = `func(*kernel.Context, *llm.Registry) error`——`openai.Register` / `anthropic.Register` 直接转换；
 - `host.ToolSource` = `func(*kernel.Context, *toolset.Registry) error`——`builtins.Register` 用闭包携带 Options；`host.SkillTools(loader)` 也是 ToolSource（skills 短表/加载只读工具对）；
-- `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)`——工具执行闸门（before_tool_call waterfall 上取后序的一环——审批的是改写后的最终调用），审批 UI / 策略引擎经此接入 DefaultAgent；空 `reason` 的兜底文案**只有一处**（loop 的 `rejected by policy`），闸门不给理由时模型看到的就是它——host 不再自造第二套默认文本；
+- `host.ToolGate` = `func(ctx context.Context, call llm.ToolCall) (approved bool, reason string)`——工具执行闸门（before_tool_call waterfall 上取后序的一环——审批的是改写后的最终调用；ctx 就是传给 `Run` 的那个），审批 UI / 策略引擎经此接入 DefaultAgent；空 `reason` 的兜底文案**只有一处**（loop 的 `rejected by policy`），闸门不给理由时模型看到的就是它——host 不再自造第二套默认文本；
 - `AgentOptions.ScopeHook` = `func(*kernel.Context) error`——每次 Run 派生请求 scope 后调用：应用经 `kernel.On` / `kernel.OnWaterfall` 在请求 scope 上自行订阅 loop/llm 事件（Local 派发只本 scope 可见，挂宿主根收不到）；
 - `AgentOptions.OnDelta` = `func(text string)`——loop 的文本增量回调（`RunStream` 的 onDelta），流式 UI 经此接入；
 - `AgentOptions.ContextBuilder` = `func(ctx, surface, input) ([]*llm.Message, error)`——每回合的上下文组装缝（`memory/assemble` 的落点）；
@@ -204,4 +206,4 @@ a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
 
 ## 测试
 
-`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + 不设回调照常跑通 + panic 原样上抛）、步数上限（带会话：落盘闭合 + 可续跑）、便捷路径的 ScopeHook、上下文组装缝（产物字面进请求 + 失败在模型调用前中止）、会话 header 归属（`TestHostDefaultAgentSessionHeaderAgentID`），以及两条 HITL 配方（waterfall 改写调用、闸门取权限卡片）；另有四条护栏：闸门**后序**语义（卡片看到的就是将执行的那份，`TestHostToolGateSeesRewrittenCall`）及其短路分支（内层已拒则整段跳过闸门、reason 取内层那句，`TestHostToolGateSkippedWhenInnerRejected`）、两条构造路径旋钮同名同型（`TestHostOptionsKnobParity`，反射比对）、README 组装配方逐字可编译可运行（`TestHostContextBuilderRecipe`，含空 input 档）；再加五条：内核服务键可取回同一实例 + Dispose 后 `closed` 守卫（`TestHostRegistryServiceKeysOnKernel`）、请求 scope 上的业务直写器（`TestHostAttachCollectorBusinessWrite`）、`tool.called` 先于闸门落盘（`TestHostToolCalledBeforeGate`）、审计事件 `request.route` / `request.usage` 的顺序与取值（`TestHostRequestUsageAndRoute`）、空 reason 的兜底文案归 loop（`TestHostGateEmptyReasonFallsBackToLoopText`）、多步回合 `request.route` 取最后一次服务模型（`TestHostRequestRouteLastWinsAcrossSteps`）、`tool.called` 对畸形参数的纵深防御（`TestTurnRecorderDropsMalformedToolArguments`）、非法 JSON 工具参数的无损兜底（回合照常闭合 + 工具与后续请求拿到的仍是原文 + 落盘那份原文可复原，`TestHostMalformedToolArgumentsDoNotKillTurn` / `TestPersistablePartsMalformedArgumentsLossless`）。
+`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + 不设回调照常跑通 + panic 原样上抛）、步数上限（带会话：落盘闭合 + 可续跑）、便捷路径的 ScopeHook、上下文组装缝（产物字面进请求 + 失败在模型调用前中止）、会话 header 归属（`TestHostDefaultAgentSessionHeaderAgentID`），以及两条 HITL 配方（waterfall 改写调用、闸门取权限卡片）；另有四条护栏：闸门**后序**语义（卡片看到的就是将执行的那份，`TestHostToolGateSeesRewrittenCall`）及其短路分支（内层已拒则整段跳过闸门、reason 取内层那句，`TestHostToolGateSkippedWhenInnerRejected`）、两条构造路径旋钮同名同型（`TestHostOptionsKnobParity`，反射比对）、README 组装配方逐字可编译可运行（`TestHostContextBuilderRecipe`，含空 input 档）；再加五条：内核服务键可取回同一实例 + Dispose 后 `closed` 守卫（`TestHostRegistryServiceKeysOnKernel`）、请求 scope 上的业务直写器（`TestHostAttachCollectorBusinessWrite`）、`tool.called` 先于闸门落盘（`TestHostToolCalledBeforeGate`）、审计事件 `request.route` / `request.usage` 的顺序与取值（`TestHostRequestUsageAndRoute`）、空 reason 的兜底文案归 loop（`TestHostGateEmptyReasonFallsBackToLoopText`）、多步回合 `request.route` 取最后一次服务模型（`TestHostRequestRouteLastWinsAcrossSteps`）、`tool.called` 对畸形参数的纵深防御（`TestTurnRecorderDropsMalformedToolArguments`）、非法 JSON 工具参数的无损兜底（回合照常闭合 + 工具与后续请求拿到的仍是原文 + 落盘那份原文可复原 + 跨重开后拿到的仍是那份字符串形，`TestHostMalformedToolArgumentsDoNotKillTurn` / `TestPersistablePartsMalformedArgumentsLossless` / `TestHostMalformedToolArgumentsSurviveReopen`）、闸门拿到的 ctx 就是传给 `Run` 的那个（值传播 + 闸门内等超时，`TestHostToolGateReceivesRunContext`）。
