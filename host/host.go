@@ -177,6 +177,61 @@ type AgentOptions struct {
 	// scope 上订阅 loop / llm 事件（loop/llm 是 EmitLocal 派发，只本
 	// scope 可见，挂宿主根收不到）。返回 error 中止本次回合。
 	ScopeHook func(scope *kernel.Context) error
+	// OnDelta 接收本回合的 assistant 文本增量（流式 UI 用）；nil =
+	// 不回调。
+	//
+	// 回调在 Run 的调用栈上**同步**执行：loop 在单个 goroutine 里
+	// 串行派发文本增量，所以不必加锁；但它属请求路径，别在里面长
+	// 时间阻塞（那会挡住整个回合）。取消经 Run 的 ctx，回调签名不
+	// 带 ctx——需要感知取消时在回调里读自己的状态。
+	//
+	// panic 原样上抛（与模型适配器 panic 同等对待，host 不吞不标，
+	// 见 README「安全默认」）。只想让某次回调失败而不中断回合，自
+	// 己在回调内兜。
+	OnDelta func(text string)
+	// MaxSteps 是单回合推理-行动步数上限（0 = 不限，loop 的默认）。
+	// 触发上限不是错误：Result 以 loop.StopMaxSteps 如实返回，回合照常
+	// 落盘闭合。
+	MaxSteps int
+	// ContextBuilder 是每回合派发前的**上下文组装缝**——长期记忆
+	// （memory/assemble 的预算组装与检索召回）与上下文裁剪的官方落点。
+	// host 传入当前 surface（有会话 = 折影，无会话 = RunHistory 的历史）
+	// 与本轮 input，返回真正作为 history 发给模型的序列；本轮 input 仍
+	// 原样追加在其后。
+	//
+	// 三条契约：
+	//
+	//   - **input 可能为空**（`Run(ctx)` 不带输入是合法调用）：取「本轮
+	//     检索信号」前先判空，别直接 `input[len(input)-1]`；空 = 只取
+	//     稳定记忆（assemble.AssembleInput.Query 的空语义）。
+	//   - **组装产物不落盘**：返回的序列只作为本次请求的 history，不进
+	//     会话 surface——召回的记忆每轮都要重新注入，下一次 Surface()
+	//     也不会把它带回来（与 memory/assemble §8.3「检索块不持久化」
+	//     一致）。
+	//   - **组装发生在请求 scope 之外**（派生 scope 之前，见 run）：在
+	//     组装里做的事不带本回合 TraceID；要观测就用自己的 tracer。
+	//
+	// 组装器不认识 host，缝在宿主这一侧（典型接线）：
+	//
+	//	items := memory.NewMemoryItemStack(assemble.Budget{})
+	//	h.NewAgent(host.AgentOptions{
+	//		// ...
+	//		ContextBuilder: func(ctx context.Context, surface, input []*llm.Message) ([]*llm.Message, error) {
+	//			in := assemble.AssembleInput{Namespace: []string{"user-42"}, Surface: surface}
+	//			if len(input) > 0 {
+	//				in.Query = input[len(input)-1].Text()
+	//			}
+	//			out, err := items.Assemble(ctx, in)
+	//			if err != nil {
+	//				return nil, err
+	//			}
+	//			return out.Messages, nil
+	//		},
+	//	})
+	//
+	// nil = 不组装（直接用 surface / explicitHistory）。返回 error 中止本
+	// 回合，且发生在**任何模型调用之前**。
+	ContextBuilder func(ctx context.Context, surface []*llm.Message, input []*llm.Message) ([]*llm.Message, error)
 }
 
 // DefaultAgentOptions 是便捷实例化参数：模型按声明名从宿主 Registry 解析，
@@ -194,6 +249,16 @@ type DefaultAgentOptions struct {
 	SessionID string
 	// ToolGate 是工具执行闸门（nil = 不设防）。
 	ToolGate ToolGate
+	// OnDelta 是文本增量回调，语义与 AgentOptions.OnDelta 相同。
+	OnDelta func(text string)
+	// ScopeHook 是请求级 scope 的进阶挂点，语义与
+	// AgentOptions.ScopeHook 相同（每次 Run 拿到当次派生的请求 scope）。
+	ScopeHook func(scope *kernel.Context) error
+	// MaxSteps 是单回合推理-行动步数上限（0 = 不限），语义同
+	// AgentOptions.MaxSteps。
+	MaxSteps int
+	// ContextBuilder 是上下文组装缝，语义同 AgentOptions.ContextBuilder。
+	ContextBuilder func(ctx context.Context, surface []*llm.Message, input []*llm.Message) ([]*llm.Message, error)
 }
 
 // NewAgent 是 agent 的**最泛化构造**：全参数注入——model 可以是任意
@@ -222,6 +287,9 @@ func (h *Host) NewAgent(opt AgentOptions) (*Agent, error) {
 		sess:      opt.Session,
 		gate:      opt.ToolGate,
 		scopeHook: opt.ScopeHook,
+		onDelta:   opt.OnDelta,
+		maxSteps:  opt.MaxSteps,
+		buildCtx:  opt.ContextBuilder,
 	}, nil
 }
 
@@ -253,13 +321,17 @@ func (h *Host) DefaultAgent(ctx context.Context, opt DefaultAgentOptions) (*Agen
 		}
 	}
 	return h.NewAgent(AgentOptions{
-		Name:      opt.Name,
-		Model:     model,
-		ToolSet:   toolSet,
-		Session:   sess,
-		System:    opt.System,
-		ModelName: opt.Model,
-		ToolGate:  opt.ToolGate,
+		Name:           opt.Name,
+		Model:          model,
+		ToolSet:        toolSet,
+		Session:        sess,
+		System:         opt.System,
+		ModelName:      opt.Model,
+		ToolGate:       opt.ToolGate,
+		OnDelta:        opt.OnDelta,
+		ScopeHook:      opt.ScopeHook,
+		MaxSteps:       opt.MaxSteps,
+		ContextBuilder: opt.ContextBuilder,
 	})
 }
 
@@ -305,6 +377,9 @@ type Agent struct {
 	sess      session.Session
 	gate      ToolGate
 	scopeHook func(scope *kernel.Context) error
+	onDelta   func(text string)
+	maxSteps  int
+	buildCtx  func(ctx context.Context, surface []*llm.Message, input []*llm.Message) ([]*llm.Message, error)
 }
 
 // Run 执行一个回合。input 是本回合的用户输入（user 消息；多条时按序）。
@@ -343,6 +418,17 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 		history = explicitHistory
 	}
 
+	// 组装缝：surface（会话折影或 RunHistory 的历史）交给宿主组装——
+	// 长期记忆与上下文裁剪的官方落点；nil = 原样使用。失败发生在
+	// 任何模型调用之前。
+	if a.buildCtx != nil {
+		built, err := a.buildCtx(ctx, history, input)
+		if err != nil {
+			return nil, fmt.Errorf("host: context builder: %w", err)
+		}
+		history = built
+	}
+
 	// 请求级 scope：每回合独立派生、用毕即毁。loop/llm 都是 Local 派发
 	// （只本 scope 可见），观测桥、闸门、落盘监听必须挂在这里。
 	reqScope, err := a.kernel.Derive()
@@ -371,17 +457,25 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 	}
 
 	// 工具闸门（HITL 最小挂点）：注册在请求 scope 的 before_tool_call
-	// waterfall 首环——拒绝即短路，模型收到带 reason 的 IsError 结果。
+	// waterfall 首环，但取**后序**——先让内层链跑完（ScopeHook 挂的改写
+	// 在这一段生效），再拿最终调用去审批，于是「批准的」与「执行的」由
+	// 构造保证是同一份（顺序说明见 README「完整 HITL 配方」）。loop 在
+	// 整条 waterfall 返回之后才真正执行工具，所以后序审批仍然先于执行。
+	// 拒绝即短路，模型收到带 reason 的 IsError 结果。
 	if a.gate != nil {
 		if _, err := kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
 			func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
-				if ok, reason := a.gate(p.Call); !ok {
+				out := next(p)
+				if out.Rejected { // 内层已拒（策略 / 改写钩子），不再打扰人
+					return out
+				}
+				if ok, reason := a.gate(out.Call); !ok {
 					if reason == "" {
 						reason = "rejected by tool gate"
 					}
-					return &loop.BeforeToolCall{Call: p.Call, Rejected: true, RejectReason: reason}
+					return &loop.BeforeToolCall{Call: out.Call, Rejected: true, RejectReason: reason}
 				}
-				return next(p)
+				return out
 			}); err != nil {
 			return nil, fmt.Errorf("host: tool gate: %w", err)
 		}
@@ -394,9 +488,12 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 		}
 	}
 
-	loopOpts := make([]loop.Option, 0, 4)
+	loopOpts := make([]loop.Option, 0, 5)
 	if a.system != "" {
 		loopOpts = append(loopOpts, loop.WithSystemPrompt(a.system))
+	}
+	if a.maxSteps > 0 {
+		loopOpts = append(loopOpts, loop.WithMaxSteps(a.maxSteps))
 	}
 	if a.toolSet != nil {
 		loopOpts = append(loopOpts, loop.WithToolSet(a.toolSet))
@@ -420,7 +517,7 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 				res, err = nil, fmt.Errorf("host: session append: %w", af.err)
 			}
 		}()
-		res, err = la.RunStream(ctx, nil, history, input...)
+		res, err = la.RunStream(ctx, a.onDelta, history, input...)
 	}()
 	return res, err // error 路径 res 可能非 nil（canceled/error 的部分产出；日志已由 turn_end 监听闭合）
 }
