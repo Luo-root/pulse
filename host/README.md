@@ -50,6 +50,7 @@ a, err := h.NewAgent(host.AgentOptions{
     System:    "...",
     ToolGate:  myApproval,          // tool-execution gate (minimal HITL mount); nil = unguarded
     OnDelta:   onText,              // text deltas (streaming UI); nil = no callback
+    MaxSteps:  12,                  // per-round step cap (0 = unlimited)
 })
 ```
 
@@ -65,7 +66,7 @@ On a session-equipped host, every `Run` performs:
 
 Error / cancel paths persist too: loop emits `turn_end` on every exit; what already happened stays in the log and the closure is recorded as `interrupted` — side effects that already went out are not treated as never-happened.
 
-An Agent built on a session-less host degrades to a pure passthrough; the `RunHistory` explicit-history channel remains (side-channel injection) and is superseded by Surface when a session exists.
+An Agent built on a session-less host degrades to a pure passthrough; the `RunHistory` explicit-history channel remains (side-channel injection) and is superseded by Surface when a session exists. With a `ContextBuilder` the order is **Surface → ContextBuilder → loop**: what the builder returns is what the model receives as history.
 
 ## Streaming text deltas
 
@@ -87,6 +88,72 @@ Contract:
 - Streaming is **not a bypass**: session persistence, observability and the gate all still apply, and `Run` still returns the full `*loop.Result`;
 - Assistant **text** only: reasoning deltas and tool-call argument deltas are transport-level fragments consumed by each adapter's own state machine, which assembles them into `llm.Reasoning` parts and `ToolCall`s delivered once with the response (for token-level reasoning, take the model from `h.Models()` and drive `Stream` yourself).
 
+## The context-assembly seam (where long-term memory lands)
+
+`AgentOptions.ContextBuilder` / `DefaultAgentOptions.ContextBuilder` is the per-round assembly seam — **the official landing point for long-term memory (`memory/assemble`'s budgeted assembly and retrieval) and context trimming**:
+
+```go
+items := memory.NewMemoryItemStack(assemble.Budget{StableTokens: 800, RetrievedTokens: 1200})
+a, err := h.NewAgent(host.AgentOptions{
+    // ...
+    ContextBuilder: func(ctx context.Context, surface, input []*llm.Message) ([]*llm.Message, error) {
+        out, err := items.Assemble(ctx, assemble.AssembleInput{
+            Namespace: []string{"user-42"},
+            Surface:   surface,                    // the current session surface
+            Query:     input[len(input)-1].Text(), // this round's input as the retrieval signal
+        })
+        if err != nil {
+            return nil, err
+        }
+        return out.Messages, nil                   // stable prefix → surface tail → retrieved → injected
+    },
+})
+```
+
+Contract:
+
+- `surface` is the folded `session.Surface()` when a session is attached, or the history passed to `RunHistory` otherwise;
+- `input` is this round's input (user messages, already validated); the returned slice becomes the history handed to loop, and **this round's input is still appended after it** — the builder owns everything *before* the current message;
+- returning an error **aborts the round before any model call** (a half-built context is never sent);
+- nil = no assembly (same behaviour as not setting it); the assembler does not know host — the seam lives host-side, and `host` never imports `memory/assemble`.
+
+## The complete HITL recipe (permission cards / argument sanitising / cancellation)
+
+`ToolGate` is the **minimal** mount (`func(llm.ToolCall) (bool, string)`: approve or reject, no ctx). The three richer jobs go through `ScopeHook`, which is available on both construction paths and receives this round's request scope:
+
+```go
+a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
+    Name: "main", Model: "main",
+    // (1) Pre-execution permission card: the gate closure holds h.Tools() and
+    //     computes the card from toolset's preview surface.
+    ToolGate: func(call llm.ToolCall) (bool, string) {
+        card, ok, err := h.Tools().Preview(ctx, call.Name, call.Arguments)
+        if err != nil || !ok {
+            return false, "no preview; ask the human" // no card still means ask — never auto-allow
+        }
+        showToHuman(card)                              // card.Subject / card.Action / card.Kind…
+        return askHuman(card), "rejected by approval UI"
+    },
+    // (2) Argument sanitising / (3) cancellation: mount your own
+    //     before_tool_call waterfall on the request scope.
+    ScopeHook: func(scope *kernel.Context) error {
+        _, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
+            func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
+                p.Call.Arguments = sanitize(p.Call.Arguments) // in-place rewrite: name and args
+                return next(p)
+            })
+        return err
+    },
+})
+```
+
+Key points:
+
+- **Cards**: `toolset.Registry.Preview(ctx, name, args)` returns `(Preview, ok, err)`; `ok=false` means the tool is unregistered or registered no `PreviewFn` — treat it as "empty preview, HITL should still ask", never as a pass;
+- **Rewriting**: `BeforeToolCall` is around-semantics — rewrite `Call.Name` / `Call.Arguments` in place, or set `Rejected` to short-circuit (loop's waterfall contract);
+- **Cancellation**: the waterfall runs on loop's request goroutine, so wait for the human with your own ctx (the one passed to `Run`). `ToolGate` carrying no ctx is deliberate (it stays the minimal mount); the complete form owns its ctx;
+- Both construction paths work: `ScopeHook` is on `NewAgent` and `DefaultAgent` alike.
+
 ## Zero new abstractions
 
 - `host.Provider` = `func(*kernel.Context, *llm.Registry) error` — `openai.Register` / `anthropic.Register` convert directly;
@@ -94,6 +161,7 @@ Contract:
 - `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)` — the tool-execution gate (mount point of the before_tool_call waterfall); approval UIs / policy engines plug into DefaultAgent through it;
 - `AgentOptions.ScopeHook` = `func(*kernel.Context) error` — called with the per-Run request scope: subscribe to loop/llm events yourself via `kernel.On` / `kernel.OnWaterfall` (Local dispatch is scope-local; mounting on the host root hears nothing);
 - `AgentOptions.OnDelta` = `func(text string)` — loop's text-delta callback (the `RunStream` onDelta); streaming UIs plug in here;
+- `AgentOptions.ContextBuilder` = `func(ctx, surface, input) ([]*llm.Message, error)` — the per-round context-assembly seam (where `memory/assemble` lands);
 - Other advanced assembly (custom services, host-level plugins) goes through `h.Kernel()` / `h.Models()` / `h.Tools()` with each package's native semantics — host hides nothing.
 
 ## Safe defaults
@@ -106,4 +174,4 @@ Contract:
 
 ## Tests
 
-`go test -race ./host/` — dedicated acceptance tests for the stateless passthrough, the three-way wiring (Surface role sequence / lifecycle closure / request.header audit / second-round history injection), tool-call-logged-before-execution, the HITL checkpoint Flush (exactly one per `after_model` step), error-path persistence with zero synthesis on reopen, SessionID resume, ToolGate rejection, ScopeHook subscription, per-request TraceIDs, and streaming text deltas (both construction paths, the nil-callback no-op, panic propagation).
+`go test -race ./host/` — dedicated acceptance tests for the stateless passthrough, the three-way wiring (Surface role sequence / lifecycle closure / request.header audit / second-round history injection), tool-call-logged-before-execution, the HITL checkpoint Flush (exactly one per `after_model` step), error-path persistence with zero synthesis on reopen, SessionID resume, ToolGate rejection, ScopeHook subscription, per-request TraceIDs, streaming text deltas (both construction paths, the nil-callback no-op, panic propagation), the step cap, ScopeHook on the convenience path, the context-assembly seam (the assembled product reaching the request literally, and failures aborting before the model call), and both HITL recipes (rewriting a call from a waterfall, taking a permission card from the gate).

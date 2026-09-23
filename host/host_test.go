@@ -845,3 +845,275 @@ func TestHostOnDeltaPanicPropagates(t *testing.T) {
 		t.Fatalf("Run returned error instead of panicking: %v", err)
 	}
 }
+
+// TestHostMaxStepsStopsTurn：#2——单回合步数上限经 AgentOptions 透传给
+// loop（此前 host 造出来的 Agent 无法设上限）。超限不是错误：Result 以
+// StoppedBy=max_steps 如实返回，回合照常闭合。
+func TestHostMaxStepsStopsTurn(t *testing.T) {
+	ctx := context.Background()
+	tools := loop.NewMemToolSet()
+	if err := tools.Register(
+		llm.ToolDef{Name: "noop", Description: "no-op", Parameters: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, json.RawMessage) (string, error) { return "ok", nil }); err != nil {
+		t.Fatal(err)
+	}
+	// 脚本恒回工具调用：没有上限会一直转下去。
+	model := llm.NewScripted(llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "noop", Arguments: json.RawMessage(`{}`)}))
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	a, err := h.NewAgent(AgentOptions{
+		Name: "bounded", Model: model, ModelName: "stub", ToolSet: tools, MaxSteps: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, llm.User(llm.Text("go")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StoppedBy != loop.StopMaxSteps || res.Steps != 2 {
+		t.Fatalf("stopped_by=%v steps=%d, want max_steps / 2", res.StoppedBy, res.Steps)
+	}
+}
+
+// TestHostDefaultAgentScopeHook：#3——便捷路径也能装 ScopeHook（此前只有
+// NewAgent 有）：请求 scope 上的自订阅 / 自挂 waterfall 从此两条路都可达。
+func TestHostDefaultAgentScopeHook(t *testing.T) {
+	ctx := context.Background()
+	h := newTestHost(t, llm.NewScripted(llm.Resp("hooked")), nil)
+	var scopes []*kernel.Context
+	a, err := h.DefaultAgent(ctx, DefaultAgentOptions{
+		Name: "hooked", Model: "stub",
+		ScopeHook: func(scope *kernel.Context) error {
+			scopes = append(scopes, scope)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, llm.User(llm.Text("go"))); err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != 1 {
+		t.Fatalf("scope hook calls = %d, want 1 (per Run)", len(scopes))
+	}
+	if scopes[0] == h.Kernel() {
+		t.Fatal("hook must receive the derived request scope, not the kernel root")
+	}
+}
+
+// TestHostContextBuilderInjects：#5——ContextBuilder 是长期记忆的官方落点：
+// 拿到会话 surface 与本轮 input，返回的组装产物真的进入发给模型的消息序列
+// （用 captureModel 字面断言，不只从 Surface 间接推断）。
+func TestHostContextBuilderInjects(t *testing.T) {
+	ctx := context.Background()
+	sess, err := memory.NewMemorySessionStack().Create(ctx, session.SessionHeader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 第一轮：让 surface 里有一条真实历史（user + assistant）。
+	seed := &captureModel{inner: llm.NewScripted(llm.Resp("first"))}
+	h1 := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	a1, err := h1.NewAgent(AgentOptions{Name: "seed", Model: seed, ModelName: "stub", Session: sess})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a1.Run(ctx, llm.User(llm.Text("older"))); err != nil {
+		t.Fatal(err)
+	}
+
+	// 第二轮：同一会话 + 组装缝。
+	cap2 := &captureModel{inner: llm.NewScripted(llm.Resp("second"))}
+	h2 := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	var surfaceLen, inputLen int
+	a2, err := h2.NewAgent(AgentOptions{
+		Name: "assembling", Model: cap2, ModelName: "stub", Session: sess,
+		ContextBuilder: func(_ context.Context, surface, input []*llm.Message) ([]*llm.Message, error) {
+			surfaceLen, inputLen = len(surface), len(input)
+			out := append([]*llm.Message{}, surface...)
+			out = append(out, llm.Assistant(llm.Text("recalled fact"))) // 模拟检索到的记忆
+			return out, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a2.Run(ctx, llm.User(llm.Text("now"))); err != nil {
+		t.Fatal(err)
+	}
+	if surfaceLen != 2 || inputLen != 1 {
+		t.Fatalf("builder args: surface=%d input=%d, want 2/1", surfaceLen, inputLen)
+	}
+	req := cap2.last
+	if req == nil {
+		t.Fatal("model was not called")
+	}
+	if len(req.Messages) != 4 {
+		t.Fatalf("model messages = %d, want 4 (surface 2 + recalled 1 + input 1)", len(req.Messages))
+	}
+	if got := req.Messages[2].Text(); got != "recalled fact" {
+		t.Fatalf("assembled message = %q", got)
+	}
+	if last := req.Messages[3]; last.Role != llm.RoleUser || last.Text() != "now" {
+		t.Fatalf("turn input must stay last: role=%v text=%q", last.Role, last.Text())
+	}
+}
+
+// TestHostContextBuilderErrorAborts：#5——组装失败中止回合，且发生在任何
+// 模型调用之前（不把半成品发给模型）。
+func TestHostContextBuilderErrorAborts(t *testing.T) {
+	ctx := context.Background()
+	cap := &captureModel{inner: llm.NewScripted(llm.Resp("unused"))}
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	a, err := h.NewAgent(AgentOptions{
+		Name: "failing", Model: cap, ModelName: "stub",
+		ContextBuilder: func(context.Context, []*llm.Message, []*llm.Message) ([]*llm.Message, error) {
+			return nil, errors.New("budget exhausted")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, llm.User(llm.Text("go"))); err == nil || !strings.Contains(err.Error(), "context builder") {
+		t.Fatalf("err = %v, want context builder error", err)
+	}
+	if cap.last != nil {
+		t.Fatal("model must not be called when assembly fails")
+	}
+}
+
+// TestHostScopeHookRewritesToolCall：#6 的官方配方——ScopeHook 在请求 scope
+// 上挂 before_tool_call waterfall，可现场改写调用参数（参数净化）；这是
+// ToolGate 之外唯一能改写调用的路径，钉住它真的生效。
+func TestHostScopeHookRewritesToolCall(t *testing.T) {
+	ctx := context.Background()
+	var got string
+	tools := loop.NewMemToolSet()
+	if err := tools.Register(
+		llm.ToolDef{Name: "echo", Description: "echo", Parameters: json.RawMessage(`{"type":"object"}`)},
+		func(_ context.Context, args json.RawMessage) (string, error) {
+			var in struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(args, &in); err != nil {
+				return "", err
+			}
+			got = in.Text
+			return "ok", nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	model := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{"text":"raw"}`)}),
+		llm.Resp("done"),
+	)
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	a, err := h.NewAgent(AgentOptions{
+		Name: "sanitizer", Model: model, ModelName: "stub", ToolSet: tools,
+		ScopeHook: func(scope *kernel.Context) error {
+			_, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
+				func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
+					if p.Call.Name == "echo" {
+						p.Call.Arguments = json.RawMessage(`{"text":"sanitized"}`)
+					}
+					return next(p)
+				})
+			return err
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, llm.User(llm.Text("go"))); err != nil {
+		t.Fatal(err)
+	}
+	if got != "sanitized" {
+		t.Fatalf("tool received %q, want the rewritten %q", got, "sanitized")
+	}
+}
+
+// TestHostToolGatePreviewRecipe：#4 的官方配方——闸门闭包持 Host.Tools()
+// 调 Registry.Preview 取执行前权限卡片（身份 / 主体 / 效果），据卡片拒绝；
+// 被拒绝的调用不执行，模型收到带 reason 的 IsError 结果。
+func TestHostToolGatePreviewRecipe(t *testing.T) {
+	ctx := context.Background()
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	executed := false
+	disp, err := h.Tools().Register(h.Kernel(), toolset.Registration{
+		Def:    llm.ToolDef{Name: "write_file", Description: "write", Parameters: json.RawMessage(`{"type":"object"}`)},
+		Source: "test.local",
+		Risk:   toolset.RiskReadWrite,
+		Fn: func(context.Context, json.RawMessage) (string, error) {
+			executed = true
+			return "wrote", nil
+		},
+		PreviewFn: func(context.Context, json.RawMessage) (toolset.Preview, error) {
+			return toolset.Preview{Action: toolset.ActionWrite, Subject: "/etc/hosts", Kind: "file"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disp()
+
+	model := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "w1", Name: "write_file", Arguments: json.RawMessage(`{}`)}),
+		llm.Resp("ack"),
+	)
+	var card toolset.Preview
+	var hadCard bool
+	a, err := h.NewAgent(AgentOptions{
+		Name: "previewed", Model: model, ModelName: "stub", ToolSet: h.Tools().AsToolSet(),
+		ToolGate: func(call llm.ToolCall) (bool, string) {
+			p, ok, err := h.Tools().Preview(ctx, call.Name, call.Arguments)
+			if err != nil {
+				t.Fatalf("preview: %v", err)
+			}
+			card, hadCard = p, ok
+			return false, "needs approval for " + p.Subject
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, llm.User(llm.Text("write it")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hadCard || card.Subject != "/etc/hosts" || card.Action != toolset.ActionWrite {
+		t.Fatalf("card = %+v ok=%v", card, hadCard)
+	}
+	if executed {
+		t.Fatal("rejected call must not execute")
+	}
+	// 模型收到的工具结果是 IsError 且文本带拒绝原因——工具结果的文本在
+	// PartToolResult.Content 里，不在 Message.Text()（后者只取文本块）。
+	var seen bool
+	for _, m := range res.Messages {
+		for _, p := range m.Parts {
+			if p.Kind != llm.PartToolResult || p.ToolResultValue == nil || !p.ToolResultValue.IsError {
+				continue
+			}
+			for _, c := range p.ToolResultValue.Content {
+				if strings.Contains(c.Text, "needs approval for /etc/hosts") {
+					seen = true
+				}
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("model must receive the rejection reason as an IsError result")
+	}
+}

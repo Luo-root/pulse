@@ -48,6 +48,7 @@ a, err := h.NewAgent(host.AgentOptions{
     System:    "...",
     ToolGate:  myApproval,          // 工具执行闸门（HITL 最小挂点）；nil = 不设防
     OnDelta:   onText,              // 文本增量（流式 UI）；nil = 不回调
+    MaxSteps:  12,                  // 单回合步数上限（0 = 不限）
 })
 ```
 
@@ -63,7 +64,7 @@ a, err := h.NewAgent(host.AgentOptions{
 
 error / cancel 路径同样落盘：loop 的 `turn_end` 无论何种方式结束都会发出，已发生的产出与输入保留在日志里，闭合事件记 `interrupted`——副作用已经出去了，就不能当没发生。
 
-无会话宿主构造的 Agent 退化为纯透传；`RunHistory` 显式传 history 的通道保留（旁路注入），有会话时被 Surface 取代。
+无会话宿主构造的 Agent 退化为纯透传；`RunHistory` 显式传 history 的通道保留（旁路注入），有会话时被 Surface 取代。装了 `ContextBuilder` 时，顺序是 **Surface → ContextBuilder → loop**：组装产物才作为 history 发给模型。
 
 ## 流式文本增量
 
@@ -85,6 +86,70 @@ res, err := a.Run(ctx, llm.User(llm.Text("...")))  // 仍是阻塞调用：返�
 - 流式**不是旁路**：会话落盘、观测、闸门照旧，`Run` 仍返回完整 `*loop.Result`；
 - 只有 assistant **文本**增量：思维链增量与工具调用参数增量是传输层分片，由各适配器自己的状态机拼成 `llm.Reasoning` part 与 `ToolCall`，随响应一次性到达（要 token 级思维链，用 `h.Models()` 取模型自己 `Stream`）。
 
+## 上下文组装缝（长期记忆的落点）
+
+`AgentOptions.ContextBuilder` / `DefaultAgentOptions.ContextBuilder` 是每回合派发前的组装缝——**长期记忆（`memory/assemble` 的预算组装与检索召回）与上下文裁剪的官方落点**：
+
+```go
+items := memory.NewMemoryItemStack(assemble.Budget{StableTokens: 800, RetrievedTokens: 1200})
+a, err := h.NewAgent(host.AgentOptions{
+    // ...
+    ContextBuilder: func(ctx context.Context, surface, input []*llm.Message) ([]*llm.Message, error) {
+        out, err := items.Assemble(ctx, assemble.AssembleInput{
+            Namespace: []string{"user-42"},
+            Surface:   surface,                    // 当前会话折影
+            Query:     input[len(input)-1].Text(), // 本轮输入作检索信号
+        })
+        if err != nil {
+            return nil, err
+        }
+        return out.Messages, nil                   // 稳定前缀 → surface 尾部 → 检索 → injected
+    },
+})
+```
+
+契约：
+
+- `surface`：有会话时是 `session.Surface()` 的折影，无会话时是 `RunHistory` 传入的 history；
+- `input`：本轮输入（host 已校验的 user 消息）；返回值作为 history 交给 loop，**本轮 input 仍原样追加在其后**——组装器只负责「当前消息之前」那一段；
+- 返回 error **中止本回合**，且发生在任何模型调用之前（半成品不会发给模型）；
+- nil = 不组装（与不设时同行为）；组装器不认识 host，缝在宿主这一侧——`host` 不 import `memory/assemble`。
+
+## 完整 HITL 配方（权限卡片 / 参数净化 / 取消）
+
+`ToolGate` 是**最小**挂点（`func(llm.ToolCall) (bool, string)`：批准或拒绝，不带 ctx）。三件更完整的事走 `ScopeHook`——它在两条构造路径上都可用，拿到的就是本回合的请求 scope：
+
+```go
+a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
+    Name: "main", Model: "main",
+    // ① 执行前权限卡片：闸门闭包持 h.Tools()，用 toolset 的预览面现算卡片。
+    ToolGate: func(call llm.ToolCall) (bool, string) {
+        card, ok, err := h.Tools().Preview(ctx, call.Name, call.Arguments)
+        if err != nil || !ok {
+            return false, "no preview; ask the human" // 拿不到卡片也要问人，别默认放行
+        }
+        showToHuman(card)                              // card.Subject / card.Action / card.Kind…
+        return askHuman(card), "rejected by approval UI"
+    },
+    // ② 参数净化 / ③ 取消：在请求 scope 上自挂 before_tool_call waterfall。
+    ScopeHook: func(scope *kernel.Context) error {
+        _, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
+            func(p *loop.BeforeToolCall, next func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
+                p.Call.Arguments = sanitize(p.Call.Arguments) // 就地改写：名字与参数都可换
+                return next(p)
+            })
+        return err
+    },
+})
+```
+
+要点：
+
+- **卡片**：`toolset.Registry.Preview(ctx, name, args)` 返回 `(Preview, ok, err)`；`ok=false` 表示工具未登记或没登记 `PreviewFn`——按「空预览，HITL 仍应问人」处理，别当成放行；
+- **改写**：`BeforeToolCall` 是 around 语义，可就地改 `Call.Name` / `Call.Arguments`，也可置 `Rejected` 短路（loop 的 waterfall 契约）；
+- **取消**：waterfall 跑在 loop 的请求 goroutine 上，用你自己的 ctx（传给 `Run` 的那个）等人工裁决即可。`ToolGate` 不带 ctx 是刻意的（保持最小挂点），完整形态的 ctx 归宿主；
+- 两条构造路径都能用：`ScopeHook` 在 `NewAgent` 与 `DefaultAgent` 上都有。
+
 ## 零新抽象
 
 - `host.Provider` = `func(*kernel.Context, *llm.Registry) error`——`openai.Register` / `anthropic.Register` 直接转换；
@@ -92,6 +157,7 @@ res, err := a.Run(ctx, llm.User(llm.Text("...")))  // 仍是阻塞调用：返�
 - `host.ToolGate` = `func(llm.ToolCall) (approved bool, reason string)`——工具执行闸门（before_tool_call waterfall 的挂载点），审批 UI / 策略引擎经此接入 DefaultAgent；
 - `AgentOptions.ScopeHook` = `func(*kernel.Context) error`——每次 Run 派生请求 scope 后调用：应用经 `kernel.On` / `kernel.OnWaterfall` 在请求 scope 上自行订阅 loop/llm 事件（Local 派发只本 scope 可见，挂宿主根收不到）；
 - `AgentOptions.OnDelta` = `func(text string)`——loop 的文本增量回调（`RunStream` 的 onDelta），流式 UI 经此接入；
+- `AgentOptions.ContextBuilder` = `func(ctx, surface, input) ([]*llm.Message, error)`——每回合的上下文组装缝（`memory/assemble` 的落点）；
 - 其余进阶装配（自定义服务、宿主级插件）经 `h.Kernel()` / `h.Models()` / `h.Tools()` 用各包原生语义——host 不藏内核。
 
 ## 安全默认
@@ -104,4 +170,4 @@ res, err := a.Run(ctx, llm.User(llm.Text("...")))  // 仍是阻塞调用：返�
 
 ## 测试
 
-`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + nil 回调不变 + panic 原样上抛），各有验收测试。
+`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + nil 回调不变 + panic 原样上抛）、步数上限、便捷路径的 ScopeHook、上下文组装缝（产物字面进请求 + 失败在模型调用前中止），以及两条 HITL 配方（waterfall 改写调用、闸门取权限卡片），各有验收测试。

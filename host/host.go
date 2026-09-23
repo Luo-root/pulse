@@ -189,6 +189,37 @@ type AgentOptions struct {
 	// 见 README「安全默认」）。只想让某次回调失败而不中断回合，自
 	// 己在回调内兜。
 	OnDelta func(text string)
+	// MaxSteps 是单回合推理-行动步数上限（0 = 不限，loop 的默认）。
+	// 触发上限不是错误：Result 以 loop.StopMaxSteps 如实返回，回合照常
+	// 落盘闭合。
+	MaxSteps int
+	// ContextBuilder 是每回合派发前的**上下文组装缝**——长期记忆
+	// （memory/assemble 的预算组装与检索召回）与上下文裁剪的官方落点。
+	// host 传入当前 surface（有会话 = 折影，无会话 = RunHistory 的历史）
+	// 与本轮 input，返回真正作为 history 发给模型的序列；本轮 input 仍
+	// 原样追加在其后。
+	//
+	// 组装器不认识 host，缝在宿主这一侧（典型接线）：
+	//
+	//	items := memory.NewMemoryItemStack(assemble.Budget{})
+	//	h.NewAgent(host.AgentOptions{
+	//		// ...
+	//		ContextBuilder: func(ctx context.Context, surface, input []*llm.Message) ([]*llm.Message, error) {
+	//			out, err := items.Assemble(ctx, assemble.AssembleInput{
+	//				Namespace: []string{"user-42"},
+	//				Surface:   surface,
+	//				Query:     input[len(input)-1].Text(),
+	//			})
+	//			if err != nil {
+	//				return nil, err
+	//			}
+	//			return out.Messages, nil
+	//		},
+	//	})
+	//
+	// nil = 不组装（直接用 surface / explicitHistory）。返回 error 中止本
+	// 回合，且发生在**任何模型调用之前**。
+	ContextBuilder func(ctx context.Context, surface []*llm.Message, input []*llm.Message) ([]*llm.Message, error)
 }
 
 // DefaultAgentOptions 是便捷实例化参数：模型按声明名从宿主 Registry 解析，
@@ -208,6 +239,14 @@ type DefaultAgentOptions struct {
 	ToolGate ToolGate
 	// OnDelta 是文本增量回调，语义与 AgentOptions.OnDelta 相同。
 	OnDelta func(text string)
+	// ScopeHook 是请求级 scope 的进阶挂点，语义与
+	// AgentOptions.ScopeHook 相同（每次 Run 拿到当次派生的请求 scope）。
+	ScopeHook func(scope *kernel.Context) error
+	// MaxSteps 是单回合推理-行动步数上限（0 = 不限），语义同
+	// AgentOptions.MaxSteps。
+	MaxSteps int
+	// ContextBuilder 是上下文组装缝，语义同 AgentOptions.ContextBuilder。
+	ContextBuilder func(ctx context.Context, surface []*llm.Message, input []*llm.Message) ([]*llm.Message, error)
 }
 
 // NewAgent 是 agent 的**最泛化构造**：全参数注入——model 可以是任意
@@ -237,6 +276,8 @@ func (h *Host) NewAgent(opt AgentOptions) (*Agent, error) {
 		gate:      opt.ToolGate,
 		scopeHook: opt.ScopeHook,
 		onDelta:   opt.OnDelta,
+		maxSteps:  opt.MaxSteps,
+		buildCtx:  opt.ContextBuilder,
 	}, nil
 }
 
@@ -268,14 +309,17 @@ func (h *Host) DefaultAgent(ctx context.Context, opt DefaultAgentOptions) (*Agen
 		}
 	}
 	return h.NewAgent(AgentOptions{
-		Name:      opt.Name,
-		Model:     model,
-		ToolSet:   toolSet,
-		Session:   sess,
-		System:    opt.System,
-		ModelName: opt.Model,
-		ToolGate:  opt.ToolGate,
-		OnDelta:   opt.OnDelta,
+		Name:           opt.Name,
+		Model:          model,
+		ToolSet:        toolSet,
+		Session:        sess,
+		System:         opt.System,
+		ModelName:      opt.Model,
+		ToolGate:       opt.ToolGate,
+		OnDelta:        opt.OnDelta,
+		ScopeHook:      opt.ScopeHook,
+		MaxSteps:       opt.MaxSteps,
+		ContextBuilder: opt.ContextBuilder,
 	})
 }
 
@@ -322,6 +366,8 @@ type Agent struct {
 	gate      ToolGate
 	scopeHook func(scope *kernel.Context) error
 	onDelta   func(text string)
+	maxSteps  int
+	buildCtx  func(ctx context.Context, surface []*llm.Message, input []*llm.Message) ([]*llm.Message, error)
 }
 
 // Run 执行一个回合。input 是本回合的用户输入（user 消息；多条时按序）。
@@ -358,6 +404,17 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 		history = h
 	} else {
 		history = explicitHistory
+	}
+
+	// 组装缝：surface（会话折影或 RunHistory 的历史）交给宿主组装——
+	// 长期记忆与上下文裁剪的官方落点；nil = 原样使用。失败发生在
+	// 任何模型调用之前。
+	if a.buildCtx != nil {
+		built, err := a.buildCtx(ctx, history, input)
+		if err != nil {
+			return nil, fmt.Errorf("host: context builder: %w", err)
+		}
+		history = built
 	}
 
 	// 请求级 scope：每回合独立派生、用毕即毁。loop/llm 都是 Local 派发
@@ -411,9 +468,12 @@ func (a *Agent) run(ctx context.Context, explicitHistory []*llm.Message, input [
 		}
 	}
 
-	loopOpts := make([]loop.Option, 0, 4)
+	loopOpts := make([]loop.Option, 0, 5)
 	if a.system != "" {
 		loopOpts = append(loopOpts, loop.WithSystemPrompt(a.system))
+	}
+	if a.maxSteps > 0 {
+		loopOpts = append(loopOpts, loop.WithMaxSteps(a.maxSteps))
 	}
 	if a.toolSet != nil {
 		loopOpts = append(loopOpts, loop.WithToolSet(a.toolSet))
