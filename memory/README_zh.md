@@ -155,7 +155,7 @@ memory 层刻意不做的胶水，全部归装配层/宿主——官方装配实
 |---|---|---|
 | `session.Surface()` → `loop.Run` history | 装配层 | loop 不 import memory |
 | `request.header` / `request.route` / `request.usage` 事件写入 | 装配层 | system+ToolDef+model 三样、本回合**实际服务**的模型（adapter 回填，未回填退声明名）、全回合累计 token 落日志（Ignorable 但必须发）；官方写入方是 `host` 的 turnRecorder |
-| `tool.called` 事件写入 | 装配层 | 「调用已发生」锚点（HITL / 时序 / 崩溃检测），**先于**审批与执行落盘；被拒绝的调用同样记（拒绝由 `tool.result` 的 IsError 呈现） |
+| `tool.called` 事件写入 | 装配层 | 「调用已发生」锚点（HITL / 时序），**先于**审批与执行落盘；被拒绝的调用同样记（拒绝由 `tool.result` 的 IsError 呈现）。持久性同全文件 Flush 口径、不额外增强崩溃耐久——崩溃现场分辨「有 tool_call 没结果」以已刷盘的 assistant 为判据 |
 | 六个 `memory/*` service key 的 Provide / Get | 宿主 / 应用插件 | 库内零消费（有意，见上「依赖规则」）：官方 `host` 装配按 `Options` 显式注入，不经键取用 |
 | `index.VectorIndex` → `assemble.Semantic` | 装配层 | 生产路径解耦，见 assemble README「接入向量路」 |
 | store 写后 `index.Upsert/Remove` | 装配层/写入方 | import 单向的代价；漏调只影响召回（Rebuild 可兜底） |

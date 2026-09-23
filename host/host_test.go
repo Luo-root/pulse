@@ -1727,3 +1727,120 @@ func TestHostGateEmptyReasonFallsBackToLoopText(t *testing.T) {
 		t.Fatalf("host must not mint a second fallback wording, got %q", result)
 	}
 }
+
+// TestHostRequestRouteLastWinsAcrossSteps：#224——多步回合里 request.route 取
+// **最后一次** adapter 回填的服务模型（回合级审计，与 request.header 对称；
+// 网关中途换模型只留最后一次），`request.usage` 仍是全回合累计。
+func TestHostRequestRouteLastWinsAcrossSteps(t *testing.T) {
+	ctx := context.Background()
+	first := llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{}`)})
+	first.Model = "gateway-model-a"
+	first.Usage = llm.TokenUsage{InputTokens: 3, OutputTokens: 1}
+	second := llm.Resp("done")
+	second.Model = "gateway-model-b"
+	second.Usage = llm.TokenUsage{InputTokens: 5, OutputTokens: 2, CachedInputTokens: 1}
+	tools := loop.NewMemToolSet()
+	if err := tools.Register(
+		llm.ToolDef{Name: "echo", Description: "echo"},
+		func(context.Context, json.RawMessage) (string, error) { return "ok", nil }); err != nil {
+		t.Fatal(err)
+	}
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	sess, err := memory.NewMemorySessionStack().Create(ctx, session.SessionHeader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := h.NewAgent(AgentOptions{
+		Name: "routes", Model: llm.NewScripted(first, second), ModelName: "declared", ToolSet: tools, Session: sess,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, llm.User(llm.Text("go"))); err != nil {
+		t.Fatal(err)
+	}
+	envs, err := sess.Events(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var route *session.RequestRoutePayload
+	var usage *session.RequestUsagePayload
+	steps := 0
+	for _, e := range envs {
+		switch e.Type {
+		case session.EventStepStarted:
+			steps++
+		case session.EventRequestRoute:
+			var p session.RequestRoutePayload
+			if err := json.Unmarshal(e.Data, &p); err != nil {
+				t.Fatal(err)
+			}
+			route = &p
+		case session.EventRequestUsage:
+			var p session.RequestUsagePayload
+			if err := json.Unmarshal(e.Data, &p); err != nil {
+				t.Fatal(err)
+			}
+			usage = &p
+		}
+	}
+	if steps != 2 {
+		t.Fatalf("steps = %d, want 2 (multi-step turn so last-wins is observable)", steps)
+	}
+	if route == nil || route.Model != "gateway-model-b" {
+		t.Fatalf("route = %+v, want the last adapter-reported model (gateway-model-b)", route)
+	}
+	if usage == nil || usage.InputTokens != 8 || usage.OutputTokens != 3 || usage.CachedInputTokens != 1 {
+		t.Fatalf("usage = %+v, want the whole-turn accumulation (8/3/1)", usage)
+	}
+}
+
+// TestTurnRecorderDropsMalformedToolArguments：#224——tool.called 的载荷守卫：
+// 参数不是合法 JSON 时留空（omitempty），不让 codec 拒绝、把落盘打成 panic。
+//
+// 注意这是**纵深防御**：host 的完整路径上，非法参数会先卡在 assistant 消息
+// 落盘（`message.assistant` 原样序列化 Part，`json.RawMessage` 拒非法 JSON），
+// 轮不到这里——根因（适配器把模型给的参数串原样透传，不保证是合法 JSON）
+// 单独开票跟踪。本用例直接跑请求 scope 的 before_tool_call 链，把守卫本身钉住。
+func TestTurnRecorderDropsMalformedToolArguments(t *testing.T) {
+	ctx := context.Background()
+	sess, err := memory.NewMemorySessionStack().Create(ctx, session.SessionHeader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := kernel.New()
+	t.Cleanup(scope.Dispose)
+	r := &turnRecorder{a: &Agent{}, sess: sess, ctx: ctx}
+	if err := r.mount(scope); err != nil {
+		t.Fatal(err)
+	}
+	out := kernel.WaterfallLocal(scope, loop.EventBeforeToolCall, &loop.BeforeToolCall{
+		Call: llm.ToolCall{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{"text":`)},
+	})
+	if out == nil || out.Call.ID != "c1" || out.Call.Name != "echo" {
+		t.Fatalf("chain result = %+v, want the payload passed through", out)
+	}
+	envs, err := sess.Events(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var called *session.ToolCalledPayload
+	for _, e := range envs {
+		if e.Type != session.EventToolCalled {
+			continue
+		}
+		var p session.ToolCalledPayload
+		if err := json.Unmarshal(e.Data, &p); err != nil {
+			t.Fatal(err)
+		}
+		called = &p
+	}
+	if called == nil || called.ToolCallID != "c1" || called.Name != "echo" {
+		t.Fatalf("tool.called = %+v, want it recorded despite malformed arguments", called)
+	}
+	if len(called.Arguments) != 0 {
+		t.Fatalf("arguments = %s, want them dropped (the codec rejects invalid JSON)", called.Arguments)
+	}
+}
