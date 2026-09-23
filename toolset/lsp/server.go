@@ -452,10 +452,18 @@ func (s *server) ensureOpen(ctx context.Context, abs, ext string) error {
 }
 
 // diagnostics 在窗口内等第一次 publish（空数组也是有效结果），返回该文件诊断。
+//
+// 循环里必须查存活：这条出口轮询 `s.diags`、**不登记 pending**，所以 markDead
+// 的 failPending 唤不醒它——不查的话，server 在等待窗口内猝死会被报成
+// 「0 个诊断 / may still be indexing」这个**成功的软结果**，宿主按「没诊断 =
+// 干净」决策就误判了（这正是 #216 要消除的「没有任何告警」）。
 func (s *server) diagnostics(ctx context.Context, abs string, window time.Duration) (string, error) {
 	uri := fileURI(abs)
 	deadline := time.Now().Add(window)
 	for {
+		if s.unusable() {
+			return "", fmt.Errorf("lsp: server %s connection closed", s.lang)
+		}
 		s.mu.Lock()
 		st := s.diags[uri]
 		if st != nil && st.received {

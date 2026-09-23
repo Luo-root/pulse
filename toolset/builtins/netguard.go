@@ -61,11 +61,7 @@ func blockedMetadataIP(ip net.IP) bool {
 // 记 private，其余域名一律 unknown，让「按类别放行」的策略落到问人的分支。
 // 真实落点的拦截在连接期按解析结果做（checkHost / guardedDial）。
 func hostClassOf(host string) string {
-	h := host
-	if h2, _, err := net.SplitHostPort(host); err == nil {
-		h = h2
-	}
-	h = strings.ToLower(strings.Trim(h, "[]"))
+	h := strings.ToLower(splitHost(host))
 	if h == "" {
 		return toolset.HostClassUnknown
 	}
@@ -88,12 +84,22 @@ func hostClassOf(host string) string {
 	return toolset.HostClassUnknown
 }
 
-func checkHost(ctx context.Context, host string, blockPrivate bool) error {
+// splitHost 把 host[:port] / [v6]:port 归一成裸主机名。
+//
+// 预览侧（hostClassOf）与连接侧（checkHost）共用这一份：两处各写一遍
+// 迟早分叉——本轮就是一处多一个 ToLower、一处走 DNS 而不特判 localhost
+// （#215 review 建议）。**不在这里做大小写归一**：连接侧保持原样交给
+// net.LookupIP / net.ParseIP，预览侧自己 ToLower。
+func splitHost(host string) string {
 	h := host
 	if h2, _, err := net.SplitHostPort(host); err == nil {
 		h = h2
 	}
-	h = strings.Trim(h, "[]")
+	return strings.Trim(h, "[]")
+}
+
+func checkHost(ctx context.Context, host string, blockPrivate bool) error {
+	h := splitHost(host)
 	if ip := net.ParseIP(h); ip != nil {
 		return checkIP(ip, blockPrivate)
 	}

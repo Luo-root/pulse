@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -336,6 +337,179 @@ func waitForMethod(fs *fakeServer, name string) bool {
 			return false
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestLSPDiagnosticsReportsDeadServer：#216 review 该修——`diagnostics` 是
+// **不登记 pending** 的那条出口（轮询 s.diags），failPending 唤不醒它。server
+// 在等待窗口内猝死时，若不查存活就会返回「no diagnostics reported within …
+// (server may still be indexing)」这个**成功的软结果**，宿主按「0 个诊断 =
+// 干净」决策就误判了（fail-open）。
+func TestLSPDiagnosticsReportsDeadServer(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "hello.go")
+	if err := os.WriteFile(file, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs := newFakeServer()
+	fs.handle = func(f rpcFrame) {
+		switch f.Method {
+		case "initialize":
+			fs.reply(f, map[string]any{"capabilities": map[string]any{}})
+		case "textDocument/didOpen":
+			// 索引期的 server 猝死：连接断掉，且**始终**不推 diagnostics。
+			close(fs.conn.out)
+		}
+	}
+	injectFake(t, fs, nil)
+
+	reg, cleanup := lspSetup(t, lspOptions(root, func(o *Options) { o.DiagWindow = 2 * time.Second }))
+	defer cleanup()
+
+	msg := lspCallErr(t, reg, map[string]any{"op": "diagnostics", "path": "hello.go"})
+	if !strings.Contains(msg, "connection closed") {
+		t.Fatalf("a server that dies during the window must be reported as an error, got %q", msg)
+	}
+	if strings.Contains(msg, "may still be indexing") {
+		t.Fatalf("must not fall back to the soft 'still indexing' text: %q", msg)
+	}
+}
+
+// failSendConn 是 Send 恒失败的 frameConn：钉住「管道已破」这条标死路径。
+type failSendConn struct {
+	base *fakeConn
+	err  error
+}
+
+func (c failSendConn) Send([]byte) error     { return c.err }
+func (c failSendConn) Recv() ([]byte, error) { return c.base.Recv() }
+func (c failSendConn) Close() error          { return c.base.Close() }
+
+// TestServerMarksDeadWhenSendFails：#216 review 建议 1——`call` 与 `notify`
+// 的 Send 失败是两条新增的标死路径（README 承诺「连接一断即标死」的 Send
+// 侧），此前零覆盖。这里直接构造 server，不走 spawn 缝。
+func TestServerMarksDeadWhenSendFails(t *testing.T) {
+	boom := errors.New("write: broken pipe")
+
+	// call：请求发不出去 → 报错 + 标死。
+	baseCall := newFakeConn()
+	defer close(baseCall.out)
+	s1 := newServer(".go", "fake", &serverProcess{
+		conn: failSendConn{base: baseCall, err: boom},
+		kill: func() {},
+	})
+	if _, err := s1.call(context.Background(), "initialize", struct{}{}); err == nil {
+		t.Fatal("call must fail when Send fails")
+	}
+	if !s1.unusable() {
+		t.Fatal("a failed call Send must mark the server unusable")
+	}
+
+	// notify：通知发不出去 → 报错 + 标死。
+	baseNotify := newFakeConn()
+	defer close(baseNotify.out)
+	s2 := newServer(".go", "fake", &serverProcess{
+		conn: failSendConn{base: baseNotify, err: boom},
+		kill: func() {},
+	})
+	if err := s2.notify("initialized", struct{}{}); err == nil {
+		t.Fatal("notify must fail when Send fails")
+	}
+	if !s2.unusable() {
+		t.Fatal("a failed notify Send must mark the server unusable")
+	}
+}
+
+// TestServerForConcurrentRebuildYieldsToOne：#216 review 建议 1——stale 缓存
+// 被摘掉后，两路并发 serverFor 都会走到 spawn；先插进缓存的那路获胜，另一路
+// 必须收尾自己的进程并退让（否则会出现双缓存 / 每次调用都要重建）。
+//
+// 用 spawnServer 里的闸门把两路**同时**钉在 spawn 里，避免靠调度撞时序。
+func TestServerForConcurrentRebuildYieldsToOne(t *testing.T) {
+	root := t.TempDir()
+	opt, err := Options{Root: root, Servers: map[string]string{".go": "fake-lsp"}}.withDefaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	orig := spawnServer
+	var spawns atomic.Int32
+	var kills atomic.Int32
+	entered := make(chan struct{}, 2)
+	gate := make(chan struct{})
+	spawnServer = func(ctx context.Context, command, dir string) (*serverProcess, error) {
+		spawns.Add(1)
+		fs := newFakeServer()
+		fs.handle = func(f rpcFrame) {
+			if f.Method == "initialize" {
+				fs.reply(f, map[string]any{})
+			}
+		}
+		entered <- struct{}{}
+		<-gate // 两路都进到这里再放行
+		return &serverProcess{conn: fs.conn, kill: func() { kills.Add(1) }}, nil
+	}
+	t.Cleanup(func() { spawnServer = orig })
+
+	// 缓存里放一个**已标死**的 server（走真实的 markDead，不用伪造状态）。
+	staleBase := newFakeConn()
+	stale := newServer(".go", "fake-lsp", &serverProcess{
+		conn: staleBase,
+		kill: func() { kills.Add(1) },
+	})
+	stale.markDead()
+	m := &manager{opt: opt, servers: map[string]*server{".go": stale}}
+
+	type result struct {
+		srv *server
+		err error
+	}
+	results := make(chan result, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			srv, err := m.serverFor(context.Background(), ".go")
+			results <- result{srv: srv, err: err}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("both callers must reach spawnServer")
+		}
+	}
+	close(gate)
+
+	var got []*server
+	for i := 0; i < 2; i++ {
+		select {
+		case r := <-results:
+			if r.err != nil {
+				t.Fatalf("serverFor: %v", r.err)
+			}
+			got = append(got, r.srv)
+		case <-time.After(5 * time.Second):
+			t.Fatal("serverFor did not return")
+		}
+	}
+
+	if got[0] != got[1] {
+		t.Fatalf("两路并发重建必须退让给同一个 server：%p vs %p", got[0], got[1])
+	}
+	m.mu.Lock()
+	cached := m.servers[".go"]
+	m.mu.Unlock()
+	if cached != got[0] {
+		t.Fatalf("缓存里必须是获胜的那一个：cached=%p want %p", cached, got[0])
+	}
+	if n := spawns.Load(); n != 2 {
+		t.Fatalf("两路各 spawn 一次且只一次：spawns=%d", n)
+	}
+	if k := kills.Load(); k < 1 {
+		t.Fatalf("落败的那路必须收尾自己的进程树：kills=%d", k)
+	}
+	if cached.unusable() {
+		t.Fatal("获胜的 server 必须是可用的")
 	}
 }
 

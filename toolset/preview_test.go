@@ -122,7 +122,7 @@ func TestPreviewIdentityUnderConcurrentDispose(t *testing.T) {
 	defer host.Dispose()
 	r := toolset.NewRegistry()
 
-	register := func() func() {
+	register := func() (func(), error) {
 		d, err := r.Register(host, toolset.Registration{
 			Def:    llm.ToolDef{Name: "q", Description: "q"},
 			Fn:     echoFn("ok"),
@@ -136,13 +136,14 @@ func TestPreviewIdentityUnderConcurrentDispose(t *testing.T) {
 				}, nil
 			},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return d
+		return d, err
 	}
 
+	// 撤销方的注册失败只能回传主 goroutine——t.Fatal / FailNow 的契约只
+	// 适用于测试 goroutine（FailNow 只终止当前 goroutine，失败会静默漏掉，
+	// `go vet` 也抓不到这种经闭包的间接调用）。
 	stop := make(chan struct{})
+	fail := make(chan error, 1)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -153,13 +154,32 @@ func TestPreviewIdentityUnderConcurrentDispose(t *testing.T) {
 				return
 			default:
 			}
-			register()()
+			d, err := register()
+			if err != nil {
+				select {
+				case fail <- err:
+				default:
+				}
+				return
+			}
+			d()
 		}
 	}()
+
+	drain := func() {
+		select {
+		case err := <-fail:
+			close(stop)
+			wg.Wait()
+			t.Fatalf("register 在并发撤销中失败: %v", err)
+		default:
+		}
+	}
 
 	var bad int
 	var sample toolset.Preview
 	for i := 0; i < 50000; i++ {
+		drain()
 		p, ok, err := r.Preview(context.Background(), "q", nil)
 		if err != nil {
 			close(stop)
@@ -178,6 +198,11 @@ func TestPreviewIdentityUnderConcurrentDispose(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+	select {
+	case err := <-fail:
+		t.Fatalf("register 在并发撤销中失败: %v", err)
+	default:
+	}
 
 	if bad != 0 {
 		t.Fatalf("ok=true 的卡片带着零值身份字段 %d 次；样本 source=%q risk=%v action=%s",
