@@ -125,8 +125,9 @@ No host needed: for the **assembly-time** trajectory alone (`fiber_state` / `loa
 
 ```go
 sessions := memory.NewMemorySessionStack() // 便捷：进程内（重启即失）
-// sessions, err := memory.NewJSONLSessionStack(dir)              // 便捷：JSONL 落盘（blobs + 文件锁 + Flush fsync）
-// stack := memory.NewSessionStack(session.NewJSONLStore(dir, /* 选项 */)) // 泛化：注入任意 SessionStore
+// sessions, err := memory.NewJSONLSessionStack(dir) // 便捷：JSONL 落盘（blobs + 文件锁 + Flush fsync）
+// st, err := session.NewJSONLStore(dir, /* 选项 */)  // 泛化：先建任意 SessionStore…
+// stack := memory.NewSessionStack(st)               // …再交给门面（恢复策略等都在 store 上）
 
 items := memory.NewMemoryItemStack(assemble.Budget{StableMemoryTokens: 800, RetrievedTokens: 1200})
 // items := memory.NewItemStack(myStore, myMeter, assemble.Budget{…}) // 泛化：注入任意 MemoryStore + 计量
