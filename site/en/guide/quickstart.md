@@ -42,7 +42,17 @@ res, err := agent.Run(ctx, llm.UserText("hello"))
 
 Tools, observability exits and the approval gate (`ToolGate`) attach at this layer; for non-default sources switch to `h.NewAgent` — no special cases. See the [host package docs](/en/packages/host/).
 
-The manual assembly below produces the same result, one layer at a time.
+What you add next all attaches at this layer:
+
+| What you want | Where it goes | Recipes |
+|---|---|---|
+| Tools (local builtins / MCP / your own) | `host.Options.Tools` | [Assembly guide](/en/guide/assembly) |
+| Session persistence and cold recovery | `host.Options.Session` | [Assembly guide](/en/guide/assembly), [memory/session](/en/packages/memory/session/) |
+| Pre-execution approval (HITL) | `host.AgentOptions.ToolGate` | [Assembly guide](/en/guide/assembly) |
+| Long-term memory and context assembly | `host.AgentOptions.ContextBuilder` | [Memory layer](/en/guide/memory) |
+| Observability exits | `host.Options.Observe` | [Observability](/en/guide/observability) |
+
+The manual assembly below produces the same result, one layer at a time (for the systematic two-layer walkthrough see the [assembly guide](/en/guide/assembly)).
 
 ## Shortest path: model + ReAct tool round
 
@@ -64,11 +74,11 @@ import (
 )
 
 func main() {
-	host := kernel.New()
-	defer host.Dispose()
+	k := kernel.New()
+	defer k.Dispose()
 
-	reg := llm.NewRegistry(host)
-	if err := openai.Register(host, reg); err != nil {
+	reg := llm.NewRegistry(k)
+	if err := openai.Register(k, reg); err != nil {
 		panic(err)
 	}
 	if err := reg.Declare("main", llm.Config{
@@ -95,7 +105,7 @@ func main() {
 	agent, err := loop.NewAgent(model, "assistant",
 		loop.WithToolSet(tools),
 		loop.WithSystemPrompt("You are a concise assistant."),
-		loop.WithEventScope(host),
+		loop.WithEventScope(k),
 	)
 	if err != nil {
 		panic(err)
@@ -118,6 +128,7 @@ go run ./main.go
 ## Next steps
 
 - **Core concepts**: Effect / ServiceKey / events and the loading model → [Core concepts](/en/guide/concepts)
+- **Assembly**: the full two-layer path with recipes (tools / sessions / approval / memory / observability / MCP) → [Assembly guide](/en/guide/assembly)
 - **Orchestration**: three-state slot node graphs and YAML loading → [flow orchestration](/en/guide/flow)
 - **Memory**: sessions, compaction, long-term store, assembly → [Memory layer](/en/guide/memory)
 - **Per-package docs**: full bilingual docs for all 28 packages → [Packages](/en/packages/)
