@@ -86,7 +86,10 @@ func (m *manager) killAll() {
 	}
 }
 
-// serverFor 按扩展名取（或懒启动）server。启动/握手失败不缓存，下次重试。
+// serverFor 按扩展名取（或懒启动）server。启动/握手失败不缓存，下次重试；
+// **缓存命中也要校验存活**——语言服务器自行退出（配置、OOM、锁文件）是常态
+// 而非异常路径，留着一个死连接会让 lsp 工具在整批 dispose 之前永久坏掉，
+// 宿主侧只表现为「工具坏了、重启应用才好」（#216）。
 func (m *manager) serverFor(ctx context.Context, ext string) (*server, error) {
 	command, ok := m.opt.Servers[ext]
 	if !ok {
@@ -99,9 +102,17 @@ func (m *manager) serverFor(ctx context.Context, ext string) (*server, error) {
 	}
 	m.mu.Lock()
 	s := m.servers[ext]
+	stale := s != nil && s.unusable()
+	if stale {
+		delete(m.servers, ext) // 死连接不许继续当缓存：下面的 spawn 会替换它
+	}
 	m.mu.Unlock()
 	if s != nil {
-		return s, nil
+		if !stale {
+			return s, nil
+		}
+		// 收尾死连接（幂等）：进程可能还挂着，树杀兜底。
+		s.shutdownAndKill()
 	}
 
 	sp, err := spawnServer(ctx, command, m.opt.Root)

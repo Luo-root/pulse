@@ -50,7 +50,8 @@ agent, err := loop.NewAgent(model, "react",
 - **`DisposeSource(source)`** revokes in bulk by source; guessing the source from a Name prefix is forbidden.
 - **`AsToolSet()`** is a live view; the Definitions snapshot for a given turn is taken once by loop at the start of Run.
 - **`LookupMeta`** lets HITL/policies look up Source/Risk; a miss should fail closed.
-- **`PreviewFn` / `LookupPreview` / `Preview`**: optional read-only pre-execution card (W2). loop does not alter it; HITL does its own Lookup. No PreviewFn = empty preview; the human is still asked according to Risk.
+- **`PreviewFn` / `LookupPreview` / `Preview`**: optional read-only pre-execution card (W2). loop does not alter it; HITL does its own Lookup. No PreviewFn = empty preview; the human is still asked according to Risk. The identity fields of `Preview()` (Tool/Source/Risk) come from the **same snapshot** as the PreviewFn — a concurrent revoke can never yield a card that is `ok=true` with an empty Source and a zero Risk.
+- **Card field semantics**: `FileChange.Added/Removed` always count by the **positional interval outside the common prefix/suffix** (large files use the same convention, only the diff text is omitted and flagged `Truncated`) — multiset counting reports a whole-file rotation as 0, which makes "escalate approval on change size" policies fail open; `NetworkChange.HostClass` is one of `public|private|metadata|unknown`, decided from the **literal** address, with hostnames always `unknown` (no DNS in preview: nothing may produce external traffic before a human approves). It is a hint, not a security boundary.
 - **Dependencies**: `toolset` → `loop`; `loop` does not import `toolset`. `MemToolSet` remains available for unit tests without a kernel.
 
 ## MCP source

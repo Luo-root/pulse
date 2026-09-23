@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Luo-root/pulse/toolset"
 )
 
 // lookupIPAddr 默认走系统解析；测试可替换以覆盖 DNS 路径（rebinding / mapped IPv6）。
@@ -50,12 +52,54 @@ func blockedMetadataIP(ip net.IP) bool {
 	return false
 }
 
-func checkHost(ctx context.Context, host string, blockPrivate bool) error {
+// hostClassOf 给出 host 的**字面**类别，供 HITL 卡片（NetworkChange.HostClass）
+// 使用，取值见 toolset.HostClass* 常量。
+//
+// 这里**不做 DNS**：PreviewFn 在**人批之前**跑，解析域名等于让未获准的动作先
+// 产生外部流量（DNS 也可当信道）。所以只有能按字面判定的才给结论——IP 字面量
+// 走与连接期同一套判据（blockedMetadataIP / IsPrivate / IsLoopback），本地名
+// 记 private，其余域名一律 unknown，让「按类别放行」的策略落到问人的分支。
+// 真实落点的拦截在连接期按解析结果做（checkHost / guardedDial）。
+func hostClassOf(host string) string {
+	h := strings.ToLower(splitHost(host))
+	if h == "" {
+		return toolset.HostClassUnknown
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			ip = v4
+		}
+		switch {
+		case blockedMetadataIP(ip):
+			return toolset.HostClassMetadata
+		case ip.IsPrivate() || ip.IsLoopback():
+			return toolset.HostClassPrivate
+		default:
+			return toolset.HostClassPublic
+		}
+	}
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return toolset.HostClassPrivate
+	}
+	return toolset.HostClassUnknown
+}
+
+// splitHost 把 host[:port] / [v6]:port 归一成裸主机名。
+//
+// 预览侧（hostClassOf）与连接侧（checkHost）共用这一份：两处各写一遍
+// 迟早分叉——本轮就是一处多一个 ToLower、一处走 DNS 而不特判 localhost
+// （#215 review 建议）。**不在这里做大小写归一**：连接侧保持原样交给
+// net.LookupIP / net.ParseIP，预览侧自己 ToLower。
+func splitHost(host string) string {
 	h := host
 	if h2, _, err := net.SplitHostPort(host); err == nil {
 		h = h2
 	}
-	h = strings.Trim(h, "[]")
+	return strings.Trim(h, "[]")
+}
+
+func checkHost(ctx context.Context, host string, blockPrivate bool) error {
+	h := splitHost(host)
 	if ip := net.ParseIP(h); ip != nil {
 		return checkIP(ip, blockPrivate)
 	}

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/Luo-root/pulse/toolset"
 	"github.com/Luo-root/pulse/toolset/builtins"
 )
 
@@ -262,5 +263,44 @@ func TestQuestionAskerAndPreview(t *testing.T) {
 	_, ok = reg2.LookupPreview("web_fetch")
 	if !ok {
 		t.Fatal("web_fetch should have PreviewFn")
+	}
+}
+
+// TestWebFetchPreviewHostClass：#215-2——`NetworkChange.HostClass` 的声明域
+// 必须真有实现产出（此前唯一产物是未定义的 "http"）。
+//
+// 口径：按**字面地址**判定，预览不做 DNS——PreviewFn 在人批之前跑，解析域名
+// 等于让未获准的动作先产生外部流量。于是域名一律 unknown（按类别放行的策略
+// 落到问人分支），IP 字面量按连接期同一套判据分类。
+func TestWebFetchPreviewHostClass(t *testing.T) {
+	_, reg, cleanup := setup(t, builtins.Options{Root: t.TempDir()})
+	defer cleanup()
+
+	cases := []struct{ url, want string }{
+		{"https://example.com/x", toolset.HostClassUnknown},
+		{"https://93.184.216.34/x", toolset.HostClassPublic},
+		{"http://10.0.0.1/x", toolset.HostClassPrivate},
+		{"http://localhost:8080/x", toolset.HostClassPrivate},
+		{"http://api.localhost/x", toolset.HostClassPrivate},
+		{"http://[::1]:8080/x", toolset.HostClassPrivate},
+		{"https://169.254.169.254/latest/meta-data/", toolset.HostClassMetadata},
+		{"http://100.100.100.200/latest/meta-data/", toolset.HostClassMetadata},
+	}
+	for _, c := range cases {
+		args, err := json.Marshal(map[string]any{"url": c.url})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, ok, err := reg.Preview(context.Background(), "web_fetch", args)
+		if err != nil || !ok || p.Network == nil {
+			t.Fatalf("%s: preview %+v ok=%v err=%v", c.url, p, ok, err)
+		}
+		if p.Network.HostClass != c.want {
+			t.Fatalf("%s: HostClass=%q want %q", c.url, p.Network.HostClass, c.want)
+		}
+		// 卡片文本也要带上类别，否则宿主自绘时得反查常量表。
+		if !strings.Contains(p.Render(), "("+c.want+")") {
+			t.Fatalf("%s: Render must carry the host class: %q", c.url, p.Render())
+		}
 	}
 }

@@ -221,6 +221,10 @@ type server struct {
 	opened   map[string]*openFile
 	uriLocks sync.Map // file URI → *sync.Mutex，串行化同文件的内容同步
 	closed   bool
+	// dead 表示连接已断（server 自行退出 / 管道破裂）：不可再用，但**不是**
+	// closed——closed 只由 shutdownAndKill 置位，是「已收尾」的幂等标记；
+	// 拿它当死连接标记会让收尾流程提前 return，漏掉进程树兜底杀（#216）。
+	dead bool
 }
 
 // uriLock 返回该文件的同步锁（get-or-create；随 server 生命周期存续）。
@@ -249,7 +253,7 @@ func (s *server) readLoop() {
 	for {
 		body, err := s.sp.conn.Recv()
 		if err != nil {
-			s.failPending(errors.New("lsp: server " + s.lang + " connection closed"))
+			s.markDead()
 			return
 		}
 		var env struct {
@@ -291,6 +295,23 @@ func (s *server) readLoop() {
 	}
 }
 
+// markDead 标记连接已断并唤醒所有等待者。语言服务器自行退出是常态（配置、
+// OOM、锁文件），这里只把 server 标成不可用；摘缓存与重建由 manager 在下次
+// 取用时做（serverFor），进程树收尾也在那里兜底。
+func (s *server) markDead() {
+	s.mu.Lock()
+	s.dead = true
+	s.mu.Unlock()
+	s.failPending(errors.New("lsp: server " + s.lang + " connection closed"))
+}
+
+// unusable 报告该 server 是否已不能再承接请求（连接断了或已收尾）。
+func (s *server) unusable() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed || s.dead
+}
+
 func (s *server) failPending(err error) {
 	s.mu.Lock()
 	chs := make([]chan rpcResponse, 0, len(s.pending))
@@ -307,7 +328,7 @@ func (s *server) failPending(err error) {
 // call 发请求并等对应 id 的响应。
 func (s *server) call(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || s.dead {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("lsp: server %s is closed", s.lang)
 	}
@@ -322,6 +343,7 @@ func (s *server) call(ctx context.Context, method string, params interface{}) (j
 		return nil, err
 	}
 	if err := s.sp.conn.Send(body); err != nil {
+		s.markDead() // 管道已破：别让后续调用继续打到这个连接上
 		return nil, fmt.Errorf("lsp: %s: send %s: %w", s.lang, method, err)
 	}
 	select {
@@ -346,7 +368,11 @@ func (s *server) notify(method string, params interface{}) error {
 	if err != nil {
 		return err
 	}
-	return s.sp.conn.Send(body)
+	if err := s.sp.conn.Send(body); err != nil {
+		s.markDead()
+		return err
+	}
+	return nil
 }
 
 // initialize 完成握手（initialize → initialized）。
@@ -426,10 +452,18 @@ func (s *server) ensureOpen(ctx context.Context, abs, ext string) error {
 }
 
 // diagnostics 在窗口内等第一次 publish（空数组也是有效结果），返回该文件诊断。
+//
+// 循环里必须查存活：这条出口轮询 `s.diags`、**不登记 pending**，所以 markDead
+// 的 failPending 唤不醒它——不查的话，server 在等待窗口内猝死会被报成
+// 「0 个诊断 / may still be indexing」这个**成功的软结果**，宿主按「没诊断 =
+// 干净」决策就误判了（这正是 #216 要消除的「没有任何告警」）。
 func (s *server) diagnostics(ctx context.Context, abs string, window time.Duration) (string, error) {
 	uri := fileURI(abs)
 	deadline := time.Now().Add(window)
 	for {
+		if s.unusable() {
+			return "", fmt.Errorf("lsp: server %s connection closed", s.lang)
+		}
 		s.mu.Lock()
 		st := s.diags[uri]
 		if st != nil && st.received {

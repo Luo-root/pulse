@@ -28,6 +28,7 @@ defer dispose()
 ## 契约要点
 
 - **lazy 生命周期**：首次调用按扩展名 spawn（`strings.Fields` 分词，不支持引号路径）→ `initialize`/`initialized` → `didOpen`；进程常驻到 dispose。启动/握手失败只对该语言报错，下次调用重试，不炸 Register
+- **进程死亡自愈**：语言服务器自行退出（配置、OOM、锁文件）是常态——连接一断即把该 server 标死（等待中的请求当场报 `connection closed`，不再干等到超时；`diagnostics` 的等待窗口内猝死同样报错，**不会**被报成「0 个诊断 / may still be indexing」这个软结果），下次取用时摘掉缓存条目 → 树杀兜底收尾旧进程 → 重新 spawn 并握手。宿主不必重启，也没有「工具坏了」的黑盒期（#216）
 - **清理双路**：显式 `dispose()` 与 scope Dispose（独立 Effect）都 `shutdown → exit →` 树杀（Windows `taskkill /T /F`；Unix 进程组 SIGKILL）
 - **position 口径**：`line`/`column` 0 基；`column` 是 LSP 原生 **UTF-16 code units**（ASCII 场景与字符数一致）
 - **op 面只读，内容同步双向**：不做 formatting / rename / codeAction 等写类 op；但每次调用会把磁盘最新内容同步给 server（首次 `didOpen`，之后按内容 hash 变化 `didChange` 全量、version++）——`edit`/`apply_patch` 改完再调 `diagnostics` 即得最新诊断

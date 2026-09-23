@@ -690,3 +690,47 @@ func TestPreviewWriteEditExecDoesNotWrite(t *testing.T) {
 		t.Fatal("read must not register PreviewFn")
 	}
 }
+
+// TestPreviewLargeFileCountsNonZero：#215-1——大文件与常规文件共用同一套计数
+// 口径（共同前缀/后缀之外的位置区间），大文件只是不生成 diff 文本。
+//
+// 曾经这一档改用多重集计数，整体位移的行集合前后完全相同 → 算出 0/0；而
+// Added/Removed 是卡片上的 `+N/-M`，按改动量升级审批的策略（if Added > 50
+// { 问人 }）在**恰好大改动**时读到 0，等于 fail-open。
+func TestPreviewLargeFileCountsNonZero(t *testing.T) {
+	root := t.TempDir()
+	const lines = 250 // 250 + 250 = 500 > maxDiffLines(400)，必走大文件档
+	oldL := make([]string, 0, lines)
+	for i := 0; i < lines; i++ {
+		oldL = append(oldL, fmt.Sprintf("line %03d\n", i))
+	}
+	// 整体位移：首行挪到末尾——多重集视角下两版完全相同。
+	rotated := append(append([]string{}, oldL[1:]...), oldL[0])
+	if err := os.WriteFile(filepath.Join(root, "big.txt"), []byte(strings.Join(oldL, "")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, reg, cleanup := setup(t, builtins.Options{Root: root})
+	defer cleanup()
+
+	args, err := json.Marshal(map[string]any{"path": "big.txt", "content": strings.Join(rotated, "")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok, err := reg.Preview(context.Background(), "write", args)
+	if err != nil || !ok || p.File == nil {
+		t.Fatalf("write preview %+v ok=%v err=%v", p, ok, err)
+	}
+	if p.File.Added == 0 || p.File.Removed == 0 {
+		t.Fatalf("a %d-line rotation must report non-zero counts, got +%d/-%d (truncated=%v)",
+			lines, p.File.Added, p.File.Removed, p.File.Truncated)
+	}
+	// 位置区间口径下，整体位移就是全量替换；这个数字也钉住「大文件不换算法」。
+	if p.File.Added != lines || p.File.Removed != lines {
+		t.Fatalf("whole-file rotation must count all lines as rewritten: want +%d/-%d, got +%d/-%d",
+			lines, lines, p.File.Added, p.File.Removed)
+	}
+	if !p.File.Truncated || !strings.Contains(p.File.Diff, "diff omitted") {
+		t.Fatalf("a large diff must be marked truncated with an omitted-text note: truncated=%v diff=%q",
+			p.File.Truncated, p.File.Diff)
+	}
+}

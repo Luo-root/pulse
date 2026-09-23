@@ -48,7 +48,8 @@ agent, err := loop.NewAgent(model, "react",
 - **`DisposeSource(source)`** 按来源批量撤销；禁止用 Name 前缀猜来源。
 - **`AsToolSet()`** 是 live 视图；同一回合的 Definitions 快照由 loop 在 Run 开始时取一次。
 - **`LookupMeta`** 供 HITL/策略查 Source/Risk；查不到应 fail-closed。
-- **`PreviewFn` / `LookupPreview` / `Preview`**：可选执行前只读卡片（W2）。loop 不改；HITL 自己 Lookup。没有 PreviewFn = 空预览，仍按 Risk 问人。
+- **`PreviewFn` / `LookupPreview` / `Preview`**：可选执行前只读卡片（W2）。loop 不改；HITL 自己 Lookup。没有 PreviewFn = 空预览，仍按 Risk 问人。`Preview()` 的身份字段（Tool/Source/Risk）与 PreviewFn 出自**同一份快照**——中途被撤销也不会给出「ok=true 但 Source 空、Risk 零值」的卡片
+- **卡片字段口径**：`FileChange.Added/Removed` 一律按**共同前缀/后缀之外的位置区间**计数（大文件同样口径，只省略 diff 文本、标 `Truncated`）——换多重集计数会让整体位移报成 0，按改动量升级审批的策略会 fail-open；`NetworkChange.HostClass` 取 `public|private|metadata|unknown`，按**字面地址**判定，域名一律 `unknown`（预览不做 DNS：人批之前不得产生外部流量），只是提示不是安全边界
 - **依赖**：`toolset` → `loop`；`loop` 不 import `toolset`。`MemToolSet` 仍可用于无 kernel 单测。
 
 ## MCP 来源
