@@ -17,7 +17,7 @@ func (e *env) regGlob() toolset.Registration {
 	return toolset.Registration{
 		Def: llm.ToolDef{
 			Name:        "glob",
-			Description: "Find files by glob pattern under the workspace Root. Results are sorted. Does not apply .gitignore in P0 (explicit).",
+			Description: "Find files by glob pattern under the workspace Root. Results are sorted. Skips .git / node_modules / vendor directories by name; does not otherwise apply .gitignore (P0, explicit).",
 			Parameters: json.RawMessage(`{
   "type":"object",
   "properties":{
@@ -82,7 +82,7 @@ func (e *env) glob(ctx context.Context, args json.RawMessage) (string, error) {
 		}
 		if d.IsDir() {
 			base := d.Name()
-			if base == ".git" || base == "node_modules" || base == "vendor" {
+			if skippedDirNames[base] {
 				if path != root {
 					return fs.SkipDir
 				}

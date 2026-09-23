@@ -17,7 +17,7 @@ reg, _ := kernel.Get(host, toolset.ServiceKey)
 dispose, err := builtins.Register(host, reg, builtins.Options{
     Root: "/path/to/workspace",
     // WriteRoots: nil → 仅 Root
-    // Enabled: []string{"read","grep"} → 子集
+    // Enabled: []string{"read","grep"} → subset (an unknown name is an error, never a silent empty registration)
 })
 defer dispose()
 ```
@@ -26,7 +26,7 @@ defer dispose()
 
 | Item | Behavior |
 |---|---|
-| Paths | Relative paths resolve against `Root`; symlinks are resolved to the final target before confining; read and write roots are separate; `ForbidRead` refuses peeking |
+| Paths | Relative paths resolve against `Root`; symlinks are resolved to the final target before confining — **including dangling links** (target not yet existing: `EvalSymlinks` alone fails there, and without the link-text fallback the write would land outside `WriteRoots`); read and write roots are separate; `ForbidRead` refuses peeking |
 | `read` | Line-number prefixes; `offset`/`limit`; returns a truncated notice with a continue-reading hint when over the limit |
 | `ls`/`glob`/`grep` | **Collect and sort stably first, then paginate**; the over-limit trailer carries an `after` cursor |
 | `edit`/`write`(overwrite) | **Must `read` first within the same process**; a newer mtime means stale and rejected; `edit` requires a unique match by default |
@@ -35,9 +35,9 @@ defer dispose()
 | `job_output` | Reads a job's incremental merged output by **global byte offset** plus status (`running`/`exited exit_code=N`/`killed`); the ring buffer (`MaxExecBytes`) drops the head when over limit and reports `dropped`; the over-limit trailer says `pass offset=N` to continue reading |
 | `job_kill` | Kills the whole tree: Windows `taskkill /T /F`, Unix process-group SIGKILL; returns only after the process has really exited; errors on an already-exited job. **Both dispose and scope Dispose kill all live jobs** (an independent Effect, a backstop even if the host forgets to dispose explicitly); `MaxJobs` (default 16) caps concurrency; when done jobs exceed `2*MaxJobs`, the oldest by creation order is evicted. When both `background` and `timeout_seconds` are given, the timeout is ignored |
 | `web_fetch` | http(s) GET → extract text → line-based `offset`/`limit` (default limit=`ReadLimit`); lines longer than `MaxLineRunes` are truncated with `…` (same rule as `read`). Over-limit trailer `pass offset=N`; each continuation GETs again. Blocks file/ftp/data, NUL binary, and cloud metadata; **at Dial time** the actually resolved IP is re-checked (against redirect / DNS rebinding) and the connection goes to the checked IP rather than the hostname. Private networks are allowed by default (`BlockPrivate` to refuse). It is not a rendered browser DOM |
-| `web_search` | A `Searcher` can be injected by default; if nil, DuckDuckGo Lite (HTML parsing, may hit anti-scraping) |
+| `web_search` | A `Searcher` can be injected by default; if nil, DuckDuckGo Lite (HTML parsing, may hit anti-scraping); the default backend caps the response body at `DefaultSearchBodyBytes` (1 MiB) — not applicable once you inject your own `Searcher` |
 | `question` | Asks a human a question; requires an `Asker`. **Not** HITL approval |
-| `glob`/`grep` | P0 does **not** apply `.gitignore` (explicit); invalid regexes return an error |
+| `glob`/`grep` | **Skips `.git` / `node_modules` / `vendor` by directory name** (named in the tool descriptions so the model is not misled by "it exists but there are no matches"; no switch yet); otherwise P0 does **not** apply `.gitignore` (explicit); invalid regexes return an error |
 | Source | `builtins.<name>`; the `dispose()` returned by `Register` is reversible |
 
 ## Three boundary layers (who owns which constraint, #157)

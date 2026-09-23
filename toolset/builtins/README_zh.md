@@ -15,7 +15,7 @@ reg, _ := kernel.Get(host, toolset.ServiceKey)
 dispose, err := builtins.Register(host, reg, builtins.Options{
     Root: "/path/to/workspace",
     // WriteRoots: nil → 仅 Root
-    // Enabled: []string{"read","grep"} → 子集
+    // Enabled: []string{"read","grep"} → 子集（未实现的名字直接报错，不静默空注册）
 })
 defer dispose()
 ```
@@ -24,7 +24,7 @@ defer dispose()
 
 | 项 | 行为 |
 |---|---|
-| 路径 | 相对路径相对 `Root`；symlink 解析到最终落点再 confine；读写根分家；`ForbidRead` 拒绝窥视 |
+| 路径 | 相对路径相对 `Root`；symlink 解析到最终落点再 confine——**含悬空链接**（目标尚不存在：`EvalSymlinks` 那一档失败，没有链接文本兜底时写操作会落到 `WriteRoots` 之外）；读写根分家；`ForbidRead` 拒绝窥视 |
 | `read` | 行号前缀；`offset`/`limit`；超限返回 truncated 续读提示 |
 | `ls`/`glob`/`grep` | **先收集并稳定排序再切页**；超限 trailer 带 `after` 游标 |
 | `edit`/`write`(覆盖) | **同进程须先 `read`**；mtime 更新则 stale 拒绝；`edit` 默认唯一匹配 |
@@ -33,9 +33,9 @@ defer dispose()
 | `job_output` | 按**全局字节偏移**读 job 增量合流输出 + status（`running`/`exited exit_code=N`/`killed`）；环形缓冲（`MaxExecBytes`）超限丢头并回报 `dropped`；超限 trailer `pass offset=N` 续读 |
 | `job_kill` | 整树杀：Windows `taskkill /T /F`，Unix 进程组 SIGKILL；等进程真正退出才返回；已退出的 job 报错。**dispose / scope Dispose 都杀全部活 job**（独立 Effect，宿主忘显式 dispose 也兜底）；`MaxJobs`（默认 16）限并发；done job 超 `2*MaxJobs` 按创建序淘汰最旧。`background` 与 `timeout_seconds` 同给时 timeout 被忽略 |
 | `web_fetch` | http(s) GET → 抽文本 → 按行 `offset`/`limit`（默认 limit=`ReadLimit`）；超 `MaxLineRunes` 的行截断加 `…`（与 `read` 同口径）。超限 trailer `pass offset=N`；每次续读再 GET。拦 file/ftp/data、NUL 二进制、云 metadata；**Dial 时**对实际解析 IP 再检一次（防 redirect / DNS rebinding），连已检 IP 而非主机名。私网默认允许（`BlockPrivate` 才拒）。不是渲染后的浏览器 DOM |
-| `web_search` | 默认可注入 `Searcher`；nil 则 DuckDuckGo Lite（HTML 解析，可能被反爬） |
+| `web_search` | 默认可注入 `Searcher`；nil 则 DuckDuckGo Lite（HTML 解析，可能被反爬）；默认后端读响应体上限 `DefaultSearchBodyBytes`（1 MiB），注入自己的 `Searcher` 后不适用 |
 | `question` | 向人提问；需 `Asker`。**不是** HITL 批准 |
-| `glob`/`grep` | P0 **不**应用 `.gitignore`（显式）；非法正则返回 error |
+| `glob`/`grep` | **按目录名跳过 `.git` / `node_modules` / `vendor`**（工具描述里已写明，模型不会被「明明存在却 no matches」误导；目前无开关）；此外 P0 **不**应用 `.gitignore`（显式）；非法正则返回 error |
 | Source | `builtins.<name>`；`Register` 返回的 `dispose()` 可逆 |
 
 ## 三层边界（约束的归属，#157）

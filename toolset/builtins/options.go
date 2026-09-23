@@ -23,8 +23,23 @@ const (
 	DefaultHTTPTimeout   = 20 * time.Second
 	DefaultSearchLimit   = 8
 	DefaultSearchMax     = 20
-	DefaultMaxJobs       = 16
+	// DefaultSearchBodyBytes 是默认搜索后端（DDG Lite）读取响应体的上限：
+	// 与 web_fetch 的 DefaultMaxFetchBytes 各管一方，这里是**后端内部**的
+	// 截断点，宿主注入自己的 Searcher 时不适用（#214）。
+	DefaultSearchBodyBytes = 1 << 20
+	DefaultMaxJobs         = 16
 )
+
+// skippedDirNames 是 glob / grep 遍历时按**目录名**跳过的集合：不随
+// .gitignore、也不看路径深度，命中即 fs.SkipDir。
+//
+// 工具描述与 README 必须与它一致（#214）：模型明知 node_modules/pkg/x.js
+// 存在却拿到 no matches，会误判成自己 pattern 写错。
+var skippedDirNames = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	"vendor":       true,
+}
 
 // Options 控制 builtins 装配与路径/输出边界。
 type Options struct {
@@ -35,6 +50,7 @@ type Options struct {
 	// ForbidRead 拒绝 read/ls/glob/grep 进入的路径前缀（绝对路径）。
 	ForbidRead []string
 	// Enabled 非空时只注册列出的工具名；空=全部已实现 builtins（含 apply_patch/web/question）。
+	// 出现未实现的名字时 Register 返回 error（并列出合法名字）——不静默空注册。
 	Enabled []string
 	// Searcher 覆盖 web_search 后端；nil 则用 DuckDuckGo Lite。
 	Searcher Searcher

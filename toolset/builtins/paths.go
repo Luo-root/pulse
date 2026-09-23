@@ -30,23 +30,49 @@ func resolveUnderRoot(root, p string) (string, error) {
 	return resolveSymlinks(abs)
 }
 
+// maxSymlinkDepth 限制手工解析链接的层数（与 filepath.EvalSymlinks 的上限
+// 同量级）：链接成环时在此中止并报错，而不是无限解析。
+const maxSymlinkDepth = 255
+
 // resolveSymlinks 把 path 解析到 symlink 最终落点。
 // 目标尚不存在时：对最深已存在祖先 EvalSymlinks，再拼回缺失后缀，
 // 避免「Root 内的 link/new.txt」实际写出 Root 外。
+//
+// 最深已存在祖先是**悬空链接**时（EvalSymlinks 失败但 Lstat 报链接），
+// 按链接文本继续解析——不能原样返回未解析路径：那样 confine* 判定的是
+// 链接路径本身，而 os.WriteFile 会跟随链接写到 Root 外（#213）。
 func resolveSymlinks(abs string) (string, error) {
-	if eval, err := filepath.EvalSymlinks(abs); err == nil {
-		return eval, nil
+	for i := 0; i < maxSymlinkDepth; i++ {
+		if eval, err := filepath.EvalSymlinks(abs); err == nil {
+			return eval, nil
+		}
+		exist := deepestExisting(abs)
+		if fi, err := os.Lstat(exist); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(exist)
+			if err != nil {
+				return "", fmt.Errorf("builtins: read symlink %s: %w", exist, err)
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(exist), target)
+			}
+			rel, err := filepath.Rel(exist, abs)
+			if err != nil {
+				return "", fmt.Errorf("builtins: resolve symlink %s: %w", exist, err)
+			}
+			abs = filepath.Join(target, rel)
+			continue // 链接指向的路径本身可能还有链接
+		}
+		evalExist, err := filepath.EvalSymlinks(exist)
+		if err != nil {
+			return abs, nil
+		}
+		rel, err := filepath.Rel(exist, abs)
+		if err != nil {
+			return abs, nil
+		}
+		return filepath.Join(evalExist, rel), nil
 	}
-	exist := deepestExisting(abs)
-	evalExist, err := filepath.EvalSymlinks(exist)
-	if err != nil {
-		return abs, nil
-	}
-	rel, err := filepath.Rel(exist, abs)
-	if err != nil {
-		return abs, nil
-	}
-	return filepath.Join(evalExist, rel), nil
+	return "", fmt.Errorf("builtins: too many levels of symbolic links: %s", abs)
 }
 
 func withinRoot(root, abs string) bool {
@@ -87,6 +113,10 @@ func confineWrite(writeRoots []string, abs string) error {
 }
 
 // deepestExisting 返回 path 上最深的已存在祖先（含自身），用于 EvalSymlinks。
+//
+// 用 os.Lstat（**不跟随**链接）：悬空链接自身算「已存在」，交给
+// resolveSymlinks 按链接文本继续解析；若改用 os.Stat，悬空链接会被跳过，
+// 从而漏掉「链接指向 Root 外」这一档。
 func deepestExisting(path string) string {
 	cur := path
 	for {

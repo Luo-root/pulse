@@ -2,6 +2,7 @@ package builtins
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/toolset"
@@ -32,25 +33,16 @@ func Register(scope *kernel.Context, reg *toolset.Registry, opt Options) (dispos
 	}
 	e := &env{opt: opt, tracker: newReadTracker(), jobs: newJobTable(opt.MaxJobs, opt.MaxExecBytes)}
 
-	want := map[string]bool{}
-	for _, n := range opt.Enabled {
-		want[n] = true
-	}
-	allow := func(name string) bool {
-		return len(want) == 0 || want[name]
-	}
-
+	// 先按「全部已实现工具」构造登记项，再校验 Enabled、最后过滤：校验与
+	// 登记共用同一份事实源，不会出现「工具名清单两份、改一处漏一处」。
 	type item struct {
 		name string
 		reg  toolset.Registration
 	}
-	var items []item
+	var all []item
 	add := func(name string, r toolset.Registration) {
-		if !allow(name) {
-			return
-		}
 		r.Source = opt.SourcePrefix + "." + name
-		items = append(items, item{name: name, reg: r})
+		all = append(all, item{name: name, reg: r})
 	}
 
 	add("read", e.regRead())
@@ -66,6 +58,39 @@ func Register(scope *kernel.Context, reg *toolset.Registry, opt Options) (dispos
 	add("web_fetch", e.regWebFetch())
 	add("web_search", e.regWebSearch())
 	add("question", e.regQuestion())
+
+	// Enabled 未知名一律 fail-loud：原先未知名只是让过滤集合命中不到任何
+	// 登记（静默注册 0 个工具、err=nil），错误要拖到运行期才以模型可见的
+	// `unknown tool` 文本露出，或者永不暴露（#214）。
+	want := map[string]bool{}
+	if len(opt.Enabled) > 0 {
+		known := make(map[string]bool, len(all))
+		names := make([]string, 0, len(all))
+		for _, it := range all {
+			known[it.name] = true
+			names = append(names, it.name)
+		}
+		var unknown []string
+		for _, n := range opt.Enabled {
+			if !known[n] {
+				unknown = append(unknown, n)
+			}
+		}
+		if len(unknown) > 0 {
+			return nil, fmt.Errorf("builtins: Options.Enabled has unknown tool name(s): %s (valid: %s)",
+				strings.Join(unknown, ", "), strings.Join(names, ", "))
+		}
+		for _, n := range opt.Enabled {
+			want[n] = true
+		}
+	}
+
+	items := make([]item, 0, len(all))
+	for _, it := range all {
+		if len(want) == 0 || want[it.name] {
+			items = append(items, it)
+		}
+	}
 
 	disposers := make([]func(), 0, len(items))
 	rollback := func() {

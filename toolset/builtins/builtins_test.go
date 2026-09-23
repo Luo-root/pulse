@@ -356,6 +356,154 @@ func TestWriteSymlinkEscape(t *testing.T) {
 	}
 }
 
+// TestWriteDanglingSymlinkEscape：#213——root/link 指向 Root 外、且目标
+// **尚不存在**时，write 与 apply_patch 都必须拒绝，且根外文件不得被创建。
+// 对照（已覆盖）：目标已存在的链接、普通 ../ 越界都会被拒 —— 恰好漏的是
+// 「目标不存在」这一档（悬空链接的两次 EvalSymlinks 都失败）。
+func TestWriteDanglingSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "link")
+	target := filepath.Join(outside, "x.txt") // 目标不存在：悬空链接
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not permitted: %v", err)
+	}
+	_, reg, cleanup := setup(t, builtins.Options{Root: root})
+	defer cleanup()
+
+	rejected := func(msg string) bool {
+		return strings.Contains(msg, "WriteRoots") || strings.Contains(msg, "outside") ||
+			strings.Contains(msg, "symlink") || strings.Contains(msg, "escapes")
+	}
+
+	msg := callErr(t, reg, "write", map[string]any{"path": "link", "content": "PWNED"})
+	if !rejected(msg) {
+		t.Fatalf("dangling symlink write must be rejected, got: %s", msg)
+	}
+	if _, err := os.Stat(target); err == nil {
+		t.Fatal("write followed a dangling symlink out of WriteRoots")
+	}
+
+	// apply_patch 走同一 resolveUnderRoot + confineWrite（同缝）。
+	patch := "*** Begin Patch\n*** Add File: link\n+PWNED\n*** End Patch\n"
+	msg = callErr(t, reg, "apply_patch", map[string]any{"patch": patch})
+	if !rejected(msg) {
+		t.Fatalf("dangling symlink apply_patch must be rejected, got: %s", msg)
+	}
+	if _, err := os.Stat(target); err == nil {
+		t.Fatal("apply_patch followed a dangling symlink out of WriteRoots")
+	}
+
+	// 反向对照：不悬空（目标已存在）时，写出 Root 外同样被拒。
+	if err := os.WriteFile(target, []byte("seed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	msg = callErr(t, reg, "write", map[string]any{"path": "link", "content": "PWNED"})
+	if !rejected(msg) {
+		t.Fatalf("resolved symlink write must be rejected, got: %s", msg)
+	}
+	if b, err := os.ReadFile(target); err != nil || string(b) != "seed" {
+		t.Fatalf("outside file changed: %q err=%v", b, err)
+	}
+}
+
+// TestRegisterEnabledValidation：#214-1——Enabled 只登记列出的工具；出现未
+// 实现的名字必须 fail-loud（原先静默注册 0 个工具、err=nil，错误要么拖到
+// 运行期才以模型可见的 unknown tool 露出，要么永不暴露）。
+func TestRegisterEnabledValidation(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, reg, cleanup := setup(t, builtins.Options{Root: root, Enabled: []string{"read", "write"}})
+	defer cleanup()
+	if defs := reg.AsToolSet().Definitions(); len(defs) != 2 {
+		t.Fatalf("Enabled subset registered %d tools, want 2", len(defs))
+	}
+	if out := call(t, reg, "read", map[string]any{"path": "a.txt"}); !strings.Contains(out, "hi") {
+		t.Fatalf("read output = %q", out)
+	}
+	if msg := callErr(t, reg, "ls", map[string]any{"path": "."}); !strings.Contains(msg, "unknown tool") {
+		t.Fatalf("a tool outside Enabled must not be registered: %s", msg)
+	}
+
+	// 未知名：报错并列出合法名字；失败的 Register 不留半个登记。
+	host := kernel.New()
+	defer host.Dispose()
+	if _, err := kernel.Use(host, toolset.Plugin()); err != nil {
+		t.Fatal(err)
+	}
+	reg2, ok := kernel.Get(host, toolset.ServiceKey)
+	if !ok {
+		t.Fatal("no registry")
+	}
+	_, err := builtins.Register(host, reg2, builtins.Options{Root: root, Enabled: []string{"reed", "writ"}})
+	if err == nil {
+		t.Fatal("unknown names in Options.Enabled must fail (they used to register zero tools silently)")
+	}
+	for _, want := range []string{"reed", "writ", "read", "write"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must mention %q: %v", want, err)
+		}
+	}
+	if n := len(reg2.AsToolSet().Definitions()); n != 0 {
+		t.Fatalf("a failed Register must leave nothing behind, got %d tools", n)
+	}
+}
+
+// TestSearchToolsDeclareSkippedDirs：#214-2——glob/grep 按目录名跳过 .git /
+// node_modules / vendor：行为侧钉住「确实跳过且只跳这些」，描述侧钉住
+// 「模型被告知了」——否则「文件明明存在却 no matches」会被误判成 pattern
+// 写错，而宿主也没有开关。
+func TestSearchToolsDeclareSkippedDirs(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "visible.js"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hidden := filepath.Join(root, "node_modules", "pkg")
+	if err := os.MkdirAll(hidden, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hidden, "x.js"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitdir := filepath.Join(root, "vendor", ".git")
+	if err := os.MkdirAll(gitdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitdir, "z.js"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, reg, cleanup := setup(t, builtins.Options{Root: root})
+	defer cleanup()
+
+	for _, name := range []string{"glob", "grep"} {
+		desc := ""
+		for _, d := range reg.AsToolSet().Definitions() {
+			if d.Name == name {
+				desc = d.Description
+			}
+		}
+		if desc == "" {
+			t.Fatalf("%s: no tool definition", name)
+		}
+		for _, dir := range []string{".git", "node_modules", "vendor"} {
+			if !strings.Contains(desc, dir) {
+				t.Fatalf("%s description must name the skipped dir %q: %s", name, dir, desc)
+			}
+		}
+	}
+
+	g := call(t, reg, "glob", map[string]any{"pattern": "**/*.js"})
+	if !strings.Contains(g, "visible.js") || strings.Contains(g, "x.js") || strings.Contains(g, "z.js") {
+		t.Fatalf("glob must return visible.js and skip the three dirs, got %q", g)
+	}
+	gr := call(t, reg, "grep", map[string]any{"pattern": "needle", "glob": "*.js"})
+	if !strings.Contains(gr, "visible.js") || strings.Contains(gr, "x.js") || strings.Contains(gr, "z.js") {
+		t.Fatalf("grep must match visible.js and skip the three dirs, got %q", gr)
+	}
+}
+
 func TestPreviewWriteEditExecDoesNotWrite(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "a.txt")
