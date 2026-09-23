@@ -242,7 +242,9 @@ func (s *SQLiteStore) Search(ctx context.Context, q MemoryQuery) ([]MemoryHit, e
 
 // SearchFTS 是 SQLite 实现特有的 FTS5 检索（token 前缀语义，C3 Assembler
 // 的召回入口）：match 形如 "toml config"，自动转成 `"toml"* AND "config"*`。
-// namespace 过滤与 Search 同口径。本方法不在 §7.1 接口面（类型断言使用）。
+// namespace 与状态过滤均与 Search 同口径（只召回 Active——被 Supersede /
+// Revoke 的事实与未过审批的 Pending 不得进召回）。本方法不在 §7.1 接口面
+// （类型断言使用）。
 func (s *SQLiteStore) SearchFTS(ctx context.Context, ns []string, match string, limit int) ([]MemoryHit, error) {
 	terms := strings.Fields(strings.TrimSpace(match))
 	if len(terms) == 0 {
@@ -260,8 +262,8 @@ func (s *SQLiteStore) SearchFTS(ctx context.Context, ns []string, match string, 
 	       i.confidence, i.source_refs, i.taint, i.valid_from, i.valid_until, i.known_at,
 	       i.created_at, i.updated_at, i.revision
 	FROM memory_items_fts f JOIN memory_items i ON i.rowid = f.rowid
-	WHERE memory_items_fts MATCH ?`
-	args := []any{matchExpr}
+	WHERE memory_items_fts MATCH ? AND i.status = ?`
+	args := []any{matchExpr, string(StatusActive)}
 	if len(ns) > 0 {
 		prefix := strings.Join(ns, nsSep)
 		sqlText += ` AND (i.ns_key = ? OR i.ns_key LIKE ? ESCAPE '\')`

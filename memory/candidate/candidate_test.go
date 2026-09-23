@@ -76,7 +76,7 @@ func TestExtractStoresPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep != (Report{Extracted: 2, Stored: 2}) {
+	if rep.Extracted != 2 || rep.Stored != 2 || rep.Duplicates != 0 || rep.Invalid != 0 {
 		t.Fatalf("report = %+v, want {2,2,0,0}", rep)
 	}
 	if len(stored) != 2 {
@@ -140,7 +140,7 @@ func TestExtractDedupContainment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep != (Report{Extracted: 3, Stored: 1, Duplicates: 2}) {
+	if rep.Extracted != 3 || rep.Stored != 1 || rep.Duplicates != 2 {
 		t.Fatalf("report = %+v, want {3,1,2,0}", rep)
 	}
 	if len(stored) != 1 || !strings.Contains(stored[0].Content, "fish shell") {
@@ -177,7 +177,7 @@ func TestExtractDedupDirtyExisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep != (Report{Extracted: 1, Duplicates: 1}) {
+	if rep.Extracted != 1 || rep.Duplicates != 1 {
 		t.Fatalf("report = %+v, want {1,0,1,0}（存量侧双空格仍拦）", rep)
 	}
 }
@@ -195,7 +195,7 @@ func TestExtractDedupWithinBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep != (Report{Extracted: 2, Stored: 1, Duplicates: 1}) {
+	if rep.Extracted != 2 || rep.Stored != 1 || rep.Duplicates != 1 {
 		t.Fatalf("report = %+v, want {2,1,1,0}", rep)
 	}
 	if len(stored) != 1 || stored[0].Content != "same note" {
@@ -218,7 +218,7 @@ func TestExtractSkipsInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep != (Report{Extracted: 4, Stored: 1, Invalid: 3}) {
+	if rep.Extracted != 4 || rep.Stored != 1 || rep.Invalid != 3 {
 		t.Fatalf("report = %+v, want {4,1,0,3}", rep)
 	}
 	if len(stored) != 1 || stored[0].Content != "valid two" {

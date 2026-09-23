@@ -38,11 +38,14 @@ type ImportStore interface {
 }
 
 // ExportItems 按 q 导出 items（强制 IncludeInactive：非 Active 状态也是
-// 记忆库状态机的一部分，丢掉它们等于丢掉 Supersede/Revoke 历史）。产物
-// 为值切片，序列化交给调用方（MemoryItem 是导出字段集的 canonical 表示，
-// 序列化用 Go 默认 JSON 字段名，与导入侧同一结构对称）。
+// 记忆库状态机的一部分，丢掉它们等于丢掉 Supersede/Revoke 历史）。**全量
+// 语义**：q.Limit 被忽略——分页参数属于查询面，冷备被它静默截断比报错更
+// 危险；需要分页请直接用 Search。产物为值切片，序列化交给调用方
+// （MemoryItem 是导出字段集的 canonical 表示，序列化用 Go 默认 JSON 字段
+// 名，与导入侧同一结构对称）。
 func ExportItems(ctx context.Context, ms MemoryStore, q MemoryQuery) ([]MemoryItem, error) {
 	q.IncludeInactive = true
+	q.Limit = 0
 	hits, err := ms.Search(ctx, q)
 	if err != nil {
 		return nil, err

@@ -306,6 +306,13 @@ func (a *DefaultAssembler) fuseAndRank(ctx context.Context, in AssembleInput, kw
 	}
 	m := make(map[string]*fused, len(kwHits))
 	for _, h := range kwHits {
+		// 非 Active 过滤：keyword 路与 semantic 路同口径。召回来源不保证
+		// 复核过状态（自定义 ftsSearcher 可返回任意条目；SQLite 的
+		// SearchFTS 自身也必须只给 Active），融合层在这里兜底——被
+		// Revoke / Supersede 的事实与未过审批的 Pending 不得进上下文。
+		if h.Item.Status != store.StatusActive {
+			continue
+		}
 		if f, ok := m[h.Item.ID]; ok {
 			f.lexical = true
 			continue

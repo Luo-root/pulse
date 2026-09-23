@@ -74,8 +74,8 @@ func TestReflectEndToEnd(t *testing.T) {
 	if len(res.Items) != 1 || res.Items[0].Content != "alpha lesson" || res.Items[0].Status != store.StatusPending {
 		t.Fatalf("items = %+v, want pending alpha lesson", res.Items)
 	}
-	if res.Report != (candidate.Report{Extracted: 1, Stored: 1}) {
-		t.Fatalf("report = %+v", res.Report)
+	if res.Report.Extracted != 1 || res.Report.Stored != 1 || len(res.Report.DuplicateHits) != 0 {
+		t.Fatalf("report = %+v, want {1,1,0,0} 且无去重命中明细", res.Report)
 	}
 	if res.InputChars != 4 || res.TruncatedChars != 0 { // "chat" = 4 rune
 		t.Fatalf("chars = %d/%d, want 4/0", res.InputChars, res.TruncatedChars)
