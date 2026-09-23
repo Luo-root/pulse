@@ -24,7 +24,7 @@ defer dispose()
 
 | 项 | 行为 |
 |---|---|
-| 路径 | 相对路径相对 `Root`；symlink 解析到最终落点再 confine——**含悬空链接**（目标尚不存在：`EvalSymlinks` 那一档失败，没有链接文本兜底时写操作会落到 `WriteRoots` 之外）；读写根分家；`ForbidRead` 拒绝窥视 |
+| 路径 | 相对路径相对 `Root`；symlink 解析到最终落点再 confine——**含悬空链接**（目标尚不存在：`EvalSymlinks` 那一档失败，没有链接文本兜底时写操作会落到 `WriteRoots` 之外）；**成环链接立即拒绝**（解析绝不会把成环路径交给 `EvalSymlinks`），且配置的根自身（`Root` / `WriteRoots` / `ForbidRead`）也解析链接——`Root` 是链接时（macOS 的 `/tmp`、`/var`）否则每一档都会被判越界；读写根分家；`ForbidRead` 拒绝窥视 |
 | `read` | 行号前缀；`offset`/`limit`；超限返回 truncated 续读提示 |
 | `ls`/`glob`/`grep` | **先收集并稳定排序再切页**；超限 trailer 带 `after` 游标 |
 | `edit`/`write`(覆盖) | **同进程须先 `read`**；mtime 更新则 stale 拒绝；`edit` 默认唯一匹配 |

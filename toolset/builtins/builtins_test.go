@@ -437,7 +437,7 @@ func TestRegisterEnabledValidation(t *testing.T) {
 	if !ok {
 		t.Fatal("no registry")
 	}
-	_, err := builtins.Register(host, reg2, builtins.Options{Root: root, Enabled: []string{"reed", "writ"}})
+	_, err := builtins.Register(host, reg2, builtins.Options{Root: root, Enabled: []string{"reed", "writ", "reed"}})
 	if err == nil {
 		t.Fatal("unknown names in Options.Enabled must fail (they used to register zero tools silently)")
 	}
@@ -446,8 +446,117 @@ func TestRegisterEnabledValidation(t *testing.T) {
 			t.Fatalf("error must mention %q: %v", want, err)
 		}
 	}
+	if n := strings.Count(err.Error(), "reed"); n != 1 {
+		t.Fatalf("a repeated unknown name must be reported once, got %d occurrences: %v", n, err)
+	}
 	if n := len(reg2.AsToolSet().Definitions()); n != 0 {
 		t.Fatalf("a failed Register must leave nothing behind, got %d tools", n)
+	}
+}
+
+// TestWriteDanglingSymlinkRelativeTarget：悬空链接的**相对目标**（`../outside/x.txt`）
+// 走的是 `filepath.Join(filepath.Dir(exist), target)` 这条独立分支，修复前
+// 同样会逃逸；这里与绝对目标档一一对应地钉住。
+func TestWriteDanglingSymlinkRelativeTarget(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	outside := filepath.Join(base, "outside")
+	for _, d := range []string{root, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(root, "rel")
+	if err := os.Symlink(filepath.Join("..", "outside", "rel.txt"), link); err != nil {
+		t.Skipf("symlink not permitted: %v", err)
+	}
+	target := filepath.Join(outside, "rel.txt")
+	_, reg, cleanup := setup(t, builtins.Options{Root: root})
+	defer cleanup()
+
+	msg := callErr(t, reg, "write", map[string]any{"path": "rel", "content": "PWNED"})
+	if !strings.Contains(msg, "WriteRoots") && !strings.Contains(msg, "outside") {
+		t.Fatalf("relative dangling symlink must be rejected with the real target, got: %s", msg)
+	}
+	if _, err := os.Stat(target); err == nil {
+		t.Fatal("write followed a relative dangling symlink out of WriteRoots")
+	}
+}
+
+// TestSymlinkCycleFailsFast：自指 / 互指链接必须**快速**报错。修复的第一版
+// 在成环路径上每轮都跑一次注定失败的 filepath.EvalSymlinks（它自己要走满
+// 255 步，实测单次约 150ms），255 轮 ≈ 38s——一次系统调用级的快失败被放大
+// 成几十秒卡顿（#213 review 实测 37.98s；对照：修复前 OS 层 294ms 返回）。
+func TestSymlinkCycleFailsFast(t *testing.T) {
+	root := t.TempDir()
+	loop := filepath.Join(root, "loop")
+	if err := os.Symlink("loop", loop); err != nil { // 自指：相对目标 → 解析回自身
+		t.Skipf("symlink not permitted: %v", err)
+	}
+	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
+	if err := os.Symlink("b", a); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a", b); err != nil {
+		t.Fatal(err)
+	}
+	_, reg, cleanup := setup(t, builtins.Options{Root: root})
+	defer cleanup()
+
+	for _, name := range []string{"loop", "loop/child.txt", "a"} {
+		start := time.Now()
+		msg := callErr(t, reg, "write", map[string]any{"path": name, "content": "x"})
+		elapsed := time.Since(start)
+		if !strings.Contains(msg, "cycle") && !strings.Contains(msg, "symbolic links") {
+			t.Fatalf("%s: want a cycle error, got %s", name, msg)
+		}
+		if elapsed > time.Second {
+			t.Fatalf("%s: a symlink cycle must fail fast, took %s (was ~38s before the fix)", name, elapsed)
+		}
+	}
+}
+
+// TestRootItselfSymlinked：Root / WriteRoots / ForbidRead 自身是 symlink 时
+// 必须解析到真实落点——只做 Abs 的话，解析后的真实路径与未解析前缀永远对
+// 不上（withinRoot 必然失败），读写全被判越界。macOS 的 /tmp、/var 都是
+// 链接（t.TempDir() 落在 /var/folders/…），CI 只跑 ubuntu 看不见这一档。
+func TestRootItselfSymlinked(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(real, "secret"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "a.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "secret", "s.txt"), []byte("s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootLink := filepath.Join(base, "root-link")
+	if err := os.Symlink(real, rootLink); err != nil {
+		t.Skipf("symlink not permitted: %v", err)
+	}
+	// ForbidRead 也用链接路径给出：canonRoot 不解析它的话，禁读前缀与解析后
+	// 的真实路径对不上，secret 会被读出来。
+	secretLink := filepath.Join(base, "secret-link")
+	if err := os.Symlink(filepath.Join(real, "secret"), secretLink); err != nil {
+		t.Fatal(err)
+	}
+
+	_, reg, cleanup := setup(t, builtins.Options{Root: rootLink, ForbidRead: []string{secretLink}})
+	defer cleanup()
+
+	if out := call(t, reg, "read", map[string]any{"path": "a.txt"}); !strings.Contains(out, "hi") {
+		t.Fatalf("read through a symlinked Root must work, got %q", out)
+	}
+	if out := call(t, reg, "write", map[string]any{"path": "new.txt", "content": "written\n"}); !strings.Contains(out, "created") {
+		t.Fatalf("write through a symlinked Root must work, got %q", out)
+	}
+	if b, err := os.ReadFile(filepath.Join(real, "new.txt")); err != nil || string(b) != "written\n" {
+		t.Fatalf("file must land in the real directory: %q err=%v", b, err)
+	}
+	if msg := callErr(t, reg, "read", map[string]any{"path": "secret/s.txt"}); !strings.Contains(msg, "forbid-read") {
+		t.Fatalf("a symlinked ForbidRead prefix must still forbid, got %s", msg)
 	}
 }
 

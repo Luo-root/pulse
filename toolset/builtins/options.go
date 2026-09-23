@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -43,11 +42,13 @@ var skippedDirNames = map[string]bool{
 
 // Options 控制 builtins 装配与路径/输出边界。
 type Options struct {
-	// Root 是默认工作区根（相对路径解析基准）。必填。
+	// Root 是默认工作区根（相对路径解析基准）。必填。自身是 symlink 时
+	// 解析到最终落点（否则解析后的真实路径与未解析前缀对不上，读写全被
+	// 判越界——macOS 的 /tmp、/var 就是这样）。
 	Root string
-	// WriteRoots 限制 edit/write 目标；空则仅允许 Root。
+	// WriteRoots 限制 edit/write 目标；空则仅允许 Root。各项同样解析链接。
 	WriteRoots []string
-	// ForbidRead 拒绝 read/ls/glob/grep 进入的路径前缀（绝对路径）。
+	// ForbidRead 拒绝 read/ls/glob/grep 进入的路径前缀（绝对路径）。各项同样解析链接。
 	ForbidRead []string
 	// Enabled 非空时只注册列出的工具名；空=全部已实现 builtins（含 apply_patch/web/question）。
 	// 出现未实现的名字时 Register 返回 error（并列出合法名字）——不静默空注册。
@@ -94,25 +95,25 @@ func (o Options) withDefaults() (Options, error) {
 	if o.Root == "" {
 		return Options{}, fmt.Errorf("builtins: Root is required")
 	}
-	abs, err := filepath.Abs(o.Root)
+	root, err := canonRoot(o.Root)
 	if err != nil {
 		return Options{}, fmt.Errorf("builtins: resolve Root: %w", err)
 	}
-	st, err := os.Stat(abs)
+	st, err := os.Stat(root)
 	if err != nil {
 		return Options{}, fmt.Errorf("builtins: Root: %w", err)
 	}
 	if !st.IsDir() {
-		return Options{}, fmt.Errorf("builtins: Root is not a directory: %s", abs)
+		return Options{}, fmt.Errorf("builtins: Root is not a directory: %s", root)
 	}
-	o.Root = abs
+	o.Root = root
 
 	if len(o.WriteRoots) == 0 {
-		o.WriteRoots = []string{abs}
+		o.WriteRoots = []string{root}
 	} else {
 		wr := make([]string, 0, len(o.WriteRoots))
 		for _, r := range o.WriteRoots {
-			a, err := filepath.Abs(r)
+			a, err := canonRoot(r)
 			if err != nil {
 				return Options{}, fmt.Errorf("builtins: WriteRoots: %w", err)
 			}
@@ -123,7 +124,7 @@ func (o Options) withDefaults() (Options, error) {
 
 	fr := make([]string, 0, len(o.ForbidRead))
 	for _, r := range o.ForbidRead {
-		a, err := filepath.Abs(r)
+		a, err := canonRoot(r)
 		if err != nil {
 			return Options{}, fmt.Errorf("builtins: ForbidRead: %w", err)
 		}

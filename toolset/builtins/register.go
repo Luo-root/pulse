@@ -71,10 +71,13 @@ func Register(scope *kernel.Context, reg *toolset.Registry, opt Options) (dispos
 			names = append(names, it.name)
 		}
 		var unknown []string
+		seenUnknown := make(map[string]bool, len(opt.Enabled))
 		for _, n := range opt.Enabled {
-			if !known[n] {
-				unknown = append(unknown, n)
+			if known[n] || seenUnknown[n] {
+				continue // 重复名只报一次，错误文本不重复列
 			}
+			seenUnknown[n] = true
+			unknown = append(unknown, n)
 		}
 		if len(unknown) > 0 {
 			return nil, fmt.Errorf("builtins: Options.Enabled has unknown tool name(s): %s (valid: %s)",

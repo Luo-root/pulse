@@ -26,7 +26,7 @@ defer dispose()
 
 | Item | Behavior |
 |---|---|
-| Paths | Relative paths resolve against `Root`; symlinks are resolved to the final target before confining — **including dangling links** (target not yet existing: `EvalSymlinks` alone fails there, and without the link-text fallback the write would land outside `WriteRoots`); read and write roots are separate; `ForbidRead` refuses peeking |
+| Paths | Relative paths resolve against `Root`; symlinks are resolved to the final target before confining — **including dangling links** (target not yet existing: `EvalSymlinks` alone fails there, and without the link-text fallback the write would land outside `WriteRoots`); **cyclic links are rejected immediately** (resolution never hands the cycle path to `EvalSymlinks`) and the configured roots themselves (`Root` / `WriteRoots` / `ForbidRead`) are resolved too — a symlinked `Root` (macOS `/tmp`, `/var`) would otherwise fail every check; read and write roots are separate; `ForbidRead` refuses peeking |
 | `read` | Line-number prefixes; `offset`/`limit`; returns a truncated notice with a continue-reading hint when over the limit |
 | `ls`/`glob`/`grep` | **Collect and sort stably first, then paginate**; the over-limit trailer carries an `after` cursor |
 | `edit`/`write`(overwrite) | **Must `read` first within the same process**; a newer mtime means stale and rejected; `edit` requires a unique match by default |
