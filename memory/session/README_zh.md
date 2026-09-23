@@ -27,18 +27,20 @@ reg := sess.Registry()                          // 事件 codec 环境（FoldTra
 - `Open` 即冷恢复（无独立 Recover 方法）：未闭合 turn/step、unpaired ToolCall 合成闭合事件**真实写回日志**后再 fold；live 会话不冷补；恢复幂等。
 - **恢复策略可选（#158）**：`NewJSONLStore(dir, WithRecoverPolicy(p))`——`RecoverSyntheticInterrupted`（默认，上述行为不变）；`RecoverExposePending`（**不合成**，未决现场挂会话句柄：`Pending()` 报告缺 result 的 ToolCall（含 Name/Arguments）与悬空 step/turn，宿主经 `ResolvePending` 补真实结果/显式闭合、`ResolveAsInterrupted` 一键走默认合成——HITL 等待点恢复的场景用这档；**未决期间 `Surface()` 拒绝投影**，返回 `ErrPendingEvents`——运行中间态是给宿主看的，unpaired tool call 喂给模型是坏请求）；`RecoverReject`（存在未决即拒绝 Open，`ErrPendingEvents`）。裁决期接口经 `sess.(session.Recoverable)` 类型断言取用（`Pending` / `ResolvePending` / `ResolveAsInterrupted`），与 `Close` 同为 JSONL 扩展、不进 `Session` 接口；裁决落盘走与 Append 同一条校验链（先 append 成功、后改内存未决集，输入校验前置，未知目标不落盘）；**裁决本身不 `Flush`**——写完落在页缓存，掉电/强杀可能丢决议，宿主裁决完成后应自行 `sess.Flush(ctx)`（契约不变：崩溃只保证 Flush 点之前）。
 - JSONL 实现额外提供 `Close() error`（类型断言使用）：释放文件锁与句柄，幂等。
+- **两态约定**：内存态 payload 恒为**还原形态**（内联字节完整），`blob:` 引用形态只出现在磁盘行上——`Surface` / `Events` / `Fork` seed / `ExportSession` 拿到的都是完整字节，同一会话「当回合」与「重开后」逐字节一致；转换点只有 `writeLineLocked`（内存 → 磁盘）与 `Open`（磁盘 → 内存）。
+- **锁归属**：`lock` 文件带持有者 token，`Close` 只删**自己这一次持有**的锁——stale 抢占后旧持有者释放不会误删新持有者的锁（否则第三个写者会趁虚而入，单写者失效）。
 
 ## 两个 backend
 
 | | MemoryStore | JSONLStore |
 |---|---|---|
 | Flush | 成功空操作（语义占位） | `f.Sync()`，崩溃只保证 Flush 点之前 |
-| 单写者 | 进程内锁（同 ID 并发 Create 恰好一个胜出） | 进程内锁 + 文件锁（`O_EXCL`，stale 抢占，`Flush` 兼作心跳） |
+| 单写者 | 进程内锁（同 ID 并发 Create 恰好一个胜出） | 进程内锁 + 文件锁（`O_EXCL`，stale 抢占默认 1h（`JSONLStale` 可调），`Flush` 兼作心跳） |
 | 撕裂恢复 | 不适用（无文件） | 无换行尾行丢弃并物理截断；中部坏行 / seq 断链 → `ErrCorruptLog` |
 | 持久 header | — | 写 `compaction.checkpoint` 后同步重写（FormatVersion 抬 2） |
 | List | 内存排序 + 游标 | 扫描 `{root}/*/header.json` + 游标 |
 
-JSONL 落盘布局：`{root}/{sessionID}/header.json` + `events.jsonl`（每行一条信封）+ `blobs/{sha256}`（>32KiB 内联字节溢出，内容寻址去重、sha 自校验；缺失 / 篡改归 `ErrCorruptLog`）+ `lock`。**JSONL 为明文：文件即密钥面、路径宿主拥有。** `blob:` URL 前缀为本包保留，宿主自带 `blob:` URL 需换 scheme。
+JSONL 落盘布局：`{root}/{sessionID}/header.json` + `events.jsonl`（每行一条信封，message payload 存 **blob 引用形态**）+ `blobs/{sha256}`（>32KiB 内联字节溢出，内容寻址去重、sha 自校验；缺失 / 篡改归 `ErrCorruptLog`）+ `lock`（内容含持有者 token）。**JSONL 为明文：文件即密钥面、路径宿主拥有。** `blob:` URL 前缀为本包保留，宿主自带 `blob:` URL 需换 scheme。
 
 ## 导出与导入（迁移保真）
 
@@ -75,7 +77,7 @@ Ignorable ≠ 可以不记：`request.header`（system + ToolDef + model 三样�
 | 哨兵 | 语义 |
 |---|---|
 | `ErrSessionExists` / `ErrSessionNotFound` | Create 撞 ID（拒绝第二写者）/ Open、Delete 不存在 |
-| `ErrWriterBusy` | 文件锁被持有（fail-fast；stale 阈值后可抢占） |
+| `ErrWriterBusy` | 文件锁被持有（fail-fast；锁 mtime 超过 `JSONLStale` 阈值（默认 1h）后可抢占，抢占后旧持有者释放不影响新持有者） |
 | `ErrUnknownEvent` / `ErrUnknownRequired` | 写入未知 required / 恢复时日志含未知 required |
 | `ErrSurfaceNotAllowed` / `ErrReplaceNotSupported` / `ErrReplaceRange` | 非 surface 类型带 Surface / Replace 类型未注册 / 窗口反向、越界或造成 pairing 孤儿 |
 | `ErrCorruptLog` | 持久日志损坏（中部坏行、seq 断链、blob 缺失 / checksum 不符） |

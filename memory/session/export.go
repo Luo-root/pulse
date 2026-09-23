@@ -76,8 +76,9 @@ func validateSeedEnvs(reg *Registry, envs []EventEnvelope) error {
 }
 
 // ExportSession 把会话导出为自包含 JSONL 流：首行 header，后续每行一个
-// 信封。blob: 引用内联回原始字节（JSONL 会话需 blobs 目录可读，缺失即
-// 失败——不降级为空内容）；内存会话 payload 本就内联，原样写出。
+// 信封。会话内存态恒为**还原形态**（blob 引用只存在于磁盘行，Open 时已
+// 还原），payload 原样写出即自包含——导出不读 blobs 目录，也不依赖它此刻
+// 可读。
 // 产物可直接作为 ImportSession 的输入，也可原样充当 JSONL store 的会话
 // 目录内容（events.jsonl 行格式同构；header 行即 header.json）。
 func ExportSession(ctx context.Context, sess Session, w io.Writer) error {
@@ -92,19 +93,8 @@ func ExportSession(ctx context.Context, sess Session, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	var blobsDir string
-	if js, ok := sess.(*jsonlSession); ok {
-		blobsDir = js.blobsDir()
-	}
 	bw := bufio.NewWriter(w)
 	for _, env := range envs {
-		if isMessageEvent(env.Type) && blobsDir != "" {
-			inlined, err := decodeBlobs(env.Data, blobsDir)
-			if err != nil {
-				return err // blob 缺失/校验不过：fail closed，不静默丢字节
-			}
-			env.Data = inlined
-		}
 		line, err := json.Marshal(env)
 		if err != nil {
 			return fmt.Errorf("session: marshal envelope seq %d: %w", env.Seq, err)
