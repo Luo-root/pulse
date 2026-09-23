@@ -19,7 +19,9 @@ const (
 	// StopMaxSteps：达到 MaxSteps 上限被安全阀打断（err 为 nil，
 	// Result 如实返回最后状态）。
 	StopMaxSteps StopReason = "max_steps"
-	// StopCanceled：ctx 取消（Run 同时返回 ctx.Err()）。
+	// StopCanceled：调用方取消——回合开始前 ctx 已取消，或模型调用
+	// **进行中**被取消（流式 UI 点「停止」正是这一刻）。两条路径
+	// Run 返回的错误都满足 errors.Is(err, ctx.Err())。
 	StopCanceled StopReason = "canceled"
 	// StopError：基础设施失败（模型调用失败、流异常终止）；
 	// Run 同时返回包装后的错误。
@@ -121,6 +123,21 @@ func waterfallOf[P any](scope *kernel.Context, k kernel.EventKey[P], payload P) 
 	return kernel.WaterfallLocal(scope, k, payload)
 }
 
+// stopReasonFor 归类**模型调用阶段**的错误：调用方取消 → canceled，
+// 其余 → error。
+//
+// 取消不止发生在步骤边界（回合顶部那次 ctx 检查）：模型调用进行中的
+// 取消由模型以错误收尾——两个真适配器只在 ctx.Err() 非 nil 时产出
+// llm.ErrCanceled（错误链里包着 ctx.Err()），极简模型（含
+// llm.NewScripted）直接回 ctx.Err()，两种形状都认。判据落在错误链上：
+// 不看 ctx 状态，避免把恰好在取消同时发生的真实失败记成取消。
+func stopReasonFor(err error) StopReason {
+	if llm.KindOf(err) == llm.ErrCanceled || errors.Is(err, context.Canceled) {
+		return StopCanceled
+	}
+	return StopError
+}
+
 // Run 执行一个回合（非流式便捷入口，等价于不带 onDelta 的 RunStream）。
 func (a *Agent) Run(ctx context.Context, history []*llm.Message, input ...*llm.Message) (*Result, error) {
 	return a.RunStream(ctx, nil, history, input...)
@@ -188,7 +205,7 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 		// 才能只听到本请求（禁止只改 Local(reg.ctx)）。
 		ch, err := a.model.Stream(llm.WithEventScope(ctx, a.scope), req)
 		if err != nil {
-			res.StoppedBy = StopError
+			res.StoppedBy = stopReasonFor(err)
 			return res, fmt.Errorf("loop: step %d: %w", step, err)
 		}
 		var resp *llm.Response
@@ -199,7 +216,11 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 					onDelta(ev.Text)
 				}
 			case llm.EventError:
-				res.StoppedBy = StopError
+				// 取消不止发生在步骤边界：模型调用进行中的取消由模型
+				// 以 EventError 收尾，真适配器把它分类为 llm.ErrCanceled。
+				// 这类不是基础设施失败——否则用户点「停止」会被计入
+				// 宿主错误率（观测 Status 直接取 StoppedBy）。
+				res.StoppedBy = stopReasonFor(ev.Err)
 				return res, fmt.Errorf("loop: step %d: %w", step, ev.Err)
 			case llm.EventDone:
 				resp = ev.Response

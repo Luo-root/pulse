@@ -287,7 +287,7 @@ Built-in behavior and optional aspects:
 |---|---|
 | Recovery | Built in and cannot be turned off. A `Run` panic becomes a node error and cancels the whole graph. |
 | `Timeout(d)` | Covers both waiting for inputs and node execution; a timeout cancels the node's `RunCtx`, so it can interrupt `Get` / `WaitAll`. |
-| `Retry(attempts, delay)` | Retries inner execution errors; `attempts <= 0` normalizes to 1. Cancellation during the input-wait phase is not retried. |
+| `Retry(attempts, delay)` | Retries inner execution errors; `attempts <= 0` normalizes to 1. Cancellation during the input-wait phase is not retried, and neither is a **skipped** input — a skip is an arrival, not a failure. |
 
 `RunCtx.Fork()` derives only a cancellable context and **shares** declared permissions and the write record; it is not an independent write transaction. Custom aspects can obtain the current context via `rc.Context()`.
 

@@ -73,7 +73,7 @@ type Result struct {
 |---|---|---|
 | `completed` | nil | 模型不再调工具 |
 | `max_steps` | nil | 安全阀打断，**不是错误** |
-| `canceled` | `ctx.Err()` | 调用方取消 |
+| `canceled` | 可被 `errors.Is` 匹配 `ctx.Err()` | 调用方取消——调用前已取消，或模型调用**进行中**点「停止」 |
 | `error` | 非 nil | 模型调用失败 / 流异常终止 |
 
 所有退出路径 `defer` 统一发一次 `turn_end`。`Messages` 带上**已发生的部分**（第一步之前就取消时可能仍是 nil，`len==0`）。工具执行失败不会升格为 `StopError`：错误文本作为 `IsError` 的 tool 结果回传模型，回合继续。

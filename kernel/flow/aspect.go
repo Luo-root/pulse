@@ -61,7 +61,8 @@ func Timeout(d time.Duration) Aspect {
 	})
 }
 
-// Retry 在节点 Run（含其内层切面）失败时重试。等数据阶段的取消不重试。
+// Retry 在节点 Run（含其内层切面）失败时重试。等数据阶段的取消不重试；
+// 跳过也不重试——跳过是「到达」，不是失败（判据见 isSkipped）。
 func Retry(attempts int, delay time.Duration) Aspect {
 	if attempts <= 0 {
 		attempts = 1
@@ -70,7 +71,10 @@ func Retry(attempts int, delay time.Duration) Aspect {
 		var err error
 		for i := 0; i < attempts; i++ {
 			err = next(rc)
-			if err == nil || err == ErrSkipped {
+			// 跳过不是失败：WaitAll 的跳过返回 *SkipError（带被跳过的
+			// Key 名），只有 errors.Is 成立——用 == 比较会让整段
+			// 「等输入 + 执行」被重跑 attempts-1 次并逐次等待。
+			if err == nil || isSkipped(err) {
 				return err
 			}
 			if rc.ctx.Err() != nil {
