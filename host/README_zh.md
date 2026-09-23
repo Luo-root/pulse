@@ -152,8 +152,8 @@ a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
 要点：
 
 - **卡片**：`toolset.Registry.Preview(ctx, name, args)` 返回 `(Preview, ok, err)`；`ok=false` 表示工具未登记或没登记 `PreviewFn`——按「空预览，HITL 仍应问人」处理，别当成放行；
-- **顺序（批准的 = 执行的）**：闸门挂在 `before_tool_call` 链的**最外环**，但取**后序**——先让链跑完内层（`ScopeHook` 挂的改写在这一段生效），再拿**最终**调用去取卡片审批；loop 在整条链返回之后才真正执行工具。所以卡片上看到的就是即将执行的那一份，闸门里不必再跑一遍 `sanitize`。反过来，闸门看不到「改写前」的原始调用——要留原始调用请观察 `llm.after_model` 或 `loop.tool_finished`；
-- **改写**：`BeforeToolCall` 是 around 语义，可就地改 `Call.Name` / `Call.Arguments`，也可置 `Rejected` 短路（loop 的 waterfall 契约）；内层已置 `Rejected` 时闸门不再打扰人；
+- **顺序（批准的 = 执行的）**：闸门挂在 `before_tool_call` 链的**最外环**，但取**后序**——先让链跑完内层（`ScopeHook` 挂的改写在这一段生效），再拿**最终**调用去取卡片审批；loop 在整条链返回之后才真正执行工具。所以卡片上看到的就是即将执行的那一份，闸门里不必再跑一遍 `sanitize`。两处代价要知道：①闸门看不到「改写前」的原始调用——要留原始调用请观察 `llm.after_model` 或 `loop.tool_finished`；②**闸门裁决时内层钩子已经跑过了**，拒绝并不能撤销它们已经发生的副作用（日志、审计行、净化记账）——需要「被拒就完全不发生」的工作应放在执行器（工具实现）里，而不是钩子里。内层已置 `Rejected` 时闸门整段跳过，人不会被打扰两次，模型拿到的是内层那句 reason；
+- **改写**：`BeforeToolCall` 是 around 语义，可就地改 `Call.Name` / `Call.Arguments`，也可置 `Rejected` 短路（loop 的 waterfall 契约）；
 - **取消**：waterfall 跑在 loop 的请求 goroutine 上，用你自己的 ctx（传给 `Run` 的那个）等人工裁决即可。`ToolGate` 不带 ctx 是刻意的（保持最小挂点），完整形态的 ctx 归宿主；
 - 两条构造路径都能用：`ScopeHook` 在 `NewAgent` 与 `DefaultAgent` 上都有。
 
@@ -179,4 +179,4 @@ a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
 
 ## 测试
 
-`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + 不设回调照常跑通 + panic 原样上抛）、步数上限（带会话：落盘闭合 + 可续跑）、便捷路径的 ScopeHook、上下文组装缝（产物字面进请求 + 失败在模型调用前中止），以及两条 HITL 配方（waterfall 改写调用、闸门取权限卡片）；另有三条护栏：闸门**后序**语义（卡片看到的就是将执行的那份，`TestHostToolGateSeesRewrittenCall`）、两条构造路径旋钮同名同型（`TestHostOptionsKnobParity`，反射比对）、README 组装配方逐字可编译可运行（`TestHostContextBuilderRecipe`，含空 input 档）。
+`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + 不设回调照常跑通 + panic 原样上抛）、步数上限（带会话：落盘闭合 + 可续跑）、便捷路径的 ScopeHook、上下文组装缝（产物字面进请求 + 失败在模型调用前中止），以及两条 HITL 配方（waterfall 改写调用、闸门取权限卡片）；另有四条护栏：闸门**后序**语义（卡片看到的就是将执行的那份，`TestHostToolGateSeesRewrittenCall`）及其短路分支（内层已拒则整段跳过闸门、reason 取内层那句，`TestHostToolGateSkippedWhenInnerRejected`）、两条构造路径旋钮同名同型（`TestHostOptionsKnobParity`，反射比对）、README 组装配方逐字可编译可运行（`TestHostContextBuilderRecipe`，含空 input 档）。

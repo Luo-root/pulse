@@ -1207,6 +1207,80 @@ func TestHostToolGateSeesRewrittenCall(t *testing.T) {
 	}
 }
 
+// TestHostToolGateSkippedWhenInnerRejected：闸门后序的**短路分支**契约——
+// 内层钩子已经把这次调用拒掉时，不再打扰人（审批 UI 不该弹卡片），也不该
+// 用 host 的兜底文案覆盖内层给的 reason。
+//
+// 这一支若被改回「无条件问人」，闸门会被调用（gateCalls>0）且工具会执行，
+// 两条断言都会红。
+func TestHostToolGateSkippedWhenInnerRejected(t *testing.T) {
+	ctx := context.Background()
+	executed := false
+	tools := loop.NewMemToolSet()
+	if err := tools.Register(
+		llm.ToolDef{Name: "echo", Description: "echo", Parameters: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, json.RawMessage) (string, error) {
+			executed = true
+			return "ok", nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	model := llm.NewScripted(
+		llm.RespToolCalls(llm.ToolCall{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{}`)}),
+		llm.Resp("done"),
+	)
+	h := newTestHost(t, llm.NewScripted(llm.Resp("unused")), func(o *Options) {
+		o.Providers, o.Models = nil, nil
+	})
+	gateCalls := 0
+	a, err := h.NewAgent(AgentOptions{
+		Name: "inner-reject", Model: model, ModelName: "stub", ToolSet: tools,
+		ScopeHook: func(scope *kernel.Context) error {
+			_, err := kernel.OnWaterfall(scope, loop.EventBeforeToolCall,
+				func(p *loop.BeforeToolCall, _ func(*loop.BeforeToolCall) *loop.BeforeToolCall) *loop.BeforeToolCall {
+					p.Rejected = true
+					p.RejectReason = "inner policy says no"
+					return p // 不委托 next：直接短路（loop 的 waterfall 契约）
+				})
+			return err
+		},
+		ToolGate: func(llm.ToolCall) (bool, string) {
+			gateCalls++
+			return true, ""
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, llm.User(llm.Text("go")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gateCalls != 0 {
+		t.Fatalf("an inner rejection must not bother the human, gate called %d time(s)", gateCalls)
+	}
+	if executed {
+		t.Fatal("a rejected call must not execute")
+	}
+	var result string
+	for _, m := range res.Messages {
+		for _, p := range m.Parts {
+			if p.Kind != llm.PartToolResult || p.ToolResultValue == nil {
+				continue
+			}
+			for _, c := range p.ToolResultValue.Content {
+				result = c.Text
+			}
+		}
+	}
+	if !strings.Contains(result, "inner policy says no") {
+		t.Fatalf("model must receive the inner reason, got %q", result)
+	}
+	if strings.Contains(result, "rejected by tool gate") {
+		t.Fatalf("host fallback text must not override the inner reason, got %q", result)
+	}
+}
+
 // TestHostContextBuilderRecipe：README「上下文组装缝」那段官方配方逐字
 // 落到可编译、可运行的用例上（没人编译的文档片段正是字段名写错还能躺在
 // 文档里的原因），并覆盖「空 input」这一档——`Run(ctx)` 不带输入是合法
