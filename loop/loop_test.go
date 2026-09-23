@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/llm"
@@ -600,6 +601,77 @@ func TestStreamCancelBeforeEventsIsCanceled(t *testing.T) {
 	if len(ends) != 1 || ends[0] != StopCanceled {
 		t.Fatalf("turn_end = %v, want exactly one canceled", ends)
 	}
+}
+
+// deadlineMidStreamModel：流中 ctx 超时——先推增量，等 deadline 到期后以
+// 适配器的超时形状收尾（mapError 把 DeadlineExceeded 映射为 ErrNetwork）。
+type deadlineMidStreamModel struct{}
+
+func (deadlineMidStreamModel) Generate(context.Context, *llm.GenerateRequest) (*llm.Response, error) {
+	return nil, errors.New("Generate is not used by RunStream")
+}
+
+func (deadlineMidStreamModel) Stream(ctx context.Context, _ *llm.GenerateRequest) (<-chan llm.StreamEvent, error) {
+	out := make(chan llm.StreamEvent, 4)
+	out <- llm.StreamEvent{Kind: llm.EventTextDelta, Text: "partial"}
+	go func() {
+		defer close(out)
+		<-ctx.Done() // deadline 到期
+		out <- llm.StreamEvent{Kind: llm.EventError, Err: llm.NewError(
+			llm.ErrNetwork, "test", 0, context.DeadlineExceeded, "请求超时")}
+	}()
+	return out, nil
+}
+
+// ctx 超时**不算**取消：三处出口口径一致都记 error（与模型层把超时归类为
+// ErrNetwork 一致），且判据不看 ctx 状态——即便此刻 ctx 确实已过期。
+func TestDeadlineIsNotCanceled(t *testing.T) {
+	t.Run("step_boundary", func(t *testing.T) {
+		scope := kernel.New()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		defer cancel()
+		<-ctx.Done() // 确定性：等 deadline 真的过期，让步骤边界看到它
+
+		var ends []StopReason
+		if _, err := kernel.On(scope, EventTurnEnd, func(p *TurnEnd) { ends = append(ends, p.StoppedBy) }); err != nil {
+			t.Fatal(err)
+		}
+		a := newTestAgent(t, llm.NewScripted(llm.Resp("x")), nil, scope)
+
+		res, err := a.Run(ctx, nil, llm.UserText("q"))
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+		}
+		if res.StoppedBy != StopError {
+			t.Fatalf("stoppedBy = %s, want error (a deadline is not a caller cancel)", res.StoppedBy)
+		}
+		if len(ends) != 1 || ends[0] != StopError {
+			t.Fatalf("turn_end = %v, want exactly one error", ends)
+		}
+	})
+
+	t.Run("mid_stream", func(t *testing.T) {
+		scope := kernel.New()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+
+		var ends []StopReason
+		if _, err := kernel.On(scope, EventTurnEnd, func(p *TurnEnd) { ends = append(ends, p.StoppedBy) }); err != nil {
+			t.Fatal(err)
+		}
+		a := newTestAgent(t, deadlineMidStreamModel{}, nil, scope)
+
+		res, err := a.Run(ctx, nil, llm.UserText("q"))
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want context.DeadlineExceeded in the chain", err)
+		}
+		if res.StoppedBy != StopError {
+			t.Fatalf("stoppedBy = %s, want error (a timeout is not a caller cancel)", res.StoppedBy)
+		}
+		if len(ends) != 1 || ends[0] != StopError {
+			t.Fatalf("turn_end = %v, want exactly one error", ends)
+		}
+	})
 }
 
 // 基础设施失败（模型错误）→ StoppedBy=error、err 非 nil、turn_end 闭合。
