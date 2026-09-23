@@ -129,7 +129,7 @@ This package **does not retry**. Upper layers back off or fail over based on Kin
 
 ## Observation Adapter
 
-`Observe(scope, cfg)` folds runtime facts into the observation envelope and writes them to the host Sink: after_response → `llm.generate_finished` (model name, token usage and instance identity in Attrs, key contract in `llm/obs.go`); timing comes from the `Started` anchor carried by the event payload (recorded by the wrapper after the waterfall chain, before the inner call) — before_generate is not subscribed. The scope must be the same one passed to `llm.WithEventScope`; calling it twice on one scope = duplicate listeners and records (godoc warning). See `observe.go` and `docs/design/observability-v1-design.md` §9.
+`Observe(scope, cfg)` folds runtime facts into the observation envelope and writes them to the host Sink: after_response → `llm.generate_finished` (model name, token usage and instance identity in Attrs, key contract in `llm/obs.go`); timing comes from the `Started` anchor carried by the event payload (recorded by the wrapper after the waterfall chain, before the inner call — the **same anchor position for `Generate` and `Stream`**, so Duration means "from call entry to completion" and includes the streaming pre-first-byte round trip); before_generate is not subscribed. The scope must be the same one passed to `llm.WithEventScope`; calling it twice on one scope = duplicate listeners and records (godoc warning). See `observe.go` and `docs/design/observability-v1-design.md` §9.
 
 ## Registry
 
@@ -220,11 +220,13 @@ Positioning: provider-neutral vocabulary + Registry. Consumers see only `ChatMod
 | The six `PartKind` constants | Block kinds, see the table above |
 | `Part` | Kind determines which pointer/string is valid |
 | `MediaContent` / `ImageSource` | Open modality / image: Data first, otherwise URL; MediaType required |
+| `ClassifyMIME` / the four `MediaFamily` constants | MIME family (`MediaImage` / `MediaVideo` / `MediaAudio` / `MediaPDF`); **one** definition shared by both adapters. Unrecognized MIME → `""` (the caller reports `bad_request`) |
 | `ToolCall` / `ToolResult` | Calls initiated by the model; results sent back (`IsError` lets the model self-correct) |
 | `Message` | `Role + Parts`; optional `Name` (multiple personas; ignored when the provider does not support it) |
 | `Text` / `Reasoning` / `ImageURL` / `ImageData` / `Media` / `MediaURL` / `Call` / `Result` / `ResultParts` | Block constructors. `Result` = single-text success; `ResultParts` can carry `isError` and multiple blocks |
 | `System` / `User` / `UserText` / `Assistant` / `AssistantText` / `ToolMessage` | Message constructors |
 | `(*Message).Text` | Concatenates all `PartText` (excluding reasoning), joined with newlines |
+| `JoinText` | The single `[]Part` → string rule behind `Message.Text`; adapters fold message and tool-result content through it too |
 | `(*Message).ReasoningText` | Concatenates the chain of thought; `""` when there is none |
 | `(*Message).ToolCalls` | All tool calls in this message |
 | `(*Message).Clone` | Top-level deep copy; pointers inside Parts are shared (messages are immutable by convention) |

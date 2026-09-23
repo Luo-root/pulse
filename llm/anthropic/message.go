@@ -73,7 +73,7 @@ func (m *messagesModel) buildParams(req *llm.GenerateRequest) (sdk.MessageNewPar
 	for _, msg := range req.Messages {
 		switch msg.Role {
 		case llm.RoleSystem:
-			system = append(system, joinText(msg.Parts))
+			system = append(system, llm.JoinText(msg.Parts))
 		default:
 			mp, err := m.convertMessage(msg)
 			if err != nil {
@@ -290,7 +290,7 @@ func (m *messagesModel) convertMessage(msg *llm.Message) (sdk.MessageParam, erro
 						ToolUseID: tr.ToolCallID,
 						IsError:   isError,
 						Content: []sdk.ToolResultBlockParamContentUnion{
-							{OfText: &sdk.TextBlockParam{Text: joinText(tr.Content)}},
+							{OfText: &sdk.TextBlockParam{Text: llm.JoinText(tr.Content)}},
 						},
 					},
 				})
@@ -348,47 +348,23 @@ func (m *messagesModel) imageBlock(src *llm.ImageSource) (sdk.ContentBlockParamU
 	}
 }
 
-// MIME 家族分类：Anthropic 支持的只有 image 与 PDF；audio / video
-// 显式报错，不静默丢弃。
-const (
-	mediaImage = "image"
-	mediaVideo = "video"
-	mediaAudio = "audio"
-	mediaPDF   = "pdf"
-)
-
-func classifyMIME(mediaType string) string {
-	mt := strings.ToLower(strings.TrimSpace(mediaType))
-	switch {
-	case strings.HasPrefix(mt, "image/"):
-		return mediaImage
-	case strings.HasPrefix(mt, "video/"):
-		return mediaVideo
-	case strings.HasPrefix(mt, "audio/"):
-		return mediaAudio
-	case mt == "application/pdf":
-		return mediaPDF
-	default:
-		return ""
-	}
-}
-
 // customBlock 映射开放模态：PDF → document 块（base64 / URL）；
-// audio / video / 其他显式报错——Anthropic 不支持，不静默丢弃。
+// image → image 块；audio / video / 其他显式报错——Anthropic 不支持，
+// 不静默丢弃。家族判定走 llm.ClassifyMIME（两 adapter 共用一份前缀定义）。
 func (m *messagesModel) customBlock(role llm.Role, p *llm.Part) (sdk.ContentBlockParamUnion, error) {
 	var empty sdk.ContentBlockParamUnion
 	if p.Media == nil {
 		return empty, unsupportedPart(m.provider, role, p.Kind)
 	}
-	switch classifyMIME(p.Media.MediaType) {
-	case mediaImage:
+	switch llm.ClassifyMIME(p.Media.MediaType) {
+	case llm.MediaImage:
 		// image/* 已有官方块：PartCustom 与 PartImage 同路，行为一致。
 		return m.imageBlock(&llm.ImageSource{
 			Data:      p.Media.Data,
 			URL:       p.Media.URL,
 			MediaType: p.Media.MediaType,
 		})
-	case mediaPDF:
+	case llm.MediaPDF:
 		doc := sdk.DocumentBlockParam{}
 		switch {
 		case len(p.Media.Data) > 0:
@@ -461,20 +437,6 @@ func mapFinishReason(s sdk.StopReason) llm.FinishReason {
 	default:
 		return llm.FinishError
 	}
-}
-
-// joinText 拼接全部文本块（\n 连接）；无文本块返回空串。
-func joinText(parts []llm.Part) string {
-	var sb strings.Builder
-	for i := range parts {
-		if parts[i].Kind == llm.PartText {
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
-			sb.WriteString(parts[i].Text)
-		}
-	}
-	return sb.String()
 }
 
 // pump 消费 SDK 流并翻译为 llm.StreamEvent。

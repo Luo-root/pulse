@@ -31,6 +31,11 @@ var (
 // 发出。Instance 是 Declare 的实例 ID——同 scope 多实例共用时区分
 // 来源；Started 供观测折叠计算 Duration（同 scope 并发 Generate 各自
 // 携带锚点，互不串扰）。
+//
+// Generate 与 Stream 共用同一个锚点位置：Duration 计的是「从调用入口
+// 到收尾」。Stream 的锚点必须落在 inner.Stream 之前，否则首字节前的
+// 往返（连接、请求发送、等首个增量）不计入，同一模型走两条路径观测
+// 出的 Duration 不可比。
 type ResponseEvent struct {
 	Response Response
 	Instance string
@@ -361,12 +366,15 @@ func (o *observed) Generate(ctx context.Context, req *GenerateRequest) (*Respons
 func (o *observed) Stream(ctx context.Context, req *GenerateRequest) (<-chan StreamEvent, error) {
 	scope := o.eventScope(ctx)
 	req = kernel.WaterfallLocal(scope, EventBeforeGenerate, req)
+	// 与 Generate 同一锚点：waterfall 链之后、inner 调用**之前**。
+	// Duration 因此计的是「从调用入口到收尾」——含建流（连接、请求发送、
+	// 等首字节）那一段，两条路径的 Duration 才可比。
+	started := time.Now()
 	src, err := o.inner.Stream(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	out := make(chan StreamEvent, 8)
-	started := time.Now()
 	go func() {
 		defer close(out)
 		for ev := range src {

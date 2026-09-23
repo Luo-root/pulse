@@ -231,7 +231,7 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 func (m *completionsModel) convertMessage(msg *llm.Message) ([]sdk.ChatCompletionMessageParamUnion, error) {
 	switch msg.Role {
 	case llm.RoleSystem:
-		return []sdk.ChatCompletionMessageParamUnion{sdk.SystemMessage(joinText(msg.Parts))}, nil
+		return []sdk.ChatCompletionMessageParamUnion{sdk.SystemMessage(llm.JoinText(msg.Parts))}, nil
 
 	case llm.RoleAssistant:
 		var texts []string
@@ -323,7 +323,7 @@ func (m *completionsModel) convertUserSide(msg *llm.Message) ([]sdk.ChatCompleti
 				return nil, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
 					"%s 消息第 %d 块 ToolResultValue 为空", msg.Role, i)
 			}
-			out = append(out, sdk.ToolMessage(joinText(tr.Content), tr.ToolCallID))
+			out = append(out, sdk.ToolMessage(llm.JoinText(tr.Content), tr.ToolCallID))
 		case llm.PartReasoning:
 			// 输入侧思维链不回传。
 		default:
@@ -342,15 +342,15 @@ func (m *completionsModel) convertCustomPart(p *llm.Part) (sdk.ChatCompletionCon
 	if p.Media == nil {
 		return empty, unsupportedPart(m.provider, llm.RoleUser, p.Kind)
 	}
-	kind := classifyMIME(p.Media.MediaType)
+	kind := llm.ClassifyMIME(p.Media.MediaType)
 	switch kind {
-	case mediaImage:
+	case llm.MediaImage:
 		ref, err := mediaRef(m.provider, p.Media.Data, p.Media.MediaType, p.Media.URL)
 		if err != nil {
 			return empty, err
 		}
 		return sdk.ImageContentPart(sdk.ChatCompletionContentPartImageImageURLParam{URL: ref}), nil
-	case mediaAudio:
+	case llm.MediaAudio:
 		if len(p.Media.Data) == 0 {
 			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
 				"audio 输入须内联字节（Completions input_audio 不接受 URL）")
@@ -359,7 +359,7 @@ func (m *completionsModel) convertCustomPart(p *llm.Part) (sdk.ChatCompletionCon
 			Data:   base64.StdEncoding.EncodeToString(p.Media.Data),
 			Format: audioFormat(p.Media.MediaType),
 		}), nil
-	case mediaPDF:
+	case llm.MediaPDF:
 		file := sdk.ChatCompletionContentPartFileFileParam{
 			Filename: param.NewOpt(mediaFilename(p.Media, "document.pdf")),
 		}
@@ -372,7 +372,7 @@ func (m *completionsModel) convertCustomPart(p *llm.Part) (sdk.ChatCompletionCon
 			return empty, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil, "PDF 块既无 Data 也无 URL")
 		}
 		return sdk.FileContentPart(file), nil
-	case mediaVideo:
+	case llm.MediaVideo:
 		ref, err := mediaRef(m.provider, p.Media.Data, p.Media.MediaType, p.Media.URL)
 		if err != nil {
 			return empty, err
@@ -631,18 +631,4 @@ func mapUsage(u sdk.CompletionUsage) llm.TokenUsage {
 		OutputTokens:      int(u.CompletionTokens),
 		CachedInputTokens: int(u.PromptTokensDetails.CachedTokens),
 	}
-}
-
-// joinText 拼接全部文本块（\n 连接）；无文本块返回空串。
-func joinText(parts []llm.Part) string {
-	var sb strings.Builder
-	for i := range parts {
-		if parts[i].Kind == llm.PartText {
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
-			sb.WriteString(parts[i].Text)
-		}
-	}
-	return sb.String()
 }

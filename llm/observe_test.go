@@ -270,3 +270,84 @@ func TestObserveConcurrentInstanceAttribution(t *testing.T) {
 		t.Fatalf("instance attribution = %v, want a=%d b=%d", counts, perInstance, perInstance)
 	}
 }
+
+// recordChan 是「写入即信号」的 Sink：断言与折叠完成同步，不轮询、不 sleep。
+type recordChan chan observability.Record
+
+func (c recordChan) Write(r observability.Record) { c <- r }
+
+// firstByteDelayModel 把「首字节前的往返」建模为 inner 调用自身的耗时：
+// Generate 直接睡在调用里；Stream 睡在建流阶段（连接 + 请求发送 + 等
+// 首个增量）——这正是流式观测原先漏计的那一段。
+type firstByteDelayModel struct {
+	llm.ChatModel
+	delay time.Duration
+}
+
+func (m firstByteDelayModel) Generate(ctx context.Context, req *llm.GenerateRequest) (*llm.Response, error) {
+	time.Sleep(m.delay)
+	return m.ChatModel.Generate(ctx, req)
+}
+
+func (m firstByteDelayModel) Stream(ctx context.Context, req *llm.GenerateRequest) (<-chan llm.StreamEvent, error) {
+	time.Sleep(m.delay)
+	return m.ChatModel.Stream(ctx, req)
+}
+
+// Duration 口径对称锚：Stream 的 Started 必须落在 inner.Stream **之前**，
+// 否则首字节前那一段不计入，同一个模型走 Generate 与走 Stream 观测出的
+// Duration 不可比（流式短、非流式长）。
+func TestDurationCoversPreFirstByteOnBothPaths(t *testing.T) {
+	const delay = 30 * time.Millisecond
+
+	scope := kernel.New()
+	t.Cleanup(scope.Dispose)
+	recs := make(recordChan, 4)
+	if err := llm.Observe(scope, observability.ObserveConfig{Sink: recs, HostID: "h", TraceID: "tr"}); err != nil {
+		t.Fatal(err)
+	}
+	reg := llm.NewRegistry(scope)
+	if _, err := reg.RegisterProvider(scope, "mock", func(llm.Config) (llm.ChatModel, error) {
+		return firstByteDelayModel{ChatModel: llm.NewScripted(respWithUsage("done")), delay: delay}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Declare("main", llm.Config{Provider: "mock"}); err != nil {
+		t.Fatal(err)
+	}
+	model, err := reg.Open("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wait := func(what string) observability.Record {
+		t.Helper()
+		select {
+		case r := <-recs:
+			if r.Event != llm.EventGenerateFinished {
+				t.Fatalf("%s: event = %q", what, r.Event)
+			}
+			return r
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: no %s record", what, llm.EventGenerateFinished)
+			return observability.Record{}
+		}
+	}
+
+	if _, err := model.Generate(llm.WithEventScope(context.Background(), scope), llm.NewRequest(llm.UserText("q"))); err != nil {
+		t.Fatal(err)
+	}
+	if got := wait("generate").Duration; got < delay {
+		t.Fatalf("generate duration = %v, want >= %v", got, delay)
+	}
+
+	ch, err := model.Stream(llm.WithEventScope(context.Background(), scope), llm.NewRequest(llm.UserText("q")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range ch {
+	}
+	if got := wait("stream").Duration; got < delay {
+		t.Fatalf("stream duration = %v, want >= %v（锚点须在建流之前，首字节前的往返才算得进去）", got, delay)
+	}
+}

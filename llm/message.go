@@ -176,15 +176,23 @@ func ToolMessage(toolCallID, text string) *Message {
 // ---- Message 读取辅助 ----
 
 // Text 拼接全部文本块（含思维链之外的正文），以换行连接。
-func (m *Message) Text() string {
+func (m *Message) Text() string { return JoinText(m.Parts) }
+
+// JoinText 拼接全部文本块（\n 连接，空块不产生分隔）；无文本块返回空串。
+//
+// 「把 []Part 摊成字符串」的唯一定义：adapter 转换消息、[Message.Text]
+// 读回文本都走它。此前两个 adapter 各持一份私有实现，规则一旦分叉
+// 不会红——线格式与读回文本会出现两种口径。
+func JoinText(parts []Part) string {
 	var b strings.Builder
-	for i, p := range m.Parts {
-		if p.Kind == PartText {
-			if i > 0 && b.Len() > 0 {
-				b.WriteString("\n")
-			}
-			b.WriteString(p.Text)
+	for i := range parts {
+		if parts[i].Kind != PartText {
+			continue
 		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(parts[i].Text)
 	}
 	return b.String()
 }

@@ -503,6 +503,44 @@ func TestInterceptionStream(t *testing.T) {
 	}
 }
 
+// 词汇表共享件：MIME 家族判定与文本拼接各只有一份实现（两个 adapter
+// 不再各持私有副本——规则一旦分叉不会红）。
+func TestClassifyMIMEAndJoinText(t *testing.T) {
+	for _, tc := range []struct {
+		mediaType string
+		want      MediaFamily
+	}{
+		{"image/png", MediaImage},
+		{"image/PNG", MediaImage},
+		{"  video/mp4 ", MediaVideo},
+		{"audio/wav", MediaAudio},
+		{"application/pdf", MediaPDF},
+		{"APPLICATION/PDF", MediaPDF},
+		{"text/plain", ""},
+		{"", ""},
+	} {
+		if got := ClassifyMIME(tc.mediaType); got != tc.want {
+			t.Fatalf("ClassifyMIME(%q) = %q, want %q", tc.mediaType, got, tc.want)
+		}
+	}
+
+	// \n 连接；非文本块跳过；空文本块不产生多余分隔。
+	if got := JoinText([]Part{Text("a"), Reasoning("r"), Text("b")}); got != "a\nb" {
+		t.Fatalf("JoinText = %q, want %q", got, "a\nb")
+	}
+	if got := JoinText([]Part{Text(""), Text("b")}); got != "b" {
+		t.Fatalf("JoinText with empty first block = %q, want %q", got, "b")
+	}
+	if got := JoinText(nil); got != "" {
+		t.Fatalf("JoinText(nil) = %q", got)
+	}
+	// Message.Text 与 JoinText 同源（不许再分叉）。
+	m := &Message{Role: RoleAssistant, Parts: []Part{Text("x"), Call(ToolCall{ID: "c"}), Text("y")}}
+	if m.Text() != JoinText(m.Parts) || m.Text() != "x\ny" {
+		t.Fatalf("Message.Text = %q, JoinText = %q", m.Text(), JoinText(m.Parts))
+	}
+}
+
 func TestCustomMediaParts(t *testing.T) {
 	m := NewScripted(Resp("heard"))
 	req := NewRequest(User(Media("audio/wav", []byte("RIFF...")), Text("这段音频说了什么")))

@@ -553,6 +553,31 @@ func TestLineSinkQuotesKeyWhenNeeded(t *testing.T) {
 	}
 }
 
+// TestLineSinkQuotesValueWhenNeeded 尾段字段（host / err / trace）同一条
+// 引号口径：TraceID 不只来自 NewTraceID——宿主可填外部 trace id，原样追加
+// 会让含换行的值注入额外行，破坏「一行一记录」。
+func TestLineSinkQuotesValueWhenNeeded(t *testing.T) {
+	trace := "a b\"c\nd"
+	var buf bytes.Buffer
+	s := NewLineSink(&buf)
+	rec := Record{Source: SourceAdapter, Event: "evt", HostID: "h 1", TraceID: trace}
+	rec.Time = time.Unix(0, 0).UTC()
+	s.Write(rec)
+	_ = s.Flush()
+
+	out := buf.String()
+	if want := "trace=" + strconv.Quote(trace); !strings.Contains(out, want) {
+		t.Fatalf("trace 未按引号口径输出：\n got %q\nwant 含 %q", out, want)
+	}
+	if want := `host="h 1"`; !strings.Contains(out, want) {
+		t.Fatalf("host 口径回归：%q", out)
+	}
+	// 换行必须转义：一条记录只占一行。
+	if got := strings.Count(out, "\n"); got != 1 {
+		t.Fatalf("行数 = %d, want 1（换行必须转义）：%q", got, out)
+	}
+}
+
 func TestLineSinkConstructorValidation(t *testing.T) {
 	assertPanics := func(name string, fn func()) {
 		t.Helper()

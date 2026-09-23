@@ -405,7 +405,10 @@ func (s *LineSink) appendTail(dst []byte, r Record) []byte {
 		painted := false
 		dst, painted = s.paint(dst, ansiDim)
 		dst = append(dst, "trace="...)
-		dst = append(dst, r.TraceID...)
+		// 与 host= / err= 同一条引号口径：TraceID 不只来自
+		// NewTraceID——宿主可填入外部 trace id（W3C traceparent 之类），
+		// 原样追加会让含空格 / 引号 / 换行的值打乱列宽甚至注入额外行。
+		dst = AppendTextValue(dst, r.TraceID)
 		dst = s.unpaint(dst, painted)
 	}
 	return dst
