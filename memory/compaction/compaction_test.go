@@ -321,3 +321,150 @@ func TestFoldTraceSources(t *testing.T) {
 	}
 	_ = json.RawMessage(nil)
 }
+
+// recordingEngine 记录收到的 SummarizeInput，回放预置结果。
+type recordingEngine struct {
+	in  SummarizeInput
+	res SummarizeResult
+}
+
+func (e *recordingEngine) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
+	e.in = in
+	return e.res, nil
+}
+
+// captureChatModel 记录最后一次 Generate 请求。
+type captureChatModel struct {
+	req *llm.GenerateRequest
+}
+
+func (c *captureChatModel) Generate(ctx context.Context, req *llm.GenerateRequest) (*llm.Response, error) {
+	c.req = req
+	return &llm.Response{Message: llm.AssistantText("summarized"), Usage: llm.TokenUsage{InputTokens: 1, OutputTokens: 1}}, nil
+}
+
+func (c *captureChatModel) Stream(context.Context, *llm.GenerateRequest) (<-chan llm.StreamEvent, error) {
+	return nil, errors.New("stream not implemented")
+}
+
+// TestCompactMeterDefaultsToCharMeter：Options.Meter 为 nil 时的承诺默认——
+// 回落 CharMeter（审计 InputTokens 不是恒 0 的空账）。
+func TestCompactMeterDefaultsToCharMeter(t *testing.T) {
+	sess, _ := session.NewMemoryStore().Create(t.Context(), session.SessionHeader{})
+	ctx := t.Context()
+	seedTurn(t, ctx, sess)
+	// DeterministicSummarizer 的 usage 是零值：只能走估算兜底。
+	rep, err := Compact(ctx, sess, Options{Engine: DeterministicSummarizer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.InputTokens <= 0 {
+		t.Fatalf("Report.InputTokens = %d, want > 0（nil Meter 必须回落 CharMeter）", rep.InputTokens)
+	}
+	events, _ := sess.Events(ctx, 0)
+	seen := 0
+	for _, ev := range events {
+		if ev.Type != session.EventCompactionSummarized {
+			continue
+		}
+		var p session.CompactionStatusPayload
+		if err := json.Unmarshal(ev.Data, &p); err != nil {
+			t.Fatal(err)
+		}
+		seen++
+		if p.InputTokens <= 0 {
+			t.Fatalf("summarized.InputTokens = %d, want > 0", p.InputTokens)
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("summarized events = %d, want 1", seen)
+	}
+}
+
+// TestCompactModelNameFallback：Engine 没报 Model 时用 Options.ModelName
+// 兜底（审计不出现空模型名）；Engine 报了就以它为准。
+func TestCompactModelNameFallback(t *testing.T) {
+	ctx := t.Context()
+	models := func(t *testing.T, sess session.Session) (string, string) {
+		t.Helper()
+		events, _ := sess.Events(ctx, 0)
+		got := map[session.EventType]string{}
+		for _, ev := range events {
+			if ev.Type != session.EventCompactionStarted && ev.Type != session.EventCompactionSummarized {
+				continue
+			}
+			var p session.CompactionStatusPayload
+			if err := json.Unmarshal(ev.Data, &p); err != nil {
+				t.Fatal(err)
+			}
+			got[ev.Type] = p.Model
+		}
+		return got[session.EventCompactionStarted], got[session.EventCompactionSummarized]
+	}
+
+	// 情形 1：Engine 空 Model → summarized 回落到声明值。
+	sess1, _ := session.NewMemoryStore().Create(ctx, session.SessionHeader{})
+	seedTurn(t, ctx, sess1)
+	eng := &recordingEngine{res: SummarizeResult{
+		Summary: llm.Message{Role: llm.RoleUser, Parts: []llm.Part{llm.Text("summary")}},
+	}}
+	if _, err := Compact(ctx, sess1, Options{Engine: eng, ModelName: "declared-model"}); err != nil {
+		t.Fatal(err)
+	}
+	started, summarized := models(t, sess1)
+	if started != "declared-model" {
+		t.Fatalf("started.Model = %q, want declared-model", started)
+	}
+	if summarized != "declared-model" {
+		t.Fatalf("summarized.Model = %q, want fallback to declared-model", summarized)
+	}
+
+	// 情形 2：Engine 报了 Model → 以它为准（不被 Options.ModelName 覆盖）。
+	sess2, _ := session.NewMemoryStore().Create(ctx, session.SessionHeader{})
+	seedTurn(t, ctx, sess2)
+	eng2 := &recordingEngine{res: SummarizeResult{
+		Summary: llm.Message{Role: llm.RoleUser, Parts: []llm.Part{llm.Text("summary")}},
+		Model:   "engine-model",
+	}}
+	if _, err := Compact(ctx, sess2, Options{Engine: eng2, ModelName: "declared-model"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, summarized := models(t, sess2); summarized != "engine-model" {
+		t.Fatalf("summarized.Model = %q, want engine-model", summarized)
+	}
+}
+
+// TestCompactSummaryBudgetPassthrough：Options.SummaryBudgetTokens 透传进
+// SummarizeInput.BudgetTokens（Engine 实现方拿得到预算），并落到
+// LLMSummarizer 的请求 MaxTokens 上（0 = 不限）。
+func TestCompactSummaryBudgetPassthrough(t *testing.T) {
+	ctx := t.Context()
+	sess, _ := session.NewMemoryStore().Create(ctx, session.SessionHeader{})
+	seedTurn(t, ctx, sess)
+	eng := &recordingEngine{res: SummarizeResult{
+		Summary: llm.Message{Role: llm.RoleUser, Parts: []llm.Part{llm.Text("summary")}},
+		Model:   "engine-model",
+	}}
+	if _, err := Compact(ctx, sess, Options{Engine: eng, SummaryBudgetTokens: 512}); err != nil {
+		t.Fatal(err)
+	}
+	if eng.in.BudgetTokens != 512 {
+		t.Fatalf("SummarizeInput.BudgetTokens = %d, want 512（透传）", eng.in.BudgetTokens)
+	}
+
+	c := &captureChatModel{}
+	s := &LLMSummarizer{Model: c, ModelName: "m"}
+	if _, err := s.Summarize(ctx, SummarizeInput{Messages: []*llm.Message{llm.UserText("x")}, BudgetTokens: 256}); err != nil {
+		t.Fatal(err)
+	}
+	if c.req == nil || c.req.MaxTokens == nil || *c.req.MaxTokens != 256 {
+		t.Fatalf("MaxTokens = %+v, want 256", c.req)
+	}
+	c.req = nil
+	if _, err := s.Summarize(ctx, SummarizeInput{Messages: []*llm.Message{llm.UserText("x")}}); err != nil {
+		t.Fatal(err)
+	}
+	if c.req == nil || c.req.MaxTokens != nil {
+		t.Fatalf("MaxTokens = %+v, want nil（0 = 不限）", c.req)
+	}
+}

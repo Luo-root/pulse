@@ -40,7 +40,7 @@ reg := sess.Registry()                          // 事件 codec 环境（FoldTra
 | Persisted header | — | synchronously rewritten after writing `compaction.checkpoint` (FormatVersion raised to 2) |
 | List | in-memory sort + cursor | scans `{root}/*/header.json` + cursor |
 
-JSONL on-disk layout: `{root}/{sessionID}/header.json` + `events.jsonl` (one envelope per line) + `blobs/{sha256}` (inline byte overflow above 32KiB, content-addressed dedup, sha self-verification, missing blob = load error) + `lock`. **JSONL is plaintext: the file is the secret surface, paths are host-owned.** The `blob:` URL prefix is reserved by this package; host-provided `blob:` URLs must switch schemes.
+JSONL on-disk layout: `{root}/{sessionID}/header.json` + `events.jsonl` (one envelope per line) + `blobs/{sha256}` (inline byte overflow above 32KiB, content-addressed dedup, sha self-verification; a missing or tampered blob is `ErrCorruptLog`) + `lock`. **JSONL is plaintext: the file is the secret surface, paths are host-owned.** The `blob:` URL prefix is reserved by this package; host-provided `blob:` URLs must switch schemes.
 
 ## Export and import (migration fidelity)
 
@@ -78,7 +78,7 @@ Ignorable ≠ optional to record: `request.header` must still be emitted by the 
 | `ErrWriterBusy` | file lock held (fail-fast; preemptible after the stale threshold) |
 | `ErrUnknownEvent` / `ErrUnknownRequired` | writing an unknown required event / the log contains an unknown required event at recovery |
 | `ErrSurfaceNotAllowed` / `ErrReplaceNotSupported` / `ErrReplaceRange` | non-surface type carrying Surface / Replace type not registered / window reversed, out of range, or creating pairing orphans |
-| `ErrCorruptLog` | persisted log corrupt (mid-file bad line, seq chain break, blob checksum mismatch) |
+| `ErrCorruptLog` | persisted log corrupt (mid-file bad line, seq chain break, blob missing / checksum mismatch) |
 | `ErrForkSplitToolGroup` / `ErrForkBadAt` | Fork splits a tool group in the middle / the cut point is out of range |
 | `ErrFormatVersion` | header version incompatible (only 1 and 2 accepted, no migration guessing) |
 | `ErrSeedUnsupported` | the import target store does not implement Seeder (no silent renumbering fallback) |

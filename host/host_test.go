@@ -1379,3 +1379,29 @@ func TestHostOptionsKnobParity(t *testing.T) {
 		}
 	}
 }
+
+// TestHostDefaultAgentSessionHeaderAgentID：DefaultAgent 建会话时把 agent 名
+// 写进 header.AgentID——同一会话目录被多个 agent 共用时可从 header 区分归属
+// （Workspace / AgentPreset 没有自动生产者，需要时用 NewAgent + 宿主自建
+// 会话显式传 header）。
+func TestHostDefaultAgentSessionHeaderAgentID(t *testing.T) {
+	ctx := context.Background()
+	h := newTestHost(t, llm.NewScripted(llm.Resp("hi")), func(o *Options) {
+		o.Session, _ = memory.NewJSONLSessionStack(t.TempDir())
+	})
+	a, err := h.DefaultAgent(ctx, DefaultAgentOptions{Name: "writer-A", Model: "stub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if c, ok := a.Session().(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+	})
+	if a.Session() == nil {
+		t.Fatal("session host must produce session agent")
+	}
+	if got := a.Session().Header().AgentID; got != "writer-A" {
+		t.Fatalf("header.AgentID = %q, want %q", got, "writer-A")
+	}
+}

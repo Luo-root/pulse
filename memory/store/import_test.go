@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,7 +91,7 @@ func TestExportImportRoundTripMem(t *testing.T) {
 	}
 
 	dst := NewMemoryStore()
-	report, err := ImportItems(ctx, dst, items)
+	report, err := ImportItems(ctx, dst, items, ImportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,14 +152,14 @@ func TestImportIdempotentMem(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := NewMemoryStore()
-	first, err := ImportItems(ctx, dst, items)
+	first, err := ImportItems(ctx, dst, items, ImportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Imported != 2 || first.Skipped != 0 {
 		t.Fatalf("first report = %+v", first)
 	}
-	second, err := ImportItems(ctx, dst, items)
+	second, err := ImportItems(ctx, dst, items, ImportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +188,7 @@ func TestImportConflictMem(t *testing.T) {
 	if _, err := dst.Put(ctx, itemOf("d1", ns, "already here"), PutMemoryOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	report, err := ImportItems(ctx, dst, items)
+	report, err := ImportItems(ctx, dst, items, ImportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +217,7 @@ func TestImportValidationMem(t *testing.T) {
 	bad := itemOf("bad", ns, "x")
 	bad.SourceRefs = nil
 	good := itemOf("good", ns, "y")
-	report, err := ImportItems(ctx, dst, []MemoryItem{bad, good})
+	report, err := ImportItems(ctx, dst, []MemoryItem{bad, good}, ImportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +234,7 @@ func TestImportValidationMem(t *testing.T) {
 func TestImportUnsupported(t *testing.T) {
 	ctx := context.Background()
 	it := itemOf("d1", []string{"tenant:a"}, "x")
-	_, err := ImportItems(ctx, noImportStore{}, []MemoryItem{it})
+	_, err := ImportItems(ctx, noImportStore{}, []MemoryItem{it}, ImportOptions{})
 	if !errors.Is(err, ErrImportUnsupported) {
 		t.Fatalf("err = %v, want ErrImportUnsupported", err)
 	}
@@ -280,11 +283,141 @@ func TestImportSameInstantSkipped(t *testing.T) {
 	}
 	alias := stored // 同一内容的导出副本，时间域转 UTC 表示（JSON 往返形态）
 	alias.KnownAt, alias.CreatedAt, alias.UpdatedAt = stored.KnownAt.UTC(), stored.CreatedAt.UTC(), stored.UpdatedAt.UTC()
-	report, err := ImportItems(ctx, dst, []MemoryItem{alias})
+	report, err := ImportItems(ctx, dst, []MemoryItem{alias}, ImportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.Skipped != 1 || report.Imported != 0 || len(report.Conflicts) != 0 {
 		t.Fatalf("same-instant alias must be Skipped, report = %+v", report)
+	}
+}
+
+// TestImportNamespaceRemap：重映射命中即把 item 挪到目标层级——源 namespace
+// 不可见、目标 namespace 可见；未命中的 item 原样保留。
+func TestImportNamespaceRemap(t *testing.T) {
+	ctx := context.Background()
+	src := NewMemoryStore()
+	srcNS := []string{"tenant:a", "project:p1"}
+	dstNS := []string{"tenant:b", "project:p9"}
+	if _, err := src.Put(ctx, itemOf("d1", srcNS, "moved"), PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	inPlace := []string{"tenant:a", "project:other"}
+	if _, err := src.Put(ctx, itemOf("d2", inPlace, "kept"), PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := ExportItems(ctx, src, MemoryQuery{Namespace: []string{"tenant:a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := NewMemoryStore()
+	report, err := ImportItems(ctx, dst, items, ImportOptions{
+		NamespaceRemap: map[string]string{"tenant:a/project:p1": "tenant:b/project:p9"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Imported != 2 || len(report.Conflicts) != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	got, err := dst.Get(ctx, dstNS, "d1")
+	if err != nil {
+		t.Fatalf("remapped item must live in the target namespace: %v", err)
+	}
+	if !slices.Equal(got.Namespace, dstNS) {
+		t.Fatalf("namespace = %v, want %v", got.Namespace, dstNS)
+	}
+	// 源 namespace 不得再看到它（跨 namespace 不互见）。
+	if _, err := dst.Get(ctx, srcNS, "d1"); !errors.Is(err, ErrItemNotFound) {
+		t.Fatalf("source namespace must not see the remapped item, err = %v", err)
+	}
+	// 未命中的映射项原样落在源层级。
+	if _, err := dst.Get(ctx, inPlace, "d2"); err != nil {
+		t.Fatalf("unmapped item must stay in place: %v", err)
+	}
+}
+
+// TestImportRemapConflictAtTarget：冲突判定落在**重映射后的目标位置**——
+// 目标已有同 ID 不同内容则拒绝且不覆盖，源位置也不留下副本。
+func TestImportRemapConflictAtTarget(t *testing.T) {
+	ctx := context.Background()
+	srcNS := []string{"tenant:a"}
+	dstNS := []string{"tenant:b"}
+	items := []MemoryItem{itemOf("d1", srcNS, "from src")}
+	dst := NewMemoryStore()
+	if _, err := dst.Put(ctx, itemOf("d1", dstNS, "already here"), PutMemoryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := ImportItems(ctx, dst, items, ImportOptions{
+		NamespaceRemap: map[string]string{"tenant:a": "tenant:b"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Imported != 0 || len(report.Conflicts) != 1 || report.Conflicts[0].ID != "d1" {
+		t.Fatalf("report = %+v", report)
+	}
+	got, err := dst.Get(ctx, dstNS, "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Content != "already here" {
+		t.Fatalf("target must not be overwritten, content = %q", got.Content)
+	}
+	if _, err := dst.Get(ctx, srcNS, "d1"); !errors.Is(err, ErrItemNotFound) {
+		t.Fatalf("no copy may land in the source namespace, err = %v", err)
+	}
+}
+
+// TestImportRemapInvalidTarget：映射值含空元素 → 该条记 Conflict 且 reason
+// 如实说明，不静默落到非法 namespace；未命中该映射的 item 照常导入。
+func TestImportRemapInvalidTarget(t *testing.T) {
+	ctx := context.Background()
+	dst := NewMemoryStore()
+	items := []MemoryItem{
+		itemOf("bad", []string{"tenant:a"}, "x"),
+		itemOf("good", []string{"tenant:c"}, "y"),
+	}
+	report, err := ImportItems(ctx, dst, items, ImportOptions{
+		NamespaceRemap: map[string]string{"tenant:a": "tenant:b/"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Imported != 1 || len(report.Conflicts) != 1 || report.Conflicts[0].ID != "bad" {
+		t.Fatalf("report = %+v", report)
+	}
+	if !strings.Contains(report.Conflicts[0].Reason, "empty element") {
+		t.Fatalf("reason = %q, want it to name the invalid remap target", report.Conflicts[0].Reason)
+	}
+	if _, err := dst.Get(ctx, []string{"tenant:c"}, "good"); err != nil {
+		t.Fatalf("unmapped item must import: %v", err)
+	}
+}
+
+// raceImportStore：Get 恒 NotFound（空 store），PutImport 恒 ErrItemExists
+// ——模拟「探测与写入之间目标被并发写入」的窗口。
+type raceImportStore struct {
+	MemoryStore
+}
+
+func (s *raceImportStore) PutImport(ctx context.Context, item MemoryItem) (MemoryItem, error) {
+	return MemoryItem{}, fmt.Errorf("%w: id %s", ErrItemExists, item.ID)
+}
+
+// TestImportPutImportRaceReason：探测未命中但写入撞 ErrItemExists → reason
+// 如实说「探测后出现」（此时并未核实内容是否相同），不借用探测分支文案。
+func TestImportPutImportRaceReason(t *testing.T) {
+	ctx := context.Background()
+	dst := &raceImportStore{MemoryStore: NewMemoryStore()}
+	report, err := ImportItems(ctx, dst, []MemoryItem{itemOf("d1", []string{"tenant:a"}, "x")}, ImportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Conflicts) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if reason := report.Conflicts[0].Reason; !strings.Contains(reason, "appeared after probe") {
+		t.Fatalf("reason = %q, want the honest post-probe wording", reason)
 	}
 }

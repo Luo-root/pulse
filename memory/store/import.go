@@ -11,6 +11,10 @@ package store
 // 幂等：ImportItems 逐条 Get 探测——已存在且内容一致 → Skipped；存在且
 // 不同 → Conflicts 记录（不覆盖，先到先得）；不存在 → PutImport。
 // Taint 原样保留：导出导入不得绕过 promotion gate 洗白信任级。
+//
+// Namespace 重映射是**显式选项**（ImportOptions.NamespaceRemap）：命中即把
+// item 挪到目标层级，冲突判定随之落在**目标位置**（同 ID 已存在仍拒绝、reason
+// 如实报出）；未命中或 nil 一律原样，不做前缀/部分替换。
 
 import (
 	"bytes"
@@ -19,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -62,14 +67,21 @@ type ImportReport struct {
 	Conflicts []Conflict
 }
 
-// ImportOptions 预留导入开关（当前无字段；namespace 重映射等后续需求
-// 落这里，避免签名破坏）。
-type ImportOptions struct{}
+// ImportOptions 控制导入行为。
+type ImportOptions struct {
+	// NamespaceRemap 把导出侧的 namespace 重映射到目标侧：键是导出侧
+	// namespace 的 canonical 串（元素以 "/" 连接），值是目标侧同一形式
+	// （再以 "/" 切回层级）。nil = 全部原样保留；未命中的 item 也原样
+	// 保留——不做前缀 / 部分替换（半套映射比不映射更危险）。元素本身含
+	// "/" 时两种切分不可区分，属调用方责任；映射值含空元素会被拒。
+	NamespaceRemap map[string]string
+}
 
-// ImportItems 把导出的 items 保真写入目标 store。失败语义：item 校验
-// 失败 / 目标已存在且不同 → 记入 Conflicts 继续（回执完整呈现）；store
-// 未实现 ImportStore → ErrImportUnsupported 整单拒绝。
-func ImportItems(ctx context.Context, ms MemoryStore, items []MemoryItem) (ImportReport, error) {
+// ImportItems 把导出的 items 保真写入目标 store（opts 控制重映射）。
+// 失败语义：item 校验失败 / 重映射配置非法 / 目标已存在且不同 → 记入
+// Conflicts 继续（回执完整呈现）；store 未实现 ImportStore →
+// ErrImportUnsupported 整单拒绝。
+func ImportItems(ctx context.Context, ms MemoryStore, items []MemoryItem, opts ImportOptions) (ImportReport, error) {
 	imp, ok := ms.(ImportStore)
 	if !ok {
 		return ImportReport{}, ErrImportUnsupported
@@ -80,6 +92,12 @@ func ImportItems(ctx context.Context, ms MemoryStore, items []MemoryItem) (Impor
 			report.Conflicts = append(report.Conflicts, Conflict{ID: item.ID, Reason: err.Error()})
 			continue
 		}
+		target, err := remapNamespace(item.Namespace, opts.NamespaceRemap)
+		if err != nil {
+			report.Conflicts = append(report.Conflicts, Conflict{ID: item.ID, Reason: err.Error()})
+			continue
+		}
+		item.Namespace = target
 		cur, err := ms.Get(ctx, item.Namespace, item.ID)
 		switch {
 		case err == nil:
@@ -91,7 +109,9 @@ func ImportItems(ctx context.Context, ms MemoryStore, items []MemoryItem) (Impor
 		case errors.Is(err, ErrItemNotFound):
 			if _, err := imp.PutImport(ctx, item); err != nil {
 				if errors.Is(err, ErrItemExists) {
-					report.Conflicts = append(report.Conflicts, Conflict{ID: item.ID, Reason: "target exists with different content"})
+					// 探测与写入之间目标被并发写入：此时**未核实**内容是否
+					// 相同，reason 如实说「探测后出现」，不借用探测分支的文案。
+					report.Conflicts = append(report.Conflicts, Conflict{ID: item.ID, Reason: "id exists in target (appeared after probe)"})
 					continue
 				}
 				return report, fmt.Errorf("store: import %s: %w", item.ID, err)
@@ -103,6 +123,29 @@ func ImportItems(ctx context.Context, ms MemoryStore, items []MemoryItem) (Impor
 	}
 	return report, nil
 }
+
+// remapNamespace 应用导入重映射：无映射或未命中 → 原样返回；命中 → 按 "/"
+// 切回层级，映射值含空元素即拒（ErrInvalidItem，回执里如实报出，不静默
+// 落到非法 namespace）。元素本身含 "/" 时切分不可区分，属调用方责任。
+func remapNamespace(ns []string, remap map[string]string) ([]string, error) {
+	if len(remap) == 0 {
+		return ns, nil
+	}
+	dst, ok := remap[namespaceKey(ns)]
+	if !ok {
+		return ns, nil
+	}
+	parts := strings.Split(dst, "/")
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			return nil, fmt.Errorf("%w: namespace remap target %q has an empty element", ErrInvalidItem, dst)
+		}
+	}
+	return parts, nil
+}
+
+// namespaceKey 是重映射键的 canonical 形式：元素以 "/" 连接。
+func namespaceKey(ns []string) string { return strings.Join(ns, "/") }
 
 // itemEqual 判定内容一致（幂等重跑口径）：字段级比较，三个 time 字段用
 // Equal()——同一时刻的本地时区表示（手动 Put 分配）与 UTC 表示（JSON

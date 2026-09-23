@@ -520,7 +520,9 @@ type ContextAssembler interface {
 
 **item 侧（`memory/store`）**：`ExportItems` 全量导出（强制 IncludeInactive——Superseded/Revoked 也是状态机的一部分）；`ImportItems` 逐条 Get 探测：不存在 → `PutImport`（可选接口 `ImportStore`，item 携带的 KnownAt/CreatedAt/UpdatedAt/Revision/Status/Taint 原样入库，validate 校验链照跑）、已存在且内容一致 → Skipped、已存在且不同 → Conflict（先到先得，不覆盖）。taint 原样保留：导入不得洗白信任级、绕过 promotion gate。未实现 `ImportStore` 返回 `ErrImportUnsupported`——双时态字段被重置的「迁移成功」比失败更糟。典型场景：开发期 → 生产搬迁、记忆库分发、冷备。
 
-**明确不做**：格式降级、增量同步、跨 store 的 seq/引用重写（SourceRefs 保持溯源注记语义）、namespace 重映射、Supersede 链重建（无反向链接字段，出界）。宿主需要这些能力时在导出产物之上自行实现。
+**明确不做**：格式降级、增量同步、跨 store 的 seq/引用重写（SourceRefs 保持溯源注记语义）、Supersede 链重建（无反向链接字段，出界）。宿主需要这些能力时在导出产物之上自行实现。
+
+**修订（2026-09-23，#221 第 4 条）**：item 侧的 namespace 重映射改由**显式选项** `ImportOptions.NamespaceRemap` 承接（键 / 值都是 `/` 连接的 canonical namespace）——命中即把 item 挪到目标层级，冲突探测与「同 ID 已存在」判定随之落在**目标位置**；未命中或 nil 一律原样，不做前缀 / 部分替换。原稿把它整体列入「明确不做」，与 `ImportOptions` 的预留注释自相矛盾；收敛口径 = **不做隐式改写，做显式映射**。
 
 ---
 

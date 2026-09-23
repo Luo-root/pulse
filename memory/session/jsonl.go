@@ -104,14 +104,16 @@ type jsonlSession struct {
 func (s *jsonlSession) blobsDir() string { return filepath.Join(s.dir, "blobs") }
 
 // Create 实现 SessionStore：header 归一规则与内存版一致（SessionID 空 →
-// 生成；CreatedAt 零值取 now；FormatVersion 零值取本包版本，不兼容拒绝）。
+// 生成；CreatedAt 零值取 now；FormatVersion 零值取本包版本，v1/v2 皆收——
+// 与 Open 和 normalizeImportHeader 同一闸门，压缩过的会话可被显式重建）。
 // 同 ID 目录已存在 → ErrSessionExists（拒绝第二写者）。
 func (s *JSONLStore) Create(ctx context.Context, header SessionHeader) (Session, error) {
 	if header.FormatVersion == 0 {
 		header.FormatVersion = FormatVersion
 	}
-	if header.FormatVersion != FormatVersion {
-		return nil, fmt.Errorf("%w: store speaks v%d, header says v%d", ErrFormatVersion, FormatVersion, header.FormatVersion)
+	if header.FormatVersion != FormatVersion && header.FormatVersion != CompactedVersion {
+		return nil, fmt.Errorf("%w: store speaks v%d/v%d, header says v%d",
+			ErrFormatVersion, FormatVersion, CompactedVersion, header.FormatVersion)
 	}
 	if header.SessionID == "" {
 		header.SessionID = newID()

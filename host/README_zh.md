@@ -52,7 +52,7 @@ a, err := h.NewAgent(host.AgentOptions{
 })
 ```
 
-`DefaultAgent` 是**基于 NewAgent 的便捷封装**：模型经宿主 Registry 按声明名解析、工具集取宿主 Tools 聚合视图、会话在宿主 SessionStack 上新建（`SessionID` 非空则打开既有会话续跑）——三行参数覆盖 90% 场景；非默认来源走 NewAgent，零特例。memory / toolset 同构：memory 门面是 `NewSessionStack(store)` 最泛化 + `NewMemorySessionStack()` / `NewJSONLSessionStack(dir)` 便捷；toolset 是 `Registry.Register` 最泛化 + `builtins.Register` / `host.SkillTools` 便捷。
+`DefaultAgent` 是**基于 NewAgent 的便捷封装**：模型经宿主 Registry 按声明名解析、工具集取宿主 Tools 聚合视图、会话在宿主 SessionStack 上新建（新建时 `header.AgentID` 取 agent 名；`SessionID` 非空则打开既有会话续跑）——三行参数覆盖 90% 场景；非默认来源走 NewAgent，零特例。memory / toolset 同构：memory 门面是 `NewSessionStack(store)` 最泛化 + `NewMemorySessionStack()` / `NewJSONLSessionStack(dir)` 便捷；toolset 是 `Registry.Register` 最泛化 + `builtins.Register` / `host.SkillTools` 便捷。
 
 ## host.Agent 的三向接线（事件驱动落盘）
 
@@ -179,4 +179,4 @@ a, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{
 
 ## 测试
 
-`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + 不设回调照常跑通 + panic 原样上抛）、步数上限（带会话：落盘闭合 + 可续跑）、便捷路径的 ScopeHook、上下文组装缝（产物字面进请求 + 失败在模型调用前中止），以及两条 HITL 配方（waterfall 改写调用、闸门取权限卡片）；另有四条护栏：闸门**后序**语义（卡片看到的就是将执行的那份，`TestHostToolGateSeesRewrittenCall`）及其短路分支（内层已拒则整段跳过闸门、reason 取内层那句，`TestHostToolGateSkippedWhenInnerRejected`）、两条构造路径旋钮同名同型（`TestHostOptionsKnobParity`，反射比对）、README 组装配方逐字可编译可运行（`TestHostContextBuilderRecipe`，含空 input 档）。
+`go test -race ./host/`——无会话透传、三向接线（Surface 角色序列 / 生命周期闭合 / request.header 审计 / 二轮历史注入）、工具执行前日志在位、HITL 检查点 Flush（每步 after_model 恰一次）、error 路径落盘与重开零合成、SessionID 续跑、ToolGate 拒绝、ScopeHook 订阅、每请求独立 TraceID、流式文本增量透传（两条构造路径 + 不设回调照常跑通 + panic 原样上抛）、步数上限（带会话：落盘闭合 + 可续跑）、便捷路径的 ScopeHook、上下文组装缝（产物字面进请求 + 失败在模型调用前中止）、会话 header 归属（`TestHostDefaultAgentSessionHeaderAgentID`），以及两条 HITL 配方（waterfall 改写调用、闸门取权限卡片）；另有四条护栏：闸门**后序**语义（卡片看到的就是将执行的那份，`TestHostToolGateSeesRewrittenCall`）及其短路分支（内层已拒则整段跳过闸门、reason 取内层那句，`TestHostToolGateSkippedWhenInnerRejected`）、两条构造路径旋钮同名同型（`TestHostOptionsKnobParity`，反射比对）、README 组装配方逐字可编译可运行（`TestHostContextBuilderRecipe`，含空 input 档）。
