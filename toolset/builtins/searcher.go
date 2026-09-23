@@ -65,7 +65,7 @@ func (s *ddgSearcher) Search(ctx context.Context, query string, limit int) ([]Se
 		return nil, fmt.Errorf("builtins/web_search: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, DefaultSearchBodyBytes))
 	if err != nil {
 		return nil, err
 	}

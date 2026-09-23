@@ -19,7 +19,7 @@ func (e *env) regGrep() toolset.Registration {
 	return toolset.Registration{
 		Def: llm.ToolDef{
 			Name:        "grep",
-			Description: "Search file contents with a Go regexp under the workspace Root. Invalid patterns return an error (not empty matches). P0 does not apply .gitignore. Use after to page.",
+			Description: "Search file contents with a Go regexp under the workspace Root. Invalid patterns return an error (not empty matches). Skips .git / node_modules / vendor directories by name; does not otherwise apply .gitignore (P0). Use after to page.",
 			Parameters: json.RawMessage(`{
   "type":"object",
   "properties":{
@@ -135,7 +135,7 @@ func (e *env) grep(ctx context.Context, args json.RawMessage) (string, error) {
 			}
 			if d.IsDir() {
 				base := d.Name()
-				if path != root && (base == ".git" || base == "node_modules" || base == "vendor") {
+				if path != root && skippedDirNames[base] {
 					return fs.SkipDir
 				}
 				return nil
