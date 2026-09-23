@@ -42,7 +42,17 @@ res, err := agent.Run(ctx, llm.UserText("hello"))
 
 工具集、观测出口、审批闸门（`ToolGate`）都在这层加；非默认来源改走 `h.NewAgent`，零特例。详见 [host 包文档](/packages/host/)。
 
-下面是同一结果的手工装配，用来一步步看清每层在做什么。
+这一步之后往上加什么，都在这层加旋钮：
+
+| 想加的东西 | 从哪进 | 详细配方 |
+|---|---|---|
+| 工具（本地 builtins / MCP / 自定义） | `host.Options.Tools` | [装配指南](/guide/assembly) |
+| 会话持久化与冷恢复 | `host.Options.Session` | [装配指南](/guide/assembly)、[memory/session](/packages/memory/session/) |
+| 执行前审批（HITL） | `host.AgentOptions.ToolGate` | [装配指南](/guide/assembly) |
+| 长期记忆与上下文组装 | `host.AgentOptions.ContextBuilder` | [记忆层](/guide/memory) |
+| 观测出口 | `host.Options.Observe` | [可观测性](/guide/observability) |
+
+下面是同一结果的手工装配，用来一步步看清每层在做什么（要按两层装配系统性地装，见 [装配指南](/guide/assembly)）。
 
 ## 最短链路：模型 + ReAct 工具回合
 
@@ -64,11 +74,11 @@ import (
 )
 
 func main() {
-	host := kernel.New()
-	defer host.Dispose()
+	k := kernel.New()
+	defer k.Dispose()
 
-	reg := llm.NewRegistry(host)
-	if err := openai.Register(host, reg); err != nil {
+	reg := llm.NewRegistry(k)
+	if err := openai.Register(k, reg); err != nil {
 		panic(err)
 	}
 	if err := reg.Declare("main", llm.Config{
@@ -95,7 +105,7 @@ func main() {
 	agent, err := loop.NewAgent(model, "assistant",
 		loop.WithToolSet(tools),
 		loop.WithSystemPrompt("You are a concise assistant."),
-		loop.WithEventScope(host),
+		loop.WithEventScope(k),
 	)
 	if err != nil {
 		panic(err)
@@ -118,6 +128,7 @@ go run ./main.go
 ## 下一步
 
 - **核心概念**：kernel 的 Effect / ServiceKey / 事件与装载模型 → [核心概念](/guide/concepts)
+- **装配**：两层装配的完整路径与配方（工具 / 会话 / 审批 / 记忆 / 观测 / MCP） → [装配指南](/guide/assembly)
 - **编排**：flow 槽位三态节点图与 YAML 声明式装图 → [flow 编排](/guide/flow)
 - **记忆**：会话、压缩、长期存储与上下文装配 → [记忆层](/guide/memory)
 - **逐包文档**：28 个包的双语完整文档 → [包文档](/packages/)

@@ -51,6 +51,7 @@ const zh = {
       '/guide/': [
         { text: '指南', items: [
           { text: '快速开始', link: '/guide/quickstart' },
+          { text: '装配指南', link: '/guide/assembly' },
           { text: '核心概念', link: '/guide/concepts' },
           { text: 'flow 编排', link: '/guide/flow' },
           { text: '记忆层', link: '/guide/memory' },
@@ -99,6 +100,7 @@ const en = {
       '/en/guide/': [
         { text: 'Guide', items: [
           { text: 'Quick start', link: '/en/guide/quickstart' },
+          { text: 'Assembly guide', link: '/en/guide/assembly' },
           { text: 'Core concepts', link: '/en/guide/concepts' },
           { text: 'flow orchestration', link: '/en/guide/flow' },
           { text: 'Memory layer', link: '/en/guide/memory' },
