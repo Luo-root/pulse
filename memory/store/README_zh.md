@@ -60,7 +60,7 @@ report, err := store.ImportItems(ctx, dst, items, store.ImportOptions{})
 // report.Imported / report.Skipped / report.Conflicts []store.Conflict
 ```
 
-- `ExportItems` 全量导出：**强制 `IncludeInactive`**——Superseded/Revoked 也是状态机的一部分，丢掉它们等于丢掉替代链与撤销历史。
+- `ExportItems` 全量导出：**强制 `IncludeInactive`**——Superseded/Revoked 也是状态机的一部分，丢掉它们等于丢掉替代链与撤销历史；**`Limit` 被忽略**（导出是全量语义——分页参数静默截断冷备比报错更危险，需要分页请直接用 `Search`）。
 - 目标 store 实现可选接口 `ImportStore`（`PutImport`）才支持导入；两个官方实现（内存/SQLite）都支持。未实现返回 `ErrImportUnsupported`，**不做静默降级**——item 携带的双时态时间域（KnownAt/CreatedAt/UpdatedAt）与 Revision 被重置的「迁移成功」比失败更糟。
 - 幂等三分支：逐条 Get 探测——不存在 → PutImport；已存在且内容一致 → Skipped；已存在且不同 → Conflict（先到先得，不覆盖）。单条校验失败（validate 照跑）记入 Conflicts 继续，不中断整单。
 - **taint 原样保留**：导入不得洗白信任级、绕过 promotion gate。
@@ -89,7 +89,7 @@ go test -race -count=1 ./memory/store/...
 - **CGO-free**：`modernc.org/sqlite`（FTS5 默认启用）；`sqlite.go`/`sqlite_test.go` 带 `//go:build !plan9 && !js` 构建约束——plan9/js 下 SQLite backend 缺席但 **store 主包照常编译**（core 不被锁死，内存实现可用）。
 - **落盘**：`memory_items` 表（namespace 以 `\x1f` join 成 `ns_key`，前缀匹配按元素边界安全）+ **FTS5 外部内容表**（`content=`，触发器随增删改同步）+ `memory_audit` 表（reason 落点）。
 - **schema 版本**：`PRAGMA user_version`，不兼容拒绝加载（不猜测迁移）；`NewSQLiteStore` 自动建表。
-- **Search 与内存实现同语义**（子串 LIKE 转义、状态过滤、UpdatedAt 降序 + ID tiebreak、Limit 硬上限）；**大小写折叠统一仅 ASCII**（SQLite `lower()` 与 Go 侧 `asciiFold` 同口径——重音等非 ASCII 大写不折叠，两实现可替换不惊异）；**FTS 走实现特有 `SearchFTS(ctx, ns, match, limit)`**（token 前缀 `"t"* AND "c"*` 形式，C3 Assembler 的召回入口，类型断言使用，不在 §7.1 接口面）。
+- **Search 与内存实现同语义**（子串 LIKE 转义、状态过滤、UpdatedAt 降序 + ID tiebreak、Limit 硬上限）；**大小写折叠统一仅 ASCII**（SQLite `lower()` 与 Go 侧 `asciiFold` 同口径——重音等非 ASCII 大写不折叠，两实现可替换不惊异）；**FTS 走实现特有 `SearchFTS(ctx, ns, match, limit)`**（token 前缀 `"t"* AND "c"*` 形式，**状态过滤与 `Search` 同口径：只给 Active**，C3 Assembler 的召回入口，类型断言使用，不在 §7.1 接口面）。
 - **并发取舍**：`MaxOpenConns(1)` + `busy_timeout` + `_txlock=immediate`（BeginTx 即 BEGIN IMMEDIATE，消除 deferred 升级窗口）——SQLite 写锁下最稳的正确性，单机吞吐不敏感；WAL 等调优由宿主 DSN 自定义。
 - **Supersede / Revoke 均为事务写**：item 写入与 audit 插入同事务，中间崩溃不留半态；新建路径的 INSERT PK 冲突映射为 `ErrItemExists`（并发新建 TOCTOU 的错误收口）。
 - **Supersede 两写在 `BEGIN IMMEDIATE` 事务内**——替代链不断。

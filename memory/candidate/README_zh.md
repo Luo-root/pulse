@@ -30,7 +30,7 @@ err = p.Reject(ctx, pending[0].ID, "noisy")    // 否决（reason 落审计）
 - **模型参数最小化**：extractor 返回的 item 只取 Kind/Content/Structured；namespace/status/taint/source/ID 由 Pipeline 钉死。
 - **门禁（ASI06）**：候选默认 `TaintUntrustedExt`（可覆盖）；SourceRefs 强制 OriginFn 会话回链；批准晋升**不改 taint**（审批是晋升闸，taint 是数据属性）。
 - **去重 v1 保守口径**：归一（小写 + 空白收紧）后已有 item 的 Content 包含候选 → 丢弃（子串冗余即重复，**超集不拦**——超集归 Supersede 修订语义）；判定在**内存双归一**完成（存量/候选两侧同口径）——store 的 ASCII 折叠不收紧空白，粗筛查询会漏拦存量侧脏数据；向量相似度去重不做（阈值语义未定，后续票）。
-- **可解释**：`Report{Extracted, Stored, Duplicates, Invalid}` 计数——禁止静默丢；去重查询失败中断批次（store 故障宁可失败让宿主重试）。
+- **可解释**：`Report{Extracted, Stored, Duplicates, Invalid}` 计数——禁止静默丢；`DuplicateHits` 与 `Duplicates` 一一对应（ID 撞车防御计数除外），给出命中的存量项 ID 与状态（含被 Revoke / Supersede 仍按 v1 保守口径拦下的那些）；去重查询失败中断批次（store 故障宁可失败让宿主重试）。
 
 ## 指标面（D4）
 

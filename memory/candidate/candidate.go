@@ -112,6 +112,27 @@ type Report struct {
 	Duplicates int
 	// Invalid 是形状丢弃数（空 Content / Structured 非法 JSON）。
 	Invalid int
+	// DuplicateHits 与 Duplicates 一一对应（ID 撞车那条防御计数除外——
+	// 它没有可指的存量项）：命中的存量项 ID 与状态。被 Revoke / Supersede
+	// 的存量同样拦下候选（v1 保守口径），但宿主由此能看到「撞了哪条、
+	// 什么状态」，不必去翻全库再猜。
+	DuplicateHits []DuplicateHit
+}
+
+// DuplicateHit 是一条让候选被判为重复的存量项。
+type DuplicateHit struct {
+	// ID 是命中项的 ID。
+	ID string
+	// Status 是命中项的状态（active / pending / superseded / revoked）。
+	Status store.MemoryStatus
+}
+
+// knownItem 是去重判定集的一条：归一文本 + 来源标识（存量项，或本轮
+// 已入库的候选——批次内去重同样要能解释）。
+type knownItem struct {
+	norm   string
+	id     string
+	status store.MemoryStatus
 }
 
 // Pipeline 是候选管线：提炼 → 去重 → Pending 入库 → 审批晋升/否决。
@@ -155,9 +176,13 @@ func (p *Pipeline) Extract(ctx context.Context, surface []*llm.Message) ([]store
 	if err != nil {
 		return nil, rep, fmt.Errorf("candidate: dedup search: %w", err)
 	}
-	norms := make([]string, 0, len(existing)+len(proposals))
+	known := make([]knownItem, 0, len(existing)+len(proposals))
 	for _, h := range existing {
-		norms = append(norms, normalize(h.Item.Content))
+		known = append(known, knownItem{
+			norm:   normalize(h.Item.Content),
+			id:     h.Item.ID,
+			status: h.Item.Status,
+		})
 	}
 	accepted := make([]store.MemoryItem, 0, len(proposals))
 	for _, prop := range proposals {
@@ -172,9 +197,10 @@ func (p *Pipeline) Extract(ctx context.Context, surface []*llm.Message) ([]store
 		}
 		norm := normalize(content)
 		dup := false
-		for _, n := range norms {
-			if strings.Contains(n, norm) {
+		for _, k := range known {
+			if strings.Contains(k.norm, norm) {
 				dup = true
+				rep.DuplicateHits = append(rep.DuplicateHits, DuplicateHit{ID: k.id, Status: k.status})
 				break
 			}
 		}
@@ -205,7 +231,8 @@ func (p *Pipeline) Extract(ctx context.Context, surface []*llm.Message) ([]store
 			return accepted, rep, fmt.Errorf("candidate: put: %w", err)
 		}
 		accepted = append(accepted, saved)
-		norms = append(norms, norm) // 批次内去重：本轮入库进判定集
+		// 批次内去重：本轮入库进判定集（同样带 ID/状态，可解释）。
+		known = append(known, knownItem{norm: norm, id: saved.ID, status: saved.Status})
 		rep.Stored++
 	}
 	// D4 指标面：整轮成功才累计（错误中断的批次不计——宿主重试成功后

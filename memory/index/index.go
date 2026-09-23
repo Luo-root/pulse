@@ -186,7 +186,18 @@ func (m *MemIndex) Search(ctx context.Context, ns []string, query string, k int)
 		// 不可见（理论上已过滤，复核兜底）也不返回。
 		it, err := m.store.Get(ctx, ns, c.id)
 		if err != nil {
-			continue
+			// 检索期间取消/超时必须上报：把「已取消」伪装成「无命中」会让
+			// 调用方与观测面都看不出召回被截断。
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			// 索引与 store 之间存在写入方同步窗口：条目可能已删除或对
+			// 本 namespace 不可见（此时 Get 返回 ErrItemNotFound）——按
+			// stale 条目跳过。其余 store 故障不得静默降召回，上报。
+			if errors.Is(err, store.ErrItemNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("index: recheck %s: %w", c.id, err)
 		}
 		if it.Status != store.StatusActive {
 			continue

@@ -63,7 +63,7 @@ a.Semantic = func(ctx context.Context, ns []string, q string, k int) ([]store.Me
 
 Retrieved memory is recalled along two paths depending on store capability (the path is visible to the host and lands in Diagnostics):
 
-- **FTS first**: when the store implements `SearchFTS` (the SQLite version), recall goes through token prefixes (`deploy` → `"deploy"*`, word boundaries + FTS rank); hits record the diagnostic `recall via fts token prefix`;
+- **FTS first**: when the store implements `SearchFTS` (the SQLite version), recall goes through token prefixes (`deploy` → `"deploy"*`, word boundaries + FTS rank); hits record the diagnostic `recall via fts token prefix`; **both recall paths (keyword and semantic) filter non-Active items in the fusion layer** — Revoked/Superseded facts and unapproved Pending candidates never enter the context, whatever the recall source returns;
 - **Substring fallback**: when FTS is unsupported (the memory version) or FTS fails, fall back to `MemoryStore.Search` substring recall (ASCII folding); FTS failure records the diagnostic `fts failed, falling back to substring`.
 
 The two paths differ (word boundaries vs substring containment): the same query may recall differently on the memory version and the SQLite version — this is an explicitly declared seam enhancement, not a regression of the store's own `Search` replaceability (that invariant was pinned in C2). Candidates from both paths go through the same deterministic `rankHits` ordering; a recall failure never interrupts assembly (diagnostic recorded, the surface continues as usual).

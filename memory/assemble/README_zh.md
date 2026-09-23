@@ -61,7 +61,7 @@ a.Semantic = func(ctx context.Context, ns []string, q string, k int) ([]store.Me
 
 检索记忆按 store 能力分两路召回（路径对宿主可见，落 Diagnostics）：
 
-- **FTS 优先**：store 实现 `SearchFTS`（SQLite 版）时走 token 前缀召回（`deploy` → `"deploy"*`，词边界 + FTS rank），命中记诊断 `recall via fts token prefix`；
+- **FTS 优先**：store 实现 `SearchFTS`（SQLite 版）时走 token 前缀召回（`deploy` → `"deploy"*`，词边界 + FTS rank），命中记诊断 `recall via fts token prefix`；**两条召回路（keyword 与 semantic）都在融合层过滤非 Active**——被 Revoke/Supersede 的事实与未过审批的 Pending 不进上下文，无论召回源返回什么；
 - **回退子串**：不支持 FTS（内存版）或 FTS 失败时回退 `MemoryStore.Search` 子串召回（ASCII 折叠）；FTS 失败记诊断 `fts failed, falling back to substring`。
 
 两路口径有差异（词边界 vs 子串包含）：同一 query 在内存版与 SQLite 版下的召回结果可能不同——这是显式声明的接缝增强，不是 store 自身 `Search` 的可替换性回归（那是 C2 已钉死的不变式）。两路候选都过同一 `rankHits` 确定性排序；召回失败不中断组装（诊断记录，surface 照常）。
