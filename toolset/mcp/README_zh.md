@@ -50,6 +50,12 @@ _ = client.Close()
 
 或 `mcp.Plugin(reg, cfg)` 交给 `kernel.Use`：卸载时自动 Detach + `Client.Close()`。
 
+## 装配期与结果语义
+
+- `Config.Timeout`（默认 `DefaultTimeout` = 30s）只约束**装配期** `Sync` 的 `ListTools`：对端不响应时 `kernel.Use` / `Sync` 必定在期限内返回错误（超时错误里带旋钮值），而不是永久挂住启动路径。父 ctx 已有的更紧 deadline 优先。
+- 工具调用本身跑调用方的回合 ctx，不受 `Config.Timeout` 约束；`Client.Close` 没有 ctx（接口如此），需要上限的实现自己在里面带（如 `ConnectCommand` 的进程 kill）。
+- `CallTool` 优先取 `Content` 文本；只回 `structuredContent`（SEP-2106）的 server 用它的 JSON 文本兜底，避免「有结果的工具」被折成空串。
+
 ## 测试
 
 ```bash

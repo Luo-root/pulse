@@ -89,6 +89,7 @@ func (c *SDKClient) ListTools(ctx context.Context) ([]Tool, error) {
 // MCP 工具业务失败（CallToolResult.IsError=true）也返回 err（内容为
 // Content 文本，不加 "tool error: " 前缀）——交给 loop.Execute 路径
 // 统一加前缀并置 Part.IsError=true，与 mock Client 的 failCall 一致。
+// Content 为空但带 structuredContent 时用其 JSON 文本兜底（否则工具结果为空串）。
 func (c *SDKClient) CallTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -116,6 +117,11 @@ func (c *SDKClient) CallTool(ctx context.Context, name string, args json.RawMess
 		return "", fmt.Errorf("toolset/mcp: call %q: %w", name, err)
 	}
 	text := contentText(res.Content)
+	if text == "" {
+		// 只回结构化结果的 server（SEP-2106 的 structuredContent）：Content 为空
+		// 时原来返回空串，模型看到的是「工具没说话」——按 JSON 文本兜底。
+		text = structuredText(res.StructuredContent)
+	}
 	if res.IsError {
 		if text == "" {
 			text = "tool error"
@@ -123,6 +129,20 @@ func (c *SDKClient) CallTool(ctx context.Context, name string, args json.RawMess
 		return "", fmt.Errorf("%s", text)
 	}
 	return text, nil
+}
+
+// structuredText 把 structuredContent 序列化为模型可读的 JSON 文本。
+// nil / 序列化失败都返回空串——调用方按「没有内容」处理（该值本身就来自对端
+// JSON，除自引用等病态值外不会失败）。
+func structuredText(v any) string {
+	if v == nil {
+		return ""
+	}
+	b, err := json.Marshal(v)
+	if err != nil || len(b) == 0 || string(b) == "null" {
+		return ""
+	}
+	return string(b)
 }
 
 // Close 关闭会话。幂等。

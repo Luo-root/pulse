@@ -52,6 +52,12 @@ _ = client.Close()
 
 Or hand `mcp.Plugin(reg, cfg)` to `kernel.Use`: on unload it automatically Detaches + calls `Client.Close()`.
 
+## Mount-time bounds and result semantics
+
+- `Config.Timeout` (default `DefaultTimeout` = 30s) bounds the **mount-time** `ListTools` in `Sync` only: when the peer does not answer, `kernel.Use` / `Sync` is guaranteed to return an error within the limit (the timeout error carries the knob value) instead of hanging the startup path forever. A tighter deadline already present on the parent ctx wins.
+- Tool calls themselves run on the caller's turn ctx and are not bounded by `Config.Timeout`; `Client.Close` takes no ctx (that is the interface), so an implementation that needs a bound must carry it itself (e.g. the process kill in `ConnectCommand`).
+- `CallTool` prefers the `Content` text; a server that returns only `structuredContent` (SEP-2106) falls back to its JSON text, so "a tool with a result" never collapses into an empty string.
+
 ## Tests
 
 ```bash

@@ -51,9 +51,12 @@ type BeforeToolCall struct {
 
 // AfterToolCall 是工具执行完成的事件载荷。
 type AfterToolCall struct {
-	Agent    string // 产生本事件的 Agent 名（NewAgent 的 name，必填）
-	Call     llm.ToolCall
-	Result   string // 回传给模型的文本（失败时为错误说明）
+	Agent  string // 产生本事件的 Agent 名（NewAgent 的 name，必填）
+	Call   llm.ToolCall
+	Result string // 回传给模型的文本（失败时为错误说明）
+	// Duration 是工具本体耗时：不含 before_tool_call 水位上的审批/改写等待
+	// （人批可能等很久；审批等待在会话日志里由 tool.called → tool.result 读出）。
+	// Rejected=true 时工具没跑过，这里的值≈0。
 	Duration time.Duration
 	Err      error // 工具自身的错误；nil 表示成功
 	Rejected bool  // true 表示被 before_tool_call 拒绝，未真实执行

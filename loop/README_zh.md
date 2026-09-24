@@ -188,6 +188,8 @@ _, _ = kernel.OnWaterfall(reqScope, loop.EventBeforeToolCall,
 | `EventAfterToolCall` + `AfterToolCall` | `Call`, `Agent`, `Result`, `Duration`, `Err`, `Rejected` | Result 与回传模型文本同源 |
 | `EventTurnEnd` + `TurnEnd` | `Final`, `Agent`, `Usage`, `Steps`, `StoppedBy` | 任意退出恰好一次 |
 
+`AfterToolCall.Duration` 只计工具本体：不含 `before_tool_call` 水位上的审批/改写等待（人批可能等几分钟），`Rejected=true` 时工具没跑、值≈0。审批等待落在 `before_tool_call` 与 `after_tool_call` 的间隔里，需要它请自行计时。
+
 ## 不做
 
 会话存储、重试 failover、把 Agent 装配成 Plugin、暴露 `llm.StreamEvent` channel。

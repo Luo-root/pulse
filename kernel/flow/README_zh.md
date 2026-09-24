@@ -237,6 +237,8 @@ g, _ := flow.New(ctx, "demo", flow.WithMaxRunning(4))
 
 `WithMaxRunning(n)` 中 `n <= 0` 表示无限并发（默认）。等待 `Requires` 时不占名额；全部输入到达后才占一个名额。
 
+取消与超时会打断「等名额」的排队：已取消/已超时的节点不会在名额释放后再进入 `Run`（终态 `canceled`；节点超时归 `failed`）——否则一个已被取消的节点会照常发起有副作用的执行，还被记成 `completed`。
+
 ## 生命周期：Run、Start、Wait 与取消
 
 ```go
