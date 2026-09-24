@@ -162,3 +162,37 @@ func unsupportedPart(provider string, role llm.Role, kind llm.PartKind) *llm.Err
 	return llm.NewError(llm.ErrBadRequest, provider, 0, nil,
 		"角色 %s 的内容块 %s 不被 %s 线协议支持", role, kind, provider)
 }
+
+// toolErrorPrefix 是两变体上 IsError 的**唯一**表达（对照 Anthropic 的
+// is_error）：OpenAI 两种线格式都没有工具结果的错误字段，模型只能从文本分辨
+// 「工具坏了」与「工具说完了」。因此这是跨家语义的必要约定（唯一字段是
+// tool 消息的 content / function_call_output 的 output），不是网关兼容 hack。
+const toolErrorPrefix = "[tool error] "
+
+// toolResultText 摊平工具结果文本：失败结果加统一前缀（内容为空时只留前缀本体，
+// 不让模型看见一个只有空格的尾巴）。
+func toolResultText(tr *llm.ToolResult) string {
+	text := llm.JoinText(tr.Content)
+	if !tr.IsError {
+		return text
+	}
+	if text == "" {
+		return strings.TrimSpace(toolErrorPrefix)
+	}
+	return toolErrorPrefix + text
+}
+
+// systemText 摊平 system 消息：两变体的系统提示都是字符串字段
+// （completions 的 system content、responses 的顶层 instructions），因此非文本块
+// 显式报错——与 assistant 分支同口径，不静默削掉提示词。
+func systemText(provider string, msg *llm.Message) (string, error) {
+	for i := range msg.Parts {
+		switch msg.Parts[i].Kind {
+		case llm.PartText, llm.PartReasoning:
+			// 文本走 JoinText；输入侧思维链不回传（与 assistant 分支一致）。
+		default:
+			return "", unsupportedPart(provider, msg.Role, msg.Parts[i].Kind)
+		}
+	}
+	return llm.JoinText(msg.Parts), nil
+}

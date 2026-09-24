@@ -62,6 +62,21 @@ APIKey 必填，本包不读环境变量——配置显式优先。
 - `FinishReason`：output 含 function_call → `FinishToolCalls`；仅 `status=incomplete` 才映射截断 / 内容过滤
 - user 内容按遇到顺序构建：图在文前就是图在前
 
+## 工具结果的失败标记、Name 与拒答（#246 / #247 定下的口径）
+
+| 词表字段 | Completions | Responses | Anthropic（对照） |
+|---|---|---|---|
+| `ToolResult.IsError` | 文本前缀 `[tool error] ` | 同左 | 原生 `is_error` |
+| `Message.Name` | `name`（system / user / assistant） | 无对应字段 → 忽略 | 无对应字段 → 忽略 |
+| system 消息里的非文本块 | `ErrBadRequest`（请求不发出） | 同左 | 同左 |
+| 拒答（refusal） | `message.refusal` / 流式 delta → 文本块 | `refusal` 内容块 → 文本块 | — |
+| `Output.Logprobs=false` + `TopLogprobs` | `ErrBadRequest` | `ErrBadRequest` | — |
+
+- **`IsError` 以文本前缀表达**：OpenAI 两种线格式都没有工具结果的错误字段（唯一能下发的只有 tool 消息的 `content` / `function_call_output.output`），模型只能从文本分辨「工具坏了」与「工具说完了」。前缀是该语义在两变体上的**唯一**表达；结果内容为空时只留前缀本体，不留一个只有空格的尾巴。
+- **`Name` 只落到有字段的那一档**：OpenAI 官方支持 `name`（system / user / assistant；tool 消息线格式没有）；Responses 变体与 Anthropic 无对应字段，忽略该值。这里的宽松口径是**有意**的——与「未支持的请求参数一律 `ErrBadRequest`」不同，见 `llm.Message.Name` godoc。
+- **拒答不静默**：completions 原来把 `message.refusal`（含流式 delta）整段丢掉，拒答时上层拿到的是空回复；现在两变体一致折成文本块，`Message.Text()` 直接读得到。
+- **system 里的非文本块显式报错**：两变体的系统提示都是字符串字段，图像等块不能表达——报 `ErrBadRequest` 而不是悄悄削掉一块提示词。
+
 ## 多模态（调用方只给词汇表块）
 
 | MIME | Completions | Responses |
@@ -96,7 +111,7 @@ req := llm.NewRequest(&llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
 |---|---|---|
 | `Reasoning.Effort` | `reasoning_effort` | `reasoning.effort` |
 | `Output.Verbosity` | `verbosity` | `text.verbosity` |
-| `Output.Logprobs` / `TopLogprobs` | `logprobs` / `top_logprobs`（TopLogprobs 自动隐含 logprobs=true） | 仅 `top_logprobs`；单设 Logprobs=true 会显式 bad_request |
+| `Output.Logprobs` / `TopLogprobs` | `logprobs` / `top_logprobs`（TopLogprobs 自动隐含 logprobs=true；显式 `Logprobs=false` 与 TopLogprobs 冲突 → 显式 bad_request） | 仅 `top_logprobs`；单设 Logprobs=true 会显式 bad_request |
 | `ToolChoice.Parallel` | `parallel_tool_calls` | 同左 |
 | `TopK` | 无官方字段 → **显式 bad_request**（不为兼容网关做 JSON 注入） | 同左 |
 
