@@ -257,13 +257,17 @@ func (a *Agent) RunStream(ctx context.Context, onDelta func(text string), histor
 		}
 
 		for _, call := range calls {
-			start := time.Now()
 			btc := &BeforeToolCall{Call: call}
 			// 与 llm.before_generate 同一条 around 契约：监听器可能
 			// Clone 改写后返回新载荷，必须以返回值为准——此后全程
 			// 使用 btc.Call（改写后的名字与参数），原 call 不再引用。
 			btc = waterfallOf(a.scope, EventBeforeToolCall, btc)
 			effective := btc.Call
+			// Duration 只计工具本体：审批/改写这段（闸门里的人批可能等几分钟）
+			// 不在其中——与 llm.before_generate 的口径一致（那边也在水位之后取
+			// start），否则一个 5ms 的工具会被记成「耗时 2 分钟」。审批等待本身
+			// 在会话日志里可读：tool.called → tool.result 的间隔。
+			start := time.Now()
 
 			if btc.Rejected {
 				reason := btc.RejectReason

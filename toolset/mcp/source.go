@@ -3,12 +3,18 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Luo-root/pulse/kernel"
 	"github.com/Luo-root/pulse/toolset"
 )
+
+// DefaultTimeout 是 Config.Timeout 的默认值：与 toolset/lsp 的握手上限同量级
+// （都是「拉起对端 + 首次协议往返」这一档）。
+const DefaultTimeout = 30 * time.Second
 
 // Config 描述一个 MCP 来源插件的装配参数。
 type Config struct {
@@ -23,6 +29,18 @@ type Config struct {
 	DefaultRisk toolset.Risk
 	// PreviewFn 覆盖本源全部工具的预览。nil 则用 DefaultPreview（opaque）。
 	PreviewFn toolset.PreviewFn
+	// Timeout 是**装配期**（Sync 的 ListTools，含 Plugin 的 Apply）的上限：
+	// 对端不响应时 kernel.Use 必须能返回错误，而不是永久阻塞。默认
+	// DefaultTimeout。只作用于 Sync——工具调用本身跑在调用方的回合 ctx 上。
+	Timeout time.Duration
+}
+
+// timeout 归一化 Timeout（<= 0 取默认）。
+func (c Config) timeout() time.Duration {
+	if c.Timeout <= 0 {
+		return DefaultTimeout
+	}
+	return c.Timeout
 }
 
 // Source 持有一次 MCP 来源的装载状态：Sync 登记，Detach 整源撤销。
@@ -81,12 +99,16 @@ func Plugin(reg *toolset.Registry, cfg Config) (kernel.Plugin, error) {
 		return nil, err
 	}
 	return kernel.Func(func(c *kernel.Context) error {
+		// 装配期没有请求 ctx 可继承：上限由 Sync 按 Config.Timeout 兜底
+		// （对端不响应时 kernel.Use 必须能返回，不能永久挂住启动路径）。
 		if err := src.Sync(c, context.Background()); err != nil {
 			return err
 		}
 		_, err := c.Effect(func() (func(), error) {
 			return func() {
 				src.Detach()
+				// Client.Close 没有 ctx（接口如此）：对端卡死时这一步不设上限，
+				// 需要上限的宿主要在实现里自己带（如 CommandTransport 的进程 kill）。
 				_ = cfg.Client.Close()
 			}, nil
 		})
@@ -112,12 +134,24 @@ func (s *Source) Sync(scope *kernel.Context, ctx context.Context) error {
 		s.synced = false
 	}
 
-	tools, err := s.cfg.Client.ListTools(ctx)
+	srcKey := s.cfg.sourceKey()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// 装配期上限：父 ctx 已有的更紧 deadline 优先（WithTimeout 取较早者）。
+	runCtx, cancel := context.WithTimeout(ctx, s.cfg.timeout())
+	defer cancel()
+
+	tools, err := s.cfg.Client.ListTools(runCtx)
 	if err != nil {
+		// 超时要带上旋钮值：装配期失败最常见的原因就是对端不响应，而
+		// context.DeadlineExceeded 本身看不出这个上限来自哪里。
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = fmt.Errorf("%w (Config.Timeout=%s)", err, s.cfg.timeout())
+		}
 		return fmt.Errorf("toolset/mcp: list tools: %w", err)
 	}
 
-	srcKey := s.cfg.sourceKey()
 	for _, t := range tools {
 		if t.Name == "" {
 			s.reg.DisposeSource(srcKey)

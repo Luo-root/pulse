@@ -190,6 +190,8 @@ Positioning: a stateless turn executor. Design: history lives with the caller, e
 | `EventAfterToolCall` + `AfterToolCall` | `Call`, `Agent`, `Result`, `Duration`, `Err`, `Rejected` | Result shares the same source as the text sent back to the model |
 | `EventTurnEnd` + `TurnEnd` | `Final`, `Agent`, `Usage`, `Steps`, `StoppedBy` | exactly once on any exit |
 
+`AfterToolCall.Duration` covers the tool body only: it excludes approval/rewrite waiting on the `before_tool_call` waterfall (a human approval can take minutes); with `Rejected=true` nothing ran, so the value is ≈0. The approval wait lives in the gap between `before_tool_call` and `after_tool_call` — time it yourself if you need it.
+
 ## Out of Scope
 
 Session storage, retry failover, assembling the Agent into a Plugin, exposing the `llm.StreamEvent` channel.

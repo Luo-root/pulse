@@ -249,9 +249,25 @@ func (g *Graph) fail(err error) {
 	g.mu.Unlock()
 }
 
-func (g *Graph) acquire() {
-	if g.sem != nil {
-		g.sem <- struct{}{}
+// acquire 取一个执行名额。取消/超时要能打断排队——否则名额一释放，早已被取消
+// 的节点照常进入 Run（发起模型调用等副作用），还会被记成 completed。ctx 用节点
+// 的 RunCtx：它已继承图的取消与节点 Timeout。
+//
+// 抢到名额与取消同时发生（select 两路都就绪时随机取一路）时以取消为准：这样
+// 「已取消 ⇔ 不再有新节点进入 Run」是确定的，不取决于调度。
+func (g *Graph) acquire(ctx context.Context) error {
+	if g.sem == nil {
+		return nil
+	}
+	select {
+	case g.sem <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			g.release()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -291,7 +307,9 @@ func (g *Graph) runNode(n *Node) {
 		if rc.ctx.Err() != nil {
 			return rc.ctx.Err()
 		}
-		g.acquire()
+		if err := g.acquire(rc.ctx); err != nil {
+			return err
+		}
 		defer g.release()
 		emitRunning()
 		defer func() {

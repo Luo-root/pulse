@@ -239,6 +239,8 @@ g, _ := flow.New(ctx, "demo", flow.WithMaxRunning(4))
 
 In `WithMaxRunning(n)`, `n <= 0` means unlimited concurrency (the default). Waiting for `Requires` takes no slot; a slot is taken only once all inputs have arrived.
 
+Cancellation and timeouts interrupt a node queueing for a slot: a canceled or timed-out node never enters `Run` after a slot frees up (it finishes as `canceled`; a node timeout is `failed`). Otherwise an already-canceled node would still start side-effecting work and be recorded as `completed`.
+
 ## Lifecycle: Run, Start, Wait, and Cancellation
 
 ```go
