@@ -85,10 +85,16 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 	var instructions []string
 	items := make(responses.ResponseInputParam, 0, len(req.Messages))
 	for _, msg := range req.Messages {
+		// Message.Name 在本线格式没有对应字段（输入项里的 message 无 name），
+		// 忽略——Chat Completions 变体有 name，两档差异见 llm/README。
 		switch msg.Role {
 		case llm.RoleSystem:
 			// Responses 的系统提示走顶层 instructions 字段。
-			instructions = append(instructions, llm.JoinText(msg.Parts))
+			text, err := systemText(m.provider, msg)
+			if err != nil {
+				return params, err
+			}
+			instructions = append(instructions, text)
 
 		case llm.RoleAssistant:
 			var texts []string
@@ -166,7 +172,7 @@ func (m *responsesModel) buildParams(req *llm.GenerateRequest) (responses.Respon
 						OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 							CallID: tr.ToolCallID,
 							Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
-								OfString: param.NewOpt(llm.JoinText(tr.Content)),
+								OfString: param.NewOpt(toolResultText(tr)),
 							},
 						},
 					})

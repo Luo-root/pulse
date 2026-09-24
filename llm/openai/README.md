@@ -64,6 +64,21 @@ APIKey is required; this package does not read environment variables — explici
 - `FinishReason`: output containing function_call → `FinishToolCalls`; truncation / content filtering maps only from `status=incomplete`
 - user content is built in encounter order: image before text stays image before text
 
+## Tool-result failure marking, Name and refusals (the #246 / #247 rulings)
+
+| Vocabulary field | Completions | Responses | Anthropic (for reference) |
+|---|---|---|---|
+| `ToolResult.IsError` | text prefix `[tool error] ` | same as left | native `is_error` |
+| `Message.Name` | `name` (system / user / assistant) | no equivalent field → ignored | no equivalent field → ignored |
+| non-text blocks in a system message | `ErrBadRequest` (the request is never sent) | same as left | same as left |
+| refusal | `message.refusal` / streaming delta → text block | `refusal` content block → text block | — |
+| `Output.Logprobs=false` + `TopLogprobs` | `ErrBadRequest` | `ErrBadRequest` | — |
+
+- **`IsError` is expressed as a text prefix**: neither OpenAI wire format has an error field for tool results (the only thing you can send is the tool message's `content` / `function_call_output.output`), so the model can only tell "the tool broke" from "the tool finished" through text. The prefix is the **only** expression of that semantic on these two variants; when the result body is empty only the prefix itself is sent, never a whitespace-only tail.
+- **`Name` lands only where a field exists**: OpenAI supports `name` (system / user / assistant; the tool message has none in the wire format); the Responses variant and Anthropic have no equivalent and ignore the value. That leniency is **deliberate** and differs from "unsupported request parameters always get `ErrBadRequest`" — see the `llm.Message.Name` godoc.
+- **Refusals are never silent**: completions used to drop `message.refusal` (including streaming deltas) entirely, so a refusal arrived as an empty reply; both variants now fold it into a text block that `Message.Text()` returns.
+- **Non-text blocks in system are an explicit error**: both variants take the system prompt as a string field, so image and other blocks cannot be expressed — `ErrBadRequest` instead of quietly shaving a piece off the prompt.
+
 ## Multimodal (callers only supply vocabulary blocks)
 
 | MIME | Completions | Responses |
@@ -98,7 +113,7 @@ Common vocabulary fields: `Temperature` / `TopP` / `MaxTokens` / `StopSequences`
 |---|---|---|
 | `Reasoning.Effort` | `reasoning_effort` | `reasoning.effort` |
 | `Output.Verbosity` | `verbosity` | `text.verbosity` |
-| `Output.Logprobs` / `TopLogprobs` | `logprobs` / `top_logprobs` (TopLogprobs automatically implies logprobs=true) | only `top_logprobs`; setting Logprobs=true alone gets an explicit bad_request |
+| `Output.Logprobs` / `TopLogprobs` | `logprobs` / `top_logprobs` (TopLogprobs automatically implies logprobs=true; an explicit `Logprobs=false` conflicting with TopLogprobs is an explicit bad_request) | only `top_logprobs`; setting Logprobs=true alone gets an explicit bad_request |
 | `ToolChoice.Parallel` | `parallel_tool_calls` | same as left |
 | `TopK` | no official field → **explicit bad_request** (no JSON injection for the sake of compatible gateways) | same as left |
 

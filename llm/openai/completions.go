@@ -118,9 +118,14 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 		if req.Output.Verbosity != "" {
 			params.Verbosity = sdk.ChatCompletionNewParamsVerbosity(req.Output.Verbosity)
 		}
-		// top_logprobs 依赖 logprobs=true 才有输出：设 TopLogprobs 时
-		// 自动隐含开启，调用方无需重复声明。
+		// top_logprobs 依赖 logprobs=true 才有输出：只给 TopLogprobs 时自动隐含
+		// 开启，调用方无需重复声明。显式 Logprobs=false 与 TopLogprobs 同时给出
+		// 是自相矛盾，报错——绝不静默改写调用方给的参数（与 Responses 变体同判）。
 		if req.Output.TopLogprobs != nil {
+			if req.Output.Logprobs != nil && !*req.Output.Logprobs {
+				return params, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
+					"Output.Logprobs=false 与 Output.TopLogprobs 不能同时设置")
+			}
 			params.Logprobs = param.NewOpt(true)
 			params.TopLogprobs = param.NewOpt(int64(*req.Output.TopLogprobs))
 		} else if req.Output.Logprobs != nil {
@@ -226,12 +231,35 @@ func (m *completionsModel) buildParams(req *llm.GenerateRequest, stream bool) (s
 	return params, nil
 }
 
+// setMessageName 把词汇表的 Message.Name 落到线格式的 name 字段：OpenAI 的
+// system / user / assistant 三种消息都有该字段，tool 消息没有（线格式如此，
+// 不对应任何可下发的东西）。
+func setMessageName(u *sdk.ChatCompletionMessageParamUnion, name string) {
+	if name == "" {
+		return
+	}
+	switch {
+	case u.OfSystem != nil:
+		u.OfSystem.Name = param.NewOpt(name)
+	case u.OfUser != nil:
+		u.OfUser.Name = param.NewOpt(name)
+	case u.OfAssistant != nil:
+		u.OfAssistant.Name = param.NewOpt(name)
+	}
+}
+
 // convertMessage 翻译单条消息。工具结果在 OpenAI 线格式中必须是
 // 顶层 tool 消息，因此一条 llm.Message 可能展开为多条。
 func (m *completionsModel) convertMessage(msg *llm.Message) ([]sdk.ChatCompletionMessageParamUnion, error) {
 	switch msg.Role {
 	case llm.RoleSystem:
-		return []sdk.ChatCompletionMessageParamUnion{sdk.SystemMessage(llm.JoinText(msg.Parts))}, nil
+		text, err := systemText(m.provider, msg)
+		if err != nil {
+			return nil, err
+		}
+		sys := sdk.SystemMessage(text)
+		setMessageName(&sys, msg.Name)
+		return []sdk.ChatCompletionMessageParamUnion{sys}, nil
 
 	case llm.RoleAssistant:
 		var texts []string
@@ -267,7 +295,9 @@ func (m *completionsModel) convertMessage(msg *llm.Message) ([]sdk.ChatCompletio
 		if len(texts) > 0 {
 			asst.Content.OfString = param.NewOpt(strings.Join(texts, "\n"))
 		}
-		return []sdk.ChatCompletionMessageParamUnion{{OfAssistant: asst}}, nil
+		u := sdk.ChatCompletionMessageParamUnion{OfAssistant: asst}
+		setMessageName(&u, msg.Name)
+		return []sdk.ChatCompletionMessageParamUnion{u}, nil
 
 	case llm.RoleUser, llm.RoleTool:
 		return m.convertUserSide(msg)
@@ -288,11 +318,14 @@ func (m *completionsModel) convertUserSide(msg *llm.Message) ([]sdk.ChatCompleti
 		if len(parts) == 0 {
 			return
 		}
+		var u sdk.ChatCompletionMessageParamUnion
 		if onlyText {
-			out = append(out, sdk.UserMessage(strings.Join(texts, "\n")))
+			u = sdk.UserMessage(strings.Join(texts, "\n"))
 		} else {
-			out = append(out, sdk.UserMessage(parts))
+			u = sdk.UserMessage(parts)
 		}
+		setMessageName(&u, msg.Name)
+		out = append(out, u)
 		parts, texts, onlyText = nil, nil, true
 	}
 	for i := range msg.Parts {
@@ -323,7 +356,7 @@ func (m *completionsModel) convertUserSide(msg *llm.Message) ([]sdk.ChatCompleti
 				return nil, llm.NewError(llm.ErrBadRequest, m.provider, 0, nil,
 					"%s 消息第 %d 块 ToolResultValue 为空", msg.Role, i)
 			}
-			out = append(out, sdk.ToolMessage(llm.JoinText(tr.Content), tr.ToolCallID))
+			out = append(out, sdk.ToolMessage(toolResultText(tr), tr.ToolCallID))
 		case llm.PartReasoning:
 			// 输入侧思维链不回传。
 		default:
@@ -425,6 +458,14 @@ func (m *completionsModel) pump(ctx context.Context, stream *ssestream.Stream[sd
 			if d.Content != "" {
 				text.WriteString(d.Content)
 				if !send(llm.StreamEvent{Kind: llm.EventTextDelta, Index: 0, Text: d.Content}) {
+					return
+				}
+			}
+			// 拒答文本与正文一样进 text 并下推：词汇表把拒答折成文本块（与
+			// Responses 变体同口径），丢掉它上层只会看到一个空回复。
+			if d.Refusal != "" {
+				text.WriteString(d.Refusal)
+				if !send(llm.StreamEvent{Kind: llm.EventTextDelta, Index: 0, Text: d.Refusal}) {
 					return
 				}
 			}
@@ -555,6 +596,12 @@ func mapCompletionsMessage(provider string, msg *sdk.ChatCompletionMessage, audi
 	}
 	if msg.Content != "" {
 		parts = append(parts, llm.Text(msg.Content))
+	}
+	// 拒答文本：Responses 变体早已映射（response 的 refusal 内容块），
+	// completions 漏了它——拒答时 Parts 长度为 0，上层既读不到拒答文本，
+	// 也看不出这是一次拒答而不是空回复。
+	if msg.Refusal != "" {
+		parts = append(parts, llm.Text(msg.Refusal))
 	}
 	// 官方 audio 输出模态：message.audio.data 为 base64 音频，
 	// transcript 是合成文本回显（OpenAI 有值、MiMo 恒空）——非空时

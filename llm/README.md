@@ -221,8 +221,8 @@ Positioning: provider-neutral vocabulary + Registry. Consumers see only `ChatMod
 | `Part` | Kind determines which pointer/string is valid |
 | `MediaContent` / `ImageSource` | Open modality / image: Data first, otherwise URL; MediaType required |
 | `ClassifyMIME` / the four `MediaFamily` constants | MIME family (`MediaImage` / `MediaVideo` / `MediaAudio` / `MediaPDF`); **one** definition shared by both adapters. Unrecognized MIME → `""` (the caller reports `bad_request`) |
-| `ToolCall` / `ToolResult` | Calls initiated by the model; results sent back (`IsError` lets the model self-correct) |
-| `Message` | `Role + Parts`; optional `Name` (multiple personas; ignored when the provider does not support it) |
+| `ToolCall` / `ToolResult` | Calls initiated by the model; results sent back (`IsError` lets the model self-correct). Expressions differ per wire: Anthropic has native `is_error`, both OpenAI variants use the `[tool error] ` text prefix (see the adapter README) |
+| `Message` | `Role + Parts`; optional `Name` (multiple personas): the OpenAI Chat Completions system/user/assistant messages carry `name`, while the Responses variant and Anthropic have no equivalent field and ignore it (no error — see the `Message.Name` godoc) |
 | `Text` / `Reasoning` / `ImageURL` / `ImageData` / `Media` / `MediaURL` / `Call` / `Result` / `ResultParts` | Block constructors. `Result` = single-text success; `ResultParts` can carry `isError` and multiple blocks |
 | `System` / `User` / `UserText` / `Assistant` / `AssistantText` / `ToolMessage` | Message constructors |
 | `(*Message).Text` | Concatenates all `PartText` (excluding reasoning), joined with newlines |

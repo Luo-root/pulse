@@ -70,7 +70,11 @@ type ToolCall struct {
 type ToolResult struct {
 	ToolCallID string
 	Content    []Part // 结果内容，通常为一个文本块
-	IsError    bool   // true 表示工具执行失败（模型可据此自我修正）
+	// IsError=true 表示工具执行失败（被闸门拒绝也算），模型据此自我修正。
+	// 线格式表达分家：Anthropic 有原生 is_error；OpenAI 两个变体都没有工具
+	// 结果的错误字段，适配器以 `[tool error] ` 文本前缀表达——同一份历史
+	// 重放到哪一家，模型都能从文本分辨「工具坏了」与「工具说完了」。
+	IsError bool
 }
 
 // Part 是消息的内容块。Kind 决定哪个字段有效：
@@ -145,7 +149,10 @@ func ResultParts(toolCallID string, isError bool, parts ...Part) Part {
 type Message struct {
 	Role  Role
 	Parts []Part
-	// Name 可选的参与者名（多角色场景），provider 不支持则忽略。
+	// Name 可选的参与者名（多角色场景）。线格式支持分家：OpenAI Chat
+	// Completions 的 system / user / assistant 消息有 name 字段（tool 消息
+	// 没有）；Responses 变体与 Anthropic 都没有对应字段，忽略该值（口径见
+	// 各 adapter README）。
 	Name string
 }
 

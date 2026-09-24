@@ -220,8 +220,8 @@ TTS（Completions）：`req.Audio = &llm.AudioOutput{Voice: "alloy", Format: "wa
 | `Part` | Kind 决定哪个指针/字符串有效 |
 | `MediaContent` / `ImageSource` | 开放模态 / 图像：Data 优先，否则 URL；MediaType 必填 |
 | `ClassifyMIME` / 四个 `MediaFamily` 常量 | MIME 家族（`MediaImage` / `MediaVideo` / `MediaAudio` / `MediaPDF`）；两个 adapter 共用**同一份**定义。不认识的 MIME → `""`（调用方报 `bad_request`） |
-| `ToolCall` / `ToolResult` | 模型发起的调用；回传结果（`IsError` 让模型自我修正） |
-| `Message` | `Role + Parts`；可选 `Name`（多角色，provider 不支持则忽略） |
+| `ToolCall` / `ToolResult` | 模型发起的调用；回传结果（`IsError` 让模型自我修正）。线格式表达分家：Anthropic 原生 `is_error`，OpenAI 两个变体用 `[tool error] ` 文本前缀（见 adapter README） |
+| `Message` | `Role + Parts`；可选 `Name`（多角色）：OpenAI Chat Completions 的 system/user/assistant 有 `name` 字段，Responses 变体与 Anthropic 无对应字段则忽略（不报错，口径见 `Message.Name` godoc） |
 | `Text` / `Reasoning` / `ImageURL` / `ImageData` / `Media` / `MediaURL` / `Call` / `Result` / `ResultParts` | 块构造器。`Result` = 单文本成功；`ResultParts` 可带 `isError` 与多块 |
 | `System` / `User` / `UserText` / `Assistant` / `AssistantText` / `ToolMessage` | 消息构造器 |
 | `(*Message).Text` | 拼接全部 `PartText`（不含 reasoning），换行连接 |
