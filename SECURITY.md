@@ -41,15 +41,18 @@ private channel. If that changes, this section will be updated.
 
 ## In scope
 
-Anything in this repository:
+Anything in this repository — the graph engine (`pulse`), graph observation (`pulse/observe`)
+and declarative assembly (`pulse/yaml`):
 
-- kernel lifecycle and reversible effects, service visibility and dependency resolution;
-- event dispatch (`Emit` / `EmitLocal` / waterfalls) and the `flow` slot semantics;
-- session storage, recovery and compaction; the long-term memory store, assembly and the
-  self-edit tool surface;
-- the tool registry, the built-in tools, and the MCP source;
-- the observability envelope, sinks and the per-request collector;
-- the provider adapters' request vocabulary and error classification.
+- the slot contract (three states, skip-is-arrival) and the failure path: the first node error
+  cancels the graph, cancellation wins over arrival, a skip is never rewritten into a failure;
+- graph lifecycle: one-shot semantics (`Add` / `Seed` after start are rejected), `WithMaxRunning`
+  admission, and the aspect chain (`Timeout` / `Retry`) including its re-entrancy latch;
+- the observation envelope: `Record` / `Attrs`, the built-in sinks (`LineSink`, `SlogSink`,
+  `MemorySink`, `MultiSink`, `AsyncSink`) and the six encoding primitives — including anything
+  that would let a payload reach a record's non-`Attrs` fields;
+- the YAML assembly path in `pulse/yaml`: document decoding, the key registry's name/type
+  resolution, and literal shape alignment.
 
 ## Out of scope
 
@@ -58,19 +61,19 @@ Anything in this repository:
   environment, or the credentials configured in it.
 - **Secrets committed in a fork** — secret scanning runs on this repository, and `.env*` is
   gitignored.
-- **Model output quality** — prompt injection that merely makes a model say something unhelpful
-  is not a vulnerability in this library. A flaw that turns model output into code execution,
-  credential exposure or data exfiltration *is*.
+- **What a host builds on top of Pulse** — prompt handling, model output quality and any other
+  domain logic above the engine are out of scope here; a flaw *inside* this library that turns
+  host input into code execution, credential exposure or data exfiltration is in scope.
 
 ## What is already in place
 
 - Secret scanning and push protection are enabled on this repository.
 - `.env`, `.env.*`, `*.pem` and `*.secrets` are gitignored.
-- `observability.Record` has no `map[string]any` escape hatch, and `Attrs` only accepts scalars
-  (`~string | ~int64 | ~float64 | ~bool`) — prompts, message payloads, attachments and
-  chain-of-thought cannot enter an observation record by construction.
-- Provider live tests are gated by environment variables, so running the default test suite
-  requires no credentials.
+- `observe.Record` has no `map[string]any` escape hatch, and `Attrs` only accepts scalars
+  (`~string | ~int64 | ~float64 | ~bool`) — payloads cannot enter an observation record by
+  construction, only keys and scalar values can.
+- The suite runs offline and needs no credentials: `go.mod` requires only `gopkg.in/yaml.v3`,
+  and no test performs network or filesystem IO beyond what it creates itself.
 
 ---
 
@@ -113,28 +116,31 @@ Pulse 目前仍在 1.0 之前（`v0.x`）。本文件说明漏洞上报方式与
 
 ### 在范围内
 
-本仓库里的一切：
+本仓库里的一切——图引擎（`pulse`）、图观测（`pulse/observe`）与声明式装图（`pulse/yaml`）：
 
-- kernel 生命周期与可逆效应、服务可见性与依赖解析；
-- 事件派发（`Emit` / `EmitLocal` / waterfall）与 `flow` 槽位语义；
-- 会话存储、冷恢复与压缩；长期记忆存储、上下文装配与 self-edit 工具面；
-- 工具注册表、内置工具、MCP 来源；
-- 观测信封、出口与请求级 collector；
-- provider 适配器的请求词汇表与错误分类。
+- 槽位契约（三态、「跳过是到达」）与失败路径：节点首错取消整图、取消优先于到达、跳过绝不
+  被改写成失败；
+- 图生命周期：一次性语义（启动后的 `Add` / `Seed` 被拒）、`WithMaxRunning` 名额准入、
+  切面链（`Timeout` / `Retry`）与它的重入门闩；
+- 观测信封：`Record` / `Attrs`、内置出口（`LineSink` / `SlogSink` / `MemorySink` /
+  `MultiSink` / `AsyncSink`）与六条编码原语——包括任何「让载荷从非 `Attrs` 字段混进记录」
+  的可能；
+- `pulse/yaml` 的装配路径：文档解码、Key 登记表的 name/type 对账、字面量形状对齐。
 
 ### 不在范围内
 
 - **第三方依赖漏洞**——请上报给上游（顺手告知我们一声仍然欢迎）。
 - **需要攻击者已经控制**进程、机器、运行环境或其中配置的凭据的场景。
 - **fork 里提交的密钥**——本仓库已开启 secret scanning，且 `.env*` 已被忽略。
-- **模型输出质量**——仅仅是让模型说错话的提示注入不算本库的漏洞；但如果模型输出能变成代码
-  执行、凭据泄露或数据外泄，那就**算**。
+- **宿主在 Pulse 之上做的事**——prompt 处理、模型输出质量以及引擎之上的任何领域逻辑都不在
+  本仓库范围内；但库**内部**把宿主输入变成代码执行、凭据泄露或数据外泄的缺陷**在**范围内。
 
 ### 已经做了哪些加固
 
 - 仓库已开启 secret scanning 与 push protection。
 - `.env`、`.env.*`、`*.pem`、`*.secrets` 均在 .gitignore 中。
-- `observability.Record` 没有 `map[string]any` 逃生舱，`Attrs` 只接受标量
-  （`~string | ~int64 | ~float64 | ~bool`）——prompt、消息载荷、附件与思维链在类型上就无法进入
-  观测记录。
-- provider 的 live 测试由环境变量门控，跑默认测试集不需要任何凭据。
+- `observe.Record` 没有 `map[string]any` 逃生舱，`Attrs` 只接受标量
+  （`~string | ~int64 | ~float64 | ~bool`）——载荷在类型上就无法进入观测记录，能进的只有
+  key 与标量值。
+- 整套测试离线可跑、不需要凭据：`go.mod` 只 require `gopkg.in/yaml.v3`，且没有任何测试
+  去做它自己没创建的 IO。

@@ -1,19 +1,17 @@
 # 包文档
 
-全仓 28 个包的双语完整 README 由构建脚本从仓库单源同步生成（**与代码同源，构建时刷新**）。左侧侧边栏按域分组；本页是快速索引。
+Pulse 只有三个包：
 
-| 域 | 包 |
-|---|---|
-| 内核 | [kernel](/packages/kernel/) · [kernel/flow](/packages/kernel/flow/) · [kernel/flow/yaml](/packages/kernel/flow/yaml/) |
-| 模型层 | [llm](/packages/llm/) · [llm/openai](/packages/llm/openai/) · [llm/anthropic](/packages/llm/anthropic/) |
-| 执行 | [loop](/packages/loop/) |
-| 工具与技能 | [toolset](/packages/toolset/) · [toolset/builtins](/packages/toolset/builtins/) · [toolset/mcp](/packages/toolset/mcp/) · [toolset/lsp](/packages/toolset/lsp/) · [skills](/packages/skills/) |
-| 记忆 | [memory](/packages/memory/) · session · compaction · store · assemble · selfedit · index · index/openai · reflection · candidate |
-| 装配 | [host](/packages/host/) |
-| 可观测 | [observability](/packages/observability/) |
-| 文本处理 | [textsplit](/packages/textsplit/) |
-| 评测 | [eval](/packages/eval/) · [eval/war](/packages/eval/war/) |
+| 包 | 是什么 | 依赖 | 文档 |
+|---|---|---|---|
+| [`pulse`](https://github.com/Luo-root/pulse)（根） | 图引擎 | **零**（只用标准库） | [核心概念](/guide/concepts) · [编排](/guide/orchestration) |
+| [`pulse/observe`](/packages/observe/) | 图观测：引擎 `Observer` 回调 → 结构化记录 | `pulse` | [图观测](/guide/observability) |
+| [`pulse/yaml`](/packages/yaml/) | 声明式装图：YAML → 图 | `pulse` + `yaml.v3` | [声明式装图](/guide/assembly) |
 
-::: tip 内容来源
-每个包页面的正文 = 仓库中该包的 `README_zh.md`（中文站）/ `README.md`（英文站）原文，由 `site/scripts/sync-docs.mjs` 在构建时同步——仓库文档更新后站点自动跟进，无需二次维护。
+后两个包的页面正文 = 仓库中该包的 `README.md`（中文）原文，由 `site/scripts/sync-docs.mjs` 在构建时同步——**与代码同源，改 README 即改站点**。
+
+根包没有单独的包页：它的 API 契约写在 godoc 里（每个导出符号都带一条），用法在指南页，设计在[`docs/design/pulse.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/pulse.md)。
+
+::: tip 依赖方向
+`pulse` ← `observe` / `yaml`，单向且不许反向。引擎不 import 任何观测包；只 import 根包的宿主，依赖闭包是空的。
 :::

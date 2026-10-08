@@ -47,11 +47,10 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS and architecture, Go version, and the provider/model if the bug involves a model call.
+      description: OS and architecture, plus the Go version you built with.
       placeholder: |
         OS: Windows 11 24H2 / Ubuntu 24.04
         Go: go1.25.0 windows/amd64
-        Provider: openai (or "not involved")
     validations:
       required: true
 

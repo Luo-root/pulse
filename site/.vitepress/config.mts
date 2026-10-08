@@ -1,40 +1,20 @@
 import { defineConfig } from 'vitepress'
 
-// 版本号单源：description 与 footer 都引用它——发版时只改这一处。
+// 版本号单源：footer 引用它——发版时只改这一处（站点文档描述的是 main 上的 API，
+// 不要在这里把「文档内容 = 某个 tag 的内容」写成声明）。
 const VERSION = 'v0.2.5'
 
-// 包文档侧边栏：分组与链接前缀参数化（zh: /packages/…、en: /en/packages/…）；
-// 分组标签随语言传入（zh 默认值 / en 显式表），避免英文站显示中文分组名。
-const ZH_LABELS = {
-  overview: '总览', kernel: '内核', model: '模型层', exec: '执行', assembly: '装配',
-  tools: '工具与技能', memory: '记忆', obs: '可观测', text: '文本处理', eval: '评测',
-}
-const EN_LABELS = {
-  overview: 'Overview', kernel: 'Kernel', model: 'Model layer', exec: 'Execution', assembly: 'Assembly',
-  tools: 'Tools & skills', memory: 'Memory', obs: 'Observability', text: 'Text', eval: 'Evaluation',
-}
+// 包文档侧边栏：pulse 只有三个包——根包 pulse（引擎，文档在指南里）、
+// observe（图观测）、yaml（声明式装图）。后两者有包 README，由 sync-docs.mjs 同步成页面。
+const ZH_LABELS = { overview: '总览', obs: '图观测', asm: '声明式装图' }
+const EN_LABELS = { overview: 'Overview', obs: 'Observation', asm: 'YAML assembly' }
 
 function pkgGroups(prefix, L = ZH_LABELS) {
   const P = (pkg) => `${prefix}packages/${pkg}/`
-  const group = (text, pkgs, collapsed = false) => ({
-    text,
-    collapsed,
-    items: pkgs.map((p) => ({ text: p, link: P(p) })),
-  })
   return [
     { text: L.overview, link: `${prefix}packages/` },
-    group(L.kernel, ['kernel', 'kernel/flow', 'kernel/flow/yaml']),
-    group(L.model, ['llm', 'llm/openai', 'llm/anthropic']),
-    group(L.exec, ['loop']),
-    group(L.assembly, ['host']),
-    group(L.tools, ['toolset', 'toolset/builtins', 'toolset/mcp', 'toolset/lsp', 'skills']),
-    group(L.memory, [
-      'memory', 'memory/session', 'memory/compaction', 'memory/store', 'memory/assemble',
-      'memory/selfedit', 'memory/index', 'memory/index/openai', 'memory/reflection', 'memory/candidate',
-    ], true),
-    group(L.obs, ['observability']),
-    group(L.text, ['textsplit']),
-    group(L.eval, ['eval', 'eval/war']),
+    { text: L.obs, items: [{ text: 'observe', link: P('observe') }] },
+    { text: L.asm, items: [{ text: 'yaml', link: P('yaml') }] },
   ]
 }
 
@@ -45,21 +25,18 @@ const zh = {
     nav: [
       { text: '指南', link: '/guide/quickstart', activeMatch: '^/guide/' },
       { text: '包文档', link: '/packages/', activeMatch: '^/packages/' },
-      { text: '评测', link: '/eval', activeMatch: '^/eval' },
     ],
     sidebar: {
       '/guide/': [
         { text: '指南', items: [
           { text: '快速开始', link: '/guide/quickstart' },
-          { text: '装配指南', link: '/guide/assembly' },
           { text: '核心概念', link: '/guide/concepts' },
-          { text: 'flow 编排', link: '/guide/flow' },
-          { text: '记忆层', link: '/guide/memory' },
-          { text: '可观测性', link: '/guide/observability' },
+          { text: '编排', link: '/guide/orchestration' },
+          { text: '声明式装图', link: '/guide/assembly' },
+          { text: '图观测', link: '/guide/observability' },
         ] },
       ],
       '/packages/': pkgGroups('/'),
-      '/eval': [{ text: '评测', items: [{ text: '性能基准', link: '/eval' }] }],
     },
     search: {
       provider: 'local',
@@ -89,26 +66,23 @@ const en = {
   label: 'English',
   lang: 'en-US',
   link: '/en/',
-  description: `Go AI agent framework — reversible effects and dependency-reactive service loading; the v2 core ships as ${VERSION}`,
+  description: `A one-shot graph engine for Go — data-arrival scheduling, explicit failure, graph observation.`,
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/en/guide/quickstart', activeMatch: '^/en/guide/' },
       { text: 'Packages', link: '/en/packages/', activeMatch: '^/en/packages/' },
-      { text: 'Benchmarks', link: '/en/eval', activeMatch: '^/en/eval' },
     ],
     sidebar: {
       '/en/guide/': [
         { text: 'Guide', items: [
           { text: 'Quick start', link: '/en/guide/quickstart' },
-          { text: 'Assembly guide', link: '/en/guide/assembly' },
           { text: 'Core concepts', link: '/en/guide/concepts' },
-          { text: 'flow orchestration', link: '/en/guide/flow' },
-          { text: 'Memory layer', link: '/en/guide/memory' },
-          { text: 'Observability', link: '/en/guide/observability' },
+          { text: 'Orchestration', link: '/en/guide/orchestration' },
+          { text: 'Declarative assembly', link: '/en/guide/assembly' },
+          { text: 'Graph observation', link: '/en/guide/observability' },
         ] },
       ],
       '/en/packages/': pkgGroups('/en/', EN_LABELS),
-      '/en/eval': [{ text: 'Benchmarks', items: [{ text: 'Performance', link: '/en/eval' }] }],
     },
     footer: {
       message: `Open Source · MIT · ${VERSION}`,
@@ -124,7 +98,7 @@ export default defineConfig({
   base: '/pulse/',
   lang: 'zh-CN',
   title: 'Pulse',
-  description: `Go AI agent 框架——可逆效应与依赖响应式装载，v2 核心已以 ${VERSION} 发布`,
+  description: `Go 的一次性图引擎——数据到达即调度，失败显式；外加一层图观测。`,
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/pulse/favicon.svg' }]], // head 里的自定义 link 不吃 base 自动前缀，硬编码（与 base 同步）
   locales: { root: zh, en },
   // v1.x dead-link checker 会把「目录尾斜杠链接」(/dir/) 规范化为 /dir/index 后查路由表，

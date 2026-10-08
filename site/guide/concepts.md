@@ -1,57 +1,139 @@
 # 核心概念
 
-Pulse v2 的底座是一个**插件内核**：对环境的所有修改都注册为可逆 Effect，服务依赖变化驱动装载 / 卸载。理解五个概念就能读懂全部包的设计。
+Pulse 只有三样东西：**Key**（数据槽）、**Node**（计算单元）、**Graph**（一次运行的世界）。理解它们和槽位的三态，剩下的都是推论。
 
-## 三问心智模型
-
-三个问题覆盖新用户需要知道的大部分内容：
-
-1. **模型 / 工具怎么接起来？** 当前：`kernel.New()` → `llm.NewRegistry(host)` → `openai.Register(...)` → `reg.Declare(...)` → `reg.Open(...)`（[快速上手](./quickstart.md)会走一遍）。这条链现已收敛为一次 `host.New(Options)` 装配（见 [host 包文档](/packages/host/)）；[快速上手](./quickstart.md)仍逐步展示手工装配。
-2. **一次 turn 怎么跑？** `agent.Run(ctx, input)` 执行一个无状态 ReAct 回合：模型 ↔ 工具循环直到模型停。历史累积、重试/failover、会话持久化都归调用方——`loop` 刻意一样都不拥有。
-3. **状态存在哪？** 按生命周期分三个 store：会话事件在事件日志（`memory/session`）、长期事实在 item store（`memory/store`）、服务实例在 kernel 服务仓库。其余一切无状态、可替换。
-
-## kernel.Context 五件套
+## 三件事
 
 | 概念 | 一句话 | 关键性质 |
 |---|---|---|
-| **Effect** | 对环境的修改都登记为效应 | 卸载即还原——插件卸载时按登记逆序自动回滚 |
-| **ServiceKey[T]** | 类型安全的服务句柄 | `kernel.Get(ctx, key)` 取值无类型断言；服务 = 惰性值 |
-| **Event** | 四模式事件 | Emit / Waterfall / Parallel（全树广播）+ EmitLocal / WaterfallLocal（本 scope） |
-| **Plugin** | 装载单元 | `kernel.Use(host, plugin)` 装载；Fiber = 依赖响应式的生命周期域 |
-| **Loader** | 增量调和 | 依赖变化时自动装载 / 卸载受影响的插件子树 |
+| **Key** | 类型化的数据槽 | `Key[T]` 把名字和类型绑在一起：`Get` 直接拿到 `T`，不用断言；同名 Key 必须以同一个 `T` 注册，不做「同名换类型」的静默覆盖 |
+| **Node** | 声明读什么、写什么 | 只声明 `Requires` / `Provides`，**不声明下一个节点是谁**——依赖由 Key 的生产与消费隐式形成 |
+| **Graph** | 一次运行的世界 | 节点集合 + 数据槽 + 首错 + 取消。数据随 `Run` 而生、随结束而灭 |
 
-请求级隔离用 **scope**（`host.Derive()`）：请求 scope 上的 Effect / 事件不影响宿主，回合结束即回收——`loop.Agent` 的 `WithEventScope` 就挂在这里。
-
-## 词汇表优先
-
-`llm` 包是 v2 的另一个支柱：请求词汇表只收**跨 provider 有稳定语义**的字段。provider 线格式没有对应参数时，adapter 显式返回 `ErrBadRequest`——不静默吞参数，也不提供 `map[string]any` 逃生舱。这保证了同一份请求代码在 OpenAI / Anthropic 上的行为可预期。
+节点长这样：
 
 ```go
-reg.Declare("main", llm.Config{
-	Provider: openai.ProviderCompletions,
-	Model:    "gpt-4o-mini",
-	APIKey:   os.Getenv("OPENAI_API_KEY"),
-})
-model, err := reg.Open("main") // observed 包装：自动发 kernel 事件
+pulse.NewNode("summarize",
+	pulse.Requires(Docs),     // AND 前置：全部就绪才进入 Run
+	pulse.Provides(Summary),  // 本节点会写出的槽位
+	func(rc *pulse.RunCtx) error {
+		docs, err := pulse.Get(rc, Docs)
+		if err != nil {
+			return err
+		}
+		return pulse.Set(rc, Summary, join(docs))
+	})
 ```
 
-## Agent 无状态
+不同类型的输入用一个节点接：`pulse.Deps(pulse.Requires(A), pulse.Requires(B))`——`Requires[T]` 一次只能收同一类型的 Key。
 
-`loop.Agent` 只执行**一个回合**：模型推理 → 工具调用 → 结果回填 → 最终回答，中间暴露 HITL 决策事件。它不持有历史——会话存储、压缩、重试与 failover 由记忆层（`memory/session`、`memory/compaction`）或宿主承担。
+## 槽位三态
 
-## 拦截点
+```
+未就绪(pending) | 已就绪(ready, 值) | 已跳过(skipped)
+```
 
-Kernel 事件是框架的扩展面：
+**就绪和跳过都是「到达」。** 等待者被唤醒后区分这两种到达，而不是把「永远不到」伪装成一个假值。这是这类引擎最容易做错的一处：把跳过当失败，会让「分支」这个基本操作无处安放。
 
-- `before_generate` / `after_response`（Waterfall）——llm 层拦截 seam，observed 包装即由此驱动；
-- `before_tool_call`（WaterfallLocal）——HITL 审批挂载点，工具调用前可拒绝 / 改写；
-- `fiber_state` / `loader_action`——观测包订阅的生命周期事件。
+由此推出两条级联规则：
 
-详见 [observability 包文档](/packages/observability/) 与 [kernel 包文档](/packages/kernel/)。
+- 任一输入跳过 → **不执行 `Run`**，全部输出跳过；
+- `Run` 成功返回后**漏写的 `Provides` 自动跳过**（否则下游永远等不到到达）。
 
-## 设计边界
+由此也推出一个容易说反的事实——**跳过是槽位的事实，不是节点的事实**：
 
-- **彻底 breaking**：v1 组件树已删除，不保留兼容层；
-- **插件不是口号**：每个环境修改都可逆、可审计；
-- **词汇表优先**：见上文；
-- **Agent 无状态**：见上文。
+| 情形 | 终态 | 观测记录 |
+|---|---|---|
+| 节点对某条 `Provide` 调 `Skip` 后正常返回 | `completed` | 等待段 + 执行段两条 |
+| 节点因**输入被跳过**而没执行 | `skipped` | **只有一条**等待记录（`err="pulse: skipped [key]"`），无执行段 |
+
+看真实输出（两个节点：`translate` 对 `translated` 调 `Skip`，`publish` 依赖 `translated`）：
+
+```text
+PULSE | 2026/10/08 - 15:34:29.695 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
+PULSE | 2026/10/08 - 15:34:29.721 | completed  |   26.01ms | pulse.node_run_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
+PULSE | 2026/10/08 - 15:34:29.721 | skipped    |   26.01ms | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=publish | host=quickstart | err="pulse: skipped [translated]" | trace=branch-demo
+```
+
+`translate` 写了跳过，但它自己正常结束了；`publish` 才是那个「没执行」的节点。
+
+### 分支怎么写
+
+没有 `if` 原语。分支 = **对未选中的 `Provide` 调用 `Skip`**：
+
+```go
+if cond {
+	if err := pulse.Set(rc, OutA, v); err != nil {
+		return err
+	}
+	return pulse.Skip(rc, OutB)
+}
+if err := pulse.Set(rc, OutB, w); err != nil {
+	return err
+}
+return pulse.Skip(rc, OutA)
+```
+
+**两边都要表态。** 只 `Skip` 未选中的那条是不够的：`Run` 成功返回后漏写的 Provides 会被自动跳过，于是「没选 A」变成「A、B 都没到」——两条下游都不跑。选中的 `Set`、没选中的 `Skip`，缺一不可。
+
+写入语义：`Set` / `Skip` 都是**幂等首写**——已就绪时再 `Set` 会被忽略（不比对值），已跳过时再 `Skip` 也忽略；同一个槽位先 `Set` 后 `Skip`（或反过来）报 `ErrConflict`。`Seed` 同理。
+
+## 一次运行一个世界
+
+> `Graph` 是模板的一次实例，不是可重跑的容器。
+
+`Start()` 第二次调用返回 `ErrGraphStarted`；槽位一旦到达即关闭、不会重开；图启动后 `Seed` 被拒。**没有 `Reset`，也不会加**。
+
+判据一句话：**pulse 持有「这一轮正在流动的数据」，不持有历史。** 一旦为了跑第二轮而要保存上轮的值，引擎就得回答「什么该留、什么该清」——那是存储语义，是调用方的事。三类需求都不需要引擎来存：
+
+| 需求 | 正确表达 |
+|---|---|
+| 同一张图跑 N 个独立请求 | 每次 `New` |
+| 一次请求内跑 3 个候选 | 一张图内 fan-out（多 `Provides`） |
+| 长会话多轮 | 每轮一张图，拓扑来自 YAML |
+
+## 失败显式
+
+`error` 与 `skipped` 走**两个出口**，不复用：
+
+- 任一节点返回非跳过错误 → 记录**首错** + 取消整图，所有等待者被唤醒；
+- `Run()` / `Err()` 返回原错误，**绝不**把失败改写成 `ErrSkipped`；
+- `panic` 不穿透：节点 panic 被转成节点错误，走同一条失败路径；
+- `Err()` 不含单纯的跳过——**全图都跳过是合法结果**。
+
+取消来源有两个：外层 `ctx` 取消（`pulse.New` 的 ctx），或切面超时（`Timeout`）。两者都让还在等数据的节点立刻返回。
+
+## RunCtx：只有声明过的槽位
+
+`RunCtx` 是一次运行里节点能看到的世界：**声明过的槽位** + 本层可取消的 context。拿不到整个黑板：
+
+- `Get` 一个没在 `Requires` 里声明的 Key → `ErrUndeclared`；
+- 写一个不在 `Provides` 里的 Key → `ErrUndeclared`。
+
+`RunCtx.Fork()` 只派生可取消 context，**共享**声明权限与写入记录——它不是独立写入事务。
+
+## 切面
+
+```go
+type Aspect func(rc *RunCtx, next func(*RunCtx) error) error
+```
+
+切面包住节点的「**等输入 + 执行**」整段——所以 `Timeout` 能打断还在等数据的节点，而不只是打断执行。不调 `next` 即短路。
+
+- `Timeout(d)`：超时取消本层 ctx；
+- `Retry(attempts, delay)`：只对执行错误重试；**等待阶段的取消不重试，输入被跳过也不重试**（跳过是到达，不是失败）；
+- 顺序：全局切面（`pulse.WithAspects`）先于节点切面，**先写的更靠外**——所以 `Timeout` 在外、`Retry` 在内。
+
+**门闩约束**：单节点的 `Run` 不得**并发**进入（两个 goroutine 同时跑同一节点必然抢同一批槽位），违反返回 `ErrNextCalledTwice`。**顺序重入是合法的**——`Retry` 正依赖它（1→0→1）。所以判据是「重叠」而不是「多次」。
+
+## 三个包的分工
+
+| 包 | 是什么 | 依赖 |
+|---|---|---|
+| `pulse`（根） | 图引擎 | **零**（只用标准库） |
+| `pulse/observe` | 图观测：把引擎的 `Observer` 回调折成结构化记录 | `pulse` |
+| `pulse/yaml` | 声明式装图：YAML → 图 | `pulse` + `yaml.v3` |
+
+**依赖箭头单向且不许反向**：引擎不 import 任何观测包，只暴露一个 `Observer` seam。不需要观测的宿主只 import 根包——它的依赖闭包是空的。
+
+下一步：看[编排](/guide/orchestration)怎么把这些拼成真实拓扑，或直接看[图观测](/guide/observability)怎么接出口。

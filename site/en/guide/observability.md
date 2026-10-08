@@ -1,75 +1,196 @@
-# Observability
+# Graph observation
 
-`observability` is v2's official observability package: **Bootstrap + Record + Sink** — three things plus the default per-request TraceID generator (`NewTraceID`) and host-provided egress (`WithRenderer`), kernel-only dependency, zero business imports (never imports llm/loop/flow).
+Observation is an **independent layer**: the engine knows no observation package and only exposes one `Observer` seam; `pulse/observe` implements that seam, folding callbacks into structured records and writing them to an egress. A host that does not need observation imports the root package alone.
 
-## The three things
-
-1. **Bootstrap**: the observability plugin, **used first** (a complete trajectory requires observability before every business plugin); subscribes to `fiber_state` / `loader_action` lifecycle events and prints the assembly-time snapshot banner;
-2. **Record**: constructs `Record` (structured observation records with two-tier trace — `host_id` / `trace_id`, assembly-time / request-time); business dimensions ride the open `Attrs` section, whose key contract is defined by the owning package (`llm.AttrModel` / `loop.AttrTool` / `flow.AttrNode`);
-3. **Sink**: the synchronous entry for constructed Records, a single `Write(observability.Record)` method — the only interface you implement; or just use a built-in exit.
-
-## Built-in exits
-
-| Exit | Shape | Use when |
-|---|---|---|
-| `LineSink` | **The default.** One human-readable line per record (column layout), self-buffered, **never through slog** | Anything a person reads: terminal / log file / startup banner; ~5x cheaper than `SlogSink` and zero-alloc |
-| `SlogSink` | `log/slog`, Text / JSON handler | You already have a logger, or need JSON for a collector |
-| `MemorySink` | In-memory collection | Test assertions and demos |
-| `MultiSink` | A `[]Sink` slice fanning out to several exits | Landing to file **and** collecting |
-
-```text
-PULSE | 2026/09/14 - 12:42:03.531 | completed  |   585.0µs | llm.generate_finished | source=bridge | llm.model=gpt-4o-mini llm.tokens_in=42 | host=pulse-web | trace=6504f73f
-PULSE | 2026/09/14 - 12:42:03.100 | -          |         - | pulse.kernel.fiber_state | source=kernel | fiber=llmAdapter#3 | state=loading→active
-```
-
-A missing status / duration column renders `-`, so the event column lines up on every record; durations keep their unit instead of truncating to zero; `Attrs` follow insertion order; colour appears only when the destination is a terminal.
-
-`AsyncSink` is a **wrapper**, not an exit: it wraps any slow exit (file / network) and moves delivery off the request path — `Write` only deep-copies `Attrs` and enqueues. It is a pessimization for already-fast exits (e.g. `MemorySink`), so don't apply it by default; when the sustained rate exceeds the exit's capacity the queue back-pressures to the exit's rate, which is the price of never dropping a record.
-
-## Host-provided egress (WithRenderer)
-
-The columnar layout is the **default**, not the only one. When you want **domain facts in columns** (HTTP method / path / client, LLM model / usage, …), replace the line-body renderer with `WithRenderer(fn)` and build your own columns from the exported encoding primitives — no need to bring your own Sink:
+## The engine's seam
 
 ```go
-render := func(dst []byte, r observability.Record, color bool) []byte {
-	model, _ := observability.Get[string](r.Attrs, llm.AttrModel) // typed read, no `any`
-	dst = observability.AppendTextValue(dst, model)
-	dst = append(dst, " | "...)
-	return observability.AppendDuration(dst, r.Duration)
+type Observer interface {
+	OnNodeWaiting(graphID, nodeID string)
+	OnNodeRunning(graphID, nodeID string)
+	OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error)
 }
-sink := observability.NewLineSink(os.Stdout,
-	observability.WithImmediate(), // watching a terminal: every line lands at once
-	observability.WithRenderer(render))
 ```
 
-Boundary: the line prefix (`WithPrefix`), the trailing newline, buffering, `Flush`, write errors and the colour decision all stay with the sink; `color` (whether colour is on right now) is handed to you, so you never probe the terminal yourself and never leak ANSI into a redirected log file.
+The contract has four clauses, all of them frozen surface:
 
-The six encoding primitives (`AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendAttrsExcept` / `AppendPadding` / `DisplayWidth`) are **byte-identical** to the built-in layout and part of the frozen surface; `AppendAttrsExcept` is how you append "attributes the fixed columns cannot hold" without re-implementing the scalar and quoting rules. A runnable example is `Example_hostRenderer` in the package docs.
+1. **Callback counts**: per node, `Waiting ≤ 1`, `Running ≤ 1`, `Finished = 1`. `Retry`'s several attempts **do not re-emit**;
+2. **Read-only**: an observer's panic or error **must not** be promoted into a node failure (the engine side already swallows it);
+3. **Concurrency-safe**: callbacks run synchronously **on the node's own goroutine** — so an implementation must be concurrency-safe, and must not block for long;
+4. **The attribution key comes from the engine**: `graphID` is emitted with every callback, so an implementation never has to carry it in from constructor arguments of its own.
 
-## Design points
+A graph defaults to no-op (attach nothing, pay nothing); `pulse.WithObserver(...)` attaches one; for several observers, combine them with `pulse.MultiObserver` (a later write overwrites an earlier one, so do the combining before passing it in).
 
-- **Side-band events**: observability subscribes via kernel On/Emit and **never enters** Waterfall chains — observation never changes business behavior;
-- **Snapshot after subscription**: the Bootstrap banner is a post-subscription state snapshot (late-mounting observers don't miss history, because the snapshot rebuilds current state);
-- **Two-tier trace**: `host_id` (assembly-time identity) + `trace_id` (request-time identity), threading four layers at runtime (host → scope → model → tools);
-- **`Attrs` is an insertion-ordered slice, not a map**: the first write reserves capacity for six entries, so common records allocate once; overwriting a key keeps its original position; the write surface is only the generic `Set[T AttrValue]` — there is no `map[string]any` escape hatch;
-- **Request-level services are local bindings**: the `CollectorKey` mounted by `AttachCollector` is reachable only via `Get` from the request scope or a descendant — parents / siblings / other concurrent requests cannot see it (no cross-talk); it **does not participate in fiber dependency resolution**, so a plugin declaring `kernel.Require(CollectorKey)` sits silently in `inactive` — diagnose with `FiberSnapshots().WaitingFor`.
+## observe folds it into two segmented-timing records
 
-## Shortest usage
+| Event | Produced when | `Duration` | `Status` |
+|---|---|---|---|
+| `pulse.node_wait_finished` | waiting ends (execution is entered, or the node terminates with skip / failure) | the waiting segment | `running`, otherwise the matching terminal state |
+| `pulse.node_run_finished` | execution ends | the execution segment | the terminal state (`completed` / `failed` / `canceled`) |
+
+A skipped node gets **only one `skipped` waiting record** — it did arrive, it just never executed. The attribution dimensions ride `Attrs`: `pulse.AttrGraph` + `pulse.AttrNode` (the key contract is defined by the **engine**; `observe` only consumes it, never defines it).
+
+## Shortest wiring
 
 ```go
-sink := observability.NewLineSink(os.Stdout) // or &observability.MemorySink{}
-defer sink.Flush()                           // Flush before closing (the last batch sits in the buffer)
+sink := observe.NewLineSink(os.Stdout, observe.WithImmediate())
+defer sink.Flush() // Flush before shutdown: the last batch is still buffered
 
-host := kernel.New()
-defer host.Dispose()                         // LIFO: Dispose runs before Flush
-
-// observability loads first; Sink is the only interface you implement — or use a built-in exit
-if _, err := kernel.Use(host, observability.Bootstrap("myapp", sink)); err != nil {
+obs, err := observe.NewRecordObserver(observe.ObserveConfig{
+	Sink:    sink,
+	HostID:  "quickstart",              // host identity (stable across runs); with TraceID it means "who + which run"
+	TraceID: observe.NewTraceID(),      // this run's correlation id (a run-time fact)
+})
+if err != nil {
 	return err
 }
-// then load business plugins: llm.Plugin(), toolset.Plugin() …
+g, err := pulse.New(ctx, "docs-pipeline", pulse.WithObserver(obs))
 ```
 
-llm / loop / flow forward their events as Records via assembly-layer bridges (model calls, tool calls, node states) — the host gets a complete trajectory without hand-written instrumentation.
+Real output for that same graph (a single node):
 
-See the [observability package docs](/en/packages/observability/) (exit selection and accounting included).
+```text
+PULSE | 2026/10/08 - 15:40:04.848 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791445204848759200-744b1b68-1
+PULSE | 2026/10/08 - 15:40:04.872 | completed  |   23.55ms | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791445204848759200-744b1b68-1
+```
+
+Line-body column order: `time | status | duration | event | source | attrs | host | err | trace`. A missing status or duration column renders `-`, which is what keeps the event column's start fixed (`-` is the **built-in layout's empty-column placeholder**, not primitive behaviour). Timestamps, trace ids and durations vary per run.
+
+## Egress
+
+`Sink` is the only interface you have to implement:
+
+```go
+type Sink interface{ Write(r Record) }
+```
+
+Three contract clauses:
+
+1. **Concurrency-safe**, and must not block the caller for long (`Write` sits on the callback path, on the node's goroutine);
+2. **No `context.Context`** — callbacks carry no ctx; an exporter that needs a deadline keeps an internal queue of its own;
+3. **Reference semantics**: the producer builds a fresh `Attrs` and does not modify it once `Write` returns; the Sink consumes read-only. An asynchronous exporter must copy for itself.
+
+Built-in egresses:
+
+| Egress | Shape | Fits |
+|---|---|---|
+| `LineSink` | **The default**. One human-readable line per record, with its own 32 KiB buffer, zero-alloc, no slog | Terminals, log files |
+| `SlogSink` | `log/slog` (Text / JSON) | Attaching to an existing host logger; JSON fed to a collector |
+| `MemorySink` | In-memory collection | Test assertions, demos |
+| `MultiSink` | Fan out to several egresses | Landing on disk and collecting at the same time |
+| `AsyncSink` | **A wrapper**: bounded queue + a single background goroutine | Slow egresses (files / network) |
+
+### Duration accounting (measured)
+
+The "execution segment" is the **wall-clock time** from entering `Run` to the node finishing — and the waiting-segment record is what gets written to the egress inside the `Running` callback, so **however slow the egress is, that is how long the execution segment is**. The same graph, the same empty node, two egresses:
+
+```text
+# MemorySink
+pulse.node_wait_finished       running    0s
+pulse.node_run_finished        completed  0s
+
+# LineSink(WithImmediate) -> terminal
+PULSE | ... | running    |         - | pulse.node_wait_finished | pulse.node=noop | ...
+PULSE | ... | completed  |   25.23ms | pulse.node_run_finished  | pulse.node=noop | ...
+```
+
+The node body is empty; the 25.23ms is entirely the cost of writing to the terminal. So:
+
+- When the duration column looks too large, suspect the egress before the node;
+- Wrap a slow egress in `AsyncSink` (`Write` only deep-copies `Attrs` and enqueues). Note that async **does not raise the throughput ceiling**: when the sustained rate exceeds what the egress can take, the bounded queue back-pressures to the egress rate — that is precisely the price of "never drop a record"; to drop instead of blocking, use `DropOnFull()`. Wrapping an already fast egress (such as `MemorySink`) in async is a pessimisation;
+- A waiting segment of `0` (rendered as `-`) means the segment was rounded to 0 by the timer's precision, not that "there was no such segment".
+
+## Host-supplied columns (WithRenderer)
+
+The columnar layout is the **default**, not the only one. When a host wants domain facts in columns, it swaps the **line body** renderer with `WithRenderer(fn)` and builds its own columns from the package's exported encoding primitives — no need to bring a Sink of its own:
+
+```go
+render := func(dst []byte, r observe.Record, color bool) []byte {
+	dst = r.Time.AppendFormat(dst, "15:04:05.000")
+	dst = append(dst, " | "...)
+	node, _ := observe.Get[string](r.Attrs, pulse.AttrNode)
+	dst = observe.AppendTextValue(dst, node)
+	dst = append(dst, " | "...)
+	dst = observe.AppendTextValue(dst, r.Status)
+	dst = append(dst, " | "...)
+	return observe.AppendDuration(dst, r.Duration)
+}
+
+sink := observe.NewLineSink(os.Stdout,
+	observe.WithImmediate(),
+	observe.WithRenderer(render))
+```
+
+Real output (the same graph):
+
+```text
+PULSE | 15:40:40.526 | step | running | 0ns
+PULSE | 15:40:40.540 | step | completed | 13.65ms
+```
+
+The renderer's contract is only four clauses: it **produces the line body only** (the line prefix and the trailing newline are added by the sink); the `color` it receives is the sink's already-resolved verdict (so it need not probe the terminal itself, and will not write ANSI into logs redirected to a file); it does not buffer and does not write to the writer (when to write belongs to the sink, and `WithImmediate` controls immediacy); and **it is called inside the sink's internal lock** — do not call back into the same sink's `Write` / `Flush` / `Err` from inside a renderer (`sync.Mutex` is not reentrant, so it hangs silently).
+
+The six encoding primitives (`AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendAttrsExcept` / `AppendPadding` / `DisplayWidth`) are **isomorphic** to the built-in layout and belong to the frozen surface: for one record under the two layouts, durations, attribute groups and column padding are **byte-identical**. `AppendAttrsExcept` is there to add "attributes the fixed columns cannot hold" at the end of the line, without rewriting the scalar and quoting rules yourself.
+
+## Record and Attrs
+
+```go
+type Record struct {
+	Time     time.Time
+	HostID   string
+	TraceID  string
+	Source   Source
+	Event    string
+	Duration time.Duration
+	Status   string
+	Err      error
+	Attrs    Attrs // the open segment
+}
+```
+
+Design constraint: **business dimensions always enter through `Attrs`; named fields are never extended**. Named fields serve only the facts every record shares — once a named field is added for one domain, `Record` grows into a convergence point for every domain's observation fields.
+
+`Attrs` is an **insertion-ordered small slice** (not a map): the order is the producer's semantic order, so an egress gets stable output without sorting; reads are a linear scan, which beats hashing when the entry count is small. Keys use the `<component>.<field>` dot convention, each component with its own key space (`pulse.graph` / `pulse.node`; a host forms a segment of its own).
+
+When a host writes its own records (business facts, say), it uses the same API:
+
+```go
+rec := observe.Record{
+	HostID:  "host-1",
+	TraceID: "t-1",
+	Source:  "app", // declare your own home: this package only produces source=observe
+	Event:   "app.turn_finished",
+	Status:  "ok",
+}
+observe.Set(&rec.Attrs, "app.turns", int64(3))
+sink.Write(rec)
+```
+
+```text
+PULSE | 2026/10/08 - 15:40:11.308 | ok         |         - | app.turn_finished | source=app | app.turns=3 | host=host-1 | trace=t-1
+```
+
+## TraceID
+
+It is injected by the host from a **single generation source**: calling `NewTraceID()` once per run is a single generation source, and a scheme you bring entirely yourself (such as a hostID prefix plus a monotonic sequence number) works just as well. The return value has **no contractual semantics**; consumers must not parse its structure. Every record of one run shares the same TraceID — that is the entire mechanism for run-level correlation.
+
+A host that speaks OTel / W3C trace context **injects its own trace id** rather than adopting the shape of `NewTraceID()`:
+
+```go
+TraceID: span.SpanContext().TraceID().String(), // 32 lowercase hex chars (a W3C trace-id)
+```
+
+`NewTraceID()` returns a "timestamp-random-seq" string — friendly to humans and naturally sortable, but **not** the 32-hex W3C form. Two boundaries are worth remembering:
+
+- a trace-id alone cannot produce a valid `traceparent`: `parent-id` (16 chars) and `trace-flags` are span semantics, and `observe` only knows about "one run" — it has no spans, so those two fields belong to the host;
+- **continuing an inbound trace** is simply putting the received trace-id into `ObserveConfig.TraceID`; ignoring an invalid `traceparent` wholesale (as W3C requires) is the host's responsibility too.
+
+An `ObserveConfig`'s lifetime **equals one run** (one `Run` of the graph): across runs a new one is required (the TraceID is unique per run, and reusing an old value manufactures false correlation).
+
+## Privacy boundary
+
+`Record` has no `map[string]any` escape hatch: the only write surface for `Attrs` is the generic `Set` (constrained to `~string | ~int64 | ~float64 | ~bool`), so **prompts, attachment bytes, secrets and chain-of-thought cannot enter by type**.
+
+The residual part of the boundary should be stated plainly: `Err` is an `error`, and where it comes from is whatever the caller passed — so **an adapter layer must not stuff an upstream's raw error body into `Err`**; it should pass an already-classified summary. "Cramming a payload into a scalar" is deliberate behaviour; the defence is the key declaring its own intent, plus a redact hook on the Sink side (an implementation can reject sensitive keys / truncate over-long values / cap the count).
+
+Package-level API and benchmark accounting: [observe package docs](/en/packages/observe/); the full design: [design doc](https://github.com/Luo-root/pulse/blob/main/docs/design/pulse.md).
