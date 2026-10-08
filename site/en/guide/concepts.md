@@ -63,10 +63,18 @@ There is no `if` primitive. Branching = **calling `Skip` on the `Provide` you di
 
 ```go
 if cond {
-	return pulse.Set(rc, OutA, v)
+	if err := pulse.Set(rc, OutA, v); err != nil {
+		return err
+	}
+	return pulse.Skip(rc, OutB)
 }
-return pulse.Skip(rc, OutB) // downstream does not execute because its input was skipped
+if err := pulse.Set(rc, OutB, w); err != nil {
+	return err
+}
+return pulse.Skip(rc, OutA)
 ```
+
+**Both sides must speak.** Skipping only the branch you did not choose is not enough: after a successful `Run`, any `Provide` you never wrote is auto-skipped, so "A was not chosen" turns into "neither A nor B arrived" — both downstreams stay unexecuted. `Set` the chosen one and `Skip` the other; you need both.
 
 Write semantics: `Set` / `Skip` are both an **idempotent first write** — writing again once the slot is ready is ignored (values are not compared), writing `Skip` again once skipped is ignored too; a `Set` and a `Skip` on the same slot report `ErrConflict`. The same holds for `Seed`.
 

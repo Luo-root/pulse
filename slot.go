@@ -68,7 +68,14 @@ func (s *slot) resolveSkip() error {
 }
 
 // wait 阻塞到到达。值为 (v, nil)；跳过为 (zero, ErrSkipped)。
+//
+// **取消优先**：ctx 已取消时一律返回 ctx.Err()，「到达」与「取消」同时就绪
+// 时也以取消为准。否则首错取消图之后，下游的终态会在 skipped（先看到跳过）
+// 与 canceled（先看到取消）之间随调度抖——而两者的成因都是那次取消。
 func (s *slot) wait(ctx context.Context) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	st, v := s.snapshot()
 	if st == slotReady {
 		return v, nil
@@ -78,6 +85,9 @@ func (s *slot) wait(ctx context.Context) (any, error) {
 	}
 	select {
 	case <-s.done:
+		if err := ctx.Err(); err != nil { // done 与取消同时就绪：取消优先
+			return nil, err
+		}
 		st, v = s.snapshot()
 		if st == slotSkipped {
 			return nil, ErrSkipped

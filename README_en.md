@@ -80,7 +80,7 @@ func main() {
 ## Design in one screen
 
 - **Data arrival is scheduling.** `Requires` is an AND precondition: a node enters `Run` only when all of its inputs have arrived.
-- **Slots have three states**: `pending` | `ready(value)` | `skipped`. Ready and skipped are *both* arrival — skipping is not failure. Branching is written by calling `Skip` on the `Provide` you did not choose.
+- **Slots have three states**: `pending` | `ready(value)` | `skipped`. Ready and skipped are *both* arrival — skipping is not failure. Branching is written by calling `Skip` on the `Provide` you did not choose (and `Set` on the one you did); **both sides must speak**, skipping only one leaves both downstreams unexecuted.
 - **Failure is explicit.** A node error records the first error and cancels the whole run; it is never rewritten as `ErrSkipped`.
 - **One run, one world.** A `Graph` is one instantiation of a template, not a re-runnable container. Reusing the template means calling `New` again — like a CI/CD workflow definition being run many times, one run instance each. Cross-run state (history, caches, sessions) belongs to the caller, not to the engine.
 - **Aspects wrap the whole "wait for input + execute" span**, so `Timeout` can interrupt a node that is still waiting for data.

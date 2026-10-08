@@ -2,6 +2,7 @@ package pulse
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -47,6 +48,17 @@ func TestCoerceSeedValue(t *testing.T) {
 		{"map into slice", map[string]any{"a": 1}, target([]string{}), nil, true},
 		{"struct elem needs resolve", []any{map[string]any{"name": "x"}}, target([]coerceDoc{}), nil, true},
 		{"array length mismatch", []any{1}, target([2]int{}), nil, true},
+
+		// 浮点转整数的端点：上界要按 float 能表示的端点判。float64(math.MaxInt64)
+		// 被舍入成 2^63，`f > math.MaxInt64` 会把 2^63 自己放过去，而
+		// int64(2^63) 在 gc 上得到 MinInt64（静默错值）。uint 同理（2^64）。
+		{"float 2^63 into int64", float64(math.MaxInt64), target(int64(0)), nil, true},
+		{"float 2^64 into uint64", float64(math.MaxUint64), target(uint64(0)), nil, true},
+		{"float 2^63 into int", float64(math.MaxInt64), target(int(0)), nil, true},
+		{"float max int64-representable", float64(math.MaxInt64) - 1024, target(int64(0)), int64(float64(math.MaxInt64) - 1024), false},
+		{"float -2^63 into int64", float64(math.MinInt64), target(int64(0)), int64(math.MinInt64), false},
+		{"float 2^63-1 rounds up", float64(math.MaxInt64) - 512, target(int64(0)), nil, true},
+		{"float 2^64-1 rounds up", float64(math.MaxUint64) - 1024, target(uint64(0)), nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

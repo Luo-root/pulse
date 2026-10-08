@@ -20,14 +20,18 @@
 //	未就绪 | 已就绪(值) | 已跳过
 //
 // 任一输入跳过 → 不执行 Run，全部输出跳过（级联）。节点可对单条
-// Provide 主动 Skip（分支）。Run 成功返回后漏写的 Provides 自动 Skip；
+// Provide 主动 Skip（分支）；但**两边都要表态**——Run 成功返回后漏写的
+// Provides 会被自动 Skip，只 Skip 一边等于两条下游都不跑。
 // 节点 error / 输入 Skip 结束时，未写 Provide 也可被清理 Skip（只为
 // 解阻塞）。error 取消整图，Run/Err 仍返回原错误，不会伪装成 ErrSkipped。
+// **取消优先于到达**：ctx 已取消时等待一律返回 ctx.Err()（与「到达」同时
+// 就绪也以取消为准），所以因首错而没跑的下游稳定报 canceled 而不是 skipped。
 //
 // # 切面
 //
 // Aspect 是 func(rc, next) 形态（见 aspect.go）；不调 next 即短路。
-// 内建 Timeout / Retry。CircuitBreaker 与 ErrorSwallow 不提供。
+// 内建 Timeout / Retry——超时是协作式的（等内层返回），重试有前提
+// （失败前没写过 Provide），两条契约都在 aspect.go 的 godoc 里。
 //
 // # 观测
 //

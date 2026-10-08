@@ -66,6 +66,8 @@ if lang == "zh" {
 return pulse.Set(rc, Translated, translate(summary))
 ```
 
+That is a **single-slot** optional output: both branches speak about the same slot (write or skip), hence a single downstream. A multi-slot branch must **speak on both sides** — `Set` the chosen one, `Skip` the other; skip only one and the unwritten ones are auto-skipped, leaving both downstreams unexecuted (see the branch example in [Core concepts](/en/guide/concepts)).
+
 It matters to tell the two terminal states apart: **the node that wrote the skip is itself `completed`**; it is the **downstream** node that never executed — because its input was skipped — that is `skipped`. Details and real records: [Core concepts · slot tri-state](/en/guide/concepts).
 
 ## Timeout
@@ -82,6 +84,8 @@ timeout err = pulse: node wait-forever timeout after 50ms
 
 A timeout is a **failure** and takes the failure path: it cancels the whole graph, and `Run` returns the error above.
 
+A timeout is **cooperative**: on expiry it cancels this layer's ctx and then **waits for the node body to return** — `Run` never returns while the body is still running (an aspect shares the write record with its parent, and returning early would let the finish path and the still-running execution touch the same slots concurrently). When the body ignores ctx (a bare `time.Sleep`, blocking IO), `Timeout` can only wait for it to finish — do not use it as a hard watchdog. **Published slots are not rolled back either**: output the body `Set` before the deadline may already have been consumed downstream — a timeout is a failure, not a rollback.
+
 ## Retry
 
 ```go
@@ -93,6 +97,8 @@ pulse.NewNode("flaky", nil, pulse.Provides(Topic), run, pulse.Retry(3, 10*time.M
 ```text
 retry   attempts = 3 err = <nil>
 ```
+
+**Preconditions for a safe retry**: the failing attempt must not have written any `Provide`, and must have no non-reentrant side effects. Slots are published on arrival with an idempotent first write: once an attempt has `Set`/`Skip`ped a slot, downstream has already been woken, later attempts' writes are **silently ignored**, and the slot is not rolled back — rolling back would mean reopening a slot, which contradicts "one run, one world". If you need transactional retry, move the output to the attempt that is guaranteed to succeed: **compute first, `Set` last**.
 
 ## First error cancels
 
@@ -106,6 +112,8 @@ pulse.node_wait_finished       node=waiter   status=canceled   err=context cance
 ```
 
 Three things hold at once: `Run` returns the **original error** (it is not rewritten as a skip); the failing node is `failed`; the waiting node that got killed is `canceled`, and it has **only the waiting-segment** record.
+
+The failure path also marks the failing node's **unwritten `Provide`s** as skipped — that only unblocks downstreams still waiting, it is not their finish reason. Their finish reason follows **"cancellation wins"**: once ctx is canceled a wait always returns `ctx.Err()`, including when arrival and cancellation become ready together. So a downstream that did not run *because of the first error* is stably `canceled` and never flips between `skipped` and `canceled` depending on scheduling.
 
 ## Rate limiting
 

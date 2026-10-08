@@ -63,10 +63,18 @@ PULSE | 2026/10/08 - 15:34:29.721 | skipped    |   26.01ms | pulse.node_wait_fin
 
 ```go
 if cond {
-	return pulse.Set(rc, OutA, v)
+	if err := pulse.Set(rc, OutA, v); err != nil {
+		return err
+	}
+	return pulse.Skip(rc, OutB)
 }
-return pulse.Skip(rc, OutB) // 下游因输入跳过而不执行
+if err := pulse.Set(rc, OutB, w); err != nil {
+	return err
+}
+return pulse.Skip(rc, OutA)
 ```
+
+**两边都要表态。** 只 `Skip` 未选中的那条是不够的：`Run` 成功返回后漏写的 Provides 会被自动跳过，于是「没选 A」变成「A、B 都没到」——两条下游都不跑。选中的 `Set`、没选中的 `Skip`，缺一不可。
 
 写入语义：`Set` / `Skip` 都是**幂等首写**——已就绪时再 `Set` 会被忽略（不比对值），已跳过时再 `Skip` 也忽略；同一个槽位先 `Set` 后 `Skip`（或反过来）报 `ErrConflict`。`Seed` 同理。
 

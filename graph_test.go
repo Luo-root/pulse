@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -561,6 +562,223 @@ func mustAdd(t *testing.T, g *Graph, n *Node) {
 	t.Helper()
 	if err := g.Add(n); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestTimeoutWaitsForInnerRun 超时到期后必须等内层收干净再返回：
+// 切面共享 `wrote`，提前返回会让收尾路径与还在跑的 Run 同时碰同一批槽
+// （数据竞态），也会让 Run 的「阻塞到全部终止」失真。
+func TestTimeoutWaitsForInnerRun(t *testing.T) {
+	out := NewKey[string]("to.out")
+	var bodyDone atomic.Bool
+
+	g := mustNew(t, context.Background(), "test", WithAspects(Timeout(20*time.Millisecond)))
+	mustAdd(t, g, NewNode("slow", nil, Provides(out), func(rc *RunCtx) error {
+		time.Sleep(120 * time.Millisecond)
+		bodyDone.Store(true)
+		return Set(rc, out, "late")
+	}))
+
+	start := time.Now()
+	err := g.Run()
+	elapsed := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("Run err = %v, want timeout", err)
+	}
+	if !bodyDone.Load() {
+		t.Fatalf("Run 在 %v 就返回了，节点体还没退出（超时提前返回）", elapsed.Round(time.Millisecond))
+	}
+	if elapsed < 100*time.Millisecond {
+		t.Fatalf("Run 耗时 %v，短于节点体自身耗时——没等内层", elapsed.Round(time.Millisecond))
+	}
+}
+
+// TestAcquireReturnsSlotWhenCanceled 「名额空着」与「ctx 已取消」同时成立时，
+// acquire 必须以取消为准并把名额放回去。这是 `select` 唯一会漏的形态：
+// 两个分支都就绪时它随机挑（若 goroutine 已经阻塞在 select 里，runtime 会把它
+// 提交给先就绪的那个分支，那种情况反而是确定的——所以直接打 acquire 本身，
+// 不靠调度碰运气）。run it with -count 才说明问题：漏了复查约有一半概率失败。
+func TestAcquireReturnsSlotWhenCanceled(t *testing.T) {
+	g := mustNew(t, context.Background(), "test", WithMaxRunning(1))
+	ctx, cancel := context.WithCancel(g.ctx)
+	cancel() // 已取消；同时名额是空的
+
+	if err := g.acquire(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("acquire = %v, want context.Canceled", err)
+	}
+	if n := len(g.sem); n != 0 {
+		t.Fatalf("取消后名额没放回去：len(sem) = %d", n)
+	}
+	// 名额确实还能被正常用掉
+	if err := g.acquire(g.ctx); err != nil {
+		t.Fatalf("放回的名额不可用：%v", err)
+	}
+	g.release()
+}
+
+// TestAddIsAtomic Add 失败必须让图保持调用前的样子：失败那次声明的
+// Provides 不能占住 producer，否则真正提供它的节点此后一直吃
+// ErrDuplicateSource，等它的节点永远停在 pending。
+func TestAddIsAtomic(t *testing.T) {
+	a := NewKey[string]("atomic.a")
+	b := NewKey[string]("atomic.b")
+
+	g := mustNew(t, context.Background(), "test")
+	if err := Seed(g, b, "seed-b"); err != nil { // b 已被 seed 占住
+		t.Fatal(err)
+	}
+	// a 先被登记/claim，b 才冲突 → 失败的 Add 不能留下 a 的占位
+	if err := g.Add(NewNode("bad", nil, Deps(Provides(a), Provides(b)), func(rc *RunCtx) error { return nil })); err == nil {
+		t.Fatal("expect duplicate source error")
+	}
+	if err := g.Add(NewNode("good", nil, Provides(a), func(rc *RunCtx) error { return Set(rc, a, "x") })); err != nil {
+		t.Fatalf("失败 Add 留下了 a 的 producer 占位：%v", err)
+	}
+
+	var got atomic.Bool
+	mustAdd(t, g, NewNode("down", Requires(a), nil, func(rc *RunCtx) error {
+		v, err := Get(rc, a)
+		if err != nil {
+			return err
+		}
+		got.Store(v == "x")
+		return nil
+	}))
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Load() {
+		t.Fatal("依赖 a 的节点没有拿到值")
+	}
+}
+
+// TestSeedFailureLeavesNoTrace 与 Add 同一条纪律：校验不过的 Seed 既不能
+// 占住来源，也不能把值写进槽位（判据与 Add 共享 check / sourceConflict）。
+func TestSeedFailureLeavesNoTrace(t *testing.T) {
+	shared := NewKey[string]("seed.trace")
+	g := mustNew(t, context.Background(), "test")
+	mustAdd(t, g, NewNode("owner", nil, Provides(shared), func(rc *RunCtx) error { return nil }))
+
+	// 同名不同类型：类型校验失败，不能把 name 的类型改成 int
+	if err := Seed(g, NewKey[int]("seed.trace"), 1); err == nil {
+		t.Fatal("expect key type conflict")
+	}
+	// 同名同类型：来源已归 owner，报 ErrDuplicateSource，且值不得写入
+	if err := Seed(g, shared, "v"); !errors.Is(err, ErrDuplicateSource) {
+		t.Fatalf("want ErrDuplicateSource, got %v", err)
+	}
+	if st, _ := g.slotOf(shared.asRef()).snapshot(); st != slotPending {
+		t.Fatalf("失败的 Seed 写进了槽位：state = %v, want slotPending", st)
+	}
+}
+
+// TestWaitReasonStableAfterFailure 首错取消后，下游的终态必须是 canceled：
+// 它没有执行是因为整图被取消，而不是因为恰好先看见了那条「解阻塞用的跳过」。
+func TestWaitReasonStableAfterFailure(t *testing.T) {
+	const rounds = 50
+	for i := 0; i < rounds; i++ {
+		k := NewKey[string]("wait.k")
+		var reason NodeFinishReason
+		obs := ObserverFunc{Finished: func(_, nodeID string, r NodeFinishReason, _ error) {
+			if nodeID == "waiter" {
+				reason = r
+			}
+		}}
+		g := mustNew(t, context.Background(), "test", WithObserver(obs))
+		mustAdd(t, g, NewNode("boom", nil, Provides(k), func(rc *RunCtx) error { return errors.New("boom") }))
+		mustAdd(t, g, NewNode("waiter", Requires(k), nil, func(rc *RunCtx) error {
+			t.Fatal("waiter 不该进入 Run")
+			return nil
+		}))
+		if err := g.Run(); err == nil {
+			t.Fatal("want boom")
+		}
+		if reason != NodeCanceled {
+			t.Fatalf("第 %d 轮：waiter 终态 = %q, want canceled", i, reason)
+		}
+	}
+}
+
+// TestRetryDoesNotRollbackPublishedSlots 钉住契约：失败 attempt 已发布的槽
+// 不回滚、下游据此已被唤醒，后续 attempt 的 Set 被静默忽略（幂等首写）。
+// 所以「重试安全」的前提是失败前没有写过 Provide，也没有不可重入副作用。
+//
+// 同步点：第一次 attempt Set 之后等下游真的跑起来再失败——否则「下游是否
+// 已被唤醒」取决于它有没有抢在取消之前进入等待，断言会变成掷硬币。
+func TestRetryDoesNotRollbackPublishedSlots(t *testing.T) {
+	out := NewKey[string]("retry.pub.out")
+	var attempts, downstreamRuns atomic.Int32
+	downstreamDone := make(chan struct{})
+
+	g := mustNew(t, context.Background(), "test")
+	mustAdd(t, g, NewNode("flaky", nil, Provides(out),
+		func(rc *RunCtx) error {
+			n := attempts.Add(1)
+			if err := Set(rc, out, fmt.Sprintf("attempt-%d", n)); err != nil {
+				t.Errorf("attempt-%d Set err = %v（首个 Set 必须成功，其余幂等忽略）", n, err)
+			}
+			if n == 1 {
+				select {
+				case <-downstreamDone:
+				case <-time.After(2 * time.Second):
+					t.Error("下游没有被第一次 attempt 的 Set 唤醒")
+				}
+			}
+			return errors.New("总是失败")
+		},
+		Retry(3, 0),
+	))
+	mustAdd(t, g, NewNode("downstream", Requires(out), nil, func(rc *RunCtx) error {
+		downstreamRuns.Add(1)
+		close(downstreamDone)
+		return nil
+	}))
+
+	if err := g.Run(); err == nil {
+		t.Fatal("want flaky error")
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts.Load())
+	}
+	if downstreamRuns.Load() != 1 {
+		t.Fatalf("downstream 进入 Run %d 次，want 1（第一次 attempt 的 Set 就该唤醒它）", downstreamRuns.Load())
+	}
+	if st, v := g.slotOf(out.asRef()).snapshot(); st != slotReady || v != "attempt-1" {
+		t.Fatalf("槽位终态 = (%v, %v)，want (slotReady, attempt-1)——已发布的槽不回滚", st, v)
+	}
+}
+
+// TestWaitReleasesGraphCtx 跑完之后图自己的 ctx 必须被取消：它是 New 从父
+// ctx 派生的子 ctx，不 cancel 就一直挂在父 ctx 的 children 上；同时
+// Err() 不能把这次收尾的 cancel 读成运行结果。
+func TestWaitReleasesGraphCtx(t *testing.T) {
+	out := NewKey[string]("ctx.out")
+	g := mustNew(t, context.Background(), "test")
+	mustAdd(t, g, NewNode("n", nil, Provides(out), func(rc *RunCtx) error { return Set(rc, out, "v") }))
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if g.ctx.Err() == nil {
+		t.Fatal("Run 返回后 g.ctx 仍未取消：子 ctx 一直挂在父 ctx 上")
+	}
+	if err := g.Err(); err != nil {
+		t.Fatalf("干净跑完的 Err() = %v, want nil（收尾 cancel 不算结果）", err)
+	}
+
+	// 父 ctx 长生命周期：跑完后子 ctx 已释放
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	out2 := NewKey[string]("ctx.out2")
+	g2 := mustNew(t, parent, "test")
+	mustAdd(t, g2, NewNode("n", nil, Provides(out2), func(rc *RunCtx) error { return nil }))
+	if err := g2.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if g2.ctx.Err() == nil {
+		t.Fatal("父 ctx 未取消时，子 ctx 应已随 Wait 收尾")
+	}
+	if err := g2.Err(); err != nil {
+		t.Fatalf("g2.Err() = %v, want nil", err)
 	}
 }
 

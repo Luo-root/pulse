@@ -66,6 +66,8 @@ if lang == "zh" {
 return pulse.Set(rc, Translated, translate(summary))
 ```
 
+这里是**单槽**可选输出：两个分支都对同一个槽表态（写或跳过），所以只有一条下游。多槽分支要**两边都表态**——选中的 `Set`、没选中的 `Skip`；只 Skip 一边，漏写的那些会被自动跳过，两条下游都不跑（见[核心概念](/guide/concepts)的分支例子）。
+
 区分两个终态很重要：**写出跳过的节点自己是 `completed`**；因输入跳过而没执行的**下游**才是 `skipped`。细节与真实记录见[核心概念 · 槽位三态](/guide/concepts)。
 
 ## 超时
@@ -82,6 +84,8 @@ timeout err = pulse: node wait-forever timeout after 50ms
 
 超时是**失败**，走失败路径：取消整图，`Run` 返回上面这条错误。
 
+超时是**协作式**的：到期先取消本层 ctx，**再等节点体返回**——`Run` 不会在节点体还在跑的时候就返回（切面与父层共享写入记录，提前返回会让收尾和还在跑的执行并发碰同一批槽）。节点体不看 ctx（裸 `time.Sleep`、阻塞 IO）时 `Timeout` 只能等它结束，别当硬性看门狗用。另外**已发布的槽不撤回**：节点体在超时前 `Set` 过的输出，下游可能已经据此跑起来了——超时是失败，不是回滚。
+
 ## 重试
 
 ```go
@@ -93,6 +97,8 @@ pulse.NewNode("flaky", nil, pulse.Provides(Topic), run, pulse.Retry(3, 10*time.M
 ```text
 retry   attempts = 3 err = <nil>
 ```
+
+**重试安全的前提**：失败前**没有写过**任何 Provide，也没有不可重入的副作用。槽位是「到达即发布、幂等首写」的：前一次 attempt 一旦 `Set`/`Skip` 过，下游就已经被唤醒，后续 attempt 的写会被**静默忽略**，槽位也不会回滚——回滚等于重开槽位，与「一次运行一个世界」冲突。需要事务性重试就把输出挪到确定成功的那次：**先算完，再 `Set`**。
 
 ## 首错即取消
 
@@ -106,6 +112,8 @@ pulse.node_wait_finished       node=waiter   status=canceled   err=context cance
 ```
 
 三件事同时成立：`Run` 返回**原错误**（没被改写成跳过）；失败的节点是 `failed`；被杀掉的等待者是 `canceled`，且**只有等待段**那一条记录。
+
+失败路径还会给该节点**没写过的 Provide** 补一条跳过——那只是把还在等的下游解开，不是下游的终态。终态由**「取消优先」**决定：ctx 已取消时等待一律返回 `ctx.Err()`，「到达与取消同时就绪」也以取消为准。所以「因首错而没跑」的下游稳定报 `canceled`，不会随调度在 `skipped` / `canceled` 之间抖。
 
 ## 限流
 

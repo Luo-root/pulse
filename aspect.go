@@ -36,6 +36,12 @@ func buildChain(aspects []Aspect, core func(*RunCtx) error) func(*RunCtx) error 
 }
 
 // Timeout 限制节点（含等数据）的总时长；超时取消本层 ctx。
+//
+// 超时是**协作式**的：到期后先取消本层 ctx，再等内层返回（内层不看 ctx 时
+// 只能等它自己结束）。不能拿到 `ctx.Done()` 就返回——`Fork` 与父 RunCtx
+// 共享 `wrote`，提前返回会让收尾路径（`skipAllOrUnwritten`）和还在跑的
+// `Run` 同时碰同一批槽，既有数据竞态，也让 `Run()` 的「阻塞到全部终止」
+// 失真。已发布的槽不会撤回：超时是失败，不是回滚。
 func Timeout(d time.Duration) Aspect {
 	return func(rc *RunCtx, next func(*RunCtx) error) error {
 		child := rc.Fork()
@@ -49,6 +55,7 @@ func Timeout(d time.Duration) Aspect {
 			return err
 		case <-ctx.Done():
 			child.Cancel()
+			<-errCh // 等内层收干净：收尾不与它并发
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
 			}
@@ -59,6 +66,13 @@ func Timeout(d time.Duration) Aspect {
 
 // Retry 在节点 Run（含其内层切面）失败时重试。等数据阶段的取消不重试；
 // 跳过也不重试——跳过是「到达」，不是失败（判据见 isSkipped）。
+//
+// **重试安全的前提**：失败前没有写过任何 Provide，也没有不可重入的副作用。
+// 槽位是「到达即发布、幂等首写」的：前一次 attempt 一旦 Set/Skip 过，下游
+// 已经被唤醒，后续 attempt 的写会被静默忽略（对已就绪的槽 resolveValue 返回
+// nil），槽位也不会回滚——回滚等于重开槽位，与「一次性」契约冲突，所以这条
+// 只能由调用方守。需要事务性重试时，把副作用与输出挪到最后一次成功的
+// attempt 上（例如先算完再 Set），别指望引擎撤前一次。
 func Retry(attempts int, delay time.Duration) Aspect {
 	if attempts <= 0 {
 		attempts = 1

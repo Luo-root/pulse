@@ -162,6 +162,15 @@ func isNumericKind(k reflect.Kind) bool {
 	return false
 }
 
+// 浮点转整数的上界必须按「float 能表示的那个端点」判：float64(math.MaxInt64)
+// 会被舍入成 2^63，写 `f > math.MaxInt64` 等于放 2^63 自己过去，而
+// int64(2^63) 在 gc 上得到 MinInt64——静默错值。下界没有这个问题
+// （float64(math.MinInt64) 恰好是 -2^63）。
+const (
+	maxInt64AsFloat64  = 9223372036854775808.0  // 2^63
+	maxUint64AsFloat64 = 18446744073709551616.0 // 2^64
+)
+
 // toInt64 把数值转成 int64；浮点必须是整值且在范围内（不截断）。
 func toInt64(v reflect.Value) (int64, bool) {
 	switch {
@@ -178,7 +187,7 @@ func toInt64(v reflect.Value) (int64, bool) {
 		if math.Trunc(f) != f || math.IsNaN(f) || math.IsInf(f, 0) {
 			return 0, false
 		}
-		if f < math.MinInt64 || f > math.MaxInt64 {
+		if f < math.MinInt64 || f >= maxInt64AsFloat64 {
 			return 0, false
 		}
 		return int64(f), true
@@ -199,7 +208,7 @@ func toUint64(v reflect.Value) (uint64, bool) {
 		return uint64(i), true
 	case isFloatKind(v.Kind()):
 		f := v.Float()
-		if math.Trunc(f) != f || math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > math.MaxUint64 {
+		if math.Trunc(f) != f || math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f >= maxUint64AsFloat64 {
 			return 0, false
 		}
 		return uint64(f), true

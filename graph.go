@@ -30,6 +30,7 @@ type Graph struct {
 
 	mu      sync.Mutex
 	started bool
+	done    bool // Wait 返回过：此后 cancel 只是收尾，不再算运行结果
 	err     error
 	sem     chan struct{}
 	wg      sync.WaitGroup
@@ -82,6 +83,11 @@ func New(ctx context.Context, graphID string, opts ...Option) (*Graph, error) {
 func (g *Graph) ID() string { return g.id }
 
 // Add 登记节点。图启动后拒绝。
+//
+// 两段式：先全量校验（只读），全部通过才提交。半途失败必须什么都不留——
+// 否则失败那次 Add 的 Provides 会占住 producer，真正提供该 Key 的节点此后
+// 一直吃 ErrDuplicateSource，等它的节点则永远停在 pending（父 ctx 不取消时
+// Run 不返回）。
 func (g *Graph) Add(n *Node) error {
 	if n == nil {
 		return fmt.Errorf("pulse: nil node")
@@ -99,16 +105,17 @@ func (g *Graph) Add(n *Node) error {
 			return fmt.Errorf("pulse: duplicate node id %q", n.id)
 		}
 	}
+
+	// —— 校验段：只读 ——
 	seenReq := make(map[string]struct{}, len(n.requires))
 	for _, k := range n.requires {
 		if _, ok := seenReq[k.name]; ok {
 			return fmt.Errorf("pulse: node %s declares %q twice in Requires", n.id, k.name)
 		}
 		seenReq[k.name] = struct{}{}
-		if err := g.keys.register(k); err != nil {
+		if err := g.keys.check(k); err != nil {
 			return err
 		}
-		g.slotOfLocked(k)
 	}
 	seenProv := make(map[string]struct{}, len(n.provides))
 	for _, k := range n.provides {
@@ -119,12 +126,22 @@ func (g *Graph) Add(n *Node) error {
 			return fmt.Errorf("pulse: node %s declares %q twice in Provides", n.id, k.name)
 		}
 		seenProv[k.name] = struct{}{}
-		if err := g.keys.register(k); err != nil {
+		if err := g.keys.check(k); err != nil {
 			return err
 		}
-		if err := g.claimSource(k.name, n.id); err != nil {
+		if err := g.sourceConflict(k.name, n.id); err != nil {
 			return err
 		}
+	}
+
+	// —— 提交段：到这一步不会再失败 ——
+	for _, k := range n.requires {
+		_ = g.keys.register(k)
+		g.slotOfLocked(k)
+	}
+	for _, k := range n.provides {
+		_ = g.keys.register(k)
+		_ = g.claimSource(k.name, n.id)
 		g.slotOfLocked(k)
 	}
 	g.nodes = append(g.nodes, n)
@@ -141,19 +158,22 @@ func SkipSeed[T any](g *Graph, k Key[T]) error {
 	return g.seedRef(k.asRef(), nil, true)
 }
 
-// seedRef 是 Seed / SkipSeed / SeedByName 的共用路径。
+// seedRef 是 Seed / SkipSeed / SeedByName 的共用路径。与 Add 同一条纪律：
+// 先只读校验，再提交——失败的 Seed 不该在图里留下登记表或来源占位。
 func (g *Graph) seedRef(ref keyRef, v any, skip bool) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.started {
 		return ErrGraphStarted
 	}
-	if err := g.keys.register(ref); err != nil {
+	if err := g.keys.check(ref); err != nil {
 		return err
 	}
-	if err := g.claimSource(ref.name, "seed"); err != nil {
+	if err := g.sourceConflict(ref.name, "seed"); err != nil {
 		return err
 	}
+	_ = g.keys.register(ref)
+	_ = g.claimSource(ref.name, "seed")
 	if skip {
 		return g.slotOfLocked(ref).resolveSkip()
 	}
@@ -162,10 +182,18 @@ func (g *Graph) seedRef(ref keyRef, v any, skip bool) error {
 
 // claimSource 保证每个 Key 只有一种来源：外部 Seed/SkipSeed，或恰好一个节点。
 func (g *Graph) claimSource(name, owner string) error {
+	if err := g.sourceConflict(name, owner); err != nil {
+		return err
+	}
+	g.producer[name] = owner
+	return nil
+}
+
+// sourceConflict 是 claimSource 的**只读预演**：判据与错误文案同源，但不写表。
+func (g *Graph) sourceConflict(name, owner string) error {
 	if prev, ok := g.producer[name]; ok && prev != owner {
 		return fmt.Errorf("%w: %q already sourced by %s", ErrDuplicateSource, name, prev)
 	}
-	g.producer[name] = owner
 	return nil
 }
 
@@ -216,7 +244,9 @@ func (g *Graph) Start() error {
 	return nil
 }
 
-// Wait 等待 Start 提交的节点全部终止。
+// Wait 等待 Start 提交的节点全部终止，并释放图自己的 ctx：它到这一步不再
+// 挂在父 ctx 的 children 上（`New` 派生的子 ctx 若不 cancel，父 ctx 是
+// Background 或长生命周期时会一直持有它）。
 func (g *Graph) Wait() error {
 	g.mu.Lock()
 	started := g.started
@@ -225,15 +255,25 @@ func (g *Graph) Wait() error {
 		return ErrGraphNotStarted
 	}
 	g.wg.Wait()
-	return g.Err()
+	g.mu.Lock()
+	g.done = true // 先定结果，再 cancel：收尾不该被读成运行结果
+	g.mu.Unlock()
+	err := g.Err()
+	g.cancel()
+	return err
 }
 
-// Err 返回首个节点错误或取消原因。不含单纯的跳过。
+// Err 返回首个节点错误或取消原因。不含单纯的跳过。运行结束后
+// （Wait 返回过）收尾的那次 cancel 不再算结果——否则干净跑完的图会
+// 报 context.Canceled。
 func (g *Graph) Err() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.err != nil {
 		return g.err
+	}
+	if g.done {
+		return nil
 	}
 	return g.ctx.Err()
 }
@@ -250,19 +290,24 @@ func (g *Graph) fail(err error) {
 	g.mu.Unlock()
 }
 
-// acquire 占用一个运行名额。ctx 取消时**不再排队**——取消要能打断「等
-// 名额」，与打断「等数据」同理（New 的 godoc 承诺「ctx 取消会打断所有
-// 等待」）：留给调用方的名额不会因为有人排队而被用在一个已取消的节点上。
+// acquire 占用一个运行名额。ctx 取消时不再排队，**拿到名额后再看一次**：
+// 「名额空出」与「取消」同时就绪时 select 会随机挑一个分支，少了这一眼就会
+// 在取消之后仍进入 Run（实测这条路径并不罕见）。留给调用方的名额不该用在
+// 一个已取消的节点上。
 func (g *Graph) acquire(ctx context.Context) error {
 	if g.sem == nil {
 		return nil
 	}
 	select {
 	case g.sem <- struct{}{}:
-		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	if err := ctx.Err(); err != nil {
+		<-g.sem // 放回名额
+		return err
+	}
+	return nil
 }
 
 func (g *Graph) release() {
