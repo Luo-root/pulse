@@ -4,10 +4,18 @@ package pulse
 type NodeFinishReason string
 
 const (
+	// NodeCompleted：Run 正常返回。返回后仍未写的 Provides 会被自动跳过，
+	// 那不算失败。
 	NodeCompleted NodeFinishReason = "completed"
-	NodeSkipped   NodeFinishReason = "skipped"
-	NodeFailed    NodeFinishReason = "failed"
-	NodeCanceled  NodeFinishReason = "canceled"
+	// NodeSkipped：输入以「跳过」到达（skip 是到达，不是失败），或本节点
+	// 自己 Skip 了输出。
+	NodeSkipped NodeFinishReason = "skipped"
+	// NodeFailed：节点返回了真实错误——含 panic 被转成的错误，以及
+	// Timeout 切面的节点超时。
+	NodeFailed NodeFinishReason = "failed"
+	// NodeCanceled：这一轮被别人拆掉了——首错取消整图、父 ctx 被取消或
+	// 截止时间到期、排队等名额期间被取消。判据见 isCanceled。
+	NodeCanceled NodeFinishReason = "canceled"
 )
 
 // 观测 attrs key 契约（归属 pulse 层）：字段语义的知识留在事实归属包，
@@ -67,13 +75,18 @@ func (o ObserverFunc) OnNodeFinished(graphID, nodeID string, reason NodeFinishRe
 }
 
 // MultiObserver 按序扇出；nil 成员跳过。
+//
+// **成员的 panic 被隔离在它自己那一格**：前面的观察者抛 panic，不会让后面的
+// 观察者收不到这条事件——扇出的全部意义就是「组合多个出口」（例如宿主自己的
+// observer 与 observe.NewRecordObserver），一个坏掉把邻居一起带走是最坏的结果。
+// 引擎侧的 notify 另有一层兜底，保证 panic 不升格为节点失败。
 type MultiObserver []Observer
 
 // OnNodeWaiting 实现 Observer。
 func (m MultiObserver) OnNodeWaiting(graphID, nodeID string) {
 	for _, o := range m {
 		if o != nil {
-			o.OnNodeWaiting(graphID, nodeID)
+			callSafely(func() { o.OnNodeWaiting(graphID, nodeID) })
 		}
 	}
 }
@@ -82,7 +95,7 @@ func (m MultiObserver) OnNodeWaiting(graphID, nodeID string) {
 func (m MultiObserver) OnNodeRunning(graphID, nodeID string) {
 	for _, o := range m {
 		if o != nil {
-			o.OnNodeRunning(graphID, nodeID)
+			callSafely(func() { o.OnNodeRunning(graphID, nodeID) })
 		}
 	}
 }
@@ -91,9 +104,15 @@ func (m MultiObserver) OnNodeRunning(graphID, nodeID string) {
 func (m MultiObserver) OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error) {
 	for _, o := range m {
 		if o != nil {
-			o.OnNodeFinished(graphID, nodeID, reason, err)
+			callSafely(func() { o.OnNodeFinished(graphID, nodeID, reason, err) })
 		}
 	}
+}
+
+// callSafely 跑一个扇出成员的调用，把它抛出的 panic 限制在这一格内。
+func callSafely(fn func()) {
+	defer func() { _ = recover() }()
+	fn()
 }
 
 // WithObserver 挂载图级生命周期观察者；后写覆盖前写（单槽）。

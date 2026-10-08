@@ -169,12 +169,21 @@ func TestObserverTimeoutFinishedFailedNoRunning(t *testing.T) {
 	obs := &recordingObserver{}
 	in := NewKey[string]("obs.to.in")
 	out := NewKey[string]("obs.to.out")
-	g := mustNew(t, context.Background(), "test", WithObserver(obs), WithAspects(Timeout(30*time.Millisecond)))
-	// 不 Seed in → WaitAll 阻塞直到超时
+	// 全局切面在这里换个用法：`late` 是 in 的来源（Start 的来源校验要求有），
+	// 但它迟迟不写——若把超时挂在全局，先超时的会是 late 自己，它一失败就取消
+	// 整图，blocked 的等待段会以 canceled 收场，就测不到「等待段超时」这条路径。
+	// 所以超时挂在 blocked 自己的切面上。
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
+	if err := g.Add(NewNode("late", nil, Provides(in), func(rc *RunCtx) error {
+		<-rc.Context().Done()
+		return rc.Context().Err()
+	})); err != nil {
+		t.Fatal(err)
+	}
 	if err := g.Add(NewNode("blocked", Requires(in), Provides(out), func(rc *RunCtx) error {
 		t.Fatal("should not run")
 		return nil
-	})); err != nil {
+	}, Timeout(30*time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
 	err := g.Run()
@@ -187,5 +196,45 @@ func TestObserverTimeoutFinishedFailedNoRunning(t *testing.T) {
 	}
 	if countPref(log, "F:blocked:failed") != 1 {
 		t.Fatalf("timeout Finished reason want failed, got %v", log)
+	}
+	// 生产者是被整图取消带走的，那一边才是 canceled——两条原因不能混为一谈。
+	if countPref(log, "F:late:canceled") != 1 {
+		t.Fatalf("producer Finished reason want canceled, got %v", log)
+	}
+}
+
+// TestMultiObserverIsolatesPanickingMember 一个成员 panic 只该落在它自己那一格：
+// 扇出的意义是「组合多个出口」（宿主自己的 observer + observe 的适配器），前面
+// 坏掉一个就让后面的观察者收不到事件，是这类组合最坏的失效方式。
+func TestMultiObserverIsolatesPanickingMember(t *testing.T) {
+	panicker := ObserverFunc{
+		Waiting:  func(_, _ string) { panic("observer boom") },
+		Running:  func(_, _ string) { panic("observer boom") },
+		Finished: func(_, _ string, _ NodeFinishReason, _ error) { panic("observer boom") },
+	}
+	recorder := &recordingObserver{}
+	in := NewKey[string]("multi.in")
+	out := NewKey[string]("multi.out")
+
+	g := mustNew(t, context.Background(), "test", WithObserver(MultiObserver{panicker, recorder}))
+	if err := Seed(g, in, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Add(NewNode("n", Requires(in), Provides(out), func(rc *RunCtx) error {
+		v, err := Get(rc, in)
+		if err != nil {
+			return err
+		}
+		return Set(rc, out, v)
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatalf("member panic must not fail graph: %v", err)
+	}
+	log := recorder.snapshot()
+	// 三条回调一条都不能少：panic 的邻居照样收全，而不是只收到 panic 之前那几条。
+	if countPref(log, "W:n") != 1 || countPref(log, "R:n") != 1 || countPref(log, "F:n:completed") != 1 {
+		t.Fatalf("recorder 收到的回调 = %v，want W/R/F 各一条", log)
 	}
 }

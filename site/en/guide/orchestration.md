@@ -15,6 +15,7 @@ topic ──┤        ├── join
 - A Key allows **one source**: `Seed`/`SkipSeed`, or exactly one node's `Provides`;
 - The same Key `Provides`d in two nodes → `Add` returns `ErrDuplicateSource` outright;
 - A node that both `Requires` and `Provides` the same Key → `Add` fails (a self-loop is not a legal data flow).
+- Conversely, **every `Requires` must have a source**: a slot nobody writes can never arrive, so that graph can never finish — `Start()` rejects it on the spot and names the node and the Key (left to runtime it is just a hang, and a hang is not something you can debug).
 
 ## Source nodes and Seed
 
@@ -76,7 +77,7 @@ It matters to tell the two terminal states apart: **the node that wrote the skip
 pulse.NewNode("wait-forever", requires, provides, run, pulse.Timeout(50*time.Millisecond))
 ```
 
-The aspect wraps the whole "**wait for input + execute**" span, so a timeout can interrupt a node that is **still waiting for data**, not just the execution. In the example below `Never` has no producer at all (its slot stays pending forever):
+The aspect wraps the whole "**wait for input + execute**" span, so a timeout can interrupt a node that is **still waiting for data**, not just the execution. The shape here is "a producer exists, but it is slower than the timeout" — upstream will write eventually, it just has not yet. The "never arrives" graph cannot even be built: a Key nobody writes is rejected by `Start()`.
 
 ```text
 timeout err = pulse: node wait-forever timeout after 50ms
@@ -114,6 +115,8 @@ pulse.node_wait_finished       node=waiter   status=canceled   err=context cance
 Three things hold at once: `Run` returns the **original error** (it is not rewritten as a skip); the failing node is `failed`; the waiting node that got killed is `canceled`, and it has **only the waiting-segment** record.
 
 The failure path also marks the failing node's **unwritten `Provide`s** as skipped — that only unblocks downstreams still waiting, it is not their finish reason. Their finish reason follows **"cancellation wins"**: once ctx is canceled a wait always returns `ctx.Err()`, including when arrival and cancellation become ready together. So a downstream that did not run *because of the first error* is stably `canceled` and never flips between `skipped` and `canceled` depending on scheduling.
+
+The same `canceled` covers the other two ways "this run was torn down from outside": the parent ctx being canceled **or hitting its deadline**, and being canceled while queued for a slot. Conversely, a node's **own** `Timeout` expiring is its `failed` — that node did not finish within its limit. The criterion for the four terminal states lives in the godoc of `pulse.NodeFinishReason`.
 
 ## Rate limiting
 

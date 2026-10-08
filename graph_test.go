@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -407,14 +408,134 @@ func TestNodeErrorCancels(t *testing.T) {
 
 func TestTimeoutInterruptsWait(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
+	// kA 必须有来源（Start 的来源校验），但它迟迟不写：slow 会真的**在等**，
+	// 这条用例测的就是超时能不能打断等待段。
+	mustAdd(t, g, NewNode("late", nil, Provides(kA), func(rc *RunCtx) error {
+		<-rc.Context().Done()
+		return rc.Context().Err()
+	}))
 	mustAdd(t, g, NewNode("slow", Requires(kA), Provides(kB), func(rc *RunCtx) error {
 		_, err := Get(rc, kA)
 		return err
 	}, Timeout(30*time.Millisecond)))
-	// 永不 Seed kA
 	err := g.Run()
+	if err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("Run err = %v, want timeout", err)
+	}
+}
+
+// TestStartRejectsUnsourcedRequires 装配期能静态判定的死图必须在 Start 就被拒：
+// 「等一个永远不会被写入的槽」今天只表现为挂死（有 deadline 时是一句看不出病因的
+// 超时，没有时进程会被 runtime 判为 fatal deadlock），而启动那一刻引擎就知道是
+// 哪个节点的哪个 Key 没有来源。
+func TestStartRejectsUnsourcedRequires(t *testing.T) {
+	g := mustNew(t, context.Background(), "test")
+	mustAdd(t, g, NewNode("waiter", Requires(kA), nil, func(rc *RunCtx) error { return nil }))
+
+	err := g.Start()
 	if err == nil {
-		t.Fatal("expected timeout")
+		t.Fatal("Start 放行了一张不可能跑完的图")
+	}
+	if !strings.Contains(err.Error(), `"waiter"`) || !strings.Contains(err.Error(), `"a"`) {
+		t.Fatalf("错误里要能读到节点 id 与 Key 名，got %v", err)
+	}
+	// 校验不过时图**仍未启动**：补上来源后可以重新 Start 并跑完。
+	if werr := g.Wait(); !errors.Is(werr, ErrGraphNotStarted) {
+		t.Fatalf("Start 失败后图不该是已启动状态：Wait() = %v", werr)
+	}
+	mustAdd(t, g, NewNode("producer", nil, Provides(kA), func(rc *RunCtx) error {
+		return Set(rc, kA, "v")
+	}))
+	if err := g.Run(); err != nil {
+		t.Fatalf("补上来源后应能跑完：%v", err)
+	}
+}
+
+// TestStartAcceptsSeededAndProvidedRequires 两种合法来源都不能被来源校验误伤：
+// 外部 Seed/SkipSeed，以及另一个节点的 Provides（含隔一层的链路）。
+func TestStartAcceptsSeededAndProvidedRequires(t *testing.T) {
+	g := mustNew(t, context.Background(), "test")
+	if err := Seed(g, kA, "seeded"); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, g, NewNode("first", Requires(kA), Provides(kB), func(rc *RunCtx) error {
+		v, err := Get(rc, kA)
+		if err != nil {
+			return err
+		}
+		return Set(rc, kB, v+"!")
+	}))
+	mustAdd(t, g, NewNode("second", Requires(kB), nil, func(rc *RunCtx) error {
+		v, err := Get(rc, kB)
+		if err != nil {
+			return err
+		}
+		if v != "seeded!" {
+			t.Fatalf("v = %q, want seeded!", v)
+		}
+		return nil
+	}))
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	// SkipSeed 也是来源：输入被跳过 → 不进入 Run，整图无错返回。
+	g2 := mustNew(t, context.Background(), "test")
+	if err := SkipSeed(g2, kA); err != nil {
+		t.Fatal(err)
+	}
+	var ran atomic.Bool
+	mustAdd(t, g2, NewNode("skipped-input", Requires(kA), nil, func(rc *RunCtx) error {
+		ran.Store(true)
+		return nil
+	}))
+	if err := g2.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if ran.Load() {
+		t.Fatal("输入被跳过时不该进入 Run")
+	}
+}
+
+// TestParentDeadlineIsCanceled 父 ctx 的截止时间到期与主动取消同属「这一轮被从
+// 外面拆了」：等待中的节点终态是 canceled，不是 failed——后者会把它报成一个并
+// 不存在的节点缺陷，宿主按 reason 分流时就会指错方向。
+func TestParentDeadlineIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+
+	var mu sync.Mutex
+	reasons := map[string]NodeFinishReason{}
+	obs := ObserverFunc{Finished: func(_, nodeID string, r NodeFinishReason, _ error) {
+		mu.Lock()
+		reasons[nodeID] = r
+		mu.Unlock()
+	}}
+	g := mustNew(t, ctx, "test", WithObserver(obs))
+	// producer 有来源关系但从不写入：waiter 一直在等，直到父 ctx 到期。
+	mustAdd(t, g, NewNode("producer", nil, Provides(kA), func(rc *RunCtx) error {
+		<-rc.Context().Done()
+		return rc.Context().Err()
+	}))
+	var waiterRan atomic.Bool
+	mustAdd(t, g, NewNode("waiter", Requires(kA), nil, func(rc *RunCtx) error {
+		waiterRan.Store(true)
+		return nil
+	}))
+
+	err := g.Run()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run err = %v, want DeadlineExceeded", err)
+	}
+	if waiterRan.Load() {
+		t.Fatal("waiter 不该进入 Run：它的输入从未被写入")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, id := range []string{"producer", "waiter"} {
+		if reasons[id] != NodeCanceled {
+			t.Fatalf("%s 终态 = %q, want canceled", id, reasons[id])
+		}
 	}
 }
 

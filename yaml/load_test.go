@@ -246,8 +246,18 @@ func TestLoadYAMLTimeoutFires(t *testing.T) {
 		t.Fatal("should not run")
 		return nil
 	})
+	// demo.wait 有来源（Start 的来源校验要求每个 Requires 都有来源），但它迟迟
+	// 不写：n 会真的**在等**，这条用例测的就是 YAML 声明的 timeout 能不能打断等待段。
+	reg.MustRegister("late", func(rc *pulse.RunCtx) error {
+		<-rc.Context().Done()
+		return rc.Context().Err()
+	})
 	doc := []byte(`
 nodes:
+  - id: late
+    uses: late
+    requires: []
+    provides: [{ name: demo.wait, type: string }]
   - id: n
     uses: blocked
     requires: [{ name: demo.wait, type: string }]
@@ -258,7 +268,6 @@ nodes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 不 Seed demo.wait → WaitAll 阻塞直到 Timeout
 	err = g.Run()
 	if err == nil {
 		t.Fatal("want timeout error")

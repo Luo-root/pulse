@@ -122,7 +122,13 @@ func (r *Registry) ResolveKey(name, typeTag string) (keyRef, error) {
 	return ref, nil
 }
 
-// TypeTagOf 返回已登记 Key 的类型记号（测试/诊断用）。
+// TypeTagOf 返回已登记 Key 的类型记号（`reflect.Type.String()`），未登记或
+// 该 Key 没有类型信息时 ok=false。
+//
+// 给**宿主做诊断**用：YAML 里的 `{name, type}` 与登记表对不上时（`ResolveKey`
+// 报「type %q does not match registered %q」），宿主可以拿它把「登记表认为
+// 应该是什么」打出来——错误信息里已经有期望值，但排查一批文档时按名字逐个
+// 查更顺手。装配本身不需要它：`ResolveKey` / `KeyRefs` 已经做完对账。
 func (r *Registry) TypeTagOf(name string) (string, bool) {
 	if r == nil {
 		return "", false

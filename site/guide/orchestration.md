@@ -14,7 +14,8 @@ topic ──┤        ├── join
 
 - 一个 Key 允许**一个来源**：`Seed`/`SkipSeed`，或恰好一个节点的 `Provides`；
 - 同一个 Key 在两个节点里 `Provides` → `Add` 直接报 `ErrDuplicateSource`；
-- 一个节点同时 `Requires` 和 `Provides` 同一个 Key → `Add` 报错（自环不是合法的数据流）。
+- 一个节点同时 `Requires` 和 `Provides` 同一个 Key → `Add` 报错（自环不是合法的数据流）；
+- 反过来，**每个 `Requires` 都必须有来源**：没有来源的槽永远不会被写入，那张图不可能跑完——`Start()` 会当场拒掉并指出是哪个节点的哪个 Key（留到运行时就是挂死，没法排查）。
 
 ## 源节点与 Seed
 
@@ -76,7 +77,7 @@ return pulse.Set(rc, Translated, translate(summary))
 pulse.NewNode("wait-forever", requires, provides, run, pulse.Timeout(50*time.Millisecond))
 ```
 
-切面包住「**等输入 + 执行**」整段，所以超时能打断一个**还在等数据**的节点，而不只是打断执行。上例中 `Never` 没有任何生产方（槽位永远 pending）：
+切面包住「**等输入 + 执行**」整段，所以超时能打断一个**还在等数据**的节点，而不只是打断执行。这里的形状是「有生产方、但比超时慢」——上游迟早会写，只是还没写。反过来，「永远等不到」的图是造不出来的：没人会写的 Key 在 `Start()` 就被拒了。
 
 ```text
 timeout err = pulse: node wait-forever timeout after 50ms
@@ -114,6 +115,8 @@ pulse.node_wait_finished       node=waiter   status=canceled   err=context cance
 三件事同时成立：`Run` 返回**原错误**（没被改写成跳过）；失败的节点是 `failed`；被杀掉的等待者是 `canceled`，且**只有等待段**那一条记录。
 
 失败路径还会给该节点**没写过的 Provide** 补一条跳过——那只是把还在等的下游解开，不是下游的终态。终态由**「取消优先」**决定：ctx 已取消时等待一律返回 `ctx.Err()`，「到达与取消同时就绪」也以取消为准。所以「因首错而没跑」的下游稳定报 `canceled`，不会随调度在 `skipped` / `canceled` 之间抖。
+
+同一个 `canceled` 还覆盖另外两种「这一轮被从外面拆了」：父 ctx 被取消**或截止时间到期**、以及在排队等名额期间被取消。反过来，节点**自己的** `Timeout` 到期算它的 `failed`——那是这个节点没在时限内完成。四个终态的判据写在 `pulse.NodeFinishReason` 的 godoc 里。
 
 ## 限流
 

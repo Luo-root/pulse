@@ -46,7 +46,14 @@ func Deps(groups ...[]keyRef) []keyRef {
 	return out
 }
 
-// NewNode 构造节点。run 只应 Get 声明过的 Requires、Set/Skip 声明过的 Provides。
+// NewNode 构造节点。run 的读写面是**本节点声明过的 Key**：`Get` / `TryGet` /
+// `WaitAll` 读声明过的任意 Key（含自己的 `Provides`，用于回看自己那条输出的
+// 去向），`Set` / `Skip` 只写自己的 `Provides`；没声明过的名字一律
+// `ErrUndeclared`。
+//
+// 注意 `Get` 是**阻塞等待**：等一个永远不会被写入的槽会一直等到本层 ctx
+// 被取消（`Timeout` 切面能打断它）。想知道「现在到了没有」用 `TryGet`。
+// 静止的图（所有 Requires 都没有来源）会在 `Graph.Start` 就被拒掉。
 func NewNode(id string, requires, provides []keyRef, run func(*RunCtx) error, aspects ...Aspect) *Node {
 	return &Node{id: id, requires: requires, provides: provides, run: run, aspects: aspects}
 }
@@ -128,6 +135,10 @@ func (rc *RunCtx) must(k keyRef, write bool) error {
 }
 
 // Get 等待 Key 到达：就绪返回值，跳过返回 ErrSkipped。
+//
+// 能读的只有「本节点声明过的」Key（`Requires` 与自己的 `Provides`），其余
+// 返回 ErrUndeclared；但**声明过不等于会到达**——没人写它时就一直等下去，
+// 直到本层 ctx 取消。要非阻塞地问就用 TryGet。
 func Get[T any](rc *RunCtx, k Key[T]) (T, error) {
 	var zero T
 	ref := k.asRef()

@@ -221,11 +221,22 @@ func (g *Graph) Run() error {
 }
 
 // Start 异步提交全部节点。
+//
+// 提交前做一次**只读校验**：每个 `Requires` 都必须有来源（外部
+// `Seed`/`SkipSeed`，或某个节点的 `Provides`）。没有来源的槽永远不会被写入，
+// 这样的图不可能跑完——而这是启动那一刻就能判定的事，不该等到运行时表现为
+// 挂死（有 deadline 时是一句看不出病因的超时错误，没有时进程会被 runtime
+// 判为 fatal deadlock）。校验不过时图**仍未启动**（`started` 保持 false），
+// 补上生产者或 Seed 后可以重新 Start。
 func (g *Graph) Start() error {
 	g.mu.Lock()
 	if g.started {
 		g.mu.Unlock()
 		return ErrGraphStarted
+	}
+	if err := g.checkSourcesLocked(); err != nil {
+		g.mu.Unlock()
+		return err
 	}
 	if len(g.nodes) == 0 {
 		g.started = true
@@ -240,6 +251,22 @@ func (g *Graph) Start() error {
 	for _, n := range nodes {
 		n := n
 		go g.runNode(n)
+	}
+	return nil
+}
+
+// checkSourcesLocked 判「每个 Requires 都有来源」。调用方持 g.mu。
+//
+// 判据是 producer 表里有没有这个 Key：外部 Seed/SkipSeed 记为 "seed"，
+// 节点 Provides 记为节点 id；某种来源至多一个（see claimSource）。Requires
+// 本身不登记来源，所以「表里没有」= 没人会写它。
+func (g *Graph) checkSourcesLocked() error {
+	for _, n := range g.nodes {
+		for _, k := range n.requires {
+			if _, ok := g.producer[k.name]; !ok {
+				return fmt.Errorf("pulse: node %q requires %q but nothing provides or seeds it", n.id, k.name)
+			}
+		}
 	}
 	return nil
 }
@@ -405,6 +432,12 @@ func isSkipped(err error) bool {
 	return errors.Is(err, ErrSkipped)
 }
 
+// isCanceled 判「这一轮被从外面拆了」：主动取消与父 ctx 的截止时间到期同属
+// 一类——对节点而言两者都是「不是我算错了」，在观测里都该是 canceled 而不是
+// failed（宿主按 reason 分流，把一个没有 bug 的节点报成失败会指错方向）。
+//
+// 节点自己的 Timeout 不走这里：它返回一句带节点名与时限的 timeout 错误，
+// 归 failed（那是这个节点没在时限内完成，是它的失败）。
 func isCanceled(err error) bool {
-	return errors.Is(err, context.Canceled)
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
