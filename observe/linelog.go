@@ -120,31 +120,31 @@ const (
 //   - **固定列**：标识（dim）→ 时间 → 状态 → 耗时 → 事件。时间定宽 25 列
 //     （`2006/01/02 - 15:04:05.000`，含毫秒）；不用 RFC3339Nano——它会吃掉
 //     小数末尾的 0，「12:42:03.531」与「12:42:04.12」宽度不一，列就跳了。
-//     状态左对齐（状态是词不是数字：completed / stop / active，**补齐按
-//     显示列**，全角字符按 2 列），耗时列右对齐
+//     状态左对齐（状态是词不是数字：completed / skipped / failed /
+//     canceled，**补齐按显示列**，全角字符按 2 列），耗时列右对齐
 //     且**带单位、不取整**：`820ns` / `585.1µs` / `7.62ms` / `1.23s`——旧的
 //     `duration_ms=0` 把亚毫秒记录写成 0，快慢全看不出来；
-//   - **列缺值渲染 `-`**：装配期记录没有状态与耗时，占位保证事件列起点恒定
-//     （「规整」的全部意义就是扫读时眼球不用重新找列）。长状态按原样输出，
-//     列宽是下限不是截断；
-//   - **具名字段组**：source → fiber → state=from→to → loader → entry → plugin。
-//     key 名比机器面短（`from`/`to` 合成 `state=a→b`、`loader_kind`→`loader`、
-//     `entry_id`→`entry`）——人读面优先阅读序，事实不丢（值原样出现）；
+//   - **列缺值渲染 `-`**：没带状态或耗时的记录（宿主直写时常见）用占位保证
+//     事件列起点恒定（「规整」的全部意义就是扫读时眼球不用重新找列）。长状态
+//     按原样输出，列宽是下限不是截断；
+//   - **具名字段组**：只有 `source`（信封共有事实）。业务维度一律走 attrs 组
+//     ——出口不认识域，域事实进列要靠宿主自己的渲染器；
 //   - **attrs 组按插入序**输出，不按 key 排序：Attrs 是产生方的语义顺序
-//     （各包折叠函数按「模型 → 用量」的顺序 Set），出口不认识业务语义，
+//     （`observe` 折叠时按「图 → 节点」的顺序 Set），出口不认识业务语义，
 //     排序只会把它打乱；插入序同样是确定性的，且省掉一次排序；
 //   - **不丢字段**：固定列盖不住的属性全部按插入序跟在列后面；
-//   - **组内 k=v 按需加引号**（含空格 / 等号 / 引号 / 控制字符），与旧实现和
-//     slog.TextHandler 的 needsQuoting 口径一致；**列**（状态 / 事件）按原样
-//     输出不加引号——状态可能是一整句话（宿主装配横幅）。
+//   - **组内 k=v 按需加引号**（含空格 / 等号 / 引号 / 控制字符），与
+//     slog.TextHandler 的 needsQuoting 同一口径；**列**（状态 / 事件）按
+//     原样输出不加引号——状态可能是一整句话（宿主自由文本）。
 //
 // # 颜色
 //
 // 只在目的地是终端时上色：标识与时间暗淡（扫读时不抢注意力）、trace 暗淡、
 // 有 Err 的耗时红色、≥1s 的耗时黄色。**不按 Status 字符串猜语义**——Status 是
-// 各事实归属包自己的词表（`completed` / `stop` / `inactive`…），出口替它们
-// 配色等于把业务语义搬进基座。要按**自己域的**语义上色（或让域事实进列）时，
-// 用 WithRenderer 换行体渲染器，见下面「宿主自带出口」。
+// 各事实归属方自己的词表（`observe` 写 running 与四个 finish reason，宿主直写
+// 时是它自己的自由文本），出口替它们配色等于把业务语义搬进基座。要按**自己
+// 域的**语义上色（或让域事实进列）时，用 WithRenderer 换行体渲染器，见下面
+// 「宿主自带出口」。
 //
 // # 宿主自带出口
 //
@@ -300,8 +300,8 @@ func (s *LineSink) appendBody(dst []byte, r Record) []byte {
 }
 
 // appendStatusCol 状态列：左对齐、宽度下限 colStatus。状态是词不是数字
-// （completed / stop / failed / active），左对齐符合阅读；超长状态（宿主
-// 装配横幅那种一整句）原样输出——列宽是下限，不是截断。
+// （completed / skipped / failed / canceled），左对齐符合阅读；超长状态（宿主
+// 直写的一整句话）原样输出——列宽是下限，不是截断。
 //
 // 补齐按**显示列**而不是 rune 数：状态是宿主可配的自由文本，「运行中」是
 // 3 rune 却占 6 列，按 rune 补会让该行的后续列整体右推 3 列。
@@ -421,7 +421,7 @@ func (s *LineSink) unpaint(dst []byte, painted bool) []byte {
 // 直接「先补分隔符再调它」会在无属性记录上多出一段空列。
 //
 // **口径稳定**：插入序、引号规则与标量渲染是各出口共用的一致性资产，改动随
-// minor 发布（见 README 的冻结清单）。
+// minor 发布（冻结面列在 docs/design/pulse.md 的「附 · 冻结面与不提供的东西」）。
 func AppendAttrs(dst []byte, a Attrs) []byte {
 	return appendAttrsSkipping(dst, a, nil)
 }
@@ -447,8 +447,8 @@ func AppendAttrs(dst []byte, a Attrs) []byte {
 //		dst = dst[:mark] // 全被固定列吃掉，这一组不写
 //	}
 //
-// **口径稳定**：与 AppendAttrs 同属冻结面，改动随 minor 发布（见 README 的
-// 冻结清单）。
+// **口径稳定**：与 AppendAttrs 同属冻结面，改动随 minor 发布（同上，见设计
+// 文档的冻结面清单）。
 func AppendAttrsExcept(dst []byte, a Attrs, skip ...string) []byte {
 	return appendAttrsSkipping(dst, a, skip)
 }
@@ -499,8 +499,8 @@ func appendAttrsSkipping(dst []byte, a Attrs, skip []string) []byte {
 // 其余按 1 列。宿主自带出口时用它算列补齐——配 AppendPadding。
 //
 // 为什么不用 utf8.RuneCountInString：中文状态（「运行中」）是 3 rune 但
-// 占 6 列，按 rune 补齐会把该行后续列整体右推——而状态正是宿主可配的
-// 自由文本（本包 godoc 自己举了「宿主装配横幅那种一整句」的例子）。
+// 占 6 列，按 rune 补齐会把该行后续列整体右推——而状态正是宿主可写的
+// 自由文本（LineSink 的状态列对它只做左对齐，不截断）。
 //
 // 表是常见区段的**近似**（东亚宽度 East Asian Width 的子集）：只为列补齐而引
 // golang.org/x/text/width 不值当。覆盖不到的（emoji 变体选择符、罕用宽字符）

@@ -68,7 +68,7 @@ pulse.NewNode("summarize",
 未就绪(pending) | 已就绪(ready, 值) | 已跳过(skipped)
 ```
 
-**就绪和跳过都是「到达」。** 等待者被唤醒后区分这两种到达，而不是把「永远不到」伪装成一个假值。这是 flow 类引擎最容易做错的一处：把 skip 当失败会让「分支」这个基本操作无处安放。
+**就绪和跳过都是「到达」。** 等待者被唤醒后区分这两种到达，而不是把「永远不到」伪装成一个假值。这是依赖驱动的图引擎最容易做错的一处：把 skip 当失败会让「分支」这个基本操作无处安放。
 
 由此推出两条级联规则：
 
@@ -110,7 +110,7 @@ return pulse.Skip(rc, OutA)
 - 槽位一旦到达即 `close(done)`，不会重开；重复 `Set` 幂等忽略，`Set` 与 `Skip` 冲突报 `ErrConflict`；
 - 图启动后 `Seed` 同样被拒。
 
-**为什么不做「多次运行」**：flow 的槽位是**流水线缓冲**，不是存储。判据一句话——
+**为什么不做「多次运行」**：引擎的槽位是**流水线缓冲**，不是存储。判据一句话——
 
 > pulse 持有「这一轮正在流动的数据」，不持有历史。
 
@@ -304,7 +304,7 @@ g, _ := pulse.New(ctx, "demo", pulse.WithObserver(obs))
 
 `Record` 没有 `map[string]any` 逃生舱：`Attrs` 的写入面只有泛型 `Set`（标量约束 `~string|~int64|~float64|~bool`），prompt、附件字节、密钥、思维链**在类型上就无法进入**。
 
-边界的残余部分要说清：`Err` 是字符串，来源是调用方传入的 `error`——所以**适配层不得把 provider 原始错误体直接塞进 `Err`**，应传已分类的摘要。
+边界的残余部分要说清：`Err` 是调用方传入的 `error`——所以**适配层不得把上游原始错误体直接塞进 `Err`**，应传已分类的摘要。
 
 ---
 
@@ -314,7 +314,9 @@ g, _ := pulse.New(ctx, "demo", pulse.WithObserver(obs))
 
 - 槽位三态与「跳过是到达」语义；
 - `Aspect` 的 `func(rc, next)` 形态与门闩约束（重叠拒、顺序允）；
-- `ErrUndeclared` / `ErrConflict` / `ErrGraphStarted` / `ErrSkipped` 的判据；
+- 哨兵错误的判据：`ErrUndeclared` / `ErrConflict` / `ErrGraphStarted` /
+  `ErrGraphNotStarted` / `ErrDuplicateSource` / `ErrSkipped` / `ErrNextCalledTwice`
+  （同一份清单也在 `AGENTS.md` 的 Freeze contract 一节）；
 - `Observer` 的回调次数契约与「panic 不升格」；
 - 六条编码原语与 `LineRenderer` 的字节级同形承诺。
 

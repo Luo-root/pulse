@@ -38,7 +38,7 @@ defer sink.Flush() // Flush before shutdown: the last batch is still buffered
 
 obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 	Sink:    sink,
-	HostID:  "quickstart",              // host identity (an assembly-time fact)
+	HostID:  "quickstart",              // host identity (stable across runs); with TraceID it means "who + which run"
 	TraceID: observe.NewTraceID(),      // this run's correlation id (a run-time fact)
 })
 if err != nil {
@@ -191,6 +191,6 @@ An `ObserveConfig`'s lifetime **equals one run** (one `Run` of the graph): acros
 
 `Record` has no `map[string]any` escape hatch: the only write surface for `Attrs` is the generic `Set` (constrained to `~string | ~int64 | ~float64 | ~bool`), so **prompts, attachment bytes, secrets and chain-of-thought cannot enter by type**.
 
-The residual part of the boundary should be stated plainly: `Err` is an `error`, and where it comes from is whatever the caller passed — so **an adapter layer must not stuff a provider's raw error body into `Err`**; it should pass an already-classified summary. "Cramming a payload into a scalar" is deliberate behaviour; the defence is the key declaring its own intent, plus a redact hook on the Sink side (an implementation can reject sensitive keys / truncate over-long values / cap the count).
+The residual part of the boundary should be stated plainly: `Err` is an `error`, and where it comes from is whatever the caller passed — so **an adapter layer must not stuff an upstream's raw error body into `Err`**; it should pass an already-classified summary. "Cramming a payload into a scalar" is deliberate behaviour; the defence is the key declaring its own intent, plus a redact hook on the Sink side (an implementation can reject sensitive keys / truncate over-long values / cap the count).
 
 Package-level API and benchmark accounting: [observe package docs](/en/packages/observe/); the full design: [design doc](https://github.com/Luo-root/pulse/blob/main/docs/design/pulse.md).

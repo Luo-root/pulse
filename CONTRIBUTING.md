@@ -39,9 +39,8 @@ Every issue — feature, design or chore — answers these, in this order:
 Two kinds of issue carry extra requirements:
 
 - **Bug report** — reproduction steps, expected vs. actual behavior, and the environment you
-  ran in (OS, Go version, Pulse version or commit, plus the provider/model if the bug involves
-  a model call). *A bug that cannot be reproduced cannot be fixed*: a report without a
-  reproduction is likely to be closed as `question`.
+  ran in (OS, Go version, Pulse version or commit). *A bug that cannot be reproduced cannot be
+  fixed*: a report without a reproduction is likely to be closed as `question`.
 - **Feature request** — a survey before a proposal. Look at how comparable projects solve the
   same problem, then lay the options out with their trade-offs — **including "do nothing"** —
   and say which one you recommend and why. Present options; don't assert a conclusion the
@@ -147,8 +146,7 @@ Pulse 是开源的 Go 库，目前仍在 1.0 之前（`v0.x`）。欢迎贡献�
 两类 Issue 有额外要求：
 
 - **Bug 报告**——复现步骤、期望行为与实际行为、运行环境（操作系统、Go 版本、Pulse 版本或
-  commit；涉及模型调用时附 provider / 模型）。**复现不了的 bug 修不了**：没有复现步骤的报告
-  很可能被按 `question` 关闭。
+  commit）。**复现不了的 bug 修不了**：没有复现步骤的报告很可能被按 `question` 关闭。
 - **功能需求**——先调研再提方案。看同类项目怎么解同一个问题，然后把各个选项连同取舍摆出来——
   **包括「什么都不做」**——并说明你推荐哪个、为什么。给可选方案，不要下证据撑不住的结论。
 

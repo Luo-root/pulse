@@ -25,13 +25,18 @@ type SlogSink struct {
 	Logger *slog.Logger
 }
 
+// slogMaxFields 是 slog 键值对的预留容量：8 个固定字段（status /
+// duration_ms / event / source / host_id / error / trace_id 与 Attrs 段本身）
+// 加上常见 attrs 条数。只是分配提示，不设上限——Attrs 再多也只是让它扩容。
+const slogMaxFields = 16
+
 // Write 实现 Sink。
 func (s SlogSink) Write(r Record) {
 	logger := s.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	attrs := make([]any, 0, 18)
+	attrs := make([]any, 0, slogMaxFields)
 	if r.Status != "" {
 		attrs = append(attrs, "status", r.Status)
 	}

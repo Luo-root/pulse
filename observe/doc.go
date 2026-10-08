@@ -76,8 +76,8 @@
 //
 // Record 无 map[string]any 逃生舱：Attrs 的写入面只有泛型 Set（标量约束
 // ~string|~int64|~float64|~bool），prompt、附件字节、密钥、思维链无法通过
-// 字段进入。注意边界：Err 字符串来源于调用方传入的 error——适配层不得把
-// provider 原始错误体直接塞入 Err，应传已分类的摘要。
+// 字段进入。注意边界：Err 是调用方传入的 error——适配层不得把上游原始错误体
+// 直接塞入 Err，应传已分类的摘要。
 //
 // 设计全貌见 docs/design/pulse.md。
 package observe

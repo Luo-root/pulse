@@ -14,7 +14,7 @@ defer sink.Flush() // 关闭前必须 Flush：最后一批还在缓冲里
 
 obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 	Sink:    sink,
-	HostID:  "host-1",             // 装配期身份
+	HostID:  "host-1",             // 宿主身份：跨运行稳定，与 TraceID 组成「谁 + 哪一次」
 	TraceID: observe.NewTraceID(), // 运行期身份，单一生成源
 })
 g, err := pulse.New(ctx, "demo", pulse.WithObserver(obs))

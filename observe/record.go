@@ -78,9 +78,10 @@ type attrEntry struct {
 	val attrScalar
 }
 
-// attrInlineCap 是首次写入预留的条目容量：覆盖各包折叠的常见规模
-// （llm 5 条 / loop 2–3 条 / pulse 2–3 条），使常见记录一次分配到位；
-// 超出后按切片自然扩容（仍是对数级分配，不再按条数线性增长）。
+// attrInlineCap 是首次写入预留的条目容量：覆盖常见规模（本包折叠的节点
+// 记录带 2 条归因：`pulse.graph` + `pulse.node`；宿主直写时通常也就三五
+// 条），使常见记录一次分配到位；超出后按切片自然扩容（仍是对数级分配，
+// 不再按条数线性增长）。
 const attrInlineCap = 6
 
 type attrKind uint8

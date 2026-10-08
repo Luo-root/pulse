@@ -38,7 +38,7 @@ defer sink.Flush() // 关闭前必须 Flush：最后一批还在缓冲里
 
 obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 	Sink:    sink,
-	HostID:  "quickstart",              // 宿主身份（装配期事实）
+	HostID:  "quickstart",              // 宿主身份（跨运行稳定），与 TraceID 组成「谁 + 哪一次」
 	TraceID: observe.NewTraceID(),      // 本次运行的关联 id（运行期事实）
 })
 if err != nil {
@@ -191,6 +191,6 @@ TraceID: span.SpanContext().TraceID().String(), // 32 位小写 hex（W3C trace-
 
 `Record` 没有 `map[string]any` 逃生舱：`Attrs` 的写入面只有泛型 `Set`（约束 `~string | ~int64 | ~float64 | ~bool`），**prompt、附件字节、密钥、思维链在类型上就无法进入**。
 
-边界的残余部分要说清：`Err` 是 `error`，来源是调用方传入的——所以**适配层不得把 provider 原始错误体直接塞进 `Err`**，应传已分类的摘要。「把 payload 塞进一个标量」属于蓄意行为，防线在 key 自述意图 + Sink 侧 redact 钩子（实现可拒绝敏感 key / 截断超长 / 限条数）。
+边界的残余部分要说清：`Err` 是 `error`，来源是调用方传入的——所以**适配层不得把上游原始错误体直接塞进 `Err`**，应传已分类的摘要。「把 payload 塞进一个标量」属于蓄意行为，防线在 key 自述意图 + Sink 侧 redact 钩子（实现可拒绝敏感 key / 截断超长 / 限条数）。
 
 包级 API 与基准口径见 [observe 包文档](/packages/observe/)；完整设计见[设计文档](https://github.com/Luo-root/pulse/blob/main/docs/design/pulse.md)。

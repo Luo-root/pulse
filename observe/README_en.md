@@ -14,7 +14,7 @@ defer sink.Flush() // Flush before shutdown: the last batch is still buffered
 
 obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 	Sink:    sink,
-	HostID:  "host-1",             // assembly-time identity
+	HostID:  "host-1",             // host identity: stable across runs; with TraceID it means "who + which run"
 	TraceID: observe.NewTraceID(), // run-time identity, single generation source
 })
 g, err := pulse.New(ctx, "demo", pulse.WithObserver(obs))

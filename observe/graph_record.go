@@ -22,9 +22,9 @@ const (
 
 // NewRecordObserver 返回写 Record 的节点分段计时观察者：等待完成与执行
 // 完成各一条记录（Duration 分别为等待段/执行段耗时），graphID 与 nodeID
-// 进 Attrs（pulse.AttrGraph / pulse.AttrNode 契约），不占用 Record 的装配
-// 专用具名字段；Status 为 running（等待段）或 finish reason（执行段）。
-// 跳过节点只有一条 skipped 等待记录，无运行记录。
+// 进 Attrs（pulse.AttrGraph / pulse.AttrNode 契约），不占用 Record 的具名
+// 字段——具名字段只服务于所有记录共有的事实；Status 为 running（等待段）
+// 或 finish reason（执行段）。跳过节点只有一条 skipped 等待记录，无运行记录。
 //
 // graphID 由 pulse 随回调发出（Graph 构造时的 graphID）——多图复用同一
 // Observer 实现时归因不漂移。

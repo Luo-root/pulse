@@ -78,7 +78,9 @@ func TestSlogSinkOmitsZeroFields(t *testing.T) {
 	sink.Write(Record{Source: SourceObserver, Event: "evt"})
 
 	line := buf.String()
-	for _, absent := range []string{"duration_ms=", "status=", "host_id=", "trace_id=", "fiber=", "from=", "to="} {
+	// 这五个键都是机器面的叫法；零值时一个都不该出现——人读面用 `-` 占位，
+	// 机器面省键，两边都不造假值。
+	for _, absent := range []string{"duration_ms=", "status=", "host_id=", "trace_id=", "error="} {
 		if strings.Contains(line, absent) {
 			t.Fatalf("零值字段 %q 不应输出：%q", absent, line)
 		}

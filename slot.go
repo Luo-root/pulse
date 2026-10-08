@@ -26,8 +26,6 @@ func newSlot() *slot {
 	return &slot{done: make(chan struct{})}
 }
 
-func (s *slot) Done() <-chan struct{} { return s.done }
-
 func (s *slot) snapshot() (slotState, any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
