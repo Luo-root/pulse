@@ -5,6 +5,7 @@ import { useData } from 'vitepress'
 // 版本号单源：badge / tagline / CTA / Release 链接都引用它——发版只改这一处。
 const VERSION = 'v0.2.5'
 const RELEASE_URL = `https://github.com/Luo-root/pulse/releases/tag/${VERSION}`
+const DESIGN_URL = 'https://github.com/Luo-root/pulse/blob/main/docs/design/pulse.md'
 
 const { lang } = useData()
 const isZh = computed(() => lang.value.startsWith('zh'))
@@ -12,61 +13,61 @@ const isZh = computed(() => lang.value.startsWith('zh'))
 const copy = {
   zh: {
     badge: `${VERSION} · 开源 MIT`,
-    heroTitle: '一切皆插件，',
-    heroTitleAccent: '卸载即还原',
-    tagline: `Pulse 是一个 Go AI agent 框架——以可逆效应与依赖响应式装载为基座的插件内核。模型、工具、编排、记忆、观测作为内核上的能力租户组合；host 薄串联包提供官方装配路径，v2 核心 ${VERSION} 已发布。`,
+    heroTitle: '数据到达即调度，',
+    heroTitleAccent: '失败显式',
+    tagline: `Pulse 是一个一次性运行的 Go 图引擎。节点只声明读哪些 Key、写哪些 Key，拓扑由数据的生产与消费隐式形成——没有边对象、没有拓扑排序、没有调度循环。引擎的依赖闭包为零；图观测是独立的一层，只经一个 Observer seam 接进来。`,
     ctaStart: '快速开始',
     ctaPackages: '包文档',
     ctaGithub: 'GitHub',
     featEyebrow: '核心能力',
-    featTitle: '一个内核，把 Agent 的每一块都做成可插拔的',
+    featTitle: '编排与观测，两件事各归其位',
     feats: [
-      { icon: 'kernel', title: '插件内核', desc: 'kernel.Context 五件套——可逆 Effect（卸载即还原）、类型安全 ServiceKey、四模式事件、Plugin/Fiber/Loader 依赖响应式装载。', link: '/pulse/packages/kernel/', linkText: '查看 kernel' },
-      { icon: 'llm', title: 'provider 中立模型层', desc: '词汇表只收跨 provider 稳定语义的字段；无对应线格式显式 ErrBadRequest，绝不静默吞参数。OpenAI / Anthropic 官方适配器。', link: '/pulse/packages/llm/', linkText: '查看 llm' },
-      { icon: 'loop', title: '无状态 ReAct', desc: 'loop.Agent 只执行一个回合——工具调用、HITL 决策事件、Waterfall 拦截点；历史与会话交由记忆层承担。', link: '/pulse/packages/loop/', linkText: '查看 loop' },
-      { icon: 'flow', title: '编排与记忆', desc: 'kernel/flow 槽位三态节点图（AND 汇聚、Skip、Observer）+ YAML 声明式装图；memory 九子包覆盖会话到反思管线。', link: '/pulse/guide/flow', linkText: '编排指南' },
-      { icon: 'obs', title: '可观测', desc: 'Bootstrap + Record + Sink，内置 SlogSink / LineSink / MemorySink 出口与 AsyncSink 包装，只依赖 kernel；trace 分 host / trace 两层，旁路订阅不进拦截链。', link: '/pulse/guide/observability', linkText: '观测指南' },
-      { icon: 'eval', title: '评测基建', desc: '分层基准 L0–L3、19 条 property 不变式、跨框架对比 eval/war——编排 fan-out 免费、纯运行 ~8.5–11.4× 差距都有数字与口径。', link: '/pulse/eval', linkText: '看数字' },
+      { icon: 'flow', title: '一次性图引擎', desc: '依赖声明即拓扑，数据到达即调度。Graph 是模板的一次实例，不是可重跑的容器——复用模板就再 New 一次。引擎只用标准库。', link: '/pulse/guide/concepts', linkText: '核心概念' },
+      { icon: 'kernel', title: '槽位三态', desc: 'pending | ready(值) | skipped。就绪与跳过都是「到达」——跳过不是失败，分支就靠对未选中的 Provide 调用 Skip 写出。', link: '/pulse/guide/concepts', linkText: '看槽位契约' },
+      { icon: 'loop', title: '切面与取消', desc: 'Aspect 包住「等输入 + 执行」整段，所以 Timeout 能打断还在等数据的节点；Retry 只对执行错误重试，跳过与取消都不重试。', link: '/pulse/guide/orchestration', linkText: '编排指南' },
+      { icon: 'eval', title: '声明式装图', desc: 'YAML 拥有拓扑，注册的工厂只给 Run；Seed 的取值交给宿主——引擎不做 IO。', link: '/pulse/guide/assembly', linkText: '装配指南' },
+      { icon: 'obs', title: '图观测', desc: '引擎每节点至多三条回调；折叠成结构化记录是 observe 的事。业务维度一律走 Attrs，不扩具名字段。', link: '/pulse/guide/observability', linkText: '观测指南' },
+      { icon: 'llm', title: '宿主自带出口', desc: '换掉行体渲染器，用六条导出的编码原语拼自己的列——与内置版式逐字节同形，出口仍然不认识任何业务语义。', link: '/pulse/guide/observability', linkText: '看渲染器契约' },
     ],
     startEyebrow: '开始使用',
-    startTitle: '两条路进入 Pulse',
+    startTitle: '两分钟起一张图',
     start1Title: '安装',
-    start1Desc: '需要 Go 1.25+。一行命令引入运行时，用环境变量提供模型 API Key。',
-    start2Title: '官方装配路径',
-    start2Desc: '要直接落地一个能跑的 Agent，用 host 薄串联包：会话栈、模型 Registry、工具集三向接线一次接好，host.New + DefaultAgent 三行参数起步。',
-    ctaTitle: '在开源、可逆、可组合的基座上构建 Agent',
-    ctaDesc: `${VERSION} 已发布——宿主可以自带出口：换掉行体渲染器（WithRenderer）并用导出的编码原语拼自己的列，与内置版式逐字节同形。`,
+    start1Desc: '需要 Go 1.25+。只有根包时依赖闭包为零——不需要观测的宿主只 import 它。',
+    start2Title: '起一张图',
+    start2Desc: '声明读写的 Key，装节点，Run。本轮的数据随 Run 而生、随结束而灭；跨运行的状态归调用方。',
+    ctaTitle: '从一个最小的图引擎开始',
+    ctaDesc: '设计文档只写两件事：编排与观测。API 契约写在 godoc 里——每个导出符号都带一条。',
+    ctaDesign: '设计文档',
     ctaRelease: `${VERSION} Release`,
-    ctaEval: '评测数字',
   },
   en: {
     badge: `${VERSION} · Open Source MIT`,
-    heroTitle: 'Everything is a plugin, ',
-    heroTitleAccent: 'unload to restore',
-    tagline: `Pulse is a Go AI agent framework — a plugin kernel grounded in reversible effects and dependency-reactive service loading. Models, tools, orchestration, memory, observability compose as tenants on the kernel; the thin host package provides the official assembly path, shipping as ${VERSION}.`,
+    heroTitle: 'Data arrival is scheduling, ',
+    heroTitleAccent: 'failure is explicit',
+    tagline: `Pulse is a one-shot graph engine for Go. A node declares only which keys it reads and which it writes; topology is implied by data production and consumption — no edge objects, no topological sort, no scheduler loop. The engine's dependency closure is empty, and graph observation is a separate layer that attaches through a single Observer seam.`,
     ctaStart: 'Quick start',
     ctaPackages: 'Package docs',
     ctaGithub: 'GitHub',
     featEyebrow: 'Core capabilities',
-    featTitle: 'One kernel, every piece of the agent pluggable',
+    featTitle: 'Orchestration and observation, each in its own place',
     feats: [
-      { icon: 'kernel', title: 'Plugin kernel', desc: 'kernel.Context five-piece — reversible Effects (unload restores), typed ServiceKey, four-mode events, Plugin/Fiber/Loader with dependency-reactive loading.', link: '/pulse/en/packages/kernel/', linkText: 'Read kernel docs' },
-      { icon: 'llm', title: 'Provider-neutral model layer', desc: 'The vocabulary only carries fields with stable cross-provider semantics; missing wire counterparts return ErrBadRequest — parameters are never silently dropped.', link: '/pulse/en/packages/llm/', linkText: 'Read llm docs' },
-      { icon: 'loop', title: 'Stateless ReAct', desc: 'loop.Agent runs exactly one turn — tool calls, HITL decision events, waterfall interception points; history and sessions belong to the memory layer.', link: '/pulse/en/packages/loop/', linkText: 'Read loop docs' },
-      { icon: 'flow', title: 'Orchestration & memory', desc: 'kernel/flow three-state slot node graph (AND joins, Skip, Observer) + YAML declarative loading; nine memory sub-packages from sessions to reflection.', link: '/pulse/en/guide/flow', linkText: 'Orchestration guide' },
-      { icon: 'obs', title: 'Observability', desc: 'Bootstrap + Record + Sink with built-in SlogSink / LineSink / MemorySink exits and an AsyncSink wrapper, kernel-only dependency; two-tier trace (host / request), side-band subscriptions that never touch interception chains.', link: '/pulse/en/guide/observability', linkText: 'Observability guide' },
-      { icon: 'eval', title: 'Evaluation infra', desc: 'Layered benchmarks L0–L3, 19 property invariants, cross-framework suite eval/war — free fan-out and the ~8.5–11.4× pure-runtime gap, with numbers and accounting.', link: '/pulse/en/eval', linkText: 'See the numbers' },
+      { icon: 'flow', title: 'One-shot graph engine', desc: 'Dependency declarations are the topology; data arrival is the schedule. A Graph is one instantiation of a template, not a re-runnable container — reuse the template by calling New again. Standard library only.', link: '/pulse/en/guide/concepts', linkText: 'Core concepts' },
+      { icon: 'kernel', title: 'Three slot states', desc: 'pending | ready(value) | skipped. Ready and skipped are both arrival — a skip is not a failure. Branching is written by calling Skip on the Provide you did not choose.', link: '/pulse/en/guide/concepts', linkText: 'Slot contract' },
+      { icon: 'loop', title: 'Aspects and cancellation', desc: 'An Aspect wraps the whole "wait for input + execute" span, so Timeout can interrupt a node still waiting for data; Retry retries execution errors only — never a skip, never a cancellation.', link: '/pulse/en/guide/orchestration', linkText: 'Orchestration guide' },
+      { icon: 'eval', title: 'Declarative assembly', desc: 'The YAML owns the topology and a registered factory supplies only Run; seed resolution is the host\'s job — the engine does no IO.', link: '/pulse/en/guide/assembly', linkText: 'Assembly guide' },
+      { icon: 'obs', title: 'Graph observation', desc: 'At most three callbacks per node; folding them into structured records is observe\'s job. Business dimensions ride Attrs only — never named fields.', link: '/pulse/en/guide/observability', linkText: 'Observation guide' },
+      { icon: 'llm', title: 'Host-supplied egress', desc: 'Swap the line renderer and build your own columns from six exported encoding primitives — byte-for-byte identical to the built-in layout, and the egress still knows nothing about your domain.', link: '/pulse/en/guide/observability', linkText: 'Renderer contract' },
     ],
     startEyebrow: 'Get started',
-    startTitle: 'Two ways into Pulse',
+    startTitle: 'A graph in two minutes',
     start1Title: 'Install',
-    start1Desc: 'Requires Go 1.25+. One command brings in the runtime; provide the model API key via environment variables.',
-    start2Title: 'The official assembly path',
-    start2Desc: 'To land a working agent directly, use the thin host package: session stack, model registry and tools are wired in one call — host.New plus DefaultAgent, three parameters to start.',
-    ctaTitle: 'Build agents on a reversible, composable foundation',
-    ctaDesc: `${VERSION} is out — hosts can bring their own egress: swap the line renderer (WithRenderer) and build your own columns from the exported encoding primitives, byte-for-byte identical to the built-in layout.`,
+    start1Desc: 'Requires Go 1.25+. With only the root package the dependency closure is empty — a host that needs no observation imports just that.',
+    start2Title: 'Build a graph',
+    start2Desc: 'Declare the keys, add nodes, Run. This run\'s data lives and dies with Run; cross-run state belongs to the caller.',
+    ctaTitle: 'Start from a minimal graph engine',
+    ctaDesc: 'The design doc covers exactly two things: orchestration and observation. API contracts live in godoc — every exported symbol carries one.',
+    ctaDesign: 'Design doc',
     ctaRelease: `${VERSION} Release`,
-    ctaEval: 'Benchmarks',
   },
 }
 
@@ -144,7 +145,7 @@ const icons = {
           <div class="card start-card">
             <span class="card-title">{{ t.start2Title }}</span>
             <span class="card-desc">{{ t.start2Desc }}</span>
-            <code class="code">h, _ := host.New(host.Options{...})</code>
+            <code class="code">g, _ := pulse.New(ctx, "demo")</code>
           </div>
         </div>
       </div>
@@ -157,8 +158,8 @@ const icons = {
         <p class="cta-desc">{{ t.ctaDesc }}</p>
         <div class="actions center">
           <a class="btn btn-primary" href="https://github.com/Luo-root/pulse" target="_blank" rel="noopener">{{ t.ctaGithub }}</a>
+          <a class="btn btn-ghost" :href="DESIGN_URL" target="_blank" rel="noopener">{{ t.ctaDesign }}</a>
           <a class="btn btn-ghost" :href="RELEASE_URL" target="_blank" rel="noopener">{{ t.ctaRelease }}</a>
-          <a class="btn btn-ghost" href="/pulse/eval">{{ t.ctaEval }}</a>
         </div>
       </div>
     </section>

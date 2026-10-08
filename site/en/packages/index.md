@@ -1,19 +1,17 @@
 # Package docs
 
-Full bilingual READMEs for all 28 packages are generated from the repository single source by the build script (**same source as the code, refreshed at build time**). The sidebar groups them by domain; this page is the quick index.
+Pulse ships exactly three packages:
 
-| Domain | Packages |
-|---|---|
-| Kernel | [kernel](/en/packages/kernel/) · [kernel/flow](/en/packages/kernel/flow/) · [kernel/flow/yaml](/en/packages/kernel/flow/yaml/) |
-| Model layer | [llm](/en/packages/llm/) · [llm/openai](/en/packages/llm/openai/) · [llm/anthropic](/en/packages/llm/anthropic/) |
-| Execution | [loop](/en/packages/loop/) |
-| Tools & skills | [toolset](/en/packages/toolset/) · [toolset/builtins](/en/packages/toolset/builtins/) · [toolset/mcp](/en/packages/toolset/mcp/) · [toolset/lsp](/en/packages/toolset/lsp/) · [skills](/en/packages/skills/) |
-| Memory | [memory](/en/packages/memory/) · session · compaction · store · assemble · selfedit · index · index/openai · reflection · candidate |
-| Assembly | [host](/en/packages/host/) |
-| Observability | [observability](/en/packages/observability/) |
-| Text | [textsplit](/en/packages/textsplit/) |
-| Evaluation | [eval](/en/packages/eval/) · [eval/war](/en/packages/eval/war/) |
+| Package | What it is | Depends on | Docs |
+|---|---|---|---|
+| [`pulse`](https://github.com/Luo-root/pulse) (root) | the graph engine | **nothing** (standard library only) | [Core concepts](/en/guide/concepts) · [Orchestration](/en/guide/orchestration) |
+| [`pulse/observe`](/en/packages/observe/) | graph observation: engine `Observer` callbacks → structured records | `pulse` | [Graph observation](/en/guide/observability) |
+| [`pulse/yaml`](/en/packages/yaml/) | declarative assembly: YAML → graph | `pulse` + `yaml.v3` | [Declarative assembly](/en/guide/assembly) |
 
-::: tip Content source
-Each package page's body = the package's `README_zh.md` (Chinese site) / `README.md` (English site) verbatim, synced at build time by `site/scripts/sync-docs.mjs` — repository doc updates flow to the site automatically, with no second copy to maintain.
+The page body of the latter two is the package's `README_en.md` verbatim, synced at build time by `site/scripts/sync-docs.mjs` — **the README is the source; editing it updates the site**.
+
+The root package has no separate page: its API contracts live in godoc (every exported symbol carries one), usage lives in the guide, and the design lives in [`docs/design/pulse.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/pulse.md).
+
+::: tip Dependency direction
+`pulse` ← `observe` / `yaml`, one-way and never reversed. The engine imports no observation package; a host that imports only the root package has an empty dependency closure.
 :::

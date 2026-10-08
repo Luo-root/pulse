@@ -1,11 +1,11 @@
 # Quick start
 
-Pulse is a Go AI agent framework built around a plugin kernel, shipping its v2 core as v0.2.5. This page walks the shortest path: **plugin kernel + model layer + a ReAct tool round**.
+Pulse is a **one-shot graph engine** plus a **graph-observation layer**. This page walks the shortest path end to end: **declare Keys → add nodes → `Run` → attach observation**.
 
 ## Requirements
 
-- **Go 1.25+** (the toolchain downloads itself when missing)
-- An API key for an OpenAI-compatible model (via environment variables — never hard-code credentials)
+- **Go 1.25.0+** (toolchain auto-downloads if missing)
+- No other dependencies: the engine uses only the standard library; the examples on this page need only the root package
 
 ## Install
 
@@ -13,122 +13,133 @@ Pulse is a Go AI agent framework built around a plugin kernel, shipping its v2 c
 go get github.com/Luo-root/pulse
 ```
 
-## Less wiring: one-step assembly (host)
-
-If you'd rather not wire it yourself, use the thin `host` package — providers, model declarations and the session stack mount on the kernel, and `DefaultAgent` turns three parameters into a working agent:
-
-```go
-k := kernel.New()
-defer k.Dispose()
-
-h, err := host.New(host.Options{
-	Kernel:    k,
-	Providers: []host.Provider{host.Provider(openai.Register)},
-	Models: []host.ModelDecl{
-		{Name: "main", Config: llm.Config{Provider: openai.ProviderCompletions, Model: "gpt-4o-mini", APIKey: os.Getenv("OPENAI_API_KEY")}},
-	},
-	Session: memory.NewMemorySessionStack(),
-})
-if err != nil {
-	panic(err)
-}
-
-agent, err := h.DefaultAgent(ctx, host.DefaultAgentOptions{Name: "main", Model: "main"})
-if err != nil {
-	panic(err)
-}
-res, err := agent.Run(ctx, llm.UserText("hello"))
-```
-
-Tools, observability exits and the approval gate (`ToolGate`) attach at this layer; for non-default sources switch to `h.NewAgent` — no special cases. See the [host package docs](/en/packages/host/).
-
-What you add next all attaches at this layer:
-
-| What you want | Where it goes | Recipes |
-|---|---|---|
-| Tools (local builtins / MCP / your own) | `host.Options.Tools` | [Assembly guide](/en/guide/assembly) |
-| Session persistence and cold recovery | `host.Options.Session` | [Assembly guide](/en/guide/assembly), [memory/session](/en/packages/memory/session/) |
-| Pre-execution approval (HITL) | `host.AgentOptions.ToolGate` | [Assembly guide](/en/guide/assembly) |
-| Long-term memory and context assembly | `host.AgentOptions.ContextBuilder` | [Memory layer](/en/guide/memory) |
-| Observability exits | `host.Options.Observe` | [Observability](/en/guide/observability) |
-
-The manual assembly below produces the same result, one layer at a time (for the systematic two-layer walkthrough see the [assembly guide](/en/guide/assembly)).
-
-## Shortest path: model + ReAct tool round
-
-The example below is full production assembly: kernel host → llm.Registry (observed wrapper) → named model instance → MemToolSet tool registration → Agent with a request scope.
+## A minimal graph
 
 ```go
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
+	"strings"
 
-	"github.com/Luo-root/pulse/kernel"
-	"github.com/Luo-root/pulse/llm"
-	"github.com/Luo-root/pulse/llm/openai"
-	"github.com/Luo-root/pulse/loop"
+	"github.com/Luo-root/pulse"
+)
+
+var (
+	Docs    = pulse.NewKey[[]string]("docs")
+	Summary = pulse.NewKey[string]("summary")
+	Report  = pulse.NewKey[string]("report")
 )
 
 func main() {
-	k := kernel.New()
-	defer k.Dispose()
-
-	reg := llm.NewRegistry(k)
-	if err := openai.Register(k, reg); err != nil {
-		panic(err)
-	}
-	if err := reg.Declare("main", llm.Config{
-		Provider: openai.ProviderCompletions,
-		Model:    "gpt-4o-mini",
-		APIKey:   os.Getenv("OPENAI_API_KEY"),
-	}); err != nil {
-		panic(err)
-	}
-	model, err := reg.Open("main")
+	g, err := pulse.New(context.Background(), "docs-pipeline")
 	if err != nil {
 		panic(err)
 	}
 
-	tools := loop.NewMemToolSet()
-	_ = tools.Register(llm.ToolDef{
-		Name:        "echo",
-		Description: "echoes the arguments back",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}}}`),
-	}, func(ctx context.Context, args json.RawMessage) (string, error) {
-		return string(args), nil
-	})
+	// Seed writes external input before the run: it declares the host as the source of docs.
+	_ = pulse.Seed(g, Docs, []string{"pulse only orchestrates and observes", "slot tri-state: skip is arrival"})
 
-	agent, err := loop.NewAgent(model, "assistant",
-		loop.WithToolSet(tools),
-		loop.WithSystemPrompt("You are a concise assistant."),
-		loop.WithEventScope(k),
-	)
+	// summarize enters Run only after docs has arrived.
+	must(g.Add(pulse.NewNode("summarize",
+		pulse.Requires(Docs),
+		pulse.Provides(Summary),
+		func(rc *pulse.RunCtx) error {
+			docs, err := pulse.Get(rc, Docs)
+			if err != nil {
+				return err
+			}
+			return pulse.Set(rc, Summary, fmt.Sprintf("%d segments / %d chars", len(docs), len([]rune(strings.Join(docs, "")))))
+		})))
+
+	// report takes the result itself: the Graph has no public slot read after Run, so outputs belong to the caller.
+	var report string
+	must(g.Add(pulse.NewNode("report",
+		pulse.Requires(Summary),
+		pulse.Provides(Report),
+		func(rc *pulse.RunCtx) error {
+			summary, err := pulse.Get(rc, Summary)
+			if err != nil {
+				return err
+			}
+			report = "Report: " + summary
+			return pulse.Set(rc, Report, report)
+		})))
+
+	if err := g.Run(); err != nil {
+		panic(err)
+	}
+	fmt.Println(report)
+}
+
+func must(err error) {
 	if err != nil {
 		panic(err)
 	}
-
-	res, err := agent.Run(context.Background(), nil, llm.UserText("call the echo tool with text=hello"))
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(res.Final.Text())
 }
 ```
 
-Save as `main.go`, set `OPENAI_API_KEY`, then run:
+Save it as `main.go`, then `go run ./main.go`:
 
-```bash
-go run ./main.go
+```text
+Report: 2 segments / 67 chars
 ```
+
+All four basic concepts appear in this code:
+
+| What you write | What it is |
+|---|---|
+| `pulse.NewKey[T]("docs")` | **Key**: a typed data slot. The name is for diagnostics and YAML reconciliation; the type gives compile-time safety. The same name must always be registered with the same `T` |
+| `pulse.Seed(g, Docs, …)` | **Seed**: external input written before the run — a seed and a node are both sources for a Key, but each Key allows only one source (both producing it → `ErrDuplicateSource`) |
+| `pulse.NewNode(id, Requires, Provides, run)` | **Node**: declares only which slots it reads and which it writes. It does **not** declare who the next node is |
+| `g.Run()` | **Graph**: submits all nodes and blocks until all have terminated; returns the first error, **excluding skips** |
+
+## Data arrival is scheduling
+
+- A node blocks on its input slots in **its own goroutine** and enters `Run` the moment the input arrives — you do not order nodes, and there is no topological-sort step;
+- The topology is **implicit**: whoever writes `summary` and whoever reads `summary` already form the dependency. There are no edge objects and no scheduler loop;
+- `Requires` is an **AND** precondition: all inputs must arrive before the node executes (if any one is skipped the whole node does not execute — see [Core concepts](/en/guide/concepts)).
+
+## One run, one world
+
+A `Graph` is **one instantiation of a template**, not a re-runnable container. This is an external contract, not an implementation detail:
+
+- A second call to `Start()` returns `ErrGraphStarted`;
+- `Seed` after the graph has started is rejected the same way; once a slot has arrived it is closed and never reopens;
+- To run the same graph a second time, the correct move is to call `New` again — just as a CI/CD workflow definition is run countless times, each one an independent run.
+
+Cross-run state (history, caches, sessions) **belongs to the caller**; the engine holds none of it. The reasoning is in [Core concepts](/en/guide/concepts).
+
+## Add observation: three lines
+
+```go
+sink := observe.NewLineSink(os.Stdout, observe.WithImmediate())
+defer sink.Flush()
+
+obs, err := observe.NewRecordObserver(observe.ObserveConfig{
+	Sink:    sink,
+	HostID:  "quickstart",
+	TraceID: observe.NewTraceID(),
+})
+g, err := pulse.New(ctx, "docs-pipeline", pulse.WithObserver(obs))
+```
+
+With those three lines added, the real output of the same graph (two records per node; timestamps / trace / durations vary per run):
+
+```text
+PULSE | 2026/10/08 - 16:43:59.485 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791449039485090000-7a4ee798-1
+PULSE | 2026/10/08 - 16:43:59.501 | completed  |   16.53ms | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791449039485090000-7a4ee798-1
+PULSE | 2026/10/08 - 16:43:59.501 | running    |   16.53ms | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791449039485090000-7a4ee798-1
+PULSE | 2026/10/08 - 16:43:59.501 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791449039485090000-7a4ee798-1
+```
+
+The engine emits at most three callbacks per node, and `observe` folds them into **two segmented timing records** — the wait segment (how long the node spent waiting for input) and the run segment (how long `Run` took): a wait record's `Status` is always `running` and its `Duration` is the wait itself (`summarize`'s input is written by `Seed` up front, hence `-`; `report` waited 16.53ms for `summary`), while a run record's `Status` is the finish reason and its `Duration` is `Run` itself. For the semantics of the duration column see [Graph observation](/en/guide/observability).
 
 ## Next steps
 
-- **Core concepts**: Effect / ServiceKey / events and the loading model → [Core concepts](/en/guide/concepts)
-- **Assembly**: the full two-layer path with recipes (tools / sessions / approval / memory / observability / MCP) → [Assembly guide](/en/guide/assembly)
-- **Orchestration**: three-state slot node graphs and YAML loading → [flow orchestration](/en/guide/flow)
-- **Memory**: sessions, compaction, long-term store, assembly → [Memory layer](/en/guide/memory)
-- **Per-package docs**: full bilingual docs for all 28 packages → [Packages](/en/packages/)
+- **Core concepts**: Key / Node / Graph / slot tri-state / aspects → [Core concepts](/en/guide/concepts)
+- **Orchestration**: branching, fan-in, timeouts, retries, rate limiting → [Orchestration](/en/guide/orchestration)
+- **Declarative assembly**: topology belongs to YAML → [Declarative assembly](/en/guide/assembly)
+- **Graph observation**: egress choice, host-provided columns, privacy boundary → [Graph observation](/en/guide/observability)
+- **Per-package API**: full documentation of all three packages (same source as the repository README) → [Packages](/en/packages/)

@@ -67,9 +67,7 @@ Requires **Go 1.25+** — the toolchain downloads itself if it is missing.
 go build ./...                                  # compilation
 go vet ./...                                    # static checks
 "$(go env GOROOT)/bin/gofmt" -l $(git ls-files '*.go')  # formatting: empty output = pass
-go test ./...                                   # all tests in the main module
-go test -race -count=1 -skip TestLive ./...     # the regression CI runs on every PR
-cd eval/war && go test -race -count=1 ./...     # nested module: cross-framework comparison suite
+go test -race -count=1 ./...                    # the regression CI runs on every PR
 ```
 
 `go vet` and the format check are CI gates, and the format gate goes through
@@ -77,26 +75,23 @@ cd eval/war && go test -race -count=1 ./...     # nested module: cross-framework
 reports the whole tree as unformatted. Its criterion is **non-empty output**, not the exit code —
 `gofmt -l` lists offending files and still exits 0.
 
-`TestLive*` in `llm/openai` and `llm/anthropic` call real provider APIs. They are gated by
-environment variables (`PULSE_OPENAI_*`, `PULSE_ANTHROPIC_*`, `PULSE_MIMO_*`) and skip when
-those are absent, so the default suite needs no credentials.
+The module has **no network dependencies**: `go.mod` requires only `gopkg.in/yaml.v3`, so the
+whole suite runs offline and needs no credentials.
 
 **Never commit credentials.** `.env`, `.env.*`, `*.pem` and `*.secrets` are gitignored, and
 secret scanning with push protection is enabled on this repository.
 
 ### Conventions a reviewer will check
 
-- **Functional options** for anything configurable — `loop.WithToolSet()`,
-  `flow.WithMaxRunning()`.
+- **Functional options** for anything configurable — `pulse.WithObserver()`,
+  `pulse.WithMaxRunning()`, `observe.WithRenderer()`.
 - **No `internal/` or `cmd/`** in library packages: this is a library, not a binary, and
   everything published here is public API.
 - **Chinese comments and docs are the norm.** When you edit near them, write in the same
   language instead of translating them.
-- **The v2 vocabulary contract**: `llm.GenerateRequest` carries only cross-provider stable
-  fields. When a provider wire format has no counterpart, the adapter returns `ErrBadRequest` —
-  never silently drop a parameter, and never add a `map[string]any` escape hatch to the request
-  vocabulary.
-- **The flow contract**: slots are `pending | ready | skipped`; a skip is an arrival, not a
+- **Observation**: business dimensions go through `Attrs` only — never add named fields to
+  `Record`; attr keys follow `<component>.<field>` and belong to the package that owns the fact.
+- **The slot contract**: slots are `pending | ready | skipped`; a skip is an arrival, not a
   failure; a node error cancels the graph and is never rewritten as a skip. Declarative graphs
   are YAML only.
 - **The freeze contract** (v0.2.0+): under 0.x SemVer a breaking change may only ride a *minor*
@@ -174,31 +169,28 @@ Pulse 是开源的 Go 库，目前仍在 1.0 之前（`v0.x`）。欢迎贡献�
 go build ./...                                  # 编译
 go vet ./...                                    # 静态检查
 "$(go env GOROOT)/bin/gofmt" -l $(git ls-files '*.go')  # 格式：输出为空即通过
-go test ./...                                   # 主 module 全部测试
-go test -race -count=1 -skip TestLive ./...     # CI 每个 PR 跑的回归集
-cd eval/war && go test -race -count=1 ./...     # 嵌套 module：跨框架对比套件
+go test -race -count=1 ./...                     # CI 每个 PR 跑的回归集
 ```
 
 `go vet` 与格式检查都是 CI 门禁；格式门禁走 `$(go env GOROOT)/bin/gofmt` 是刻意的——`PATH` 上
 可能挂着旧版二进制，解析不了新语法，会把整棵树报成未格式化。它的判据是**输出非空即失败**，
 不是退出码：`gofmt -l` 列完违规文件仍然退出 0。
 
-`llm/openai`、`llm/anthropic` 里的 `TestLive*` 会调用真实 provider：由环境变量
-（`PULSE_OPENAI_*`、`PULSE_ANTHROPIC_*`、`PULSE_MIMO_*`）门控，缺失时自动跳过，因此默认测试集
-不需要任何凭据。
+本 module **无任何网络依赖**：`go.mod` 只 require `gopkg.in/yaml.v3`，整套测试离线可跑、
+不需要凭据。
 
 **绝不要提交凭据。** `.env`、`.env.*`、`*.pem`、`*.secrets` 都在 .gitignore 中，且本仓库已开启
 secret scanning 与 push protection。
 
 ### Review 会检查的约定
 
-- **可配置处一律用 functional options**——`loop.WithToolSet()`、`flow.WithMaxRunning()`。
+- **可配置处一律用 functional options**——`pulse.WithObserver()`、`pulse.WithMaxRunning()`、
+  `observe.WithRenderer()`。
 - **库包不放 `internal/` 或 `cmd/`**：这是库不是可执行程序，这里发布的每个包都是公开 API。
 - **中文注释与中文文档是本仓库常态**；在这些内容旁边改动时，用同一种语言写，不要顺手翻译。
-- **v2 词汇表契约**：`llm.GenerateRequest` 只承载跨 provider 稳定的字段；provider 线格式没有
-  对应物时，适配器返回 `ErrBadRequest`——既不静默丢参数，也不给请求词汇表加
-  `map[string]any` 逃生舱。
-- **flow 契约**：槽位是 `pending | ready | skipped`；skip 是「到达」不是「失败」；节点出错会取消
+- **观测**：业务维度一律走 `Attrs`——绝不给 `Record` 加具名字段；attr key 用
+  `<组件>.<字段>` 约定，归属定义它的那个包。
+- **槽位契约**：槽位是 `pending | ready | skipped`；skip 是「到达」不是「失败」；节点出错会取消
   整张图，绝不改写成 skip。声明式图只用 YAML。
 - **freeze 契约**（v0.2.0 起）：0.x SemVer 下 breaking 只能随 **minor** 发布，patch 内永不破坏，
   且每次 breaking 都在 Release notes 顶部显式列出。
