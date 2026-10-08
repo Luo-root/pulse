@@ -367,11 +367,20 @@ func (g *Graph) runNode(n *Node) {
 	// 生命周期埋点在 innermost core：Retry 重入时靠门闩只发一次。
 	chain := buildChain(append(append([]Aspect{}, g.aspects...), n.aspects...), func(rc *RunCtx) (err error) {
 		emitWaiting()
-		if err := WaitAll(rc, n.requires...); err != nil {
+		skipped, err := awaitAll(rc, n.requires)
+		if err != nil {
 			return err
 		}
 		if rc.ctx.Err() != nil {
 			return rc.ctx.Err()
+		}
+		// 到几个收几个：**只要有一条输入真的到了值**，就带着到了的那些进入
+		// Run；一条值都没到才轮到本节点自己跳过。判据是「有没有值」，不是
+		// 「有没有跳过」——上游某一路没有值，不该让手里还有数据的下游跟着停，
+		// 也不该让已经到达的值作废。一条 Requires 都没有的源节点不适用此
+		// 判据，照常执行。
+		if len(n.requires) > 0 && len(skipped) == len(n.requires) {
+			return skipErr(skipped...)
 		}
 		if err := g.acquire(rc.ctx); err != nil {
 			return err

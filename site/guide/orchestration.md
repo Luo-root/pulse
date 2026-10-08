@@ -54,7 +54,7 @@ _ = g.Add(pulse.NewNode("join",
 	}))
 ```
 
-`Requires` 是 AND：两个输入都到达才进入 `Run`。跑通时 `g.Err()` 是 `nil`。
+`Requires` 是 AND：**全部输入到达**（就绪或跳过）才算这一关过了；过了之后是**到几个收几个**——只要有一条真的到了值就进入 `Run`，一条值都没到才不执行（见[核心概念](/guide/concepts)）。跑通时 `g.Err()` 是 `nil`。
 
 ## 分支：对未选中的路调 Skip
 
@@ -62,14 +62,14 @@ _ = g.Add(pulse.NewNode("join",
 
 ```go
 if lang == "zh" {
-	return pulse.Skip(rc, Translated) // 下游因输入跳过而不执行
+	return pulse.Skip(rc, Translated) // 下游只依赖这一条 → 一条值都没到 → 不执行
 }
 return pulse.Set(rc, Translated, translate(summary))
 ```
 
 这里是**单槽**可选输出：两个分支都对同一个槽表态（写或跳过），所以只有一条下游。多槽分支要**两边都表态**——选中的 `Set`、没选中的 `Skip`；只 Skip 一边，漏写的那些会被自动跳过，两条下游都不跑（见[核心概念](/guide/concepts)的分支例子）。
 
-区分两个终态很重要：**写出跳过的节点自己是 `completed`**；因输入跳过而没执行的**下游**才是 `skipped`。细节与真实记录见[核心概念 · 槽位三态](/guide/concepts)。
+区分两个终态很重要：**写出跳过的节点自己是 `completed`**；因**一条值都没到**而没执行的**下游**才是 `skipped`。细节与真实记录见[核心概念 · 槽位三态](/guide/concepts)。
 
 ## 超时
 

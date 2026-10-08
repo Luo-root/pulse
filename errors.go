@@ -10,8 +10,13 @@ import (
 // Graph.Run / Graph.Err 不会把单纯的跳过当成 error 返回。
 var ErrSkipped = errors.New("pulse: skipped")
 
-// SkipError 携带被跳过的 Key 名，便于 WaitAll 的调用方区分哪些输入
-// 走了跳过。errors.Is(err, ErrSkipped) 仍成立。
+// SkipError 携带被跳过的 Key 名：读一条没值的输入（Get）或要求「全到齐」
+// （WaitAll）时，调用方据此知道是哪几路输入没值。errors.Is(err, ErrSkipped)
+// 仍成立。
+//
+// 它同时是**显式的 fan-in 策略**载体：节点把 WaitAll 的返回值直接返回，
+// 就是声明「缺一条就别跑我」，引擎按「本节点以跳过收尾」处理（全部输出
+// 跳过，不是失败）。
 type SkipError struct {
 	Keys []string
 }

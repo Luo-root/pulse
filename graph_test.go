@@ -139,6 +139,208 @@ func TestCascadeSkip(t *testing.T) {
 	}
 }
 
+// TestPartialArrivalRunsNode 到几个收几个：多路输入里只要有一路真的到了值，
+// 节点就带着到了的那些进入 Run。上游某一路没有值，不该让手里还有数据的下游
+// 跟着停，更不该让已经到达的值作废。
+func TestPartialArrivalRunsNode(t *testing.T) {
+	c1 := NewKey[string]("partial.c1")
+	c2 := NewKey[string]("partial.c2")
+	c3 := NewKey[string]("partial.c3")
+	joined := NewKey[string]("partial.joined")
+
+	var joinReason NodeFinishReason
+	obs := ObserverFunc{Finished: func(_, nodeID string, r NodeFinishReason, _ error) {
+		if nodeID == "join" {
+			joinReason = r
+		}
+	}}
+
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
+	// 三个候选：两个有产出，第三个这轮没产出——这是合法的跳过，不是失败。
+	for i, k := range []Key[string]{c1, c2, c3} {
+		k, want := k, fmt.Sprintf("v%d", i+1)
+		mustAdd(t, g, NewNode(fmt.Sprintf("cand%d", i+1), nil, Provides(k), func(rc *RunCtx) error {
+			if i == 2 {
+				return Skip(rc, k)
+			}
+			return Set(rc, k, want)
+		}))
+	}
+	// 汇聚节点要求全部三路：按老行为它会因 cand3 的跳过而整个不执行。
+	mustAdd(t, g, NewNode("join",
+		Deps(Requires(c1), Requires(c2), Requires(c3)), Provides(joined),
+		func(rc *RunCtx) error {
+			var got []string
+			for _, k := range []Key[string]{c1, c2, c3} {
+				v, ok, skipped, err := TryGet(rc, k)
+				if err != nil {
+					return err
+				}
+				switch {
+				case ok:
+					got = append(got, v)
+				case skipped: // 这一路没有值，跳过即可
+				default:
+					return fmt.Errorf("输入既未就绪也未跳过——门不该把它放进来")
+				}
+			}
+			return Set(rc, joined, strings.Join(got, "+"))
+		}))
+
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	v, ok, skipped, err := TryGet(inspect(g), joined)
+	if err != nil || !ok || skipped || v != "v1+v2" {
+		t.Fatalf("join 输出 = %q ok=%v skipped=%v err=%v，want \"v1+v2\" 就绪", v, ok, skipped, err)
+	}
+	if joinReason != NodeCompleted {
+		t.Fatalf("join 终态 = %q, want completed（它进入了 Run）", joinReason)
+	}
+}
+
+// TestAllInputsSkippedSkipsNode 一条值都没到，才是本节点自己跳过：
+// 全部 Requires 都以跳过到达时 Run 不进入、全部输出跳过——纯分支的下游
+// 仍按跳过收尾（与 TestPartialArrivalRunsNode 是同一条判据的两侧）。
+func TestAllInputsSkippedSkipsNode(t *testing.T) {
+	a := NewKey[string]("allskip.a")
+	b := NewKey[string]("allskip.b")
+	out := NewKey[string]("allskip.out")
+
+	var ran atomic.Bool
+	var reason NodeFinishReason
+	obs := ObserverFunc{Finished: func(_, nodeID string, r NodeFinishReason, _ error) {
+		if nodeID == "sink" {
+			reason = r
+		}
+	}}
+
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
+	if err := SkipSeed(g, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := SkipSeed(g, b); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, g, NewNode("sink", Deps(Requires(a), Requires(b)), Provides(out), func(rc *RunCtx) error {
+		ran.Store(true)
+		return Set(rc, out, "should-not")
+	}))
+
+	if err := g.Run(); err != nil {
+		t.Fatalf("全跳过是合法结果：%v", err)
+	}
+	if ran.Load() {
+		t.Fatal("两路输入一条值都没到，节点不该进入 Run")
+	}
+	if reason != NodeSkipped {
+		t.Fatalf("sink 终态 = %q, want skipped", reason)
+	}
+	if _, ok, skipped, err := TryGet(inspect(g), out); err != nil || ok || !skipped {
+		t.Fatalf("out = ok=%v skipped=%v err=%v, want skipped", ok, skipped, err)
+	}
+}
+
+// TestPartialArrivalGetSkippedInput 在「到几个收几个」下，Run 里 Get 一条没值的
+// 输入是**正常路径**：返回 *SkipError（带 Key 名，errors.Is(err, ErrSkipped)
+// 成立），既不阻塞到 ctx 取消，也不是节点失败——节点照常写自己的输出，
+// 终态是 completed。
+func TestPartialArrivalGetSkippedInput(t *testing.T) {
+	have := NewKey[string]("get.have")
+	miss := NewKey[string]("get.miss")
+	out := NewKey[string]("get.out")
+
+	var gotErr error
+	var outReason NodeFinishReason
+	obs := ObserverFunc{Finished: func(_, nodeID string, r NodeFinishReason, _ error) {
+		if nodeID == "reader" {
+			outReason = r
+		}
+	}}
+
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
+	mustAdd(t, g, NewNode("src", nil, Provides(have), func(rc *RunCtx) error {
+		return Set(rc, have, "v")
+	}))
+	mustAdd(t, g, NewNode("gone", nil, Provides(miss), func(rc *RunCtx) error {
+		return Skip(rc, miss)
+	}))
+	mustAdd(t, g, NewNode("reader", Deps(Requires(have), Requires(miss)), Provides(out),
+		func(rc *RunCtx) error {
+			if _, err := Get(rc, miss); err != nil {
+				gotErr = err
+			}
+			v, err := Get(rc, have)
+			if err != nil {
+				return err
+			}
+			return Set(rc, out, v)
+		}))
+
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(gotErr, ErrSkipped) {
+		t.Fatalf("Get 一条跳过的输入 = %v, want ErrSkipped", gotErr)
+	}
+	var se *SkipError
+	if !errors.As(gotErr, &se) || len(se.Keys) != 1 || se.Keys[0] != "get.miss" {
+		t.Fatalf("SkipError.Keys = %v, want [get.miss]", se)
+	}
+	if outReason != NodeCompleted {
+		t.Fatalf("reader 终态 = %q, want completed（少一路输入也该照做）", outReason)
+	}
+	if v, ok, skipped, err := TryGet(inspect(g), out); err != nil || !ok || skipped || v != "v" {
+		t.Fatalf("out = %q ok=%v skipped=%v err=%v, want \"v\" 就绪", v, ok, skipped, err)
+	}
+}
+
+// TestWaitAllStrictFanIn WaitAll 的返回值是**显式的 fan-in 策略声明**：
+// 节点把它直接 return 出去 = 「缺一条就别跑我」。引擎按「本节点以跳过收尾」
+// 处理——全部输出跳过、不是失败（Run 返回 nil），Retry 也不重试。
+func TestWaitAllStrictFanIn(t *testing.T) {
+	a := NewKey[string]("strict.a")
+	b := NewKey[string]("strict.b")
+	out := NewKey[string]("strict.out")
+
+	var runs atomic.Int32
+	var reason NodeFinishReason
+	obs := ObserverFunc{Finished: func(_, nodeID string, r NodeFinishReason, _ error) {
+		if nodeID == "strict" {
+			reason = r
+		}
+	}}
+	req := Deps(Requires(a), Requires(b))
+
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
+	if err := SkipSeed(g, b); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, g, NewNode("src", nil, Provides(a), func(rc *RunCtx) error {
+		return Set(rc, a, "v")
+	}))
+	mustAdd(t, g, NewNode("strict", req, Provides(out), func(rc *RunCtx) error {
+		runs.Add(1)
+		if err := WaitAll(rc, req...); err != nil {
+			return err // 显式声明：缺一条就别跑我
+		}
+		return Set(rc, out, "v")
+	}, Retry(3, 0)))
+
+	if err := g.Run(); err != nil {
+		t.Fatalf("跳过不是失败：%v", err)
+	}
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("节点体跑了 %d 次，want 1（跳到收尾，Retry 不得重试）", got)
+	}
+	if reason != NodeSkipped {
+		t.Fatalf("strict 终态 = %q, want skipped", reason)
+	}
+	if _, ok, skipped, err := TryGet(inspect(g), out); err != nil || ok || !skipped {
+		t.Fatalf("out = ok=%v skipped=%v err=%v, want skipped（以跳过收尾时全部输出跳过）", ok, skipped, err)
+	}
+}
+
 func TestDuplicateProviderRejected(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
 	mustAdd(t, g, NewNode("a", nil, Provides(kA), func(rc *RunCtx) error {
@@ -310,7 +512,7 @@ func TestAspectConcurrentNextCalledOnce(t *testing.T) {
 	}
 }
 
-// 跳过不是失败：输入被跳过时 Retry 必须立即返回，不得重跑整段
+// 跳过不是失败：输入一条值都没到时 Retry 必须立即返回，不得重跑整段
 // 「等输入 + 执行」——否则白等 (attempts-1) × delay，内层切面
 // （观测/埋点/记账）也被重复执行。
 func TestRetryDoesNotRerunSkippedNode(t *testing.T) {
@@ -479,7 +681,8 @@ func TestStartAcceptsSeededAndProvidedRequires(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// SkipSeed 也是来源：输入被跳过 → 不进入 Run，整图无错返回。
+	// SkipSeed 也是来源：唯一输入没值（到几个收几个，一条都没有）→ 不进入 Run，
+	// 整图无错返回。
 	g2 := mustNew(t, context.Background(), "test")
 	if err := SkipSeed(g2, kA); err != nil {
 		t.Fatal(err)
@@ -493,7 +696,7 @@ func TestStartAcceptsSeededAndProvidedRequires(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ran.Load() {
-		t.Fatal("输入被跳过时不该进入 Run")
+		t.Fatal("唯一输入一条值都没到，不该进入 Run")
 	}
 }
 
