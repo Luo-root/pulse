@@ -6,29 +6,36 @@ Observation is an **independent layer**: the engine knows no observation package
 
 ```go
 type Observer interface {
+	OnGraphStarted(graphID string)
+	OnGraphFinished(graphID string, reason NodeFinishReason, err error)
 	OnNodeWaiting(graphID, nodeID string)
 	OnNodeRunning(graphID, nodeID string)
 	OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error)
 }
 ```
 
-The contract has four clauses, all of them frozen surface:
+The contract has five clauses, all of them frozen surface:
 
-1. **Callback counts**: per node, `Waiting ≤ 1`, `Running ≤ 1`, `Finished = 1`. `Retry`'s several attempts **do not re-emit**;
+1. **Callback counts**: run level `Started ≤ 1`, `Finished ≤ 1`; per node `Waiting ≤ 1`, `Running ≤ 1`, `Finished = 1`. `Retry`'s several attempts **do not re-emit**;
 2. **Read-only**: an observer's panic or error **must not** be promoted into a node failure (the engine side already swallows it);
-3. **Concurrency-safe**: callbacks run synchronously **on the node's own goroutine** — so an implementation must be concurrency-safe, and must not block for long;
-4. **The attribution key comes from the engine**: `graphID` is emitted with every callback, so an implementation never has to carry it in from constructor arguments of its own.
+3. **Concurrency-safe**: the three node callbacks run synchronously **on the node's own goroutine**, the two run-level ones on the **`Start` / `Wait` caller's goroutine** — so an implementation must be concurrency-safe, and must not block for long;
+4. **The timing is a bracket**: `GraphStarted` precedes **every** node callback of the run (a graph that fails start validation never started, so nothing is emitted), and `GraphFinished` follows **all** of them; a host that calls `Start` without `Wait` never sees `finished`, and a repeated `Wait` does not re-emit it;
+5. **The attribution key comes from the engine**: `graphID` is emitted with every callback, so an implementation never has to carry it in from constructor arguments of its own.
 
 A graph defaults to no-op (attach nothing, pay nothing); `pulse.WithObserver(...)` attaches one; for several observers, combine them with `pulse.MultiObserver` (a later write overwrites an earlier one, so do the combining before passing it in).
 
-## observe folds it into two segmented-timing records
+## observe folds it into two run-level + two per-node records
 
 | Event | Produced when | `Duration` | `Status` |
 |---|---|---|---|
+| `pulse.graph_started` | before any node is committed | `0` | `running` |
+| `pulse.graph_finished` | after every node terminated (before `Wait` returns) | the whole run | the run's terminal state (`completed` / `failed` / `canceled`) |
 | `pulse.node_wait_finished` | waiting ends (execution is entered, or the node terminates with skip / failure) | the waiting segment | `running`, otherwise the matching terminal state |
 | `pulse.node_run_finished` | execution ends | the execution segment | the terminal state (`completed` / `failed` / `canceled`) |
 
-A skipped node gets **only one `skipped` waiting record** — it did arrive, it just never executed. The attribution dimensions ride `Attrs`: `pulse.AttrGraph` + `pulse.AttrNode` (the key contract is defined by the **engine**; `observe` only consumes it, never defines it).
+The two run-level records **bracket** the run's node records: a host no longer has to stitch node records back into a run by way of the `pulse.graph` attribute — a run is an entity with a head and a tail in the observation. The run-level terminal state is only ever `completed` / `failed` / `canceled`: **a run in which every node skipped is still `completed`** (skipping is a node-level fact and is not promoted to failure). A skipped node gets **only one `skipped` waiting record** — it did arrive, it just never executed.
+
+The attribution dimensions ride `Attrs`: `pulse.AttrGraph` + `pulse.AttrNode` (the key contract is defined by the **engine**; `observe` only consumes it, never defines it). Node records carry both; the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run".
 
 ## Shortest wiring
 
@@ -47,12 +54,16 @@ if err != nil {
 g, err := pulse.New(ctx, "docs-pipeline", pulse.WithObserver(obs))
 ```
 
-Real output for that same graph (a single node):
+Real output for that same graph (a single node; timestamps, trace ids and durations vary per run):
 
 ```text
-PULSE | 2026/10/08 - 15:40:04.848 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791445204848759200-744b1b68-1
-PULSE | 2026/10/08 - 15:40:04.872 | completed  |   23.55ms | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791445204848759200-744b1b68-1
+PULSE | 2026/10/09 - 10:42:50.472 | running    |         - | pulse.graph_started | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770472465000-1667c395-2
+PULSE | 2026/10/09 - 10:42:50.472 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770472465000-1667c395-2
+PULSE | 2026/10/09 - 10:42:50.487 | completed  |   15.50ms | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770472465000-1667c395-2
+PULSE | 2026/10/09 - 10:42:50.487 | completed  |   15.50ms | pulse.graph_finished | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770472465000-1667c395-2
 ```
+
+Four records: the two run-level ones bracket the two node ones. The run-level `Duration` is the **whole run** (wall clock between the two callbacks) — here it is the same order as the node's execution segment because this run was spent almost entirely in that node; graph assembly, `Seed` and `Flush` are outside its window (accounting below). The `Status` of `pulse.graph_finished` is the run's terminal state and its `Err` is the very value `Run()` returns.
 
 Line-body column order: `time | status | duration | event | source | attrs | host | err | trace`. A missing status or duration column renders `-`, which is what keeps the event column's start fixed (`-` is the **built-in layout's empty-column placeholder**, not primitive behaviour). Timestamps, trace ids and durations vary per run.
 
@@ -82,23 +93,29 @@ Built-in egresses:
 
 ### Duration accounting (measured)
 
-The "execution segment" is the **wall-clock time** from entering `Run` to the node finishing — and the waiting-segment record is what gets written to the egress inside the `Running` callback, so **however slow the egress is, that is how long the execution segment is**. The same graph, the same empty node, two egresses:
+All four segments are **wall clock**, and callbacks run synchronously — so **however slow the egress is, that is how long the segment is**. The same graph, the same empty node (`noop`), two egresses (`MemorySink`, and a fake egress whose `Write` sleeps 20ms per record):
 
 ```text
-# MemorySink
-pulse.node_wait_finished       running    0s
-pulse.node_run_finished        completed  0s
+# MemorySink (writing a record costs about nothing)
+pulse.graph_started            node=-      running    0s
+pulse.node_wait_finished       node=noop   running    0s
+pulse.node_run_finished        node=noop   completed  0s
+pulse.graph_finished           node=-      completed  0s
 
-# LineSink(WithImmediate) -> terminal
-PULSE | ... | running    |         - | pulse.node_wait_finished | pulse.node=noop | ...
-PULSE | ... | completed  |   25.23ms | pulse.node_run_finished  | pulse.node=noop | ...
+# a fake egress whose Write sleeps 20ms
+pulse.graph_started            node=-      running    0s
+pulse.node_wait_finished       node=noop   running    0s
+pulse.node_run_finished        node=noop   completed  20.5701ms
+pulse.graph_finished           node=-      completed  62.2437ms
 ```
 
-The node body is empty; the 25.23ms is entirely the cost of writing to the terminal. So:
+The node body is empty: the `20.5701ms` is entirely that one write (the waiting-segment record is written inside the `Running` callback, and the execution segment's timer starts before it). **The run-level record is longer** (`62.2437ms`) — its window covers "commit the nodes → everything terminated", and this run performed three writes inside that window (run-level started, node waiting segment, node execution segment). Hence:
 
-- When the duration column looks too large, suspect the egress before the node;
-- Wrap a slow egress in `AsyncSink` (`Write` only deep-copies `Attrs` and enqueues). Note that async **does not raise the throughput ceiling**: when the sustained rate exceeds what the egress can take, the bounded queue back-pressures to the egress rate — that is precisely the price of "never drop a record"; to drop instead of blocking, use `DropOnFull()`. Wrapping an already fast egress (such as `MemorySink`) in async is a pessimisation;
-- A waiting segment of `0` (rendered as `-`) means the segment was rounded to 0 by the timer's precision, not that "there was no such segment".
+- When the duration column looks too large, suspect the egress before the node; `LineSink` on a real terminal is itself a slow egress (one write syscall per record), its double-digit-millisecond costs land in the segments the same way, and they vary with the terminal and with redirection;
+- Wrap a slow egress in `AsyncSink` (`Write` only deep-copies `Attrs` and enqueues). Note that async **does not raise the throughput ceiling**: when the sustained rate exceeds what the egress can take, the bounded queue back-pressures to the egress rate — that is precisely the price of "never drop a record"; to drop instead of blocking, use `DropOnFull()`. Wrapping an already fast egress (such as `MemorySink`) in async is a pessimisation; it also **does not take the `Write` call out of the window**, it only defers landing;
+- A segment of `0` (rendered `-`) means the segment was rounded to 0 by the timer's precision, not that "there was no such segment".
+
+**How the run-level record differs from your own stopwatch around `Run()`**: its window starts inside `Start()` (before any node is committed) and ends before `Wait()` returns — so it **excludes** graph assembly, `Seed`, and the egress `Flush` after `Wait()` returns, which makes your outside stopwatch generally longer; conversely it includes the write of the run-level started record, which is in no node segment at all. Use it for "the boundary of one run"; keep your own stopwatch for "how long my function spent in `Run`".
 
 ## Host-supplied columns (WithRenderer)
 

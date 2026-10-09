@@ -2,7 +2,7 @@
 
 # observe
 
-`pulse/observe` is **graph observation**: it folds the engine's three `Observer` callbacks into structured `Record`s and writes them to a host-chosen `Sink`.
+`pulse/observe` is **graph observation**: it folds the engine's `Observer` callbacks (two run-level plus three per node) into structured `Record`s and writes them to a host-chosen `Sink`.
 
 The dependency is one-way (`pulse` ← `observe`): the engine does not know this package exists and only exposes a seam; a host that needs no observation never imports it.
 
@@ -23,14 +23,20 @@ g, err := pulse.New(ctx, "demo", pulse.WithObserver(obs))
 
 ## Record shape
 
-Two **segmented-timing** records per node:
+**Two run-level records per run**, plus **two segmented-timing records per node**:
 
-| Event | `Duration` | `Status` |
-|---|---|---|
-| `pulse.node_wait_finished` | the waiting segment | `running`, otherwise the finish reason |
-| `pulse.node_run_finished` | the execution segment | `completed` / `failed` / `canceled` |
+| Event | Produced when | `Duration` | `Status` |
+|---|---|---|---|
+| `pulse.graph_started` | before any node is committed | `0` | `running` |
+| `pulse.graph_finished` | after every node terminated (before `Wait` returns) | the whole run | `completed` / `failed` / `canceled` |
+| `pulse.node_wait_finished` | the waiting segment ends | the waiting segment | `running`, otherwise the finish reason |
+| `pulse.node_run_finished` | the execution segment ends | the execution segment | `completed` / `failed` / `canceled` |
 
-A skipped node gets **only** a `skipped` waiting record — it did arrive, it just never executed. Attribution rides `Attrs` (`pulse.AttrGraph` / `pulse.AttrNode`; the key contract is defined by the engine, this package only consumes it).
+The two run-level records **bracket** the run's node records (`started` precedes every node record, `finished` follows all of them); a host that only calls `Start` without `Wait` never sees `finished`. A skipped node gets **only** a `skipped` waiting record — it did arrive, it just never executed. A run in which every node skipped is still `completed` at run level: skipping is a node-level fact.
+
+Attribution rides `Attrs` (`pulse.AttrGraph` / `pulse.AttrNode`; the key contract is defined by the engine, this package only consumes it): node records carry both, the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run".
+
+**Duration accounting**: everything is **wall clock**, and callbacks run synchronously on the caller's goroutine — however slow the egress is, that is how long the segment is (the `pulse.graph_finished` window covers the whole run, egress writes included). `AsyncSink` only defers **landing**, it does not take the `Write` call out of the window. A segment rounded to `0` (rendered `-` by the built-in layout) means "too small to measure", not "there was no such segment".
 
 ## Egress
 

@@ -40,8 +40,10 @@
 //
 // # 观测
 //
-// WithObserver 挂自有 typed Observer（默认 no-op），发出 NodeWaiting /
-// NodeRunning / NodeFinished。引擎不依赖任何观测包：把这三条回调折成
+// WithObserver 挂自有 typed Observer（默认 no-op），发出图级两条
+// （GraphStarted / GraphFinished：前者在提交任何节点之前、后者在 Wait 返回
+// 之前，把本轮的节点事件夹在中间）与每节点三条（NodeWaiting / NodeRunning /
+// NodeFinished，Retry 不重复打点）。引擎不依赖任何观测包：把这些回调折成
 // 观测记录是 Observer 实现方（宿主或官方适配）的事。
 //
 // # 装配

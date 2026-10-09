@@ -6,29 +6,36 @@
 
 ```go
 type Observer interface {
+	OnGraphStarted(graphID string)
+	OnGraphFinished(graphID string, reason NodeFinishReason, err error)
 	OnNodeWaiting(graphID, nodeID string)
 	OnNodeRunning(graphID, nodeID string)
 	OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error)
 }
 ```
 
-契约四条，都是冻结面：
+契约五条，都是冻结面：
 
-1. **回调次数**：每个节点 `Waiting ≤ 1`、`Running ≤ 1`、`Finished = 1`。`Retry` 的多次 attempt **不重复打点**；
+1. **回调次数**：图级 `Started ≤ 1`、`Finished ≤ 1`；每个节点 `Waiting ≤ 1`、`Running ≤ 1`、`Finished = 1`。`Retry` 的多次 attempt **不重复打点**；
 2. **只读**：观察者的 panic 与 error **不得**升格为节点失败（引擎侧已吞掉）；
-3. **并发安全**：回调在**节点自己的 goroutine** 上同步执行——所以实现必须并发安全，且不得长时间阻塞；
-4. **归因键由引擎给出**：`graphID` 随每次回调发出，实现侧不必从构造参数自行携带。
+3. **并发安全**：节点三条在**节点自己的 goroutine** 上同步执行，图级两条在 **`Start` / `Wait` 的调用方 goroutine** 上——实现必须并发安全，且不得长时间阻塞；
+4. **时序是夹住**：`GraphStarted` 先于本轮的**任何**节点回调（启动校验失败的图没有启动，不发），`GraphFinished` 晚于**全部**节点回调；只 `Start` 不 `Wait` 的宿主拿不到 `finished`，重复 `Wait` 不重复发；
+5. **归因键由引擎给出**：`graphID` 随每次回调发出，实现侧不必从构造参数自行携带。
 
 图默认 no-op（不挂就没有任何开销），`pulse.WithObserver(...)` 挂载；要多个观察者用 `pulse.MultiObserver` 组合（后写覆盖前写，所以组合要在传参前做完）。
 
-## observe 把它折成两条分段计时
+## observe 折成运行级两条 + 节点级两条
 
 | 事件 | 何时产出 | `Duration` | `Status` |
 |---|---|---|---|
+| `pulse.graph_started` | 提交任何节点之前 | `0` | `running` |
+| `pulse.graph_finished` | 全部节点终止之后（`Wait` 返回前） | 整轮耗时 | 运行终态（`completed` / `failed` / `canceled`） |
 | `pulse.node_wait_finished` | 等待结束（进入执行，或以 skip / 失败终结） | 等待段 | `running`，否则是对应的终态 |
 | `pulse.node_run_finished` | 执行结束 | 执行段 | 终态（`completed` / `failed` / `canceled`） |
 
-跳过节点**只有一条 `skipped` 等待记录**——它确实到达了，只是没执行。归因维度走 `Attrs`：`pulse.AttrGraph` + `pulse.AttrNode`（key 契约由**引擎**定义，`observe` 只消费不定义）。
+运行级两条把本轮的节点记录**夹在中间**：宿主不必再靠 `pulse.graph` 这个 Attr 把节点记录自行拼回一轮——一轮在观测里是一个有头有尾的实体。运行级终态只会是 `completed` / `failed` / `canceled`：**一轮里全部节点都跳过，整轮仍是 `completed`**（跳过是节点级的事实，不升格为失败）。跳过节点**只有一条 `skipped` 等待记录**——它确实到达了，只是没执行。
+
+归因维度走 `Attrs`：`pulse.AttrGraph` + `pulse.AttrNode`（key 契约由**引擎**定义，`observe` 只消费不定义）。节点记录两个都带，运行级两条只带 `pulse.AttrGraph`——节点维度对「一次运行」没有意义。
 
 ## 最短接入
 
@@ -47,12 +54,16 @@ if err != nil {
 g, err := pulse.New(ctx, "docs-pipeline", pulse.WithObserver(obs))
 ```
 
-同一个图（单节点）的真实输出：
+同一个图（单节点）的真实输出（时间戳 / trace / 耗时随运行变化）：
 
 ```text
-PULSE | 2026/10/08 - 15:32:14.066 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791444734065505900-3ca14140-1
-PULSE | 2026/10/08 - 15:32:14.082 | completed  |   15.98ms | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791444734065505900-3ca14140-1
+PULSE | 2026/10/09 - 10:42:50.472 | running    |         - | pulse.graph_started | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770472465000-1667c395-2
+PULSE | 2026/10/09 - 10:42:50.472 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770472465000-1667c395-2
+PULSE | 2026/10/09 - 10:42:50.487 | completed  |   15.50ms | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770472465000-1667c395-2
+PULSE | 2026/10/09 - 10:42:50.487 | completed  |   15.50ms | pulse.graph_finished | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770472465000-1667c395-2
 ```
+
+四条：运行级两条夹住节点两条。运行级那条的 `Duration` 是**整轮**（两回调之间的墙钟）——这里与节点执行段同量级，是因为这一轮几乎全花在那个节点上；装图、`Seed` 与 `Flush` 不在它的窗口里（口径见下）。`pulse.graph_finished` 的 `Status` 是运行终态，`Err` 与 `Run()` 的返回值同源。
 
 行体列序：`时间 | 状态 | 耗时 | 事件 | source | attrs | host | err | trace`。缺的状态或耗时列渲染 `-`，于是事件列起点恒定（`-` 是**内置版式的空列占位**，不是原语行为）。时间戳、trace 与耗时随运行变化。
 
@@ -82,23 +93,29 @@ type Sink interface{ Write(r Record) }
 
 ### 耗时口径（实测）
 
-「执行段」是从进入 `Run` 到节点结束的**墙钟时间**——而等待段那条记录是在 `Running` 回调里写进出口的，所以**出口有多慢，执行段就有多长**。同一张图、同一个空节点，两种出口：
+四段都是**墙钟**，而回调是同步执行的——所以**出口有多慢，段就有多长**。同一张图、同一个空节点（`noop`），两种出口（`MemorySink`，与一个 `Write` 每条睡 20ms 的假出口）：
 
 ```text
-# MemorySink
-pulse.node_wait_finished       running    0s
-pulse.node_run_finished        completed  0s
+# MemorySink（写出一条的代价可以忽略）
+pulse.graph_started            node=-      running    0s
+pulse.node_wait_finished       node=noop   running    0s
+pulse.node_run_finished        node=noop   completed  0s
+pulse.graph_finished           node=-      completed  0s
 
-# LineSink(WithImmediate) → 控制台
-PULSE | ... | running    |         - | pulse.node_wait_finished | pulse.node=noop | ...
-PULSE | ... | completed  |   16.60ms | pulse.node_run_finished  | pulse.node=noop | ...
+# 每条 Write 睡 20ms 的假出口
+pulse.graph_started            node=-      running    0s
+pulse.node_wait_finished       node=noop   running    0s
+pulse.node_run_finished        node=noop   completed  20.5701ms
+pulse.graph_finished           node=-      completed  62.2437ms
 ```
 
-节点体是空的，16.60ms 全是控制台写出的开销。所以：
+节点体是空的：`20.5701ms` 全是那一次写出的开销（等待段那条记录在 `Running` 回调里写，而执行段的计时点在它之前）。**整轮那条更长**（`62.2437ms`）——运行级的窗口覆盖「提交节点 → 全部终止」，这一轮里三次写出都在窗口内（运行级 started、节点等待段、节点执行段）。由此：
 
-- 耗时列偏大先怀疑出口，而不是节点；
-- 慢出口套 `AsyncSink`（`Write` 只做 `Attrs` 深拷 + 入队）。注意异步**不提高吞吐上限**：持续速率超过出口能力时，有界队列回压到出口速率——这正是「不丢记录」的代价，要丢不堵用 `DropOnFull()`。对已经很快的出口（如 `MemorySink`）套异步是负优化；
-- 等待段为 `0`（渲染成 `-`）表示该段耗时被计时精度取整为 0，而不是「没有这段」。
+- 耗时列偏大先怀疑出口，而不是节点；真终端上的 `LineSink` 本身就是慢出口（每条一次写系统调用），十几毫秒起的开销同样落在段里，且随终端与重定向而变；
+- 慢出口套 `AsyncSink`（`Write` 只做 `Attrs` 深拷 + 入队）。注意异步**不提高吞吐上限**：持续速率超过出口能力时，有界队列回压到出口速率——这正是「不丢记录」的代价，要丢不堵用 `DropOnFull()`。对已经很快的出口（如 `MemorySink`）套异步是负优化；它也**不把 `Write` 调用从窗口里摘掉**，只是把落盘推后；
+- 段耗时为 `0`（渲染成 `-`）表示该段耗时被计时精度取整为 0，而不是「没有这段」。
+
+**运行级那条与你自己在 `Run()` 外掐表的边界差别**：它的窗口起点在 `Start()` 内部（提交节点之前）、终点在 `Wait()` 返回之前——所以**不含**装图、`Seed` 与 `Wait()` 返回后的出口 `Flush`，你从外面掐一般更长；反过来它含了「运行级 started 那条记录写出」的耗时，而那部分不在任何节点段里。要「一轮的边界」用它，要「我这个函数在 `Run` 上花了多久」就自己掐表。
 
 ## 宿主自带列（WithRenderer）
 

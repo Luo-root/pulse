@@ -108,12 +108,14 @@ retry   attempts = 3 err = <nil>
 
 ```text
 run err = boom
-pulse.node_wait_finished       node=boom     status=running    err=<nil>
-pulse.node_run_finished        node=boom     status=failed     err=boom
-pulse.node_wait_finished       node=waiter   status=canceled   err=context canceled
+pulse.graph_started            node=-        status=running   err=<nil>
+pulse.node_wait_finished       node=boom     status=running   err=<nil>
+pulse.node_run_finished        node=boom     status=failed    err=boom
+pulse.node_wait_finished       node=waiter   status=canceled  err=context canceled
+pulse.graph_finished           node=-        status=failed    err=boom
 ```
 
-三件事同时成立：`Run` 返回**原错误**（没被改写成跳过）；失败的节点是 `failed`；被杀掉的等待者是 `canceled`，且**只有等待段**那一条记录。
+三件事同时成立：`Run` 返回**原错误**（没被改写成跳过）；失败的节点是 `failed`；被杀掉的等待者是 `canceled`，且**只有等待段**那一条记录。失败轮也不缺头尾——运行级两条照发，`pulse.graph_finished` 的 `Status` 是 `failed`、`Err` 就是首错。
 
 失败路径还会给该节点**没写过的 Provide** 补一条跳过——那只是把还在等的下游解开，不是下游的终态。终态由**「取消优先」**决定：ctx 已取消时等待一律返回 `ctx.Err()`，「到达与取消同时就绪」也以取消为准。所以「因首错而没跑」的下游稳定报 `canceled`，不会随调度在 `skipped` / `canceled` 之间抖。
 

@@ -1,6 +1,9 @@
 package pulse
 
-// NodeFinishReason 是 NodeFinished 的终止原因。
+// NodeFinishReason 是 NodeFinished / GraphFinished 的终止原因。
+//
+// 图级只会出现三个：completed / failed / canceled——「跳过」是节点级的事实
+// （一次运行不会因为某些节点跳过就整体跳过）。
 type NodeFinishReason string
 
 const (
@@ -32,26 +35,58 @@ const (
 	AttrGraph = "pulse.graph"
 )
 
-// Observer 观察单次 Graph 运行里每个节点的生命周期。
-// 默认无观察者（no-op）。实现必须并发安全：每个节点在独立 goroutine
-// 里回调。panic / error 不得升格为节点失败（由 Graph 吞掉）。
+// Observer 观察单次 Graph 运行：图级两条 + 每个节点三条。
+// 默认无观察者（no-op）。实现必须并发安全：节点回调在各自的节点 goroutine
+// 上，图回调在 Start / Wait 的调用方 goroutine 上。panic / error 不得升格为
+// 节点失败（由 Graph 吞掉）。
 //
 // graphID 是图身份（New 的 graphID，必填）：随每次回调发出，实现侧
 // 无需从构造参数另行携带——多图复用同一 Observer 实现时归因不漂移。
 //
-// 每节点次数契约（E1）：Waiting ≤ 1、Running ≤ 1、Finished = 1。
-// Retry 多次 attempt 不会重复打 Waiting/Running。
+// 次数契约（冻结面）：
+//
+//   - 图级（E0）：GraphStarted ≤ 1、GraphFinished ≤ 1；
+//   - 节点级（E1）：Waiting ≤ 1、Running ≤ 1、Finished = 1，
+//     Retry 多次 attempt 不重复打 Waiting/Running。
+//
+// 时序：GraphStarted 在提交**任何**节点 goroutine 之前发出，GraphFinished 在
+// **全部**节点终止之后发出——一段完整的观测里，图的两条天然把节点事件夹在中间。
 type Observer interface {
+	// OnGraphStarted 在图通过启动校验、开始提交节点时发出一次。
+	// 校验失败与重复 Start 都到不了这里（那时图没有启动）。
+	OnGraphStarted(graphID string)
+	// OnGraphFinished 在 Wait 返回前发出一次：reason 是运行终态（图只会是
+	// completed / failed / canceled），err 是首错（即 Graph.Err()）。
+	// 只 Start 不 Wait 的宿主收不到它；重复 Wait 不重复发。
+	OnGraphFinished(graphID string, reason NodeFinishReason, err error)
 	OnNodeWaiting(graphID, nodeID string)
 	OnNodeRunning(graphID, nodeID string)
 	OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error)
 }
 
-// ObserverFunc 把三个回调收成一个结构，便于测试与桥装配。
+// ObserverFunc 把五条回调收成一个结构，便于测试与桥装配。
+// 图级的两个字段带 Graph 前缀，节点的三个不带——前者是后加的，
+// 改名会波及所有构造方，不值得为对称付这份破坏。
 type ObserverFunc struct {
-	Waiting  func(graphID, nodeID string)
-	Running  func(graphID, nodeID string)
-	Finished func(graphID, nodeID string, reason NodeFinishReason, err error)
+	GraphStarted  func(graphID string)
+	GraphFinished func(graphID string, reason NodeFinishReason, err error)
+	Waiting       func(graphID, nodeID string)
+	Running       func(graphID, nodeID string)
+	Finished      func(graphID, nodeID string, reason NodeFinishReason, err error)
+}
+
+// OnGraphStarted 实现 Observer。
+func (o ObserverFunc) OnGraphStarted(graphID string) {
+	if o.GraphStarted != nil {
+		o.GraphStarted(graphID)
+	}
+}
+
+// OnGraphFinished 实现 Observer。
+func (o ObserverFunc) OnGraphFinished(graphID string, reason NodeFinishReason, err error) {
+	if o.GraphFinished != nil {
+		o.GraphFinished(graphID, reason, err)
+	}
 }
 
 // OnNodeWaiting 实现 Observer。
@@ -82,6 +117,24 @@ func (o ObserverFunc) OnNodeFinished(graphID, nodeID string, reason NodeFinishRe
 // observer 与 observe.NewRecordObserver），一个坏掉把邻居一起带走是最坏的结果。
 // 引擎侧的 notify 另有一层兜底，保证 panic 不升格为节点失败。
 type MultiObserver []Observer
+
+// OnGraphStarted 实现 Observer。
+func (m MultiObserver) OnGraphStarted(graphID string) {
+	for _, o := range m {
+		if o != nil {
+			callSafely(func() { o.OnGraphStarted(graphID) })
+		}
+	}
+}
+
+// OnGraphFinished 实现 Observer。
+func (m MultiObserver) OnGraphFinished(graphID string, reason NodeFinishReason, err error) {
+	for _, o := range m {
+		if o != nil {
+			callSafely(func() { o.OnGraphFinished(graphID, reason, err) })
+		}
+	}
+}
 
 // OnNodeWaiting 实现 Observer。
 func (m MultiObserver) OnNodeWaiting(graphID, nodeID string) {

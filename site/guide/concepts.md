@@ -51,12 +51,14 @@ pulse.NewNode("summarize",
 看真实输出（两个节点：`translate` 对 `translated` 调 `Skip`，`publish` 依赖 `translated`）：
 
 ```text
-PULSE | 2026/10/08 - 15:34:29.695 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
-PULSE | 2026/10/08 - 15:34:29.721 | completed  |   26.01ms | pulse.node_run_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
-PULSE | 2026/10/08 - 15:34:29.721 | skipped    |   26.01ms | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=publish | host=quickstart | err="pulse: skipped [translated]" | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | running    |         - | pulse.graph_started | source=observe | pulse.graph=branch-demo | host=quickstart | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | skipped    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=publish | host=quickstart | err="pulse: skipped [translated]" | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | completed  |   524.5µs | pulse.graph_finished | source=observe | pulse.graph=branch-demo | host=quickstart | trace=branch-demo
 ```
 
-`translate` 写了跳过，但它自己正常结束了；`publish` 才是那个「没执行」的节点。
+`translate` 写了跳过，但它自己正常结束了；`publish` 才是那个「没执行」的节点。整轮那条是 `completed`——**有节点跳过，这一轮仍然是成功的**。
 
 ### 汇聚：到几个收几个
 

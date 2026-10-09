@@ -235,6 +235,9 @@ func (g *Graph) Run() error {
 // 没有时进程会被 runtime 判为 fatal deadlock。校验不过时图**仍未启动**
 // （`started` 保持 false）：补上生产者 / Seed 之后可以重新 `Start`；含环的图
 // 则要改装配——引擎没有 Remove，环只能靠**重新装一张图**消除。
+//
+// 通过校验后发出一次 `Observer.OnGraphStarted`——在提交**任何**节点 goroutine
+// 之前，所以它先于本轮的全部节点事件。空图也发（它的两条件同样齐）。
 func (g *Graph) Start() error {
 	g.mu.Lock()
 	if g.started {
@@ -249,15 +252,15 @@ func (g *Graph) Start() error {
 		g.mu.Unlock()
 		return err
 	}
-	if len(g.nodes) == 0 {
-		g.started = true
-		g.mu.Unlock()
-		return nil
-	}
 	g.started = true
 	nodes := append([]*Node(nil), g.nodes...)
 	g.mu.Unlock()
 
+	g.notify(func(o Observer) { o.OnGraphStarted(g.id) })
+
+	if len(nodes) == 0 {
+		return nil
+	}
 	g.wg.Add(len(nodes))
 	for _, n := range nodes {
 		n := n
@@ -398,6 +401,10 @@ func (g *Graph) checkAcyclicLocked() error {
 // Wait 等待 Start 提交的节点全部终止，并释放图自己的 ctx：它到这一步不再
 // 挂在父 ctx 的 children 上（`New` 派生的子 ctx 若不 cancel，父 ctx 是
 // Background 或长生命周期时会一直持有它）。
+//
+// 返回前发出一次 `Observer.OnGraphFinished`（reason 取运行终态，err 即本次
+// 返回值）——在**全部**节点终止之后，所以它晚于本轮的全部节点事件。
+// 只 `Start` 不 `Wait` 的宿主收不到它；重复 `Wait` 不重复发。
 func (g *Graph) Wait() error {
 	g.mu.Lock()
 	started := g.started
@@ -407,9 +414,15 @@ func (g *Graph) Wait() error {
 	}
 	g.wg.Wait()
 	g.mu.Lock()
+	first := !g.done
 	g.done = true // 先定结果，再 cancel：收尾不该被读成运行结果
 	g.mu.Unlock()
 	err := g.Err()
+	if first {
+		// 图级终态只会是 completed / failed / canceled：跳过是节点级的事实
+		// （fail 不收跳过，Err 也不含它），升不到这一层。
+		g.notify(func(o Observer) { o.OnGraphFinished(g.id, finishReason(err), err) })
+	}
 	g.cancel()
 	return err
 }

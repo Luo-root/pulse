@@ -125,16 +125,20 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 g, err := pulse.New(ctx, "docs-pipeline", pulse.WithObserver(obs))
 ```
 
-With those three lines added, the real output of the same graph (two records per node; timestamps / trace / durations vary per run):
+With those three lines added, the real output of the same graph (two run-level records bracketing four node records; timestamps / trace / durations vary per run):
 
 ```text
-PULSE | 2026/10/08 - 16:43:59.485 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791449039485090000-7a4ee798-1
-PULSE | 2026/10/08 - 16:43:59.501 | completed  |   16.53ms | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791449039485090000-7a4ee798-1
-PULSE | 2026/10/08 - 16:43:59.501 | running    |   16.53ms | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791449039485090000-7a4ee798-1
-PULSE | 2026/10/08 - 16:43:59.501 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791449039485090000-7a4ee798-1
+PULSE | 2026/10/09 - 10:42:50.372 | running    |         - | pulse.graph_started | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770372309700-d47dc250-1
+PULSE | 2026/10/09 - 10:42:50.388 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770372309700-d47dc250-1
+PULSE | 2026/10/09 - 10:42:50.388 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770372309700-d47dc250-1
+PULSE | 2026/10/09 - 10:42:50.388 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791513770372309700-d47dc250-1
+PULSE | 2026/10/09 - 10:42:50.388 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791513770372309700-d47dc250-1
+PULSE | 2026/10/09 - 10:42:50.388 | completed  |   15.80ms | pulse.graph_finished | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770372309700-d47dc250-1
 ```
 
-The engine emits at most three callbacks per node, and `observe` folds them into **two segmented timing records** — the wait segment (how long the node spent waiting for input) and the run segment (how long `Run` took): a wait record's `Status` is always `running` and its `Duration` is the wait itself (`summarize`'s input is written by `Seed` up front, hence `-`; `report` waited 16.53ms for `summary`), while a run record's `Status` is the finish reason and its `Duration` is `Run` itself. For the semantics of the duration column see [Graph observation](/en/guide/observability).
+The engine also emits two run-level callbacks per run (start / finish), and `observe` folds them into **two run-level records**: `pulse.graph_started` precedes every node record and `pulse.graph_finished` follows all of them, its `Status` being the run's terminal state (skipping is a node-level fact, so a skipped node does **not** make the run fail). The two node records are **segmented timing** — the wait segment (how long the node spent waiting for input) and the run segment (how long `Run` took): a wait record's `Status` is always `running` and its `Duration` is the wait itself (`summarize`'s input is written by `Seed` up front, hence `-`), while a run record's `Status` is the finish reason and its `Duration` is `Run` itself.
+
+Neither node spent any time of its own here (their segments were all rounded to `-`), yet the run-level record reports `15.80ms`: its window covers "commit the nodes → everything terminated", which includes runtime and egress-write costs — for its accounting and how it differs from your own stopwatch see [Graph observation](/en/guide/observability).
 
 ## Next steps
 
