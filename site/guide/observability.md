@@ -18,8 +18,8 @@ type Observer interface {
 
 1. **回调次数**：图级 `Started ≤ 1`、`Finished ≤ 1`；每个节点 `Waiting ≤ 1`、`Running ≤ 1`、`Finished = 1`。`Retry` 的多次 attempt **不重复打点**；
 2. **只读**：观察者的 panic 与 error **不得**升格为节点失败（引擎侧已吞掉）；
-3. **并发安全**：节点三条在**节点自己的 goroutine** 上同步执行，图级两条在 **`Start` / `Wait` 的调用方 goroutine** 上——实现必须并发安全，且不得长时间阻塞；
-4. **时序是夹住**：`GraphStarted` 先于本轮的**任何**节点回调（启动校验失败的图没有启动，不发），`GraphFinished` 晚于**全部**节点回调；只 `Start` 不 `Wait` 的宿主拿不到 `finished`，重复 `Wait` 不重复发；
+3. **并发安全**：节点三条在**节点自己的 goroutine** 上同步执行，图级两条在 **`Start` / `Wait` 的调用方 goroutine** 上——实现必须并发安全，且不得长时间阻塞。**别在回调里调本图的 `Start` / `Wait`**：回调就在它们的调用路径上，那是同一个 goroutine 等自己，会死等；
+4. **时序是夹住**：`GraphStarted` 先于本轮的**任何**节点回调（启动校验失败的图没有启动，不发），`GraphFinished` 晚于**全部**节点回调；只 `Start` 不 `Wait` 的宿主拿不到 `finished`，而并发 / 重复 `Wait` 都在这一发返回之后才返回（任何一个 `Wait` 返回时，本轮的收尾都已在出口落地）；
 5. **归因键由引擎给出**：`graphID` 随每次回调发出，实现侧不必从构造参数自行携带。
 
 图默认 no-op（不挂就没有任何开销），`pulse.WithObserver(...)` 挂载；要多个观察者用 `pulse.MultiObserver` 组合（后写覆盖前写，所以组合要在传参前做完）。

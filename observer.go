@@ -51,6 +51,11 @@ const (
 //
 // 时序：GraphStarted 在提交**任何**节点 goroutine 之前发出，GraphFinished 在
 // **全部**节点终止之后发出——一段完整的观测里，图的两条天然把节点事件夹在中间。
+// 并发 / 重复 `Wait` 都在 GraphFinished 那一发返回之后才返回（任何一个 Wait
+// 返回时，本轮的收尾都已经在出口落地）。
+//
+// 图级两条在 `Start` / `Wait` 的调用路径上同步执行——所以**别在回调里调本图的
+// `Start` / `Wait`**：那是同一个 goroutine 等自己，会死等。
 type Observer interface {
 	// OnGraphStarted 在图通过启动校验、开始提交节点时发出一次。
 	// 校验失败与重复 Start 都到不了这里（那时图没有启动）。

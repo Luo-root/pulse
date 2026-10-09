@@ -454,6 +454,147 @@ func TestObserverEmptyGraphBrackets(t *testing.T) {
 // TestObserverFuncGraphFieldsFire 接线自检：ObserverFunc 的两个图级字段真的会被
 // 引擎调用到。（字段是可选的，nil 就不发——TestObserverPanicIsolated 用的正是只填
 // 节点三个的那种 ObserverFunc。）
+// TestObserverWaitWaitsForStartSubmission started 回调**阻塞**期间，另一个
+// goroutine 的 Wait 不能返回，更不能先发出 finished：`started = true` 一旦对
+// 别的 goroutine 可见，WaitGroup 计数就必须已经登记好（含 started 那一发自身）。
+// 少了这一条，慢的 started 回调会把「Wait 提前返回 + finished 抢在节点事件前」
+// 的窗口拉到几十毫秒量级——那不是理论竞态。
+//
+// 确定性：不靠调度猜——回调被 channel 卡住，直到本用例主动放行；空图也一并覆盖
+// （没有节点时，计数只可能来自 started 那一发）。
+func TestObserverWaitWaitsForStartSubmission(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		node bool
+	}{{"有节点", true}, {"空图", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var log []string
+			seen := func() []string {
+				mu.Lock()
+				defer mu.Unlock()
+				return append([]string(nil), log...)
+			}
+			add := func(s string) {
+				mu.Lock()
+				log = append(log, s)
+				mu.Unlock()
+			}
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			obs := ObserverFunc{
+				GraphStarted: func(string) {
+					add("GS")
+					close(entered)
+					<-release
+				},
+				GraphFinished: func(string, NodeFinishReason, error) { add("GF") },
+				Waiting:       func(_, id string) { add("W:" + id) },
+				Running:       func(_, id string) { add("R:" + id) },
+				Finished:      func(_, id string, _ NodeFinishReason, _ error) { add("F:" + id) },
+			}
+			g := mustNew(t, context.Background(), "startwait", WithObserver(obs))
+			want := []string{"GS", "GF"}
+			if tc.node {
+				out := NewKey[string]("startwait.out")
+				if err := g.Add(NewNode("n", nil, Provides(out), func(rc *RunCtx) error {
+					return Set(rc, out, "ok")
+				})); err != nil {
+					t.Fatal(err)
+				}
+				want = []string{"GS", "W:n", "R:n", "F:n", "GF"}
+			}
+
+			startErr := make(chan error, 1)
+			go func() { startErr <- g.Start() }()
+			<-entered // started 回调已进入并卡住
+			waitErr := make(chan error, 1)
+			go func() { waitErr <- g.Wait() }()
+			select {
+			case err := <-waitErr:
+				t.Fatalf("Wait 在 started 回调返回 / 节点提交之前就返回了（err=%v），log=%v", err, seen())
+			case <-time.After(50 * time.Millisecond):
+			}
+			if got := seen(); len(got) != 1 || got[0] != "GS" {
+				t.Fatalf("started 回调没返回就出现了别的回调：%v", got)
+			}
+
+			close(release)
+			if err := <-startErr; err != nil {
+				t.Fatalf("Start = %v", err)
+			}
+			if err := <-waitErr; err != nil {
+				t.Fatalf("Wait = %v", err)
+			}
+			if got := seen(); !equalStrings(got, want) {
+				t.Fatalf("log = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestObserverConcurrentWaitBothSeeFinished finished 回调阻塞时，**每一个** Wait
+// 都要等它返回再返回——「只发一次」与「每个 Wait 都在它落地之后返回」是两条不同
+// 的承诺：前者靠一个门闩就够，后者还要让后来的 Wait 等第一次调用结束（sync.Once
+// 同时给到）。否则先返回的那个 Wait 会把出口收尾了，记录还在另一个 goroutine 里。
+func TestObserverConcurrentWaitBothSeeFinished(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	obs := ObserverFunc{
+		GraphFinished: func(string, NodeFinishReason, error) {
+			if calls.Add(1) == 1 {
+				close(entered)
+			}
+			<-release
+		},
+	}
+	out := NewKey[string]("cwfe.out")
+	g := mustNew(t, context.Background(), "concurrentwait", WithObserver(obs))
+	if err := g.Add(NewNode("n", nil, Provides(out), func(rc *RunCtx) error {
+		return Set(rc, out, "ok")
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	first := make(chan error, 1)
+	go func() { first <- g.Wait() }()
+	<-entered // 第一个 Wait 正卡在 finished 回调里
+	second := make(chan error, 1)
+	go func() { second <- g.Wait() }()
+	select {
+	case err := <-second:
+		t.Fatalf("第二个 Wait 在 finished 回调返回之前就返回了（err=%v）", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("第一个 Wait = %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("第二个 Wait = %v", err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("finished 回调 %d 次，want 1", n)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestObserverFuncGraphFieldsFire(t *testing.T) {
 	var mu sync.Mutex
 	var started, finished []string

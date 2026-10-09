@@ -35,6 +35,10 @@ type Graph struct {
 	err     error
 	sem     chan struct{}
 	wg      sync.WaitGroup
+	// finishOnce 让「发一次 OnGraphFinished」与「所有 Wait 都等到它落地」同时
+	// 成立：sync.Once 会阻塞后来的调用者直到第一个调用返回（比自己的 done
+	// 门闩强——那个只保证不重发，先返回的 Wait 会把出口先关掉）。
+	finishOnce sync.Once
 }
 
 // Option 配置 Graph。
@@ -238,6 +242,11 @@ func (g *Graph) Run() error {
 //
 // 通过校验后发出一次 `Observer.OnGraphStarted`——在提交**任何**节点 goroutine
 // 之前，所以它先于本轮的全部节点事件。空图也发（它的两条件同样齐）。
+//
+// WaitGroup 的计数在**放锁之前**登记，且把 started 那一发自身也计进去
+// （`+1`）：另一 goroutine 只要看见 `started == true`，就一定看见非零计数——
+// 否则它会在节点还没提交时就从 `wg.Wait()` 返回、提前发出 finished（慢的
+// started 回调把窗口拉到几十毫秒量级，这不是理论竞态）。
 func (g *Graph) Start() error {
 	g.mu.Lock()
 	if g.started {
@@ -254,14 +263,12 @@ func (g *Graph) Start() error {
 	}
 	g.started = true
 	nodes := append([]*Node(nil), g.nodes...)
+	g.wg.Add(len(nodes) + 1) // +1：started 那一发落地前，其他 goroutine 的 Wait 不该溜过去
 	g.mu.Unlock()
 
 	g.notify(func(o Observer) { o.OnGraphStarted(g.id) })
+	g.wg.Done()
 
-	if len(nodes) == 0 {
-		return nil
-	}
-	g.wg.Add(len(nodes))
 	for _, n := range nodes {
 		n := n
 		go g.runNode(n)
@@ -404,7 +411,14 @@ func (g *Graph) checkAcyclicLocked() error {
 //
 // 返回前发出一次 `Observer.OnGraphFinished`（reason 取运行终态，err 即本次
 // 返回值）——在**全部**节点终止之后，所以它晚于本轮的全部节点事件。
-// 只 `Start` 不 `Wait` 的宿主收不到它；重复 `Wait` 不重复发。
+// 只 `Start` 不 `Wait` 的宿主收不到它。
+//
+// **并发与重复 `Wait` 都在这一发返回之后才返回**（finishOnce）：任何一个
+// `Wait` 返回时，本轮的 finished 都已在出口落地——不会出现「先返回的那个把
+// 出口收尾了，记录还留在另一个 goroutine 里」。
+//
+// 回调在 `Start` / `Wait` 的调用路径上同步执行，所以**别在 Observer 回调里调
+// 本图的 `Start` / `Wait`**：那是同一个 goroutine 等自己，会死等。
 func (g *Graph) Wait() error {
 	g.mu.Lock()
 	started := g.started
@@ -414,15 +428,14 @@ func (g *Graph) Wait() error {
 	}
 	g.wg.Wait()
 	g.mu.Lock()
-	first := !g.done
 	g.done = true // 先定结果，再 cancel：收尾不该被读成运行结果
 	g.mu.Unlock()
 	err := g.Err()
-	if first {
+	g.finishOnce.Do(func() {
 		// 图级终态只会是 completed / failed / canceled：跳过是节点级的事实
 		// （fail 不收跳过，Err 也不含它），升不到这一层。
 		g.notify(func(o Observer) { o.OnGraphFinished(g.id, finishReason(err), err) })
-	}
+	})
 	g.cancel()
 	return err
 }
