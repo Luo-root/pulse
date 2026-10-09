@@ -92,6 +92,8 @@ Two boundaries:
 - Reading an input that has no value yields `*SkipError` (`errors.Is(err, ErrSkipped)` holds) — not a zero value, not a failure, and `Get` does not block on it. Asking each key "did this path arrive" with `TryGet` is the easy way.
 - Conversely, **a node that wants "all-or-skip me" speaks for itself**: return `WaitAll`'s value straight out of `Run`. The node still enters `Run` (the skip is its own conclusion, not something the gate imposed), ends as `skipped`, and `Run`/`Err` stay clean while `Retry` does not retry it. Note that **an output already published is not rolled back**: whatever the body `Set` before that stays ready, and only `Provides` not yet written are skipped (the one-shot slot contract).
 
+This hand-written fan-in has an equivalent sugar: `pulse.Join` collects the N same-typed routes into one `pulse.Batch[T]` (each route carries its source name, missing routes included) — see [Orchestration](/en/guide/orchestration).
+
 ### How to write a branch
 
 There is no `if` primitive. Branching = **calling `Skip` on the `Provide` you did not choose**:
