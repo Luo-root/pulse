@@ -88,7 +88,7 @@ pulse.NewNode("join",
 Two boundaries:
 
 - Reading an input that has no value yields `*SkipError` (`errors.Is(err, ErrSkipped)` holds) — not a zero value, not a failure, and `Get` does not block on it. Asking each key "did this path arrive" with `TryGet` is the easy way.
-- Conversely, **a node that wants "all-or-skip me" speaks for itself**: return `WaitAll`'s value straight out of `Run`. The node still enters `Run` (the skip is its own conclusion, not something the gate imposed), ends as `skipped` with every output skipped, and `Run`/`Err` stay clean while `Retry` does not retry it.
+- Conversely, **a node that wants "all-or-skip me" speaks for itself**: return `WaitAll`'s value straight out of `Run`. The node still enters `Run` (the skip is its own conclusion, not something the gate imposed), ends as `skipped`, and `Run`/`Err` stay clean while `Retry` does not retry it. Note that **an output already published is not rolled back**: whatever the body `Set` before that stays ready, and only `Provides` not yet written are skipped (the one-shot slot contract).
 
 ### How to write a branch
 

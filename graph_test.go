@@ -296,8 +296,10 @@ func TestPartialArrivalGetSkippedInput(t *testing.T) {
 }
 
 // TestWaitAllStrictFanIn WaitAll 的返回值是**显式的 fan-in 策略声明**：
-// 节点把它直接 return 出去 = 「缺一条就别跑我」。引擎按「本节点以跳过收尾」
-// 处理——全部输出跳过、不是失败（Run 返回 nil），Retry 也不重试。
+// 节点把它直接 return 出去 = 「缺一条就别跑我」。引擎让本节点以「跳过」收尾
+// ——不是失败（Run 返回 nil），Retry 也不重试。本用例的节点体没写过任何
+// 输出，所以 Provide 全部以跳过到达（写过的那部分不回滚，见
+// TestWaitAllStrictKeepsPublishedOutput）。
 func TestWaitAllStrictFanIn(t *testing.T) {
 	a := NewKey[string]("strict.a")
 	b := NewKey[string]("strict.b")
@@ -337,7 +339,55 @@ func TestWaitAllStrictFanIn(t *testing.T) {
 		t.Fatalf("strict 终态 = %q, want skipped", reason)
 	}
 	if _, ok, skipped, err := TryGet(inspect(g), out); err != nil || ok || !skipped {
-		t.Fatalf("out = ok=%v skipped=%v err=%v, want skipped（以跳过收尾时全部输出跳过）", ok, skipped, err)
+		t.Fatalf("out = ok=%v skipped=%v err=%v, want skipped（收尾为跳过时，没写过的输出跟着跳过）", ok, skipped, err)
+	}
+}
+
+// TestWaitAllStrictKeepsPublishedOutput 钉住「以跳过收尾」的输出边界：
+// 节点体已经 Set 过的槽**不回滚**——只有还没写的 Provide 会被跳过。这与
+// 一次性槽位契约（到达即发布）一致，所以 godoc / 文档不能承诺「全部输出跳过」。
+func TestWaitAllStrictKeepsPublishedOutput(t *testing.T) {
+	a := NewKey[string]("pubstrict.a")
+	b := NewKey[string]("pubstrict.b")
+	published := NewKey[string]("pubstrict.published")
+	unwritten := NewKey[string]("pubstrict.unwritten")
+
+	var reason NodeFinishReason
+	obs := ObserverFunc{Finished: func(_, nodeID string, r NodeFinishReason, _ error) {
+		if nodeID == "strict" {
+			reason = r
+		}
+	}}
+	req := Deps(Requires(a), Requires(b))
+
+	g := mustNew(t, context.Background(), "test", WithObserver(obs))
+	if err := SkipSeed(g, b); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, g, NewNode("src", nil, Provides(a), func(rc *RunCtx) error {
+		return Set(rc, a, "v")
+	}))
+	mustAdd(t, g, NewNode("strict", req, Deps(Provides(published), Provides(unwritten)),
+		func(rc *RunCtx) error {
+			if err := Set(rc, published, "kept"); err != nil {
+				return err
+			}
+			return WaitAll(rc, req...) // 缺 b：以跳过收尾，但已发布的那条留下
+		}))
+
+	if err := g.Run(); err != nil {
+		t.Fatalf("跳过不是失败：%v", err)
+	}
+	if reason != NodeSkipped {
+		t.Fatalf("strict 终态 = %q, want skipped", reason)
+	}
+	// 先 Set 过的那条：不回滚
+	if v, ok, skipped, err := TryGet(inspect(g), published); err != nil || !ok || skipped || v != "kept" {
+		t.Fatalf("published = %q ok=%v skipped=%v err=%v，want \"kept\" 就绪（已发布的槽不回滚）", v, ok, skipped, err)
+	}
+	// 没写过的那条：跟着跳过
+	if _, ok, skipped, err := TryGet(inspect(g), unwritten); err != nil || ok || !skipped {
+		t.Fatalf("unwritten = ok=%v skipped=%v err=%v, want skipped", ok, skipped, err)
 	}
 }
 

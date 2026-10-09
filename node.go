@@ -240,8 +240,9 @@ func awaitAll(rc *RunCtx, keys []keyRef) ([]string, error) {
 // 它**不是**节点默认的门：`Requires` 里只要有一条输入真的到了值，节点就会
 // 带着到了的那些进入 Run（到几个收几个），输入跳过拦不住它。想让「缺一条就
 // 别跑我」的节点把这个返回值直接 return 出去——引擎把 *SkipError 读成
-// 「本节点以跳过收尾」，全部输出跳过，且不是失败（`Retry` 不重试、
-// `Run`/`Err` 不报错）。这是显式的 fan-in 策略声明，默认策略则相反。
+// 「本节点以跳过收尾」：**尚未发布的输出会被跳过，已经发布的槽位不回滚**
+// （一次性槽位契约），且不是失败（`Retry` 不重试、`Run`/`Err` 不报错）。
+// 这是显式的 fan-in 策略声明，默认策略则相反。
 func WaitAll(rc *RunCtx, keys ...keyRef) error {
 	skipped, err := awaitAll(rc, keys)
 	if err != nil {
