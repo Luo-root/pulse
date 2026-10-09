@@ -99,7 +99,7 @@ All four basic concepts appear in this code:
 
 - A node blocks on its input slots in **its own goroutine** and enters `Run` the moment the input arrives — you do not order nodes, and there is no topological-sort step;
 - The topology is **implicit**: whoever writes `summary` and whoever reads `summary` already form the dependency. There are no edge objects and no scheduler loop;
-- `Requires` is an **AND** precondition: all inputs must arrive before the node executes (if any one is skipped the whole node does not execute — see [Core concepts](/en/guide/concepts)).
+- `Requires` is an **AND** precondition: the gate is judged once all inputs have arrived (ready or skipped) — **collect whatever arrives**, so one input with a value is enough to execute (only when no input brought a value does it not execute — see [Core concepts](/en/guide/concepts)).
 
 ## One run, one world
 
