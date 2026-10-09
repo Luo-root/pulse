@@ -235,12 +235,74 @@ err = pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2, r3),
 
 **`Get(k)` 收的是 Key 对象，不是名字**，三种结果分得很开——「调错了」不许混进「这一路没值」：带值到达给 `(值, nil)`；那一路以跳过到达给 `(零值, *SkipError)`（与 `pulse.Get` 同口径，`return` 出去本节点就跳过，即单路版的严格）；传了一条**不在这张清单里**的 Key 给 `ErrUndeclared`（写错了，不是没值）。要整束严格仍用 `WaitAll()`；要「到几个收几个」就 `Values()`。
 
-**边界（写清楚，别让下一个人以为抓得到）**：编译期锁住的是**元素类型**（`ins []Key[T]` 与 fn 的 `Batch[T]` 必须同一个 `T`）与**个数**（`Join` 收一束、`FanOut` 按输出槽开实例，N 在装配期固定）；**同类型多槽位之间的顺序锁不住**——`Keys(a, b)` 与 `Keys(b, a)`（a、b 都是 `Key[string]`）**都编译**。实测（`.workbase/probe-order`）：
+**判据（一个糖该不该存在）**：出发点必须是「**开发者究竟在哪里容易写错**」，不是「应该怎样实现类型安全」——糖要消灭的是**具体的写错**（同一条名字写三遍、同类型多槽位读错一条、字符串拼错静默拿零值），顺带把重复劳动减掉。反过来，按 arity 把类型参数铺开的构造函数（`Node1` / `Node2`…）锁住的多半是编译器本来就会替你查的东西：越铺越重，而真正会写错的地方一个没解决——#279 的接线糖形态 1 就是因此被否的（重新设计见 #282）。**说不出消灭哪一类写错的糖，不该存在。**
+
+**边界（写清楚，别让下一个人以为抓得到）**：编译期锁住的是**元素类型**（`ins []Key[T]` 与 fn 的 `Batch[T]` 必须同一个 `T`）与**个数**（`Join` 收一束、`FanOut` 按输出槽开实例，N 在装配期固定）；**同类型多槽位之间的顺序锁不住**——`Keys(a, b)` 与 `Keys(b, a)`（a、b 都是 `Key[string]`）**都编译**。同一段图换个声明顺序各跑一次：
 
 ```text
 Keys(a,b) -> Values()[0]="from-a"  Get(a)=("from-a", <nil>)
 Keys(b,a) -> Values()[0]="from-b"  Get(a)=("from-a", <nil>)
+两种顺序都编译通过；按位置读变了，按 Key 取没变
 ```
+
+<details>
+<summary>复现上面这份输出（自包含，<code>go run main.go</code> 即可）</summary>
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/Luo-root/pulse"
+)
+
+func main() {
+	a := pulse.NewKey[string]("probe.a")
+	b := pulse.NewKey[string]("probe.b")
+	out := pulse.NewKey[string]("probe.out")
+
+	run := func(swapped bool) (byPos, byKey string) {
+		g, err := pulse.New(context.Background(), "probe")
+		if err != nil {
+			panic(err)
+		}
+		if err := pulse.Seed(g, a, "from-a"); err != nil {
+			panic(err)
+		}
+		if err := pulse.Seed(g, b, "from-b"); err != nil {
+			panic(err)
+		}
+		ins := pulse.Keys(a, b)
+		if swapped {
+			ins = pulse.Keys(b, a) // 只是换了声明顺序：照样编译
+		}
+		if err := pulse.Join(g, "collect", ins, out, func(rc *pulse.RunCtx, m pulse.Batch[string]) (string, error) {
+			byPos = m.Values()[0] // 按位置读：写反了这里就错
+			v, err := m.Get(a)    // 按来源 Key 取：与声明顺序无关
+			byKey = fmt.Sprintf("%q, %v", v, err)
+			return strings.Join(m.Values(), ","), nil
+		}); err != nil {
+			panic(err)
+		}
+		if err := g.Run(); err != nil {
+			panic(err)
+		}
+		return byPos, byKey
+	}
+
+	p1, k1 := run(false)
+	p2, k2 := run(true)
+	fmt.Printf("Keys(a,b) -> Values()[0]=%q  Get(a)=(%s)\n", p1, k1)
+	fmt.Printf("Keys(b,a) -> Values()[0]=%q  Get(a)=(%s)\n", p2, k2)
+	fmt.Printf("两种顺序都编译通过；按位置读变了，按 Key 取没变\n")
+}
+
+```
+
+</details>
 
 写反顺序的结果只是**声明顺序**变了：按位置读会错位，**按 `Get(a)` 取永远拿到对的那条**——这正是 `Batch` 带来源名要买的东西。要按位置读，声明顺序即语义顺序。
 
