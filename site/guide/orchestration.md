@@ -103,6 +103,31 @@ err = pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2, r3),
 
 **编译期锁住什么**：元素类型（`Keys(...)` 与 `Batch[T]` 必须同一个 `T`）与个数（`Join` 收一束、`FanOut` 按输出槽开实例）。**锁不住同类型多槽位的顺序**——`Keys(a, b)` 与 `Keys(b, a)`（都是 `Key[string]`）**都编译**。实测：按位置读会错位（`Values()[0]` 从 `"from-a"` 变成 `"from-b"`），按 `Get(a)` 取两次都是 `"from-a"`——这就是 `Batch` 带来源名要买的东西，写反顺序只是声明顺序变了。
 
+## 流式：Produce / Consume / Tee
+
+`Key[<-chan T]` 早就能用，缺的不是「再包一层 channel」，而是每个生产 / 消费节点都要手写的六件事（创建与发布、关闭责任、循环、取消、错误回传、背压与名额）。最典型的一处写错是 **`Set` 出 channel 就 `return`**：节点已经 `completed`，真正的发送留在没人观测的后台 goroutine 里——错误回不到图上、取消也叫不醒它。
+
+```go
+err := pulse.Produce(g, "src", stream, func(rc *pulse.RunCtx, send func(int) error) error {
+	for _, v := range values {
+		if err := send(v); err != nil { // 取消能从堵住的发送里出来
+			return err
+		}
+	}
+	return nil
+})
+err = pulse.Consume(g, "sink", stream, func(rc *pulse.RunCtx, v int) error {
+	return handle(v)
+})
+err = pulse.Tee(g, "fan", stream, pulse.Keys(sA, sB)) // 广播：两个下游各拿完整数据
+```
+
+- **生产端活着发完**：channel 的关闭只在节点返回时的 `defer` 里（成功 / 出错 / 取消 / panic 都走它，不会双次 close），`send` 在发送与 `rc.Context().Done()` 上 `select`。
+- **消费端用 `select`，不是 `for range`**：后者在取消之后会把缓冲区里的值**继续算完**，而且整轮还报成功；`select` 在取消那一刻退出并返回取消原因。
+- **空流不是跳过**：一次都没发、出口正常关闭 → 下游照样进入 `Run`（零次回调、`completed`、整轮成功）。
+- **名额**：流的两端必须同时活着——`Produce` 要 `WithMaxRunning ≥ 2`、`Tee` 要 `≥ N+1`；不够在**装图期**就报错，不留到运行时卡死。
+- **`FanOut` 与 `Tee` 别混**：抢（每个数据只做一次）用 `FanOut`；每个下游都要拿到全部数据用 `Tee`。普通值不需要 `Tee`——一个 `Provides` 加 N 个 `Requires` 本来就是广播，只有 channel 会被瓜分。
+
 ## 分支：对未选中的路调 Skip
 
 没有 `if` 原语，分支就是「把没走的那些 `Provide` 标成跳过」：
@@ -115,6 +140,8 @@ return pulse.Set(rc, Translated, translate(summary))
 ```
 
 这里是**单槽**可选输出：两个分支都对同一个槽表态（写或跳过），所以只有一条下游。多槽分支要**两边都表态**——选中的 `Set`、没选中的 `Skip`；只 Skip 一边，漏写的那些会被自动跳过，两条下游都不跑（见[核心概念](/guide/concepts)的分支例子）。
+
+`pulse.Only` 把这一句说完：`return pulse.Only(rc, OutA, v)` = 写 A，本节点其余出口自动作废。N 条出口从「1 次 `Set` + N−1 次 `Skip`」变成 1 行，而且**调用方不再自己写 `Skip`**——上面那句「漏表态」的错在形态上就不存在了。它**不判断条件**：走哪条还是你 `if` 出来的。反面也值得知道：重复表态会变吵，先 `Set` 过别的出口再 `Only` 会直接 `ErrConflict`（手写 `Set` 两次是静默忽略的）。
 
 区分两个终态很重要：**写出跳过的节点自己是 `completed`**；因**一条值都没到**而没执行的**下游**才是 `skipped`。细节与真实记录见[核心概念 · 槽位三态](/guide/concepts)。
 

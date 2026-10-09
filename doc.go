@@ -53,7 +53,10 @@
 //
 // 装配糖 FanOut / Join 把「一个输入 → N 个并行实例」与「N 路同类型 → 一束」
 // 收进函数签名（见 sugar.go）：语义与手写 NewNode 逐字段一致，缺项与**来源**在
-// Batch 里可见（每条一条 BatchItem），严格汇聚显式 WaitAll()。
+// Batch 里可见（每条一条 BatchItem），严格汇聚显式 WaitAll()。接线之外还有：
+// Only（排他分支一次表态）、Produce / Consume（流式生产 / 消费，节点活着发完、
+// 循环用 select）、Tee（一根流复制给 N 个下游）——后三件见 stream.go，流的两端
+// 必须同时活着，名额不够在**装配期**就拒。
 //
 // 并发默认无限；WithMaxRunning(n) 只限制同时进入 Run 的节点数，
 // 等数据不占名额（排队等名额也会被 ctx 取消打断）。

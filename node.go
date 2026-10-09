@@ -201,8 +201,11 @@ func Set[T any](rc *RunCtx, k Key[T], v T) error {
 }
 
 // Skip 将一条 Provide 标记为跳过。已就绪则冲突。
-func Skip[T any](rc *RunCtx, k Key[T]) error {
-	ref := k.asRef()
+func Skip[T any](rc *RunCtx, k Key[T]) error { return skipRef(rc, k.asRef()) }
+
+// skipRef 是 Skip 的非泛型内核：糖（Only）要按本节点的声明表逐条作废时，只有
+// keyRef 可用，调不了泛型的 Skip。
+func skipRef(rc *RunCtx, ref keyRef) error {
 	if err := rc.must(ref, true); err != nil {
 		return err
 	}

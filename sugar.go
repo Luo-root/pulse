@@ -265,3 +265,33 @@ func collectBatch[T any](rc *RunCtx, ins []Key[T]) (Batch[T], error) {
 	}
 	return b, nil
 }
+
+// Only 是排他分支的一句话写法：写这一条，本节点其余 Provides 全部作废。
+//
+// 它**不判断任何条件**——走哪条仍然是调用方 if 出来的。Only 负责把「我走这条，
+// 别的作废」压成一次表态，消灭的是**漏表态**这一类写错：手写分支要写 1 次 Set
+// 加 N−1 次 Skip，少写一边是**静默的**——只 Skip(B)、忘了 Set(A) 时，A、B 两条
+// 下游都不跑（未写的 Provide 被自动跳过），而整轮仍返回 nil、没有任何提示。
+// 用 Only 的调用方不再自己写 Skip，「漏表态」在形态上就不存在了。
+//
+// 另一面：重复表态会**变吵**。若先 Set 过别的出口再 Only，Only 会给那条已就绪
+// 的槽补一次 Skip，直接 `ErrConflict`；而手写 Set 两次是被静默忽略的。所以
+// Only 要**代替** Set，不要与之并用——需要同时写出多个值的节点继续手写 Set。
+func Only[T any](rc *RunCtx, k Key[T], v T) error {
+	if rc == nil || rc.node == nil {
+		return fmt.Errorf("pulse: Only: nil run context")
+	}
+	if err := Set(rc, k, v); err != nil {
+		return err
+	}
+	want := k.asRef().name
+	for _, p := range rc.node.provides {
+		if p.name == want {
+			continue
+		}
+		if err := skipRef(rc, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
