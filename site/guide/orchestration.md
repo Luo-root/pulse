@@ -65,8 +65,11 @@ _ = g.Add(pulse.NewNode("join",
 // fan-in：N 条同类型输入 → 一束
 err = pulse.Join(g, "collect", pulse.Keys(a, b, c), out,
 	func(rc *pulse.RunCtx, m pulse.Batch[string]) (Report, error) {
-		title, _ := m.Value("title") // 按来源名取，不必记住声明顺序
-		return report(title, m.Values(), m.Missing()), nil
+		headline, err := m.Get(a) // 单路严格：缺 a 就让本节点跳过
+		if err != nil {
+			return Report{}, err
+		}
+		return report(headline, m.Values(), m.Missing()), nil // Values()：到几个收几个
 	})
 
 // fan-out：一个输入 → N 个并行实例，各自一条输出槽（节点名 id-1 … id-N）
@@ -94,9 +97,11 @@ err = pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2, r3),
 
 `pulse.NoValue()` 与 `Skip(rc, key)` 不是一回事：后者只把那一条输出槽标成跳过，节点自己照常 `completed`；前者是**节点级**终态声明，一返回整个节点就以 `skipped` 结束。
 
-**缺项与来源都在类型上可见**：`pulse.Batch[T]` 是一张清单——`Items []BatchItem[T]`（`Key` + `Value` + `Present`，按声明顺序排），**每一条声明都在**，缺项也占一行；`Len()` / `Values()` / `Missing()` / `Value(name)` 是这张清单上的四种读法。只给一束值，宿主就分不清「这一路没值」「这一路本来就不在」「这个值出自哪条槽」。
+**缺项与来源都在类型上可见**：`pulse.Batch[T]` 是一张清单——`Items []BatchItem[T]`（`Key` + `Value` + `Present`，按声明顺序排），**每一条声明都在**，缺项也占一行；`Len()` / `Values()` / `Missing()` / `Get(k)` 是这张清单上的四种读法。只给一束值，宿主就分不清「这一路没值」「这一路本来就不在」「这个值出自哪条槽」。
 
-**编译期锁住什么**：元素类型（`Keys(...)` 与 `Batch[T]` 必须同一个 `T`）与个数（`Join` 收一束、`FanOut` 按输出槽开实例）。**锁不住同类型多槽位的顺序**——`Keys(a, b)` 与 `Keys(b, a)`（都是 `Key[string]`）**都编译**。实测：按位置读会错位（`Values()[0]` 从 `"from-a"` 变成 `"from-b"`），按 `Value("a")` 读两次都是 `"from-a"`——这就是 `Batch` 带来源名要买的东西，写反顺序只是声明顺序变了。
+`Get(k)` 收的是 **Key 对象**而不是名字（字符串写错一个字母只会静默变成零值），三种结果分得很开：带值到达给值；那一路以跳过到达回 `*SkipError`（`return` 出去本节点就跳过）；传了一条不在这张清单里的 Key 回 `ErrUndeclared`——「写错了」不会混进「这一路没值」。
+
+**编译期锁住什么**：元素类型（`Keys(...)` 与 `Batch[T]` 必须同一个 `T`）与个数（`Join` 收一束、`FanOut` 按输出槽开实例）。**锁不住同类型多槽位的顺序**——`Keys(a, b)` 与 `Keys(b, a)`（都是 `Key[string]`）**都编译**。实测：按位置读会错位（`Values()[0]` 从 `"from-a"` 变成 `"from-b"`），按 `Get(a)` 取两次都是 `"from-a"`——这就是 `Batch` 带来源名要买的东西，写反顺序只是声明顺序变了。
 
 ## 分支：对未选中的路调 Skip
 

@@ -51,8 +51,8 @@ func TestJoinCollectsWhatArrives(t *testing.T) {
 	}
 }
 
-// Batch 带来源：**每一条声明都在 Items 里**（缺项也在），值可以按名字取——同类型
-// 多槽位的顺序编译期锁不住，这条设计就是为了让「数错位次」不再有后果。
+// Batch 带来源：**每一条声明都在 Items 里**（缺项也在），值可以按来源 Key 取——
+// 同类型多槽位的顺序编译期锁不住，这条设计就是为了让「数错位次」不再有后果。
 //
 // 这里刻意让两条来源的值**一模一样**：只按位置读的话，拿到哪个都一样，分不出来。
 func TestBatchCarriesSourceNames(t *testing.T) {
@@ -93,15 +93,16 @@ func TestBatchCarriesSourceNames(t *testing.T) {
 			t.Fatalf("Items[%d] = %+v, want %+v", i, got.Items[i], w)
 		}
 	}
-	// 按名字取：有值的给值，缺项与不在这一束里的名字都不 ok。
-	if v, ok := got.Value(b.Name()); !ok || v != "same" {
-		t.Fatalf("Value(%q) = %q, %v; want same, true", b.Name(), v, ok)
+	// 按来源 Key 取：三种结果分得很开（有值 / 这一路没值 / 压根不在这张清单里）。
+	if v, err := got.Get(b); err != nil || v != "same" {
+		t.Fatalf("Get(b) = %q, %v; want same, nil", v, err)
 	}
-	if v, ok := got.Value(c.Name()); ok || v != "" {
-		t.Fatalf("缺项按名字取不该 ok：%q, %v", v, ok)
+	if v, err := got.Get(c); !errors.Is(err, ErrSkipped) || v != "" {
+		t.Fatalf("缺项应当回 *SkipError：%q, %v", v, err)
 	}
-	if v, ok := got.Value("batchsrc.nope"); ok || v != "" {
-		t.Fatalf("不在这一束里的名字不该 ok：%q, %v", v, ok)
+	other := NewKey[string]("batchsrc.other")
+	if v, err := got.Get(other); !errors.Is(err, ErrUndeclared) || v != "" {
+		t.Fatalf("不在这张清单里的 Key 应当回 ErrUndeclared：%q, %v", v, err)
 	}
 	// Values() 每次新建切片：调用方改它不影响 Batch（下面再取一次要还原样）。
 	vals := got.Values()

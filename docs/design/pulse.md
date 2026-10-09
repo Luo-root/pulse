@@ -198,11 +198,11 @@ nodes:
 // fan-in：N 条同类型输入 → 一束
 err := pulse.Join(g, "collect", pulse.Keys(a, b, c), out,
     func(rc *pulse.RunCtx, m pulse.Batch[string]) (Report, error) {
-        if err := m.WaitAll(); err != nil { // 显式严格：缺一条就以跳过收尾
+        headline, err := m.Get(a) // 单路严格：缺 a 就让本节点跳过
+        if err != nil {
             return Report{}, err
         }
-        title, _ := m.Value("title") // 按来源名取，不必记住声明顺序
-        return report(title, m.Values()), nil
+        return report(headline, m.Values()), nil // Values()：到几个收几个
     })
 
 // fan-out：一个输入 → N 个并行实例，各自一条输出槽（节点名 id-1 … id-N）
@@ -231,16 +231,18 @@ err = pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2, r3),
 
 `NoValue()` 与 `Skip(rc, key)` **不是**同一件事：后者只把那一条输出槽标成跳过，节点自己照常返回 nil、终态是 `completed`；前者是节点级终态声明，一返回整个节点就以 `skipped` 结束（已发布的输出不回滚）。终态差别有用例并排钉着。
 
-**缺项在类型上可见，来源也在**：`Batch` 是一张**清单**——`Items []BatchItem[T]`（`Key` + `Value` + `Present`，按 `ins` 声明顺序排），**每一条声明都在**，缺项也占一行。只给一束值，宿主就分不清「这一路没值」「这一路本来就不在」「这个值出自哪条槽」；`Len()` / `Values()` / `Missing()` / `Value(name)` 是这张清单上的四种读法。默认「到几个收几个」、严格靠显式 `WaitAll()`，都是它的直接结果。
+**缺项在类型上可见，来源也在**：`Batch` 是一张**清单**——`Items []BatchItem[T]`（`Key` + `Value` + `Present`，按 `ins` 声明顺序排），**每一条声明都在**，缺项也占一行。只给一束值，宿主就分不清「这一路没值」「这一路本来就不在」「这个值出自哪条槽」；`Len()` / `Values()` / `Missing()` / `Get(k)` 是这张清单上的四种读法。
+
+**`Get(k)` 收的是 Key 对象，不是名字**，三种结果分得很开——「调错了」不许混进「这一路没值」：带值到达给 `(值, nil)`；那一路以跳过到达给 `(零值, *SkipError)`（与 `pulse.Get` 同口径，`return` 出去本节点就跳过，即单路版的严格）；传了一条**不在这张清单里**的 Key 给 `ErrUndeclared`（写错了，不是没值）。要整束严格仍用 `WaitAll()`；要「到几个收几个」就 `Values()`。
 
 **边界（写清楚，别让下一个人以为抓得到）**：编译期锁住的是**元素类型**（`ins []Key[T]` 与 fn 的 `Batch[T]` 必须同一个 `T`）与**个数**（`Join` 收一束、`FanOut` 按输出槽开实例，N 在装配期固定）；**同类型多槽位之间的顺序锁不住**——`Keys(a, b)` 与 `Keys(b, a)`（a、b 都是 `Key[string]`）**都编译**。实测（`.workbase/probe-order`）：
 
 ```text
-Keys(a,b) -> Values()[0]="from-a"  Value("probe.a")="from-a"
-Keys(b,a) -> Values()[0]="from-b"  Value("probe.a")="from-a"
+Keys(a,b) -> Values()[0]="from-a"  Get(a)=("from-a", <nil>)
+Keys(b,a) -> Values()[0]="from-b"  Get(a)=("from-a", <nil>)
 ```
 
-写反顺序的结果只是**声明顺序**变了：按位置读会错位，**按 `Value(name)` 读永远拿到对的那条**——这正是 `Batch` 带来源名要买的东西。要按位置读，声明顺序即语义顺序。
+写反顺序的结果只是**声明顺序**变了：按位置读会错位，**按 `Get(a)` 取永远拿到对的那条**——这正是 `Batch` 带来源名要买的东西。要按位置读，声明顺序即语义顺序。
 
 `FanOut` 的 N 是**装配期固定**的：引擎的拓扑不随数据变，数据条数不定的并行请在节点内部做业务循环，别指望运行时长出节点。
 

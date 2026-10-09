@@ -65,8 +65,11 @@ Wiring a node by hand aligns the same name three times (the declaration in `NewN
 // fan-in: N inputs of one type → one batch
 err = pulse.Join(g, "collect", pulse.Keys(a, b, c), out,
 	func(rc *pulse.RunCtx, m pulse.Batch[string]) (Report, error) {
-		title, _ := m.Value("title") // take it by source name; no need to memorise the order
-		return report(title, m.Values(), m.Missing()), nil
+		headline, err := m.Get(a) // per-route strict: no `a` and this node skips
+		if err != nil {
+			return Report{}, err
+		}
+		return report(headline, m.Values(), m.Missing()), nil // Values(): collect whatever arrived
 	})
 
 // fan-out: one input → N parallel instances, each with its own output slot
@@ -95,9 +98,11 @@ Both callbacks receive **this node's own `*RunCtx`** as their first parameter: a
 
 `pulse.NoValue()` is not the same thing as `Skip(rc, key)`: the latter marks just that one output slot as skipped and the node still finishes as `completed`; the former is a **node-level** terminal declaration — return it and the whole node ends as `skipped`.
 
-**Missing routes *and* their sources are visible in the type**: `pulse.Batch[T]` is a roster — `Items []BatchItem[T]` (`Key` + `Value` + `Present`, in declaration order) — **every declaration is in it**, missing routes included; `Len()` / `Values()` / `Missing()` / `Value(name)` are four ways to read that roster. A bare slice of values would leave the host unable to tell "this route has no value" from "this route was never part of the batch" — or from "which slot did this value come from".
+**Missing routes *and* their sources are visible in the type**: `pulse.Batch[T]` is a roster — `Items []BatchItem[T]` (`Key` + `Value` + `Present`, in declaration order) — **every declaration is in it**, missing routes included; `Len()` / `Values()` / `Missing()` / `Get(k)` are four ways to read that roster. A bare slice of values would leave the host unable to tell "this route has no value" from "this route was never part of the batch" — or from "which slot did this value come from".
 
-**What the compiler locks**: the element type (`Keys(...)` and `Batch[T]` must share one `T`) and the arity (`Join` takes one batch, `FanOut` opens one instance per output slot). It does **not** lock the order of same-typed slots — `Keys(a, b)` and `Keys(b, a)` (both `Key[string]`) **both compile**. Measured: positional reading shifts (`Values()[0]` goes from `"from-a"` to `"from-b"`) while `Value("a")` returns `"from-a"` either way — that is exactly what the source names on `Batch` buy, and swapping the order only changes declaration order.
+`Get(k)` takes a **`Key` object**, not a name (a typo in a string literal would silently become a zero value), and its three outcomes stay far apart: a value on arrival gives the value; a route that arrived skipped gives `*SkipError` (return it and this node skips); a `Key` that is not part of this batch gives `ErrUndeclared` — "you asked for the wrong thing" never mixes with "this route has no value".
+
+**What the compiler locks**: the element type (`Keys(...)` and `Batch[T]` must share one `T`) and the arity (`Join` takes one batch, `FanOut` opens one instance per output slot). It does **not** lock the order of same-typed slots — `Keys(a, b)` and `Keys(b, a)` (both `Key[string]`) **both compile**. Measured: positional reading shifts (`Values()[0]` goes from `"from-a"` to `"from-b"`) while `Get(a)` returns `"from-a"` either way — that is exactly what the source names on `Batch` buy, and swapping the order only changes declaration order.
 
 ## Branching: call Skip on the path you did not take
 

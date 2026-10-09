@@ -85,7 +85,7 @@ func main() {
 - **失败显式。** 节点 error 记录首错并取消整图，**不会**被改写成 `ErrSkipped`。
 - **一次运行一个世界。** `Graph` 是模板的一次实例，不是可重跑的容器；复用模板的正确做法是再 `New` 一次——类比 CI/CD 的 workflow 定义被 run 无数遍、每遍一个独立 run 实例。跨运行状态（历史、缓存、会话）归调用方，不归引擎。
 - **切面包住「等输入 + 执行」整段**，所以 `Timeout` 能打断还在等数据的节点。
-- **装配糖只收名字、不改语义。** `pulse.FanOut` / `pulse.Join` 把「一个输入 → N 个并行实例」与「N 路同类型 → 一束」收进函数签名（`pulse.Keys(...)` + `pulse.Batch[T]`）：每条输入都带**来源名**（`Batch.Items`，缺项也占一行），要严格就显式 `m.WaitAll()`，要按名字取值就 `m.Value(name)`，两个回调都拿到**本节点自己的 `*RunCtx`**（长任务靠 `rc.Context()` 感知取消）。`pulse.NoValue()` 是**节点级**跳过，与只跳一条输出的 `Skip(rc, key)` 不是一回事；`FanOut` 的 N 个 worker **整批一次校验、一次提交**，装不完就整个失败、图上不留半个 fan-out。糖产出的图与手写 `NewNode` 的图观测记录**逐字段一致**（有等价锚用例钉着）。**编译期锁元素类型与个数，锁不住同类型槽位的顺序**（`Keys(a,b)` 与 `Keys(b,a)` 都编译，实测）——按来源名取不受影响，这条边界写在设计文档里。
+- **装配糖只收名字、不改语义。** `pulse.FanOut` / `pulse.Join` 把「一个输入 → N 个并行实例」与「N 路同类型 → 一束」收进函数签名（`pulse.Keys(...)` + `pulse.Batch[T]`）：每条输入都带**来源名**（`Batch.Items`，缺项也占一行），要整束严格就 `m.WaitAll()`，要单路严格就 `m.Get(k)`（缺这一路回 `*SkipError`、传了没声明的 Key 回 `ErrUndeclared`），两个回调都拿到**本节点自己的 `*RunCtx`**（长任务靠 `rc.Context()` 感知取消）。`pulse.NoValue()` 是**节点级**跳过，与只跳一条输出的 `Skip(rc, key)` 不是一回事；`FanOut` 的 N 个 worker **整批一次校验、一次提交**，装不完就整个失败、图上不留半个 fan-out。糖产出的图与手写 `NewNode` 的图观测记录**逐字段一致**（有等价锚用例钉着）。**编译期锁元素类型与个数，锁不住同类型槽位的顺序**（`Keys(a,b)` 与 `Keys(b,a)` 都编译，实测）——按来源 Key 取不受影响，这条边界写在设计文档里。
 - **观测只走一个 seam。** 引擎发出图级两条（开始 / 结束，把本轮夹在中间）与每节点至多三条回调；把它们折成记录是 `observe` 的事。
 
 完整设计（编排 + 观测）：[`docs/design/pulse.md`](docs/design/pulse.md)。

@@ -9,7 +9,7 @@ import (
 //
 // 只给值、不给来源时，「第 k 条值出自哪个槽」只能靠声明顺序去数——同类型多槽位
 // 的顺序编译期锁不住（见 `Join` 的边界），值又长得像的时候数错也看不出来。
-// 带上来源名以后，调用方可以**按名字取**（`Batch.Value`），不必记住 `ins` 的次序。
+// 带上来源名以后，调用方可以**按来源 Key 取**（`Batch.Get`），不必记住 `ins` 的次序。
 type BatchItem[T any] struct {
 	// Key 是来源 Key 名（Key.Name()）。
 	Key string
@@ -64,18 +64,30 @@ func (b Batch[T]) Missing() []string {
 	return out
 }
 
-// Value 按**来源 Key 名**取值：那一路带值到达才 ok。
+// Get 按**来源 Key** 取这一路的值。三种结果分得很开，为的就是不让「调错了」混进
+// 「这一路没值」：
 //
-// 名字不在这一束里、或者那一路以跳过到达，都返回零值与 false——「本来就不在」
-// 与「到了但没值」要分开判断就查 `Items`（每条都有 Present）。
-func (b Batch[T]) Value(name string) (T, bool) {
-	for _, it := range b.Items {
-		if it.Key == name {
-			return it.Value, it.Present
-		}
-	}
+//   - 带值到达 → (值, nil)；
+//   - **以跳过到达** → (零值, *SkipError)（errors.Is(err, ErrSkipped) 成立）：
+//     跳过是到达，与 pulse.Get 同口径——直接 `return` 出去，本节点就以跳过收尾
+//     （单路版的 WaitAll）；
+//   - **不在这张清单里** → ErrUndeclared：传了一条本节点没声明的 Key，是写错了，
+//     不是「这一路没值」。
+//
+// 收 `Key[T]` 而不是名字：调用方手里本来就有那个 Key 对象，复用它就不必再写一遍
+// 名字（字符串写错一个字母只会静默变成零值），类型对不上编译期直接红。
+func (b Batch[T]) Get(k Key[T]) (T, error) {
 	var zero T
-	return zero, false
+	for _, it := range b.Items {
+		if it.Key != k.Name() {
+			continue
+		}
+		if !it.Present {
+			return zero, skipErr(k.Name())
+		}
+		return it.Value, nil
+	}
+	return zero, fmt.Errorf("%w: %s is not part of this batch", ErrUndeclared, k.asRef())
 }
 
 // WaitAll 是**显式的严格 fan-in 声明**：有缺项就返回 *SkipError
@@ -127,8 +139,11 @@ func NoValue(keys ...string) error { return skipErr(keys...) }
 // 长度，不参与类型检查。
 //
 // **同类型多槽位的顺序锁不住**：`Keys(a, b)` 与 `Keys(b, a)` 都编译（a、b 都是
-// `Key[string]` 时谁也拦不住）。边界如此，但后果有兜底——`Batch.Items` 每条自带
-// 来源名，按 `Value(name)` 取就不会数错位次；要按位置读，声明顺序即语义顺序。
+// `Key[string]` 时谁也拦不住）。边界如此，但后果有兜底——`Batch.Get(a)` 按 Key
+// 对象取，传错类型编译期就红、写错名字也轮不到；要按位置读，声明顺序即语义顺序。
+//
+// 严格有两种粒度：`return b.WaitAll()` 是「缺一条就别跑我」；`v, err := b.Get(a)`
+// 之后把 err 返回出去是「这一条缺了就别跑我」。
 func Join[T, O any](g *Graph, id string, ins []Key[T], out Key[O],
 	fn func(rc *RunCtx, b Batch[T]) (O, error), aspects ...Aspect) error {
 	if g == nil {
