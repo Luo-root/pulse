@@ -199,6 +199,6 @@ var report string // 1) the node closure writes it out — use this for the term
 if err := g.Run(); err != nil { return err } // 2) failures come back as the return value
 ```
 
-`Run()` / `Err()` semantics: they return the **first error** or the ctx cancellation reason, and **never a plain skip**; an all-skipped graph is a legal outcome (`Err()` is `nil`).
+`Run()` / `Err()` semantics: they return the **first error**, and **never a plain skip** (an all-skipped graph is a legal outcome — `Err()` is `nil`). **Cancellation is cooperative**: the engine only promises that nodes still waiting for data or for a slot return immediately; whether a node already inside `Run` looks at the ctx is up to that node. So a cancellation **becomes the run result only when some node sees it and turns it into an error** — a run whose nodes never looked up and each returned normally counts as completed (`Err()` stays `nil`), even if the parent ctx was cancelled midway.
 
 Next: the topology does not have to live in Go either — see [Declarative assembly](/en/guide/assembly); to see how long each node spent waiting and how long executing, see [Graph observation](/en/guide/observability).
