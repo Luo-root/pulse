@@ -190,6 +190,45 @@ nodes:
 
 时间字段用 Go 的 `ParseDuration` 形式（`30s` / `100ms`），不写裸数字。
 
+### 语法糖：`Spread` / `Join`
+
+手写装图要三次对齐同一个名字（`NewNode` 声明、`Get` 读、`Set` 写），三处都可能漂移。糖把名字收进**函数签名**：
+
+```go
+// fan-in：N 条同类型输入 → 一束
+err := pulse.Join(g, "collect", pulse.Keys(a, b, c), out,
+    func(m pulse.Batch[string]) (Report, error) {
+        if err := m.WaitAll(); err != nil { // 显式严格：缺一条就以跳过收尾
+            return Report{}, err
+        }
+        return report(m.Values), nil
+    })
+
+// fan-out：一个输入 → N 个并行实例，各自一条输出槽（节点名 id-1 … id-N）
+err = pulse.Spread(g, "worker", docs, pulse.Keys(r1, r2, r3),
+    func(shard int, doc string) (Result, error) {
+        if nothingFor(shard) {
+            return Result{}, pulse.NoValue() // 这一份没有产出：那条槽跳过，不是失败
+        }
+        return work(shard, doc)
+    })
+```
+
+**语义一个字都不改**：糖产出的图与手写 `NewNode` 的图，观测记录**逐字段一致**（`observe` 侧有等价锚用例钉着）。
+
+| 糖 | 展开成 | 语义来源 |
+|---|---|---|
+| `Join` | 一个节点：`Requires(ins...)` + `Provides(out)`，fn 把输入收成 `Batch` | 门的「到几个收几个」；全跳过时节点自己跳过、fn 不执行 |
+| `Spread` | N 个节点：各自 `Requires(in)` + `Provides(outs[i])` | 每实例一个 goroutine；`NoValue()` = 那条输出槽跳过 |
+| `Batch.WaitAll()` | fn 直接 `return` 它 | 与 `pulse.WaitAll` 同口径：**整节点**以跳过收尾 |
+| `NoValue()` | 一条 `*SkipError`（`errors.Is(err, ErrSkipped)` 成立） | 「这一次没有值」：本节点跳过，输出槽随之跳过；下游 `Join` 在 `Batch.Missing` 里看得见 |
+
+**缺项在类型上可见**：`Batch{Values, Missing}` 同时给出「到了什么」与「哪几路没值」。只给一束值，宿主就分不清「这一路没值」与「这一路本来就不在」——而默认「到几个收几个」、严格靠显式 `WaitAll`，正是这一对字段的直接结果。
+
+**边界（写清楚，别让下一个人以为抓得到）**：编译期锁住的是**元素类型**（`ins []Key[T]` 与 fn 的 `Batch[T]` 必须同一个 `T`）与**个数**（`Join` 收一束、`Spread` 按输出槽开实例，N 在装配期固定）；**同类型多槽位之间的顺序锁不住**——两个都是 `Key[string]` 时把参数写反照样编译。要锁顺序只有三条路（每条槽一个命名类型 / 名字写回签名 / 接受它），本仓选第三条，靠「声明顺序即语义顺序」的一致性 + 评审。
+
+`Spread` 的 N 是**装配期固定**的：引擎的拓扑不随数据变，数据条数不定的并行请在节点内部做业务循环，别指望运行时长出节点。
+
 ## 6. 并发与读语义
 
 - 节点各自一个 goroutine；`RunCtx` 的 context 是唯一取消通道；

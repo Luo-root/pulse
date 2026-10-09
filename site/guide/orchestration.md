@@ -57,6 +57,40 @@ _ = g.Add(pulse.NewNode("join",
 
 `Requires` 是 AND：**全部输入到达**（就绪或跳过）才算这一关过了；过了之后是**到几个收几个**——只要有一条真的到了值就进入 `Run`，一条值都没到才不执行（见[核心概念](/guide/concepts)）。跑通时 `g.Err()` 是 `nil`。
 
+## 语法糖：Spread / Join
+
+上面那种手写装图要三次对齐同一个名字（`NewNode` 里的声明、`Get` 读、`Set` 写）。糖把名字收进**函数签名**：
+
+```go
+// fan-in：N 条同类型输入 → 一束
+err = pulse.Join(g, "collect", pulse.Keys(a, b, c), out,
+	func(m pulse.Batch[string]) (Report, error) {
+		return report(m.Values, m.Missing), nil // 缺项在类型上可见
+	})
+
+// fan-out：一个输入 → N 个并行实例，各自一条输出槽（节点名 id-1 … id-N）
+err = pulse.Spread(g, "worker", docs, pulse.Keys(r1, r2, r3),
+	func(shard int, doc string) (Result, error) {
+		if nothingFor(shard) {
+			return Result{}, pulse.NoValue() // 这一份没有产出：那条槽跳过，不是失败
+		}
+		return work(shard, doc)
+	})
+```
+
+糖只是糖——它产出的图与手写 `NewNode` 的图**观测记录逐字段一致**（`observe` 侧有等价锚用例钉着：同一拓扑两种装法，事件名 / 节点归因 / 终态 / `Err` / 信封全对上）。
+
+| 你写的 | 展开成 | 语义 |
+|---|---|---|
+| `Join(..., Keys(a,b,c), out, fn)` | 一个节点：`Requires(a,b,c)` + `Provides(out)` | 门是「到几个收几个」；全跳过时 fn 不执行，节点自己跳过 |
+| `Spread(..., in, Keys(r1,r2), fn)` | 两个节点（`worker-1` / `worker-2`），各自 `Requires(in)` | 各自一个 goroutine；实例个数在装配期固定 |
+| `pulse.NoValue()` | 一条 `*SkipError` | 「这一次没有值」：本节点跳过，它的输出槽随之跳过；下游 `Join` 在 `Batch.Missing` 里看得见 |
+| `m.WaitAll()` | 直接 `return` 它 | 显式的严格 fan-in：缺一条就以跳过收尾（不是失败） |
+
+**缺项在类型上可见**：`pulse.Batch[T]` 同时给出 `Values` 与 `Missing`——只给一束值，宿主就分不清「这一路没值」和「这一路本来就不在」。
+
+**编译期锁住什么**：元素类型（`Keys(...)` 与 `Batch[T]` 必须同一个 `T`）与个数（`Join` 收一束、`Spread` 按输出槽开实例）。**锁不住同类型多槽位的顺序**——两个都是 `Key[string]` 时把参数写反照样编译；要锁顺序得给每条槽定义命名类型或把名字写回签名，本仓选了「接受它 + 靠声明顺序的一致性」。
+
 ## 分支：对未选中的路调 Skip
 
 没有 `if` 原语，分支就是「把没走的那些 `Provide` 标成跳过」：
