@@ -51,9 +51,9 @@
 // NewRegistry 登记 Run 工厂与 Key；声明式装图在子包 yaml
 // （YAML 拥有拓扑，Factory 只给 Run）。
 //
-// 装配糖 Spread / Join 把「一个输入 → N 个并行实例」与「N 路同类型 → 一束」
-// 收进函数签名（见 sugar.go）：语义与手写 NewNode 逐字段一致，缺项在
-// Batch.Missing 里可见，严格汇聚显式 WaitAll()。
+// 装配糖 FanOut / Join 把「一个输入 → N 个并行实例」与「N 路同类型 → 一束」
+// 收进函数签名（见 sugar.go）：语义与手写 NewNode 逐字段一致，缺项与**来源**在
+// Batch 里可见（每条一条 BatchItem），严格汇聚显式 WaitAll()。
 //
 // 并发默认无限；WithMaxRunning(n) 只限制同时进入 Run 的节点数，
 // 等数据不占名额（排队等名额也会被 ctx 取消打断）。
