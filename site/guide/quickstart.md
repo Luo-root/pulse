@@ -125,16 +125,20 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 g, err := pulse.New(ctx, "docs-pipeline", pulse.WithObserver(obs))
 ```
 
-加上这三行后，同一张图的真实输出（两个节点各两条；时间戳 / trace / 耗时随运行变化）：
+加上这三行后，同一张图的真实输出（运行级两条夹住节点四条；时间戳 / trace / 耗时随运行变化）：
 
 ```text
-PULSE | 2026/10/08 - 16:43:34.956 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791449014956043900-14fef348-1
-PULSE | 2026/10/08 - 16:43:34.970 | completed  |   14.54ms | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791449014956043900-14fef348-1
-PULSE | 2026/10/08 - 16:43:34.970 | running    |   14.54ms | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791449014956043900-14fef348-1
-PULSE | 2026/10/08 - 16:43:34.970 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791449014956043900-14fef348-1
+PULSE | 2026/10/09 - 10:42:50.372 | running    |         - | pulse.graph_started | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770372309700-d47dc250-1
+PULSE | 2026/10/09 - 10:42:50.388 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770372309700-d47dc250-1
+PULSE | 2026/10/09 - 10:42:50.388 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770372309700-d47dc250-1
+PULSE | 2026/10/09 - 10:42:50.388 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791513770372309700-d47dc250-1
+PULSE | 2026/10/09 - 10:42:50.388 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791513770372309700-d47dc250-1
+PULSE | 2026/10/09 - 10:42:50.388 | completed  |   15.80ms | pulse.graph_finished | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770372309700-d47dc250-1
 ```
 
-引擎每节点至多三条回调，`observe` 把它们折成**两条分段计时记录**——等待段（等输入花了多久）与执行段（`Run` 花了多久）：等待段的 `Status` 恒为 `running`，`Duration` 是等待耗时（`summarize` 的输入由 `Seed` 预先写入，所以是 `-`；`report` 等了 `summary` 14.54ms）；执行段的 `Status` 是结束原因，`Duration` 是 `Run` 本身的耗时。耗时列的口径见[图观测](/guide/observability)。
+引擎每一轮另有两条运行级回调（开始 / 结束），`observe` 把它们折成**运行级两条**：`pulse.graph_started` 排在任何节点记录之前、`pulse.graph_finished` 排在全部之后，`Status` 是运行终态（跳过是节点级的事实，有节点跳过**不**让整轮变失败）。节点两条是**分段计时**——等待段（等输入花了多久）与执行段（`Run` 花了多久）：等待段的 `Status` 恒为 `running`，`Duration` 是等待耗时（`summarize` 的输入由 `Seed` 预先写入，所以是 `-`）；执行段的 `Status` 是结束原因，`Duration` 是 `Run` 本身的耗时。
+
+这轮两个节点本身都没花时间（节点段全被取整成 `-`），整轮那条却报了 `15.80ms`：运行级的窗口覆盖「提交节点 → 全部终止」，运行时与出口写出的开销都在里面——它的口径与边界差别见[图观测](/guide/observability)。
 
 ## 下一步
 

@@ -18,20 +18,34 @@ const (
 	EventNodeWaitFinished = "pulse.node_wait_finished"
 	// EventNodeRunFinished 是节点执行完成的观测记录事件名。
 	EventNodeRunFinished = "pulse.node_run_finished"
+	// EventGraphStarted 是「这一轮开始了」的运行级记录事件名：引擎在提交
+	// 任何节点之前发出，所以它排在本轮全部节点记录之前。
+	EventGraphStarted = "pulse.graph_started"
+	// EventGraphFinished 是「这一轮结束了」的运行级记录事件名：Duration 为
+	// 整轮耗时（两回调之间），Status 为运行终态（completed / failed / canceled）。
+	EventGraphFinished = "pulse.graph_finished"
 )
 
-// NewRecordObserver 返回写 Record 的节点分段计时观察者：等待完成与执行
-// 完成各一条记录（Duration 分别为等待段/执行段耗时），graphID 与 nodeID
-// 进 Attrs（pulse.AttrGraph / pulse.AttrNode 契约），不占用 Record 的具名
-// 字段——具名字段只服务于所有记录共有的事实；Status 为 running（等待段）
-// 或 finish reason（执行段）。跳过节点只有一条 skipped 等待记录，无运行记录。
+// NewRecordObserver 返回写 Record 的观察者：**一次运行两条运行级记录**
+// （started / finished）+ **每个节点两条分段计时记录**（等待完成与执行完成
+// 各一条，Duration 分别为等待段/执行段耗时）。
+//
+// 归因走 Attrs：节点记录带 pulse.AttrGraph + pulse.AttrNode，运行级记录只带
+// pulse.AttrGraph（节点维度对它没有意义）——key 契约由**事实归属包** pulse
+// 定义，本包只消费。Status 为 running（等待段 / 运行级 started）或终态
+// （finish reason）。跳过节点只有一条 skipped 等待记录，无运行记录。
+//
+// 记录顺序即引擎事件的顺序：运行级 started 排在本轮全部节点记录之前，
+// finished 排在它们之后。
 //
 // graphID 由 pulse 随回调发出（Graph 构造时的 graphID）——多图复用同一
 // Observer 实现时归因不漂移。
 //
-// 单实例可复用于多图并发：内部按（graphID, nodeID）记账，同名节点跨图
-// 互不串扰。同图同节点的残留条目（Finished 未达，如进程退出）会影响该
-// 键的下一次记账，长期复用建议按图运行周期换实例。
+// 单实例可复用于多图并发：内部按（graphID, nodeID）与 graphID 记账，同名
+// 节点跨图互不串扰。同图同节点 / 同 graphID 的残留条目（Finished 未达，如
+// 进程退出）会影响该键的下一次记账；**同 graphID 的两轮运行并发复用同一
+// 实例**时，整轮耗时会按后一次 Started 起算（拿不到 Started 时 Duration 为
+// 恰好 0，记录照发）。长期复用建议按图运行周期换实例。
 // 挂载：pulse.WithObserver(NewRecordObserver(cfg))；与宿主自有 Observer
 // 经 pulse.MultiObserver 组合。观察者 panic / error 不升格为节点失败
 // （pulse 侧 notify 已吞掉，只读 seam 契约）。cfg.Sink 为 nil 返回哨兵错误。
@@ -48,9 +62,10 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 	}
 	var mu sync.Mutex
 	states := make(map[nodeKey]*nodeState)
+	graphStart := make(map[string]time.Time)
 
-	seg := func(graphID, nodeID, event, status string, d time.Duration, err error) {
-		rec := Record{
+	newRec := func(event, status string, d time.Duration, err error) Record {
+		return Record{
 			HostID:   cfg.HostID,
 			TraceID:  cfg.TraceID,
 			Source:   SourceObserver,
@@ -59,12 +74,43 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 			Duration: d,
 			Err:      err,
 		}
+	}
+
+	seg := func(graphID, nodeID, event, status string, d time.Duration, err error) {
+		rec := newRec(event, status, d, err)
 		Set(&rec.Attrs, pulse.AttrGraph, graphID)
 		Set(&rec.Attrs, pulse.AttrNode, nodeID)
 		cfg.Sink.Write(rec)
 	}
 
+	// 运行级记录只带图 ID：节点维度对它没有意义。
+	graphSeg := func(graphID, event, status string, d time.Duration, err error) {
+		rec := newRec(event, status, d, err)
+		Set(&rec.Attrs, pulse.AttrGraph, graphID)
+		cfg.Sink.Write(rec)
+	}
+
 	return pulse.ObserverFunc{
+		GraphStarted: func(graphID string) {
+			mu.Lock()
+			graphStart[graphID] = time.Now()
+			mu.Unlock()
+			graphSeg(graphID, EventGraphStarted, "running", 0, nil)
+		},
+		GraphFinished: func(graphID string, reason pulse.NodeFinishReason, err error) {
+			mu.Lock()
+			start, ok := graphStart[graphID]
+			delete(graphStart, graphID)
+			mu.Unlock()
+			// 没见过 Started：不编造整轮耗时，**留 0**——它是「不知道」，不是
+			// 「耗时为零」。不留 `time.Since(time.Now())` 那种几十纳秒的残值：
+			// 那会把「没量到」渲染成一个看着像真数字的值（实测 Linux 上 90ns）。
+			var d time.Duration
+			if ok {
+				d = time.Since(start)
+			}
+			graphSeg(graphID, EventGraphFinished, string(reason), d, err)
+		},
 		Waiting: func(graphID, nodeID string) {
 			mu.Lock()
 			states[nodeKey{graphID, nodeID}] = &nodeState{waitStart: time.Now()}

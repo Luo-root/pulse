@@ -257,13 +257,17 @@ pulse/observe          Record / Sink / 折叠适配
 
 ```go
 type Observer interface {
+    OnGraphStarted(graphID string)
+    OnGraphFinished(graphID string, reason NodeFinishReason, err error)
     OnNodeWaiting(graphID, nodeID string)
     OnNodeRunning(graphID, nodeID string)
     OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error)
 }
 ```
 
-节点不超过三次回调（`Waiting ≤ 1`、`Running ≤ 1`、`Finished = 1`）；`Retry` 的多次 attempt **不重复打点**。图默认 no-op，`WithObserver` 挂载，需要多个时用 `MultiObserver` 组合。
+图级不超过两条（`GraphStarted ≤ 1`、`GraphFinished ≤ 1`），节点不超过三次回调（`Waiting ≤ 1`、`Running ≤ 1`、`Finished = 1`）；`Retry` 的多次 attempt **不重复打点**。时序是**夹住**：`GraphStarted` 在提交任何节点 goroutine 之前发出（启动校验失败的图没有启动，不发），`GraphFinished` 在全部节点终止之后、`Wait` 返回之前发出——只 `Start` 不 `Wait` 的宿主拿不到它；并发 / 重复 `Wait` 都在这一发返回之后才返回。图级终态只会是 `completed` / `failed` / `canceled`（跳过是节点级的事实，升不到这一层）。图默认 no-op，`WithObserver` 挂载，需要多个时用 `MultiObserver` 组合。
+
+节点回调在**节点自己的 goroutine** 上执行，图级两条在 **`Start` / `Wait` 的调用方 goroutine** 上执行——两边都同步。由此两条并发约束：`WaitGroup` 计数必须在 `started` 对别的 goroutine 可见**之前**登记（含 `started` 那一发自身），否则并发 `Wait` 会在节点还没提交时就返回；收尾那一发走 `sync.Once`，好让后来的 `Wait` 等第一次调用结束，而不是各自返回、把出口先收掉。
 
 **观察者的 panic 与 error 不得升格为节点失败**——这是只读 seam：观测坏了不该让业务图挂掉。
 
@@ -313,18 +317,22 @@ type Sink interface{ Write(r Record) }
 
 ## 10. 图适配：`NewRecordObserver`
 
-`observe` 实现引擎的 seam，把每个节点折成**两条分段计时记录**：
+`observe` 实现引擎的 seam，把**一次运行折成两条运行级记录**，把**每个节点折成两条分段计时记录**：
 
 | 事件 | 何时 | 内容 |
 |---|---|---|
+| `pulse.graph_started` | 提交任何节点之前 | `Duration = 0`；`Status = "running"` |
+| `pulse.graph_finished` | 全部节点终止之后（`Wait` 返回前） | `Duration` = 整轮耗时；`Status` = 运行终态 |
 | `pulse.node_wait_finished` | 等待完成（进入执行，或以 skip/失败终结） | `Duration` = 等待段；进入执行时 `Status = "running"`，否则为 finish reason |
 | `pulse.node_run_finished` | 执行完成 | `Duration` = 执行段；`Status` = finish reason |
 
+运行级两条把本轮的节点记录**夹在中间**：宿主因此不必再靠 `pulse.graph` 这个 Attr 把节点记录自行拼回一轮——一轮在观测里是一个有头有尾的实体。运行级终态只会是 `completed` / `failed` / `canceled`：**一轮里全部节点都跳过，整轮仍是 `completed`**（跳过是节点级的事实，不升格为失败）。
+
 跳过节点**只有一条 skipped 等待记录，无运行记录**——这与「跳过是到达」一致：它确实到达了，只是没执行。
 
-归因维度走 Attrs：`pulse.graph`（图 ID）+ `pulse.node`（节点 ID）。**key 契约由引擎定义**（事实归属包），`observe` 只消费不定义。
+归因维度走 Attrs：`pulse.graph`（图 ID）+ `pulse.node`（节点 ID）。**key 契约由引擎定义**（事实归属包），`observe` 只消费不定义。节点记录两个都带，运行级两条只带 `pulse.graph`。
 
-**耗时的口径**：两段都是墙钟，且**执行段包含「等待段那条记录写出口」的耗时**——回调在节点 goroutine 上同步执行，`Running` 里先给 `runStart` 打点、再落等待段记录，于是慢出口把自己的写开销记进了执行段。实测同一张图、同一个空节点（`noop`）：`MemorySink` 两段都是 `0s`，`LineSink(WithImmediate)` 写控制台时执行段 `16.60ms`。两条推论：**耗时列偏大先怀疑出口**（慢出口套 `AsyncSink`）；等待段为 `0`（内置版式渲染 `-`）表示该段耗时被计时精度取整为 0，而不是「没有这一段」。
+**耗时的口径**：四段都是墙钟，且**执行段包含「等待段那条记录写出口」的耗时**——回调在节点 goroutine 上同步执行，`Running` 里先给 `runStart` 打点、再落等待段记录，于是慢出口把自己的写开销记进了执行段。实测同一张图、同一个空节点（`noop`）：`MemorySink` 四段都是 `0s`；出口换成每条 `Write` 睡 20ms 的假出口时，执行段 `20.57ms`（就是那次写出的代价）；**整轮那条 `62.24ms`**——运行级的窗口覆盖「提交节点 → 全部终止」，这一轮里三次写出（运行级 started、节点等待段、节点执行段）都在窗口内，所以它天然比宿主的掐表少一点（不含装图、`Seed` 与 `Flush`），又天然比节点段之和大一些。两条推论：**耗时列偏大先怀疑出口**（慢出口套 `AsyncSink`）；段耗时为 `0`（内置版式渲染 `-`）表示该段耗时被计时精度取整为 0，而不是「没有这一段」。
 
 ```go
 obs, err := observe.NewRecordObserver(observe.ObserveConfig{
@@ -366,7 +374,7 @@ g, _ := pulse.New(ctx, "demo", pulse.WithObserver(obs))
 - 哨兵错误的判据：`ErrUndeclared` / `ErrConflict` / `ErrGraphStarted` /
   `ErrGraphNotStarted` / `ErrDuplicateSource` / `ErrSkipped` / `ErrNextCalledTwice`
   （同一份清单也在 `AGENTS.md` 的 Freeze contract 一节）；
-- `Observer` 的回调次数契约与「panic 不升格」；
+- `Observer` 的回调次数契约（图级两条 + 节点三条）与「panic 不升格」；
 - 六条编码原语与 `LineRenderer` 的字节级同形承诺。
 
 **刻意不提供**：
