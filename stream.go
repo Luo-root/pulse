@@ -42,12 +42,13 @@ func newStreamConfig(opts []StreamOption) streamConfig {
 	return c
 }
 
-// checkStreamSlots 在装配期拦住「名额养不起这条流」的图。
+// checkStreamSlots 是流式糖在**装配期**的快速失败：名额明显不够就别往下走，
+// 早点报给调用方。
 //
-// 流的两端必须同时活着：生产端 / 复制端堵在发送上，消费端才有机会进入 Run 去
-// 读。名额不够时它会跑到一半卡住，只能等外部超时（实测：maxRun=1 + 无缓冲，
-// 400ms 外部超时才解开），而缓冲只是把这条死锁推到「流比缓冲长」的时候。所以
-// 按引擎已有的做法——**静态可判定的病在装配期就拒**，别留到运行期挂死。
+// 但它**证明不了组合图安全**——糖在装配那一刻看不全整张图（上游生产端可能还没
+// 装、下游消费端可能是后加的）。真正的判据在 `Start`（见 Graph.checkStreamLocked）：
+// 全部流节点要同时有名额，且每条流出口都得有人消费。两处一起才完整：这里给的是
+// 即时反馈，那里才是权威校验。
 func checkStreamSlots(g *Graph, id, kind string, need int) error {
 	if g.maxRun > 0 && g.maxRun < need {
 		return fmt.Errorf("pulse: %s %q: WithMaxRunning(%d) cannot host this stream: "+
@@ -69,9 +70,11 @@ func checkStreamSlots(g *Graph, id, kind string, need int) error {
 //   - **空流**（一次都没 send 就正常返回）：下游看到关闭、零次回调、整轮成功。
 //     注意它走的是「值到了」这条路（槽位里放的是 channel），**不是跳过**；想要
 //     「没有值」的语义就别 `Set` 那条 channel。
-//   - **名额**：生产端与消费端必须同时活着，所以 `WithMaxRunning` 至少是 2（或
-//     不设）；`maxRun == 1` 在装配期就被拒。代价是禁掉「小流 + 大缓冲」这个能
-//     凑合跑的配置——那种配置的成败取决于数据量，不该被依赖。
+//   - **名额**：生产端与消费端必须同时活着。装配期先做一次快速检查
+//     （`WithMaxRunning ≥ 2`），`Start` 再按**整张图**复核——全部流节点要同时有
+//     名额（实测：`WithMaxRunning(2)` 下 `Produce → Tee → Consume` 三个流节点
+//     会装配全过、运行期死锁），且每条出口都得有人消费。代价是禁掉「小流 +
+//     大缓冲」这类能凑合跑的配置——那种配置的成败取决于数据量，不该被依赖。
 //
 // 生产端不开切面：`Retry` 会撞上「已发布的槽」（幂等首写 → 第二次 attempt 直接
 // `ErrConflict`），`Timeout` 与「节点活着发完」冲突（它只把流掐断，消费端看到的
@@ -91,7 +94,7 @@ func Produce[T any](g *Graph, id string, out Key[<-chan T],
 		return err
 	}
 	cfg := newStreamConfig(opts)
-	return g.Add(NewNode(id, nil, Provides(out), func(rc *RunCtx) error {
+	n := NewNode(id, nil, Provides(out), func(rc *RunCtx) error {
 		ch := make(chan T, cfg.buf)
 		defer close(ch)
 		if err := Set(rc, out, ch); err != nil {
@@ -100,12 +103,17 @@ func Produce[T any](g *Graph, id string, out Key[<-chan T],
 		return fn(rc, func(v T) error {
 			select {
 			case ch <- v:
-				return nil
+				// 发成功了也要复查 ctx：「发得出去」与「已取消」同时就绪时 select
+				// 随机挑（与 acquire 的复查同一条纪律）。少了这一眼，取消之后还会
+				// 继续发，这一轮也可能把取消报成成功。
+				return rc.Context().Err()
 			case <-rc.Context().Done():
 				return rc.Context().Err()
 			}
 		})
-	}))
+	})
+	n.streamKind = "produce"
+	return g.Add(n)
 }
 
 // Consume 是流式消费的语法糖：循环、取消、提前退出都收进一次调用。
@@ -134,7 +142,7 @@ func Consume[T any](g *Graph, id string, in Key[<-chan T],
 	if fn == nil {
 		return fmt.Errorf("pulse: Consume %q: nil fn", id)
 	}
-	return g.Add(NewNode(id, Requires(in), nil, func(rc *RunCtx) error {
+	n := NewNode(id, Requires(in), nil, func(rc *RunCtx) error {
 		ch, err := Get(rc, in)
 		if err != nil {
 			return err // 跳过到达 → 本节点跳过（级联），不是失败
@@ -144,6 +152,13 @@ func Consume[T any](g *Graph, id string, in Key[<-chan T],
 			case <-rc.Context().Done():
 				return rc.Context().Err()
 			case v, ok := <-ch:
+				// 进了 channel 分支先复查 ctx：两个分支同时就绪时 select 随机挑
+				// （与 acquire 的复查同一条纪律）。少了这一眼，「channel 已关闭 +
+				// 同刻被取消」会走成 `return nil`——把取消报成成功；有缓冲时还会
+				// 在取消之后继续调 fn。
+				if err := rc.Context().Err(); err != nil {
+					return err
+				}
 				if !ok {
 					return nil
 				}
@@ -152,7 +167,9 @@ func Consume[T any](g *Graph, id string, in Key[<-chan T],
 				}
 			}
 		}
-	}))
+	})
+	n.streamKind = "consume"
+	return g.Add(n)
 }
 
 // Tee 是广播（复制）的语法糖：一根流复制给 N 个下游，每个下游都拿到**完整、
@@ -173,8 +190,10 @@ func Consume[T any](g *Graph, id string, in Key[<-chan T],
 //   - **慢下游会拖住快的**：Tee 依次往每条出口发，卡在最慢的那条上（背压按最慢
 //     的算）。这是固有权衡——想让慢下游不拖累别人，得自己给它 `WithBuffer`，或
 //     让它自己丢。
-//   - **名额**：Tee 与它的 N 个下游要同时活着 ⇒ `WithMaxRunning ≥ N+1`，不够在
-//     装配期就拒（同 `Produce`）。
+//   - **名额**：Tee 与它的 N 个下游要同时活着 ⇒ 装配期快速检查
+//     `WithMaxRunning ≥ N+1`，`Start` 再按整张图复核（同 `Produce`，含上游）。
+//   - **每条出口都得有人要**：`outs` 里任何一条没有下游 `Requires`，`Start` 就
+//     拒绝——发送端会永久堵在那条无缓冲出口上（缓冲只把死锁推到缓冲写满）。
 //   - **空流**：一次都没发、全部出口正常关闭 → 下游零次回调、整轮成功（与
 //     `Produce` 同一条口径：空流是「值到了」，不是「跳过」）。
 //   - 一条出口只能给一个下游；要再分一层就再接一个 `Tee`。
@@ -193,7 +212,7 @@ func Tee[T any](g *Graph, id string, in Key[<-chan T], outs []Key[<-chan T],
 		return err
 	}
 	cfg := newStreamConfig(opts)
-	return g.Add(NewNode(id, Requires(in), Provides(outs...), func(rc *RunCtx) error {
+	n := NewNode(id, Requires(in), Provides(outs...), func(rc *RunCtx) error {
 		src, err := Get(rc, in)
 		if err != nil {
 			return err // 上游跳过 → 整批一起跳过（级联）
@@ -217,17 +236,25 @@ func Tee[T any](g *Graph, id string, in Key[<-chan T], outs []Key[<-chan T],
 			case <-rc.Context().Done():
 				return rc.Context().Err()
 			case v, ok := <-src:
+				if err := rc.Context().Err(); err != nil { // 同 Consume：进了分支先复查
+					return err
+				}
 				if !ok {
 					return nil
 				}
 				for _, ch := range chans {
 					select {
 					case ch <- v:
+						if err := rc.Context().Err(); err != nil {
+							return err
+						}
 					case <-rc.Context().Done():
 						return rc.Context().Err()
 					}
 				}
 			}
 		}
-	}))
+	})
+	n.streamKind = "tee"
+	return g.Add(n)
 }

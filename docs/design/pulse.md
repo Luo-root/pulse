@@ -338,7 +338,7 @@ err = pulse.Tee(g, "fan", stream, pulse.Keys(sA, sB, sC))
 | `Produce` | 一个节点：`Provides(out)`，`Set` 出 channel 后**活着发完** | 关闭只在返回时的 `defer`（成功 / 出错 / 取消 / panic 都走它，没有双次 close）；`send` 在发送与 `rc.Context().Done()` 上 `select` |
 | `Consume` | 一个节点：`Requires(in)`，`select` 循环读 | **不能用 `for range`**：实测它会「取消之后把缓冲区算完」并且整轮报成功（没人看见取消 → `Run()` 返回 `nil`，见 #286） |
 | `Tee` | 一个节点：`Requires(in)` + `Provides(outs...)`，逐条转发 | 广播：每个下游拿到完整同序数据；**背压按最慢的下游算** |
-| 装配校验 | `checkStreamSlots` | 「流的两端必须同时活着」是静态可判定的：`Produce` 要 `maxRun ≥ 2`、`Tee` 要 `≥ N+1`，不够就**装配期**拒（实测：`maxRun=1` + 无缓冲会跑到一半卡死，只能等外部超时） |
+| 装配校验 | `checkStreamSlots`（装配期快速失败）+ `Graph.checkStreamLocked`（`Start` 的权威校验） | 「流的两端必须同时活着」是**组合**性质的约束：糖在装配那一刻看不全整张图，所以局部检查只做即时反馈，`Start` 按**全部流节点**要名额（实测：`maxRun=2` 下 `Produce → Tee → Consume` 三个流节点会装配全过、运行期死锁），并要求每条流出口都有人 `Requires`（没人读的出口会让发送端永久堵住） |
 
 **为什么「要复制」的只有流这一类**（实测四种分发形态）：普通值——一个 `Provides`、N 个下游各自 `Requires` 同一个 Key——3 个下游都拿到完整值；一组值（slice 当一个值）同理；**只有 channel 会抢**：同一条 channel 给 3 个下游，6 个值被瓜分（合计 6，不是 18）；复制成 3 条 channel 才是 18。所以「抢」用 `FanOut`、「每个都拿到」用 `Tee`，两者不互相替代。
 

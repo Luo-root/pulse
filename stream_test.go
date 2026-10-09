@@ -334,6 +334,133 @@ func TestOnlyConflictsWithEarlierSet(t *testing.T) {
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("Run = %v, want ErrConflict", err)
 	}
+	// 冲突是在**发布之前**预检出来的：不能为了报这个错先把选中的出口发出去
+	// （下游可能已被唤醒，而引擎不回滚已发布的值）。
+	if st := g.slotOf(a.asRef()).state; st == slotReady {
+		t.Fatal("Only 在已知冲突时仍然发布了选中的出口")
+	}
+}
+
+// 名额是「同时活着」的约束，而糖的局部检查看不全组合图。
+//
+// 实测（修之前）：`WithMaxRunning(2)` 下 `Produce → Tee([a]) → Consume(a)`
+// ——三个流节点——装配全过，运行期直接死锁，只能等外部超时。所以校验挪到
+// `Start`：名额容不下全部流节点就拒（与另两条静态校验同一口径）。
+func TestStreamSlotsCheckedAtStart(t *testing.T) {
+	src := NewKey[<-chan int]("s.compose.src")
+	a := NewKey[<-chan int]("s.compose.a")
+
+	build := func(g *Graph) {
+		t.Helper()
+		if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error {
+			return nil // 空流：只为验证装配，不真的发
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := Tee(g, "tee", src, Keys(a)); err != nil {
+			t.Fatal(err)
+		}
+		if err := Consume(g, "sink", a, func(rc *RunCtx, v int) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	g := mustNew(t, context.Background(), "compose", WithMaxRunning(2))
+	build(g)
+	err := g.Start()
+	if err == nil || !strings.Contains(err.Error(), "slots at the same time") {
+		t.Fatalf("Start = %v, want 名额不足的装配错误", err)
+	}
+
+	// 同一张图（名额不设限）跑得通——错的只是名额，不是图本身。
+	g2 := mustNew(t, context.Background(), "compose-ok")
+	build(g2)
+	if err := g2.Run(); err != nil {
+		t.Fatalf("名额放开后应当跑得通：%v", err)
+	}
+}
+
+// 流节点的每条出口都得有人要：漏挂一个消费者 = 发送端永久堵在那条出口上
+// （`checkSourcesLocked` 只判「Requires 有来源」，判不了「Provides 有消费者」）。
+func TestStreamOutputNeedsConsumer(t *testing.T) {
+	src := NewKey[<-chan int]("s.nc.src")
+	a := NewKey[<-chan int]("s.nc.a")
+	b := NewKey[<-chan int]("s.nc.b")
+
+	// 1) Tee 的一条出口没人接
+	g := mustNew(t, context.Background(), "nc-tee")
+	if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := Tee(g, "tee", src, Keys(a, b)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Consume(g, "sink", a, func(rc *RunCtx, v int) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	err := g.Start()
+	if err == nil || !strings.Contains(err.Error(), "nothing consumes it") {
+		t.Fatalf("Start = %v, want 「出口没人消费」的装配错误", err)
+	}
+
+	// 2) Produce 的出口没人接
+	g2 := mustNew(t, context.Background(), "nc-produce")
+	if err := Produce(g2, "src", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	err = g2.Start()
+	if err == nil || !strings.Contains(err.Error(), "nothing consumes it") {
+		t.Fatalf("Start = %v, want 「出口没人消费」的装配错误", err)
+	}
+}
+
+// 隔离消费端：取消与「有值可读 / channel 已关闭」同时就绪时，取消必须赢。
+//
+// 这条钉的是「进分支后复查 ctx」那一行——select 在两个分支都就绪时随机挑
+// （与 `acquire` 同一条纪律），少了复查就会在取消之后继续调 fn，甚至把
+// 「channel 已关闭」走成 `return nil`、把取消报成成功。
+//
+// 与 `TestAcquireReturnsSlotWhenCanceled` 同理：漏了复查约有**一半**概率失败，
+// 所以这条要用 `-count` 跑才说明问题（`go test -run TestConsumeStopsCallingAfterCancel
+// -count=20`）。
+func TestConsumeStopsCallingAfterCancel(t *testing.T) {
+	in := NewKey[<-chan int]("s.stop")
+	ch := make(chan int, 64)
+	for i := 0; i < 64; i++ {
+		ch <- i
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g := mustNew(t, ctx, "stop")
+	if err := Seed(g, in, (<-chan int)(ch)); err != nil {
+		t.Fatal(err)
+	}
+
+	var cancelled atomic.Bool
+	var afterCancel atomic.Int32
+	calls := 0
+	if err := Consume(g, "sink", in, func(rc *RunCtx, v int) error {
+		calls++
+		if cancelled.Load() {
+			afterCancel.Add(1)
+		}
+		if calls == 1 {
+			cancel() // 第一轮回调里取消：此后两个分支同时就绪
+			cancelled.Store(true)
+		}
+		time.Sleep(time.Millisecond)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := g.Run()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run = %v, want context.Canceled", err)
+	}
+	if n := afterCancel.Load(); n > 0 {
+		t.Fatalf("取消之后还在调 fn：%d 次（进分支后没复查 ctx）", n)
+	}
 }
 
 // 装配期参数校验（与 Join / FanOut 同形）。

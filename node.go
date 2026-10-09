@@ -12,6 +12,10 @@ type Node struct {
 	provides []keyRef
 	run      func(*RunCtx) error
 	aspects  []Aspect
+	// streamKind 非空表示这个节点是流式糖装出来的（"produce" / "consume" /
+	// "tee"）。Start 的流式校验要按它认流节点：名额是**同时活着**的约束，
+	// 而糖在装配那一刻看不全整张图。手写节点为空串。
+	streamKind string
 }
 
 // Requires 声明本节点依赖的输入槽。

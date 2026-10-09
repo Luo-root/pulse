@@ -289,6 +289,10 @@ func (g *Graph) Start() error {
 		g.mu.Unlock()
 		return err
 	}
+	if err := g.checkStreamLocked(); err != nil {
+		g.mu.Unlock()
+		return err
+	}
 	g.started = true
 	nodes := append([]*Node(nil), g.nodes...)
 	g.wg.Add(len(nodes) + 1) // +1：started 那一发落地前，其他 goroutine 的 Wait 不该溜过去
@@ -314,6 +318,55 @@ func (g *Graph) checkSourcesLocked() error {
 		for _, k := range n.requires {
 			if _, ok := g.producer[k.name]; !ok {
 				return fmt.Errorf("pulse: node %q requires %q but nothing provides or seeds it", n.id, k.name)
+			}
+		}
+	}
+	return nil
+}
+
+// checkStreamLocked 是流式糖（Produce / Consume / Tee）在 Start 的静态校验。
+// 调用方持 g.mu。两条都是「静态可判定、运行期表现为挂死」的病：
+//
+//  1. **名额是「同时活着」的约束，而糖在装配那一刻看不全整张图。** 一条流上
+//     生产端 / 复制端堵在发送上、消费端堵在读上，链上每个节点都得同时在名额表
+//     里；逐个 helper 的局部检查**证明不了组合图安全**——实测
+//     `WithMaxRunning(2)` 下 `Produce → Tee([a]) → Consume(a)`（三个流节点）
+//     装配全过，运行期直接死锁，只能等外部超时。这里按**全部流节点**要名额：
+//     偏保守（两条互不相关的流也会要求名额之和），但引擎的名额是逐个申请的、
+//     没有 gang 调度，凑合的分配同样会死锁——宁可在这里拒得早。
+//  2. **流节点的每条出口都得有人 Requires。** `checkSourcesLocked` 只判「每个
+//     Requires 有来源」，不判「每个 Provides 有消费者」；漏挂一个消费者（或
+//     Tee 的某条出口没接下游）时，发送端会永久堵在那条无缓冲出口上——缓冲只把
+//     死锁推到「缓冲写满」。
+func (g *Graph) checkStreamLocked() error {
+	var stream []*Node
+	for _, n := range g.nodes {
+		if n.streamKind != "" {
+			stream = append(stream, n)
+		}
+	}
+	if len(stream) == 0 {
+		return nil
+	}
+	if g.maxRun > 0 && g.maxRun < len(stream) {
+		ids := make([]string, 0, len(stream))
+		for _, n := range stream {
+			ids = append(ids, n.id)
+		}
+		return fmt.Errorf("pulse: stream needs %d slots at the same time, but WithMaxRunning(%d): %s",
+			len(stream), g.maxRun, strings.Join(ids, ", "))
+	}
+	consumed := make(map[string]struct{}, len(g.nodes))
+	for _, n := range g.nodes {
+		for _, k := range n.requires {
+			consumed[k.name] = struct{}{}
+		}
+	}
+	for _, n := range stream {
+		for _, k := range n.provides {
+			if _, ok := consumed[k.name]; !ok {
+				return fmt.Errorf("pulse: node %q provides %q but nothing consumes it: "+
+					"a stream output nobody reads blocks the sender forever", n.id, k.name)
 			}
 		}
 	}
