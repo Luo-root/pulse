@@ -108,12 +108,14 @@ Any node returning a non-skip error → record the **first error** + cancel the 
 
 ```text
 run err = boom
-pulse.node_wait_finished       node=boom     status=running    err=<nil>
-pulse.node_run_finished        node=boom     status=failed     err=boom
-pulse.node_wait_finished       node=waiter   status=canceled   err=context canceled
+pulse.graph_started            node=-        status=running   err=<nil>
+pulse.node_wait_finished       node=boom     status=running   err=<nil>
+pulse.node_run_finished        node=boom     status=failed    err=boom
+pulse.node_wait_finished       node=waiter   status=canceled  err=context canceled
+pulse.graph_finished           node=-        status=failed    err=boom
 ```
 
-Three things hold at once: `Run` returns the **original error** (it is not rewritten as a skip); the failing node is `failed`; the waiting node that got killed is `canceled`, and it has **only the waiting-segment** record.
+Three things hold at once: `Run` returns the **original error** (it is not rewritten as a skip); the failing node is `failed`; the waiting node that got killed is `canceled`, and it has **only the waiting-segment** record. A failed run still gets both ends: the two run-level records are emitted as usual, with `pulse.graph_finished` carrying `Status = failed` and the first error in `Err`.
 
 The failure path also marks the failing node's **unwritten `Provide`s** as skipped — that only unblocks downstreams still waiting, it is not their finish reason. Their finish reason follows **"cancellation wins"**: once ctx is canceled a wait always returns `ctx.Err()`, including when arrival and cancellation become ready together. So a downstream that did not run *because of the first error* is stably `canceled` and never flips between `skipped` and `canceled` depending on scheduling.
 

@@ -85,7 +85,7 @@ func main() {
 - **Failure is explicit.** A node error records the first error and cancels the whole run; it is never rewritten as `ErrSkipped`.
 - **One run, one world.** A `Graph` is one instantiation of a template, not a re-runnable container. Reusing the template means calling `New` again — like a CI/CD workflow definition being run many times, one run instance each. Cross-run state (history, caches, sessions) belongs to the caller, not to the engine.
 - **Aspects wrap the whole "wait for input + execute" span**, so `Timeout` can interrupt a node that is still waiting for data.
-- **Observation rides a single seam.** The engine emits at most three callbacks per node; folding them into records is `observe`'s job.
+- **Observation rides a single seam.** The engine emits two run-level callbacks (start / finish, bracketing the run) plus at most three per node; folding them into records is `observe`'s job.
 
 Full design: [`docs/design/pulse.md`](docs/design/pulse.md) (Chinese; the single design doc for both orchestration and observation).
 

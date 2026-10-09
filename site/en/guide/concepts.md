@@ -51,12 +51,14 @@ This also yields a fact that is easy to state backwards — **a skip is a fact a
 See the real output (two nodes: `translate` calls `Skip` on `translated`, and `publish` requires `translated`):
 
 ```text
-PULSE | 2026/10/08 - 15:39:02.334 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
-PULSE | 2026/10/08 - 15:39:02.348 | completed  |   13.75ms | pulse.node_run_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
-PULSE | 2026/10/08 - 15:39:02.348 | skipped    |   13.75ms | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=publish | host=quickstart | err="pulse: skipped [translated]" | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | running    |         - | pulse.graph_started | source=observe | pulse.graph=branch-demo | host=quickstart | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | skipped    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=publish | host=quickstart | err="pulse: skipped [translated]" | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | completed  |   524.5µs | pulse.graph_finished | source=observe | pulse.graph=branch-demo | host=quickstart | trace=branch-demo
 ```
 
-`translate` wrote a skip, but it finished normally itself; `publish` is the node that did not execute.
+`translate` wrote a skip, but it finished normally itself; `publish` is the node that did not execute. The run-level record is `completed` — **a skipped node does not make the run a failure**.
 
 ### Fan-in: collect whatever arrives
 
