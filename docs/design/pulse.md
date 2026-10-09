@@ -190,7 +190,7 @@ nodes:
 
 时间字段用 Go 的 `ParseDuration` 形式（`30s` / `100ms`），不写裸数字。
 
-### 语法糖：`Spread` / `Join`
+### 语法糖：`FanOut` / `Join`
 
 手写装图要三次对齐同一个名字（`NewNode` 声明、`Get` 读、`Set` 写），三处都可能漂移。糖把名字收进**函数签名**：
 
@@ -201,11 +201,12 @@ err := pulse.Join(g, "collect", pulse.Keys(a, b, c), out,
         if err := m.WaitAll(); err != nil { // 显式严格：缺一条就以跳过收尾
             return Report{}, err
         }
-        return report(m.Values), nil
+        title, _ := m.Value("title") // 按来源名取，不必记住声明顺序
+        return report(title, m.Values()), nil
     })
 
 // fan-out：一个输入 → N 个并行实例，各自一条输出槽（节点名 id-1 … id-N）
-err = pulse.Spread(g, "worker", docs, pulse.Keys(r1, r2, r3),
+err = pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2, r3),
     func(rc *pulse.RunCtx, shard int, doc string) (Result, error) {
         if nothingFor(shard) {
             return Result{}, pulse.NoValue() // 这一份没有产出：整个实例跳过，不是失败
@@ -214,6 +215,8 @@ err = pulse.Spread(g, "worker", docs, pulse.Keys(r1, r2, r3),
     })
 ```
 
+名字叫 `FanOut` 而不是 `Spread`，是因为它**不切分数据**：N 个实例看到的是同一条输入，「各做一份」靠 `shard` 自己挑。
+
 两个回调的第一个参数都是**本节点的 `*RunCtx`**（与手写节点同一个）：取消看 `rc.Context()`，归因看 `rc.NodeID()`。糖不该把运行上下文藏起来——要调 HTTP / 数据库的实例，得能在整图被取消时醒过来。
 
 **语义一个字都不改**：糖产出的图与手写 `NewNode` 的图，观测记录**逐字段一致**（`observe` 侧有等价锚用例钉着）。
@@ -221,18 +224,25 @@ err = pulse.Spread(g, "worker", docs, pulse.Keys(r1, r2, r3),
 | 糖 | 展开成 | 语义来源 |
 |---|---|---|
 | `Join` | 一个节点：`Requires(ins...)` + `Provides(out)`，fn 把输入收成 `Batch` | 门的「到几个收几个」；全跳过时节点自己跳过、fn 不执行 |
-| `Spread` | N 个节点：各自 `Requires(in)` + `Provides(outs[i])` | 每实例一个 goroutine；`NoValue()` = 整个实例跳过 |
-| `Spread` 的装配 | 一批 `addAll`：全量校验通过才一次提交 | **整批原子**：任一个装不进去就整个失败，图上不留半个 fan-out |
+| `FanOut` | N 个节点：各自 `Requires(in)` + `Provides(outs[i])` | 每实例一个 goroutine；`NoValue()` = 整个实例跳过 |
+| `FanOut` 的装配 | 一批 `addAll`：全量校验通过才一次提交 | **整批原子**：任一个装不进去就整个失败，图上不留半个 fan-out |
 | `Batch.WaitAll()` | fn 直接 `return` 它 | 与 `pulse.WaitAll` 同口径：**整节点**以跳过收尾 |
-| `NoValue()` | 一条 `*SkipError`（`errors.Is(err, ErrSkipped)` 成立） | 「这一次没有值」：**整节点**跳过，输出槽随之跳过；下游 `Join` 在 `Batch.Missing` 里看得见 |
+| `NoValue()` | 一条 `*SkipError`（`errors.Is(err, ErrSkipped)` 成立） | 「这一次没有值」：**整节点**跳过，输出槽随之跳过；下游 `Join` 在 `Batch.Missing()` 里看得见 |
 
 `NoValue()` 与 `Skip(rc, key)` **不是**同一件事：后者只把那一条输出槽标成跳过，节点自己照常返回 nil、终态是 `completed`；前者是节点级终态声明，一返回整个节点就以 `skipped` 结束（已发布的输出不回滚）。终态差别有用例并排钉着。
 
-**缺项在类型上可见**：`Batch{Values, Missing}` 同时给出「到了什么」与「哪几路没值」。只给一束值，宿主就分不清「这一路没值」与「这一路本来就不在」——而默认「到几个收几个」、严格靠显式 `WaitAll`，正是这一对字段的直接结果。两条切片都按 `ins` 的**声明顺序**排；`Values` 不带名字，所以「第 k 条值来自哪个 Key」要拿 `ins` 与 `Missing` 对回去——声明顺序即语义顺序。
+**缺项在类型上可见，来源也在**：`Batch` 是一张**清单**——`Items []BatchItem[T]`（`Key` + `Value` + `Present`，按 `ins` 声明顺序排），**每一条声明都在**，缺项也占一行。只给一束值，宿主就分不清「这一路没值」「这一路本来就不在」「这个值出自哪条槽」；`Len()` / `Values()` / `Missing()` / `Value(name)` 是这张清单上的四种读法。默认「到几个收几个」、严格靠显式 `WaitAll()`，都是它的直接结果。
 
-**边界（写清楚，别让下一个人以为抓得到）**：编译期锁住的是**元素类型**（`ins []Key[T]` 与 fn 的 `Batch[T]` 必须同一个 `T`）与**个数**（`Join` 收一束、`Spread` 按输出槽开实例，N 在装配期固定）；**同类型多槽位之间的顺序锁不住**——两个都是 `Key[string]` 时把参数写反照样编译。要锁顺序只有三条路（每条槽一个命名类型 / 名字写回签名 / 接受它），本仓选第三条，靠「声明顺序即语义顺序」的一致性 + 评审。
+**边界（写清楚，别让下一个人以为抓得到）**：编译期锁住的是**元素类型**（`ins []Key[T]` 与 fn 的 `Batch[T]` 必须同一个 `T`）与**个数**（`Join` 收一束、`FanOut` 按输出槽开实例，N 在装配期固定）；**同类型多槽位之间的顺序锁不住**——`Keys(a, b)` 与 `Keys(b, a)`（a、b 都是 `Key[string]`）**都编译**。实测（`.workbase/probe-order`）：
 
-`Spread` 的 N 是**装配期固定**的：引擎的拓扑不随数据变，数据条数不定的并行请在节点内部做业务循环，别指望运行时长出节点。
+```text
+Keys(a,b) -> Values()[0]="from-a"  Value("probe.a")="from-a"
+Keys(b,a) -> Values()[0]="from-b"  Value("probe.a")="from-a"
+```
+
+写反顺序的结果只是**声明顺序**变了：按位置读会错位，**按 `Value(name)` 读永远拿到对的那条**——这正是 `Batch` 带来源名要买的东西。要按位置读，声明顺序即语义顺序。
+
+`FanOut` 的 N 是**装配期固定**的：引擎的拓扑不随数据变，数据条数不定的并行请在节点内部做业务循环，别指望运行时长出节点。
 
 ## 6. 并发与读语义
 

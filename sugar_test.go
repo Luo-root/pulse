@@ -31,21 +31,86 @@ func TestJoinCollectsWhatArrives(t *testing.T) {
 	var got Batch[string]
 	if err := Join(g, "collect", Keys(a, b, c), out, func(rc *RunCtx, batch Batch[string]) (string, error) {
 		got = batch
-		return strings.Join(batch.Values, "+"), nil
+		return strings.Join(batch.Values(), "+"), nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Values) != 2 || got.Values[0] != "A" || got.Values[1] != "C" {
-		t.Fatalf("Values = %v, want [A C]", got.Values)
+	vals := got.Values()
+	if len(vals) != 2 || vals[0] != "A" || vals[1] != "C" {
+		t.Fatalf("Values() = %v, want [A C]", vals)
 	}
-	if len(got.Missing) != 1 || got.Missing[0] != b.Name() {
-		t.Fatalf("Missing = %v, want [%s]", got.Missing, b.Name())
+	miss := got.Missing()
+	if len(miss) != 1 || miss[0] != b.Name() {
+		t.Fatalf("Missing() = %v, want [%s]", miss, b.Name())
 	}
 	if got.Len() != 2 {
-		t.Fatalf("Len = %d, want 2", got.Len())
+		t.Fatalf("Len() = %d, want 2", got.Len())
+	}
+}
+
+// Batch 带来源：**每一条声明都在 Items 里**（缺项也在），值可以按名字取——同类型
+// 多槽位的顺序编译期锁不住，这条设计就是为了让「数错位次」不再有后果。
+//
+// 这里刻意让两条来源的值**一模一样**：只按位置读的话，拿到哪个都一样，分不出来。
+func TestBatchCarriesSourceNames(t *testing.T) {
+	a := NewKey[string]("batchsrc.a")
+	b := NewKey[string]("batchsrc.b")
+	c := NewKey[string]("batchsrc.c")
+	out := NewKey[string]("batchsrc.out")
+	g := mustNew(t, context.Background(), "batchsrc")
+	if err := Seed(g, a, "same"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Seed(g, b, "same"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SkipSeed(g, c); err != nil {
+		t.Fatal(err)
+	}
+	var got Batch[string]
+	if err := Join(g, "collect", Keys(a, b, c), out, func(rc *RunCtx, batch Batch[string]) (string, error) {
+		got = batch
+		return "ok", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 3 {
+		t.Fatalf("Items = %+v, want 三条（缺项也在）", got.Items)
+	}
+	want := []BatchItem[string]{
+		{Key: a.Name(), Value: "same", Present: true},
+		{Key: b.Name(), Value: "same", Present: true},
+		{Key: c.Name()}, // 以跳过到达：Key 在、Present=false、Value 是零值
+	}
+	for i, w := range want {
+		if got.Items[i] != w {
+			t.Fatalf("Items[%d] = %+v, want %+v", i, got.Items[i], w)
+		}
+	}
+	// 按名字取：有值的给值，缺项与不在这一束里的名字都不 ok。
+	if v, ok := got.Value(b.Name()); !ok || v != "same" {
+		t.Fatalf("Value(%q) = %q, %v; want same, true", b.Name(), v, ok)
+	}
+	if v, ok := got.Value(c.Name()); ok || v != "" {
+		t.Fatalf("缺项按名字取不该 ok：%q, %v", v, ok)
+	}
+	if v, ok := got.Value("batchsrc.nope"); ok || v != "" {
+		t.Fatalf("不在这一束里的名字不该 ok：%q, %v", v, ok)
+	}
+	// Values() 每次新建切片：调用方改它不影响 Batch（下面再取一次要还原样）。
+	vals := got.Values()
+	if len(vals) != 2 {
+		t.Fatalf("Values() = %v, want 两条", vals)
+	}
+	vals[0] = "mutated"
+	if again := got.Values(); again[0] != "same" {
+		t.Fatalf("Values() 返回的切片被改后影响到了 Batch：%v", again)
 	}
 }
 
@@ -113,16 +178,16 @@ func TestJoinWaitAllStrictOptOut(t *testing.T) {
 
 // 部分产出是正常路径：三个实例里第二个返回 NoValue()，下游 Join 在 Missing 里
 // 看见它，整轮仍然是成功的——「跳过是到达，不是失败」在糖上同样成立。
-func TestSpreadPartialValueIsMissingNotFailure(t *testing.T) {
-	in := NewKey[string]("spread.in")
-	outs := Keys(NewKey[string]("spread.r1"), NewKey[string]("spread.r2"), NewKey[string]("spread.r3"))
-	joined := NewKey[string]("spread.joined")
+func TestFanOutPartialValueIsMissingNotFailure(t *testing.T) {
+	in := NewKey[string]("fanout.in")
+	outs := Keys(NewKey[string]("fanout.r1"), NewKey[string]("fanout.r2"), NewKey[string]("fanout.r3"))
+	joined := NewKey[string]("fanout.joined")
 	obs := &recordingObserver{}
-	g := mustNew(t, context.Background(), "spread", WithObserver(obs))
+	g := mustNew(t, context.Background(), "fanout", WithObserver(obs))
 	if err := Seed(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Spread(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
+	if err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
 		if shard == 2 {
 			return "", NoValue() // 第 2 份没有产出：这正是「部分产出」的正常表达
 		}
@@ -133,18 +198,20 @@ func TestSpreadPartialValueIsMissingNotFailure(t *testing.T) {
 	var got Batch[string]
 	if err := Join(g, "collect", outs, joined, func(rc *RunCtx, batch Batch[string]) (string, error) {
 		got = batch
-		return strings.Join(batch.Values, ","), nil
+		return strings.Join(batch.Values(), ","), nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
 		t.Fatalf("部分产出不该让这一轮失败: %v", err)
 	}
-	if len(got.Values) != 2 || got.Values[0] != "doc#1" || got.Values[1] != "doc#3" {
-		t.Fatalf("Values = %v, want [doc#1 doc#3]", got.Values)
+	vals := got.Values()
+	if len(vals) != 2 || vals[0] != "doc#1" || vals[1] != "doc#3" {
+		t.Fatalf("Values() = %v, want [doc#1 doc#3]", vals)
 	}
-	if len(got.Missing) != 1 || got.Missing[0] != "spread.r2" {
-		t.Fatalf("Missing = %v, want [spread.r2]", got.Missing)
+	miss := got.Missing()
+	if len(miss) != 1 || miss[0] != "fanout.r2" {
+		t.Fatalf("Missing() = %v, want [fanout.r2]", miss)
 	}
 	log := obs.snapshot()
 	if countPref(log, "F:worker-2:skipped") != 1 {
@@ -155,29 +222,29 @@ func TestSpreadPartialValueIsMissingNotFailure(t *testing.T) {
 	}
 }
 
-// Spread 的节点名与分片号一致（观测归因要靠它）：两个实例分别叫 worker-1 /
+// FanOut 的节点名与分片号一致（观测归因要靠它）：两个实例分别叫 worker-1 /
 // worker-2，拿到的 shard 也是 1 / 2。
 //
 // 注意**不要在 worker 之间共享可变状态**（这里各自只写自己的输出槽，再由下游
-// 汇聚读出来）：`Spread` 的实例是真并发，往同一个切片 append 就是竞态。
-func TestSpreadNamesWorkersByShard(t *testing.T) {
-	in := NewKey[string]("spreadname.in")
-	outs := Keys(NewKey[string]("spreadname.r1"), NewKey[string]("spreadname.r2"))
-	joined := NewKey[string]("spreadname.joined")
+// 汇聚读出来）：`FanOut` 的实例是真并发，往同一个切片 append 就是竞态。
+func TestFanOutNamesWorkersByShard(t *testing.T) {
+	in := NewKey[string]("fanoutname.in")
+	outs := Keys(NewKey[string]("fanoutname.r1"), NewKey[string]("fanoutname.r2"))
+	joined := NewKey[string]("fanoutname.joined")
 	obs := &recordingObserver{}
-	g := mustNew(t, context.Background(), "spreadname", WithObserver(obs))
+	g := mustNew(t, context.Background(), "fanoutname", WithObserver(obs))
 	if err := Seed(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Spread(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
+	if err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
 		return v + "#" + strconv.Itoa(shard), nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
 	if err := Join(g, "collect", outs, joined, func(rc *RunCtx, b Batch[string]) (string, error) {
-		got = append(got, b.Values...)
-		return strings.Join(b.Values, ","), nil
+		got = append(got, b.Values()...)
+		return strings.Join(b.Values(), ","), nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -197,15 +264,15 @@ func TestSpreadNamesWorkersByShard(t *testing.T) {
 }
 
 // 失败显式：任一实例报错 → 首错取消整图，Run 返回原错误（糖不吞错）。
-func TestSpreadFailureCancelsGraph(t *testing.T) {
-	in := NewKey[string]("spreadfail.in")
-	outs := Keys(NewKey[string]("spreadfail.r1"), NewKey[string]("spreadfail.r2"))
+func TestFanOutFailureCancelsGraph(t *testing.T) {
+	in := NewKey[string]("fanoutfail.in")
+	outs := Keys(NewKey[string]("fanoutfail.r1"), NewKey[string]("fanoutfail.r2"))
 	boom := errors.New("worker boom")
-	g := mustNew(t, context.Background(), "spreadfail")
+	g := mustNew(t, context.Background(), "fanoutfail")
 	if err := Seed(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Spread(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
+	if err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
 		if shard == 2 {
 			return "", boom
 		}
@@ -219,30 +286,30 @@ func TestSpreadFailureCancelsGraph(t *testing.T) {
 }
 
 // 装配必须**整批原子**：N 个 worker 里只要有一个装不进去（输出槽已被别人占住），
-// 整个 Spread 失败且图里不留这一批的任何痕迹——否则调用方以为整个 fan-out 没装上，
+// 整个 FanOut 失败且图里不留这一批的任何痕迹——否则调用方以为整个 fan-out 没装上，
 // 图上却跑着前几个 worker，观测里冒出一批没人认领的节点。
-func TestSpreadAssemblyIsAtomic(t *testing.T) {
-	in := NewKey[string]("spreadatomic.in")
-	outs := Keys(NewKey[string]("spreadatomic.r1"), NewKey[string]("spreadatomic.r2"), NewKey[string]("spreadatomic.r3"))
+func TestFanOutAssemblyIsAtomic(t *testing.T) {
+	in := NewKey[string]("fanoutatomic.in")
+	outs := Keys(NewKey[string]("fanoutatomic.r1"), NewKey[string]("fanoutatomic.r2"), NewKey[string]("fanoutatomic.r3"))
 	obs := &recordingObserver{}
-	g := mustNew(t, context.Background(), "spreadatomic", WithObserver(obs))
+	g := mustNew(t, context.Background(), "fanoutatomic", WithObserver(obs))
 	if err := Seed(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Seed(g, outs[2], "taken"); err != nil { // r3 先被占住 → worker-3 装不进去
 		t.Fatal(err)
 	}
-	err := Spread(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
+	err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
 		return v, nil
 	})
 	if !errors.Is(err, ErrDuplicateSource) {
-		t.Fatalf("Spread = %v, want ErrDuplicateSource", err)
+		t.Fatalf("FanOut = %v, want ErrDuplicateSource", err)
 	}
 	// 判据一：r1 没被 worker-1 占住（真留下残留的话，这次 Add 会吃 ErrDuplicateSource）
 	if err := g.Add(NewNode("solo", Requires(in), Provides(outs[0]), func(rc *RunCtx) error {
 		return Set(rc, outs[0], "solo")
 	})); err != nil {
-		t.Fatalf("失败的 Spread 在图上留下了 r1 的占位：%v", err)
+		t.Fatalf("失败的 FanOut 在图上留下了 r1 的占位：%v", err)
 	}
 	if err := g.Run(); err != nil {
 		t.Fatal(err)
@@ -251,7 +318,7 @@ func TestSpreadAssemblyIsAtomic(t *testing.T) {
 	log := obs.snapshot()
 	for _, n := range []string{"worker-1", "worker-2", "worker-3"} {
 		if countPref(log, "W:"+n) != 0 || countPref(log, "F:"+n) != 0 {
-			t.Fatalf("失败的 Spread 留下了节点 %s：log = %v", n, log)
+			t.Fatalf("失败的 FanOut 留下了节点 %s：log = %v", n, log)
 		}
 	}
 	if countPref(log, "F:solo:completed") != 1 {
@@ -265,11 +332,11 @@ func TestSpreadAssemblyIsAtomic(t *testing.T) {
 // 时序是确定的：实例 1 进入 fn 之后才放实例 2 去失败，所以「取消叫醒卡住的那个」
 // 一定被测到（不靠调度碰运气）；5 秒看门狗把「没叫醒」直接报成一句可读的失败，
 // 而不是让整个测试套件挂到超时。
-func TestSpreadCallbackSeesCancellation(t *testing.T) {
-	in := NewKey[string]("spreadctx.in")
-	outs := Keys(NewKey[string]("spreadctx.r1"), NewKey[string]("spreadctx.r2"))
+func TestFanOutCallbackSeesCancellation(t *testing.T) {
+	in := NewKey[string]("fanoutctx.in")
+	outs := Keys(NewKey[string]("fanoutctx.r1"), NewKey[string]("fanoutctx.r2"))
 	boom := errors.New("instance 2 boom")
-	g := mustNew(t, context.Background(), "spreadctx")
+	g := mustNew(t, context.Background(), "fanoutctx")
 	if err := Seed(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +346,7 @@ func TestSpreadCallbackSeesCancellation(t *testing.T) {
 		sawNode   string
 		sawNode2  string
 	)
-	if err := Spread(g, "ctx", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
+	if err := FanOut(g, "ctx", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
 		if shard == 2 {
 			<-entered // 等实例 1 确实进了 fn，再制造失败
 			sawNode2 = rc.NodeID()
@@ -357,7 +424,7 @@ func TestNoValueVersusPerKeySkip(t *testing.T) {
 
 // 装配期入参校验：nil 图 / 空 id / 空输入 / 空输出 / nil fn。
 //
-// 空 id 单独钉：`Spread` 的节点名是「id + "-" + 分片号」拼出来的，不前置拦下就会
+// 空 id 单独钉：`FanOut` 的节点名是「id + "-" + 分片号」拼出来的，不前置拦下就会
 // 造出叫 `-1` / `-2` 的节点（观测里归因不了，也和 Join 的行为不一致）。
 func TestSugarRejectsBadArgs(t *testing.T) {
 	k := NewKey[string]("sugar.bad")
@@ -377,16 +444,16 @@ func TestSugarRejectsBadArgs(t *testing.T) {
 	if err := Join(g, "j", Keys(k), out, nil); err == nil {
 		t.Fatal("nil fn 应当报错")
 	}
-	if err := Spread(nil, "s", k, Keys(out), work); err == nil {
+	if err := FanOut(nil, "s", k, Keys(out), work); err == nil {
 		t.Fatal("nil graph 应当报错")
 	}
-	if err := Spread(g, "", k, Keys(out), work); err == nil {
+	if err := FanOut(g, "", k, Keys(out), work); err == nil {
 		t.Fatal("空 id 应当报错")
 	}
-	if err := Spread(g, "s", k, nil, work); err == nil {
+	if err := FanOut(g, "s", k, nil, work); err == nil {
 		t.Fatal("空输出应当报错")
 	}
-	if err := Spread(g, "s", k, Keys(out), nil); err == nil {
+	if err := FanOut(g, "s", k, Keys(out), nil); err == nil {
 		t.Fatal("nil fn 应当报错")
 	}
 	// 上面每一次都必须什么都没留下：`-1` 这种名字只有空 id 被放行才会出现。

@@ -57,7 +57,7 @@ _ = g.Add(pulse.NewNode("join",
 
 `Requires` is an AND: **all inputs must arrive** (ready or skipped) for that gate to pass; past the gate it is **collect whatever arrives** — one input with a value is enough to enter `Run`, and only when no input brought a value does the node not execute (see [Core concepts](/en/guide/concepts)). On a clean run `g.Err()` is `nil`.
 
-## Sugar: Spread / Join
+## Sugar: FanOut / Join
 
 Wiring a node by hand aligns the same name three times (the declaration in `NewNode`, the `Get`, the `Set`). The sugar pulls the names into the **function signature**:
 
@@ -65,12 +65,13 @@ Wiring a node by hand aligns the same name three times (the declaration in `NewN
 // fan-in: N inputs of one type → one batch
 err = pulse.Join(g, "collect", pulse.Keys(a, b, c), out,
 	func(rc *pulse.RunCtx, m pulse.Batch[string]) (Report, error) {
-		return report(m.Values, m.Missing), nil // missing routes are visible in the type
+		title, _ := m.Value("title") // take it by source name; no need to memorise the order
+		return report(title, m.Values(), m.Missing()), nil
 	})
 
 // fan-out: one input → N parallel instances, each with its own output slot
 // (nodes are named id-1 … id-N)
-err = pulse.Spread(g, "worker", docs, pulse.Keys(r1, r2, r3),
+err = pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2, r3),
 	func(rc *pulse.RunCtx, shard int, doc string) (Result, error) {
 		if nothingFor(shard) {
 			return Result{}, pulse.NoValue() // this shard has no output: the whole instance skips, that is not a failure
@@ -79,22 +80,24 @@ err = pulse.Spread(g, "worker", docs, pulse.Keys(r1, r2, r3),
 	})
 ```
 
+It is called `FanOut` rather than `Spread` because it does **not split data**: all N instances see the same input, and "one piece each" is up to `shard`.
+
 Sugar is only sugar — the graph it produces and the graph you wire by hand yield **field-for-field identical observation records** (the `observe` package pins this with an equivalence anchor: same topology, two wirings, same event names / node attribution / terminal states / `Err` / envelope).
 
 | What you write | Expands to | Semantics |
 |---|---|---|
 | `Join(..., Keys(a,b,c), out, fn)` | one node: `Requires(a,b,c)` + `Provides(out)` | the gate is "collect whatever arrives"; when every input skipped, `fn` does not run and the node skips itself |
-| `Spread(..., in, Keys(r1,r2), fn)` | two nodes (`worker-1` / `worker-2`), each `Requires(in)` | one goroutine each; the instance count is fixed at assembly time; the whole batch is committed **in one step**, so an incomplete batch fails entirely and leaves no half fan-out on the graph |
-| `pulse.NoValue()` | a `*SkipError` | "no value this time": the **whole node** skips, its output slot skips with it; a downstream `Join` sees it in `Batch.Missing` |
+| `FanOut(..., in, Keys(r1,r2), fn)` | two nodes (`worker-1` / `worker-2`), each `Requires(in)` | one goroutine each; the instance count is fixed at assembly time; the whole batch is committed **in one step**, so an incomplete batch fails entirely and leaves no half fan-out on the graph |
+| `pulse.NoValue()` | a `*SkipError` | "no value this time": the **whole node** skips, its output slot skips with it; a downstream `Join` sees it in `Batch.Missing()` |
 | `m.WaitAll()` | `return` it directly | the explicit strict fan-in: one missing route and the node finishes as skipped (not a failure) |
 
 Both callbacks receive **this node's own `*RunCtx`** as their first parameter: an instance that talks to HTTP or a database uses `rc.Context()` to notice cancellation (the engine wakes it when the graph is canceled), and `rc.NodeID()` for attribution.
 
 `pulse.NoValue()` is not the same thing as `Skip(rc, key)`: the latter marks just that one output slot as skipped and the node still finishes as `completed`; the former is a **node-level** terminal declaration — return it and the whole node ends as `skipped`.
 
-**Missing routes are visible in the type**: `pulse.Batch[T]` carries both `Values` and `Missing` — a bare slice of values would leave the host unable to tell "this route has no value" from "this route was never part of the batch". Both slices follow the declaration order of `ins`.
+**Missing routes *and* their sources are visible in the type**: `pulse.Batch[T]` is a roster — `Items []BatchItem[T]` (`Key` + `Value` + `Present`, in declaration order) — **every declaration is in it**, missing routes included; `Len()` / `Values()` / `Missing()` / `Value(name)` are four ways to read that roster. A bare slice of values would leave the host unable to tell "this route has no value" from "this route was never part of the batch" — or from "which slot did this value come from".
 
-**What the compiler locks**: the element type (`Keys(...)` and `Batch[T]` must share one `T`) and the arity (`Join` takes one batch, `Spread` opens one instance per output slot). It does **not** lock the order of same-typed slots — swap two `Key[string]` arguments and it still compiles; locking order would mean a named type per slot or names back in the signature, and this repo chose "accept it, and rely on declaration order being semantic order".
+**What the compiler locks**: the element type (`Keys(...)` and `Batch[T]` must share one `T`) and the arity (`Join` takes one batch, `FanOut` opens one instance per output slot). It does **not** lock the order of same-typed slots — `Keys(a, b)` and `Keys(b, a)` (both `Key[string]`) **both compile**. Measured: positional reading shifts (`Values()[0]` goes from `"from-a"` to `"from-b"`) while `Value("a")` returns `"from-a"` either way — that is exactly what the source names on `Batch` buy, and swapping the order only changes declaration order.
 
 ## Branching: call Skip on the path you did not take
 
