@@ -53,7 +53,8 @@ func Deps(groups ...[]keyRef) []keyRef {
 //
 // 注意 `Get` 是**阻塞等待**：等一个永远不会被写入的槽会一直等到本层 ctx
 // 被取消（`Timeout` 切面能打断它）。想知道「现在到了没有」用 `TryGet`。
-// 静止的图（所有 Requires 都没有来源）会在 `Graph.Start` 就被拒掉。
+// 静止的图（所有 `Requires` 都没有来源）与含依赖环的图都会在 `Graph.Start`
+// 就被拒掉——两者都不可能跑完，且都是启动那一刻能静态判定的。
 func NewNode(id string, requires, provides []keyRef, run func(*RunCtx) error, aspects ...Aspect) *Node {
 	return &Node{id: id, requires: requires, provides: provides, run: run, aspects: aspects}
 }

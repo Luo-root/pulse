@@ -16,6 +16,7 @@ topic ──┤        ├── join
 - 同一个 Key 在两个节点里 `Provides` → `Add` 直接报 `ErrDuplicateSource`；
 - 一个节点同时 `Requires` 和 `Provides` 同一个 Key → `Add` 报错（自环不是合法的数据流）；
 - 反过来，**每个 `Requires` 都必须有来源**：没有来源的槽永远不会被写入，那张图不可能跑完——`Start()` 会当场拒掉并指出是哪个节点的哪个 Key（留到运行时就是挂死，没法排查）。
+- **依赖关系也不能成环**：有来源不等于能满足。环里每条 `Requires` 都有生产者，但没有任何节点能先进入 `Run`（门要等全部输入到达），所有槽永远停在 `pending`——所以 `Start()` 同样当场拒掉，报出一条具体的环：`pulse: dependency cycle: A -> B -> A (A requires "y", B requires "x")`。`Seed`/`SkipSeed` 的 Key 在启动前就到齐了，不算边。
 
 ## 源节点与 Seed
 

@@ -16,6 +16,7 @@ topic ──┤        ├── join
 - The same Key `Provides`d in two nodes → `Add` returns `ErrDuplicateSource` outright;
 - A node that both `Requires` and `Provides` the same Key → `Add` fails (a self-loop is not a legal data flow).
 - Conversely, **every `Requires` must have a source**: a slot nobody writes can never arrive, so that graph can never finish — `Start()` rejects it on the spot and names the node and the Key (left to runtime it is just a hang, and a hang is not something you can debug).
+- **The dependency graph must also be acyclic**: having a source is not the same as being satisfiable. In a cycle every `Requires` has a producer, yet no node can enter `Run` first (the gate waits for all inputs), so every slot stays `pending` forever — `Start()` rejects that as well, reporting one concrete cycle: `pulse: dependency cycle: A -> B -> A (A requires "y", B requires "x")`. Keys from `Seed`/`SkipSeed` have already arrived before start, so they form no edge.
 
 ## Source nodes and Seed
 
