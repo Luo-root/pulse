@@ -92,6 +92,8 @@ pulse.NewNode("join",
 - 读到一条没值的输入得到的是 `*SkipError`（`errors.Is(err, ErrSkipped)` 成立）——不是零值，也不是失败，`Get` 读它也不阻塞。逐条问「这一路到了没有」用 `TryGet` 最省事。
 - 反过来，**要「缺一条就别跑我」的节点自己表态**：把 `WaitAll` 的返回值直接返回出去。它仍会进入 `Run`（跳过是它自己的结论，不是被门挡住的），终态是 `skipped`、`Run`/`Err` 不报错、`Retry` 不重试。注意**已经发布的输出不回滚**：节点体先 `Set` 过的那几条照常就绪，只有还没写的 `Provides` 会被跳过（一次性槽位契约）。
 
+这段手写汇聚有等价的糖：`pulse.Join` 把 N 路同类型输入收成一束 `pulse.Batch[T]`（每条输入带来源名，缺项也占一行）——见[编排](/guide/orchestration)。
+
 ### 分支怎么写
 
 没有 `if` 原语。分支 = **对未选中的 `Provide` 调用 `Skip`**：
