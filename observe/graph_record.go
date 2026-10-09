@@ -45,7 +45,7 @@ const (
 // 节点跨图互不串扰。同图同节点 / 同 graphID 的残留条目（Finished 未达，如
 // 进程退出）会影响该键的下一次记账；**同 graphID 的两轮运行并发复用同一
 // 实例**时，整轮耗时会按后一次 Started 起算（拿不到 Started 时 Duration 为
-// 0，记录照发）。长期复用建议按图运行周期换实例。
+// 恰好 0，记录照发）。长期复用建议按图运行周期换实例。
 // 挂载：pulse.WithObserver(NewRecordObserver(cfg))；与宿主自有 Observer
 // 经 pulse.MultiObserver 组合。观察者 panic / error 不升格为节点失败
 // （pulse 侧 notify 已吞掉，只读 seam 契约）。cfg.Sink 为 nil 返回哨兵错误。
@@ -102,10 +102,14 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 			start, ok := graphStart[graphID]
 			delete(graphStart, graphID)
 			mu.Unlock()
-			if !ok {
-				start = time.Now() // 没见过 Started：不编造整轮耗时
+			// 没见过 Started：不编造整轮耗时，**留 0**——它是「不知道」，不是
+			// 「耗时为零」。不留 `time.Since(time.Now())` 那种几十纳秒的残值：
+			// 那会把「没量到」渲染成一个看着像真数字的值（实测 Linux 上 90ns）。
+			var d time.Duration
+			if ok {
+				d = time.Since(start)
 			}
-			graphSeg(graphID, EventGraphFinished, string(reason), time.Since(start), err)
+			graphSeg(graphID, EventGraphFinished, string(reason), d, err)
 		},
 		Waiting: func(graphID, nodeID string) {
 			mu.Lock()

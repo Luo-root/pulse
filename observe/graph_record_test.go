@@ -454,7 +454,9 @@ func TestRecordObserverGraphFinishedOnAllSkipped(t *testing.T) {
 }
 
 // 防御分支：没见过 started 就收到 finished（半路接上的实例）——记录照发，但不编造
-// 整轮耗时（Duration = 0），因为那个 0 是「不知道」，不是「耗时为零」。
+// 整轮耗时（Duration **恰好** 0，不是「约等于 0」）：那个 0 是「不知道」，不是
+// 「耗时为零」。（别在这个分支里塞 `time.Since(time.Now())`——Linux 上它会留下
+// 90ns 级的残值，把「没量到」渲染成一个看着像真数字的值。）
 func TestRecordObserverGraphFinishedWithoutStarted(t *testing.T) {
 	sink := &MemorySink{}
 	obs, err := NewRecordObserver(testObsCfg(sink))
