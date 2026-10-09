@@ -93,7 +93,7 @@ func must(err error) {
 | `pulse.NewKey[T]("docs")` | **Key**：类型化数据槽。名字用于诊断与 YAML 对账，类型给编译期安全；同名必须以同一个 `T` 注册 |
 | `pulse.Seed(g, Docs, …)` | **Seed**：运行前写入外部输入——seed 与节点都是 Key 的来源，但每个 Key 只允许一个来源（两处都产 → `ErrDuplicateSource`） |
 | `pulse.NewNode(id, Requires, Provides, run)` | **Node**：只声明读哪些槽、写哪些槽。它**不声明**下一个节点是谁 |
-| `g.Run()` | **Graph**：提交全部节点并阻塞到全部终止；返回首错，**不含跳过** |
+| `g.Run()` | **Graph**：提交全部节点并阻塞到全部终止；返回首错，**不含跳过**；取消需由节点自己看见才算结果 |
 
 ## 数据到达即调度
 

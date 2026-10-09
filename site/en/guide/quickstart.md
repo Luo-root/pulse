@@ -93,7 +93,7 @@ All four basic concepts appear in this code:
 | `pulse.NewKey[T]("docs")` | **Key**: a typed data slot. The name is for diagnostics and YAML reconciliation; the type gives compile-time safety. The same name must always be registered with the same `T` |
 | `pulse.Seed(g, Docs, …)` | **Seed**: external input written before the run — a seed and a node are both sources for a Key, but each Key allows only one source (both producing it → `ErrDuplicateSource`) |
 | `pulse.NewNode(id, Requires, Provides, run)` | **Node**: declares only which slots it reads and which it writes. It does **not** declare who the next node is |
-| `g.Run()` | **Graph**: submits all nodes and blocks until all have terminated; returns the first error, **excluding skips** |
+| `g.Run()` | **Graph**: submits all nodes and blocks until all have terminated; returns the first error, **excluding skips**; a cancellation counts only if a node sees it |
 
 ## Data arrival is scheduling
 
