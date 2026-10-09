@@ -54,7 +54,7 @@ _ = g.Add(pulse.NewNode("join",
 	}))
 ```
 
-`Requires` is an AND: the node enters `Run` only when both inputs have arrived. On a clean run `g.Err()` is `nil`.
+`Requires` is an AND: **all inputs must arrive** (ready or skipped) for that gate to pass; past the gate it is **collect whatever arrives** — one input with a value is enough to enter `Run`, and only when no input brought a value does the node not execute (see [Core concepts](/en/guide/concepts)). On a clean run `g.Err()` is `nil`.
 
 ## Branching: call Skip on the path you did not take
 
@@ -62,14 +62,14 @@ There is no `if` primitive — branching is "mark the `Provide`s you did not tak
 
 ```go
 if lang == "zh" {
-	return pulse.Skip(rc, Translated) // downstream does not run because its input was skipped
+	return pulse.Skip(rc, Translated) // the downstream needs only this one → no value arrived → it does not run
 }
 return pulse.Set(rc, Translated, translate(summary))
 ```
 
 That is a **single-slot** optional output: both branches speak about the same slot (write or skip), hence a single downstream. A multi-slot branch must **speak on both sides** — `Set` the chosen one, `Skip` the other; skip only one and the unwritten ones are auto-skipped, leaving both downstreams unexecuted (see the branch example in [Core concepts](/en/guide/concepts)).
 
-It matters to tell the two terminal states apart: **the node that wrote the skip is itself `completed`**; it is the **downstream** node that never executed — because its input was skipped — that is `skipped`. Details and real records: [Core concepts · slot tri-state](/en/guide/concepts).
+It matters to tell the two terminal states apart: **the node that wrote the skip is itself `completed`**; it is the **downstream** node that never executed — because no input brought a value — that is `skipped`. Details and real records: [Core concepts · slot tri-state](/en/guide/concepts).
 
 ## Timeout
 

@@ -14,7 +14,7 @@ Pulse 只有三样东西：**Key**（数据槽）、**Node**（计算单元）�
 
 ```go
 pulse.NewNode("summarize",
-	pulse.Requires(Docs),     // AND 前置：全部就绪才进入 Run
+	pulse.Requires(Docs),     // AND 前置：全部输入到达（就绪或跳过）才判门
 	pulse.Provides(Summary),  // 本节点会写出的槽位
 	func(rc *pulse.RunCtx) error {
 		docs, err := pulse.Get(rc, Docs)
@@ -35,9 +35,10 @@ pulse.NewNode("summarize",
 
 **就绪和跳过都是「到达」。** 等待者被唤醒后区分这两种到达，而不是把「永远不到」伪装成一个假值。这是这类引擎最容易做错的一处：把跳过当失败，会让「分支」这个基本操作无处安放。
 
-由此推出两条级联规则：
+由此推出三条规则：
 
-- 任一输入跳过 → **不执行 `Run`**，全部输出跳过；
+- **到几个收几个**：等**全部**输入到达（就绪或跳过）后才判门——只要有一条输入真的到了值，节点就带着到了的那些进入 `Run`；
+- 一条值都没到（全部输入都以跳过到达）→ **不执行 `Run`**，全部输出跳过；
 - `Run` 成功返回后**漏写的 `Provides` 自动跳过**（否则下游永远等不到到达）。
 
 由此也推出一个容易说反的事实——**跳过是槽位的事实，不是节点的事实**：
@@ -45,7 +46,7 @@ pulse.NewNode("summarize",
 | 情形 | 终态 | 观测记录 |
 |---|---|---|
 | 节点对某条 `Provide` 调 `Skip` 后正常返回 | `completed` | 等待段 + 执行段两条 |
-| 节点因**输入被跳过**而没执行 | `skipped` | **只有一条**等待记录（`err="pulse: skipped [key]"`），无执行段 |
+| 节点因**一条值都没到**而没执行 | `skipped` | **只有一条**等待记录（`err="pulse: skipped [key]"`），无执行段 |
 
 看真实输出（两个节点：`translate` 对 `translated` 调 `Skip`，`publish` 依赖 `translated`）：
 
@@ -56,6 +57,38 @@ PULSE | 2026/10/08 - 15:34:29.721 | skipped    |   26.01ms | pulse.node_wait_fin
 ```
 
 `translate` 写了跳过，但它自己正常结束了；`publish` 才是那个「没执行」的节点。
+
+### 汇聚：到几个收几个
+
+门看的是「**有没有值**」，不是「有没有跳过」。等全部输入到达之后：只要有一条真的到了值，节点就带着到了的那些进入 `Run`；一条值都没到，才是它自己跳过。
+
+```go
+pulse.NewNode("join",
+	pulse.Requires(A, B, C), // 这一轮只有 A、B 有值
+	pulse.Provides(Joined),
+	func(rc *pulse.RunCtx) error {
+		var parts []string
+		for _, k := range []pulse.Key[string]{A, B, C} {
+			v, ok, skipped, err := pulse.TryGet(rc, k)
+			if err != nil {
+				return err
+			}
+			switch {
+			case ok:
+				parts = append(parts, v)
+			case skipped: // 这一路没有值，跳过它
+			default:
+				return fmt.Errorf("输入既未就绪也未跳过")
+			}
+		}
+		return pulse.Set(rc, Joined, strings.Join(parts, "+"))
+	})
+```
+
+两条边界：
+
+- 读到一条没值的输入得到的是 `*SkipError`（`errors.Is(err, ErrSkipped)` 成立）——不是零值，也不是失败，`Get` 读它也不阻塞。逐条问「这一路到了没有」用 `TryGet` 最省事。
+- 反过来，**要「缺一条就别跑我」的节点自己表态**：把 `WaitAll` 的返回值直接返回出去。它仍会进入 `Run`（跳过是它自己的结论，不是被门挡住的），终态是 `skipped`、`Run`/`Err` 不报错、`Retry` 不重试。注意**已经发布的输出不回滚**：节点体先 `Set` 过的那几条照常就绪，只有还没写的 `Provides` 会被跳过（一次性槽位契约）。
 
 ### 分支怎么写
 
@@ -121,7 +154,7 @@ type Aspect func(rc *RunCtx, next func(*RunCtx) error) error
 切面包住节点的「**等输入 + 执行**」整段——所以 `Timeout` 能打断还在等数据的节点，而不只是打断执行。不调 `next` 即短路。
 
 - `Timeout(d)`：超时取消本层 ctx；
-- `Retry(attempts, delay)`：只对执行错误重试；**等待阶段的取消不重试，输入被跳过也不重试**（跳过是到达，不是失败）；
+- `Retry(attempts, delay)`：只对执行错误重试；**等待阶段的取消不重试，以跳过收尾的也不重试**（一条值都没到而没执行、或自己把 `WaitAll` 的跳过返回出去）——跳过是到达，不是失败；
 - 顺序：全局切面（`pulse.WithAspects`）先于节点切面，**先写的更靠外**——所以 `Timeout` 在外、`Retry` 在内。
 
 **门闩约束**：单节点的 `Run` 不得**并发**进入（两个 goroutine 同时跑同一节点必然抢同一批槽位），违反返回 `ErrNextCalledTwice`。**顺序重入是合法的**——`Retry` 正依赖它（1→0→1）。所以判据是「重叠」而不是「多次」。

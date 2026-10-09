@@ -134,11 +134,16 @@ func (rc *RunCtx) must(k keyRef, write bool) error {
 	return nil
 }
 
-// Get 等待 Key 到达：就绪返回值，跳过返回 ErrSkipped。
+// Get 等待 Key 到达：就绪返回值，跳过返回 *SkipError（带 Key 名，
+// errors.Is(err, ErrSkipped) 成立）。
 //
 // 能读的只有「本节点声明过的」Key（`Requires` 与自己的 `Provides`），其余
 // 返回 ErrUndeclared；但**声明过不等于会到达**——没人写它时就一直等下去，
 // 直到本层 ctx 取消。要非阻塞地问就用 TryGet。
+//
+// 读到跳过是**常见路径**，不是异常：节点到几个收几个（见 WaitAll），
+// 所以 Run 里读到一条没值的输入得到 *SkipError 是正常结果——按本节点的语义
+// 处理它（少一路输入照做，或让整条链路以跳过收尾），它既不阻塞、也不是失败。
 func Get[T any](rc *RunCtx, k Key[T]) (T, error) {
 	var zero T
 	ref := k.asRef()
@@ -207,12 +212,15 @@ func Skip[T any](rc *RunCtx, k Key[T]) error {
 	return nil
 }
 
-// WaitAll 等待全部 keys 就绪。任一跳过 → ErrSkipped（带被跳过的名字）。
-func WaitAll(rc *RunCtx, keys ...keyRef) error {
+// awaitAll 阻塞到 keys 全部到达（就绪或跳过），返回其中以跳过到达的名字。
+//
+// 「跳过」是到达的一种，不算这一层的错误——只有取消与未声明才返回 err。
+// 引擎的门与 WaitAll 共用它，读法不同：门判「有没有值」，WaitAll 报「谁没值」。
+func awaitAll(rc *RunCtx, keys []keyRef) ([]string, error) {
 	var skipped []string
 	for _, k := range keys {
 		if err := rc.must(k, false); err != nil {
-			return err
+			return nil, err
 		}
 		_, err := rc.g.slotOf(k).wait(rc.ctx)
 		if err == ErrSkipped {
@@ -220,8 +228,25 @@ func WaitAll(rc *RunCtx, keys ...keyRef) error {
 			continue
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
+	}
+	return skipped, nil
+}
+
+// WaitAll 阻塞到全部 keys 到达（就绪或跳过）。有跳过的返回 *SkipError
+// （`Keys` 列出被跳过的名字，errors.Is(err, ErrSkipped) 成立），全部就绪才返回 nil。
+//
+// 它**不是**节点默认的门：`Requires` 里只要有一条输入真的到了值，节点就会
+// 带着到了的那些进入 Run（到几个收几个），输入跳过拦不住它。想让「缺一条就
+// 别跑我」的节点把这个返回值直接 return 出去——引擎把 *SkipError 读成
+// 「本节点以跳过收尾」：**尚未发布的输出会被跳过，已经发布的槽位不回滚**
+// （一次性槽位契约），且不是失败（`Retry` 不重试、`Run`/`Err` 不报错）。
+// 这是显式的 fan-in 策略声明，默认策略则相反。
+func WaitAll(rc *RunCtx, keys ...keyRef) error {
+	skipped, err := awaitAll(rc, keys)
+	if err != nil {
+		return err
 	}
 	if len(skipped) > 0 {
 		return skipErr(skipped...)

@@ -14,7 +14,7 @@ A node looks like this:
 
 ```go
 pulse.NewNode("summarize",
-	pulse.Requires(Docs),     // AND precondition: enters Run only when all inputs have arrived
+	pulse.Requires(Docs),     // AND precondition: the gate is judged once all inputs have arrived (ready or skipped)
 	pulse.Provides(Summary),  // the slots this node will write
 	func(rc *pulse.RunCtx) error {
 		docs, err := pulse.Get(rc, Docs)
@@ -35,9 +35,10 @@ pending | ready(value) | skipped
 
 **Ready and skipped are both "arrival".** A waiter, once woken, distinguishes these two kinds of arrival, instead of disguising "never arrives" as a fake value. This is the place where engines of this kind most easily go wrong: treating a skip as failure leaves the basic operation of branching with nowhere to live.
 
-Two cascading rules follow:
+Three rules follow:
 
-- any input skipped → **`Run` is not executed**, and all outputs are skipped;
+- **Collect whatever arrives**: the gate is judged once **all** inputs have arrived (ready or skipped) — one input that actually brought a value is enough for the node to enter `Run` with those that did;
+- when no input brought a value (every input arrived as skipped) → **`Run` is not executed**, and all outputs are skipped;
 - after `Run` returns successfully, **unwritten `Provides` are auto-skipped** (otherwise downstream would wait forever for an arrival).
 
 This also yields a fact that is easy to state backwards — **a skip is a fact about the slot, not about the node**:
@@ -45,7 +46,7 @@ This also yields a fact that is easy to state backwards — **a skip is a fact a
 | Case | Final state | Observation records |
 |---|---|---|
 | The node calls `Skip` on one `Provide` and then returns normally | `completed` | two: wait segment + run segment |
-| The node did not execute because **an input was skipped** | `skipped` | **only one** wait record (`err="pulse: skipped [key]"`), no run segment |
+| The node did not execute because **no input brought a value** | `skipped` | **only one** wait record (`err="pulse: skipped [key]"`), no run segment |
 
 See the real output (two nodes: `translate` calls `Skip` on `translated`, and `publish` requires `translated`):
 
@@ -56,6 +57,38 @@ PULSE | 2026/10/08 - 15:39:02.348 | skipped    |   13.75ms | pulse.node_wait_fin
 ```
 
 `translate` wrote a skip, but it finished normally itself; `publish` is the node that did not execute.
+
+### Fan-in: collect whatever arrives
+
+The gate asks "**did any input bring a value**", not "was any input skipped". Once all inputs have arrived: one input with a value is enough for the node to enter `Run` with those that did; only when no input brought a value does the node skip itself.
+
+```go
+pulse.NewNode("join",
+	pulse.Requires(A, B, C), // only A and B carried a value this run
+	pulse.Provides(Joined),
+	func(rc *pulse.RunCtx) error {
+		var parts []string
+		for _, k := range []pulse.Key[string]{A, B, C} {
+			v, ok, skipped, err := pulse.TryGet(rc, k)
+			if err != nil {
+				return err
+			}
+			switch {
+			case ok:
+				parts = append(parts, v)
+			case skipped: // this path has no value; skip it
+			default:
+				return fmt.Errorf("input is neither ready nor skipped")
+			}
+		}
+		return pulse.Set(rc, Joined, strings.Join(parts, "+"))
+	})
+```
+
+Two boundaries:
+
+- Reading an input that has no value yields `*SkipError` (`errors.Is(err, ErrSkipped)` holds) — not a zero value, not a failure, and `Get` does not block on it. Asking each key "did this path arrive" with `TryGet` is the easy way.
+- Conversely, **a node that wants "all-or-skip me" speaks for itself**: return `WaitAll`'s value straight out of `Run`. The node still enters `Run` (the skip is its own conclusion, not something the gate imposed), ends as `skipped`, and `Run`/`Err` stay clean while `Retry` does not retry it. Note that **an output already published is not rolled back**: whatever the body `Set` before that stays ready, and only `Provides` not yet written are skipped (the one-shot slot contract).
 
 ### How to write a branch
 

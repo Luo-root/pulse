@@ -7,8 +7,9 @@ const (
 	// NodeCompleted：Run 正常返回。返回后仍未写的 Provides 会被自动跳过，
 	// 那不算失败。
 	NodeCompleted NodeFinishReason = "completed"
-	// NodeSkipped：输入以「跳过」到达（skip 是到达，不是失败），或本节点
-	// 自己 Skip 了输出。
+	// NodeSkipped：本节点没进入 Run，或自己 Skip 了输出。没进入 Run 的判据
+	// 是「输入一条值都没到」（全部 Requires 都以跳过到达），不是「有输入
+	// 跳过」——到几个收几个（skip 是到达，不是失败）。
 	NodeSkipped NodeFinishReason = "skipped"
 	// NodeFailed：节点返回了真实错误——含 panic 被转成的错误，以及
 	// Timeout 切面的节点超时。
