@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -222,12 +223,18 @@ func (g *Graph) Run() error {
 
 // Start 异步提交全部节点。
 //
-// 提交前做一次**只读校验**：每个 `Requires` 都必须有来源（外部
-// `Seed`/`SkipSeed`，或某个节点的 `Provides`）。没有来源的槽永远不会被写入，
-// 这样的图不可能跑完——而这是启动那一刻就能判定的事，不该等到运行时表现为
-// 挂死（有 deadline 时是一句看不出病因的超时错误，没有时进程会被 runtime
-// 判为 fatal deadlock）。校验不过时图**仍未启动**（`started` 保持 false），
-// 补上生产者或 Seed 后可以重新 Start。
+// 提交前做一次**只读校验**，两条判据都能在这一刻静态判定：
+//
+//   - 每个 `Requires` 都必须有来源（外部 `Seed`/`SkipSeed`，或某个节点的
+//     `Provides`）。没有来源的槽永远不会被写入；
+//   - 依赖关系**无环**。有来源不等于能满足：环里每条 `Requires` 都有生产者，
+//     但没有任何节点能先进入 `Run`（门要等全部输入到达），所有槽永远停在
+//     pending。
+//
+// 两条都是「运行时表现为挂死」的事：有 deadline 时是一句看不出病因的超时，
+// 没有时进程会被 runtime 判为 fatal deadlock。校验不过时图**仍未启动**
+// （`started` 保持 false）：补上生产者 / Seed 之后可以重新 `Start`；含环的图
+// 则要改装配——引擎没有 Remove，环只能靠**重新装一张图**消除。
 func (g *Graph) Start() error {
 	g.mu.Lock()
 	if g.started {
@@ -235,6 +242,10 @@ func (g *Graph) Start() error {
 		return ErrGraphStarted
 	}
 	if err := g.checkSourcesLocked(); err != nil {
+		g.mu.Unlock()
+		return err
+	}
+	if err := g.checkAcyclicLocked(); err != nil {
 		g.mu.Unlock()
 		return err
 	}
@@ -269,6 +280,119 @@ func (g *Graph) checkSourcesLocked() error {
 		}
 	}
 	return nil
+}
+
+// checkAcyclicLocked 判「依赖关系无环」。调用方持 g.mu。
+//
+// 与 checkSourcesLocked 互补：**有来源不等于能满足**。环里的槽谁也等不来谁，
+// 门（等全部输入到达）就永远不开——这不是可执行的反馈环，而是不可完成的拓扑。
+//
+// 建图：N 的某条 Requires 由节点 M 提供 → 边 M → N（M 必须先跑完）。来源是
+// "seed" 的 Key 不建边——Seed/SkipSeed 在 Start 之前就已经到达了。自环不可能
+// 出现：Requires 与 Provides 同名的节点在 Add 就被拒。
+//
+// 判据用 Kahn 剥叶（O(V+E)，只在 Start 跑一次）：剥得完 = 无环；剥不完 =
+// 剩下的节点要么在环里，要么在环的下游。再从剩下的节点里走出一条**具体**的环
+// 报出去——比只报节点集合可操作。遍历按声明序取第一条出边，所以报错稳定。
+func (g *Graph) checkAcyclicLocked() error {
+	if len(g.nodes) < 2 {
+		return nil
+	}
+	index := make(map[string]int, len(g.nodes))
+	for i, n := range g.nodes {
+		index[n.id] = i
+	}
+
+	type edge struct {
+		to  int    // 下游节点下标
+		key string // 下游 Requires 的那条 Key
+	}
+	succ := make([][]edge, len(g.nodes))
+	indeg := make([]int, len(g.nodes))
+	linked := make(map[[2]int]struct{})
+	for ci, n := range g.nodes {
+		for _, k := range n.requires {
+			pi, ok := index[g.producer[k.name]]
+			if !ok {
+				continue // 来自 seed（缺来源的那种已被 checkSourcesLocked 拦下）
+			}
+			pair := [2]int{pi, ci}
+			if _, dup := linked[pair]; dup {
+				continue // 同一对节点被多条 Requires 依赖：只留一条边
+			}
+			linked[pair] = struct{}{}
+			succ[pi] = append(succ[pi], edge{to: ci, key: k.name})
+			indeg[ci]++
+		}
+	}
+
+	// Kahn 剥叶。
+	queue := make([]int, 0, len(g.nodes))
+	for i, d := range indeg {
+		if d == 0 {
+			queue = append(queue, i)
+		}
+	}
+	for len(queue) > 0 {
+		i := queue[0]
+		queue = queue[1:]
+		for _, e := range succ[i] {
+			indeg[e.to]--
+			if indeg[e.to] == 0 {
+				queue = append(queue, e.to)
+			}
+		}
+	}
+	start := -1
+	for i, d := range indeg {
+		if d > 0 {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+
+	// 走出一条环：indeg 不为 0 的节点必有出边（否则它会被剥掉），节点数有限，
+	// 所以沿 succ 一直走必然撞回走过的节点。
+	var path []int
+	var keys []string // keys[i] 是 path[i] → path[i+1] 那条边
+	pos := make(map[int]int, len(g.nodes))
+	cur := start
+	for {
+		p, seen := pos[cur]
+		if seen {
+			path, keys = path[p:], keys[p:]
+			break
+		}
+		pos[cur] = len(path)
+		path = append(path, cur)
+		if len(succ[cur]) == 0 { // 防御性出口：理论上到不了
+			keys = keys[:len(path)-1]
+			break
+		}
+		keys = append(keys, succ[cur][0].key)
+		cur = succ[cur][0].to
+	}
+
+	ids := make([]string, 0, len(path)+1)
+	for _, i := range path {
+		ids = append(ids, g.nodes[i].id)
+	}
+	ids = append(ids, g.nodes[path[0]].id) // 合上环
+
+	// 「谁在等谁」：path[i] 等的是走进它的那条边（上一条）上的 Key。
+	waits := make([]string, 0, len(path))
+	for i, idx := range path {
+		prev := (i - 1 + len(path)) % len(path)
+		if prev >= len(keys) {
+			break
+		}
+		waits = append(waits, fmt.Sprintf("%s requires %q", g.nodes[idx].id, keys[prev]))
+	}
+	return fmt.Errorf("pulse: dependency cycle: %s (%s)",
+		strings.Join(ids, " -> "), strings.Join(waits, ", "))
 }
 
 // Wait 等待 Start 提交的节点全部终止，并释放图自己的 ctx：它到这一步不再

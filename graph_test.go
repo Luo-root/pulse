@@ -256,6 +256,142 @@ func TestEmptyGraphStartWait(t *testing.T) {
 	}
 }
 
+// TestStartRejectsDependencyCycle 环是启动那一刻就能静态判定的事：每个
+// Requires 都有生产者（来源校验会放行），但没有任何节点能先进入 Run——门要等
+// 全部输入到达，环里的槽谁也等不来谁。不拒掉的话，有 deadline 时是一句看不出
+// 病因的超时，没有时进程会被 runtime 判为 fatal deadlock。
+//
+// 报错要指出环上的节点与 Key，且顺序稳定（按声明序取第一条出边）。
+func TestStartRejectsDependencyCycle(t *testing.T) {
+	x := NewKey[int]("x")
+	y := NewKey[int]("y")
+
+	g := mustNew(t, context.Background(), "test")
+	mustAdd(t, g, NewNode("A", Requires(y), Provides(x), func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("B", Requires(x), Provides(y), func(rc *RunCtx) error { return nil }))
+
+	err := g.Start()
+	if err == nil {
+		t.Fatal("含环的图必须在 Start 被拒，而不是留到运行时挂死")
+	}
+	const want = `pulse: dependency cycle: A -> B -> A (A requires "y", B requires "x")`
+	if err.Error() != want {
+		t.Fatalf("Start err =\n  %q\nwant\n  %q", err.Error(), want)
+	}
+	// 校验不过时图**仍未启动**：Wait 仍报 ErrGraphNotStarted，再 Start 仍报环
+	if err := g.Wait(); !errors.Is(err, ErrGraphNotStarted) {
+		t.Fatalf("Wait = %v, want ErrGraphNotStarted（失败的 Start 不该把图启动起来）", err)
+	}
+	if err := g.Start(); err == nil || errors.Is(err, ErrGraphStarted) {
+		t.Fatalf("第二次 Start = %v, want 同一个环错误（不是 ErrGraphStarted）", err)
+	}
+}
+
+// TestStartCycleIgnoresSeededEdges Seed/SkipSeed 的 Key 在 Start 之前就已经
+// 到达，不构成依赖边：它既不该被算进环里，也不该掩盖真正的环。
+func TestStartCycleIgnoresSeededEdges(t *testing.T) {
+	seed := NewKey[int]("cyc.seed")
+	x := NewKey[int]("cyc.x")
+	y := NewKey[int]("cyc.y")
+	z := NewKey[int]("cyc.z")
+
+	g := mustNew(t, context.Background(), "test")
+	if err := Seed(g, seed, 1); err != nil {
+		t.Fatal(err)
+	}
+	// A/B/C 三节点环；A 另外吃一条 Seed（那条边不参与环）
+	mustAdd(t, g, NewNode("A", Deps(Requires(x), Requires(seed)), Provides(y), func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("B", Requires(y), Provides(z), func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("C", Requires(z), Provides(x), func(rc *RunCtx) error { return nil }))
+
+	err := g.Start()
+	if err == nil {
+		t.Fatal("三节点环必须在 Start 被拒")
+	}
+	const want = `pulse: dependency cycle: A -> B -> C -> A (A requires "cyc.x", B requires "cyc.y", C requires "cyc.z")`
+	if err.Error() != want {
+		t.Fatalf("Start err =\n  %q\nwant\n  %q", err.Error(), want)
+	}
+}
+
+// TestStartHandlesMultiKeyFromOneProvider 同一个上游提供多条 Key、下游全吃：
+// 边与入度必须只记一次。多记一次不会报错、少记一次会把合法图误判成环——这条
+// 钉住的是「不会被误判」。
+func TestStartHandlesMultiKeyFromOneProvider(t *testing.T) {
+	p := NewKey[int]("mk.p")
+	q := NewKey[int]("mk.q")
+	out := NewKey[int]("mk.out")
+
+	g := mustNew(t, context.Background(), "test")
+	mustAdd(t, g, NewNode("up", nil, Deps(Provides(p), Provides(q)), func(rc *RunCtx) error {
+		if err := Set(rc, p, 1); err != nil {
+			return err
+		}
+		return Set(rc, q, 2)
+	}))
+	mustAdd(t, g, NewNode("down", Deps(Requires(p), Requires(q)), Provides(out), func(rc *RunCtx) error {
+		a, err := Get(rc, p)
+		if err != nil {
+			return err
+		}
+		b, err := Get(rc, q)
+		if err != nil {
+			return err
+		}
+		return Set(rc, out, a+b)
+	}))
+
+	if err := g.Run(); err != nil {
+		t.Fatalf("合法图被误判成环：%v", err)
+	}
+}
+
+// TestStartAcceptsDiamondWithSeed 无环图不受新判据影响：Seed 起点 + 菱形
+// （一个上游扇出两条、再汇聚到一个下游）照常启动并跑完。
+func TestStartAcceptsDiamondWithSeed(t *testing.T) {
+	seed := NewKey[int]("dia.seed")
+	left := NewKey[int]("dia.left")
+	right := NewKey[int]("dia.right")
+	out := NewKey[int]("dia.out")
+
+	g := mustNew(t, context.Background(), "test")
+	if err := Seed(g, seed, 1); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, g, NewNode("L", Requires(seed), Provides(left), func(rc *RunCtx) error {
+		v, err := Get(rc, seed)
+		if err != nil {
+			return err
+		}
+		return Set(rc, left, v+1)
+	}))
+	mustAdd(t, g, NewNode("R", Requires(seed), Provides(right), func(rc *RunCtx) error {
+		v, err := Get(rc, seed)
+		if err != nil {
+			return err
+		}
+		return Set(rc, right, v+2)
+	}))
+	mustAdd(t, g, NewNode("D", Deps(Requires(left), Requires(right)), Provides(out), func(rc *RunCtx) error {
+		a, err := Get(rc, left)
+		if err != nil {
+			return err
+		}
+		b, err := Get(rc, right)
+		if err != nil {
+			return err
+		}
+		return Set(rc, out, a+b)
+	}))
+
+	if err := g.Run(); err != nil {
+		t.Fatalf("无环图被新判据误伤：%v", err)
+	}
+	if v, ok, skipped, err := TryGet(inspect(g), out); err != nil || !ok || skipped || v != 5 {
+		t.Fatalf("out = %d ok=%v skipped=%v err=%v, want 5", v, ok, skipped, err)
+	}
+}
+
 // 顺序多次 next 合法（Retry 依赖）；第二次成功返回即可。
 func TestAspectSequentialNextAllowed(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")

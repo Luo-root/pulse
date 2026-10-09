@@ -128,7 +128,7 @@ return pulse.Skip(rc, OutA)
 
 `Graph.Start()` 把**全部节点一次性提交**，每个节点一个 goroutine，阻塞在自己的输入槽位上。`Run()` = `Start()` + `Wait()`。
 
-- **启动前校验来源**：每个 `Requires` 都必须有来源（外部 `Seed`/`SkipSeed`，或某个节点的 `Provides`）。没有来源的槽永远不会被写入，那样的图**不可能跑完**——而这是启动那一刻就能静态判定的事，所以 `Start()` 直接拒绝并指出节点与 Key，而不是留到运行时挂死（有 deadline 时是一句看不出病因的超时，没有时进程会被 runtime 判为 `fatal deadlock`）。校验不过时图仍未启动（`started` 保持 false），补上来源可以重新 `Start`；
+- **启动前静态校验两条**：① 每个 `Requires` 都必须有来源（外部 `Seed`/`SkipSeed`，或某个节点的 `Provides`）——没有来源的槽永远不会被写入；② 依赖关系**无环**——有来源不等于能满足，环里每条 `Requires` 都有生产者，但没有任何节点能先进入 `Run`（门要等全部输入到达），所有槽永远停在 `pending`。两条都描述**不可能跑完**的图，也都是启动那一刻就能判定的，所以 `Start()` 直接拒绝并指出节点与 Key，而不是留到运行时挂死（有 deadline 时是一句看不出病因的超时，没有时进程会被 runtime 判为 `fatal deadlock`）。环报成一条具体路径：`pulse: dependency cycle: A -> B -> A (A requires "y", B requires "x")`（Seed 的 Key 不构成边，只按节点的生产者建图）。校验不过时图仍未启动（`started` 保持 false）：补上来源可以重新 `Start`，含环的图则要**重新装一张**（引擎没有 `Remove`）；
 - **首错即取消**：任一节点返回非跳过错误 → 记录首错 + `cancel()` 整图，所有等待者被唤醒；**取消优先于到达**——ctx 已取消时等待一律返回 `ctx.Err()`（「到达与取消同时就绪」也以取消为准），所以因首错而没跑的下游稳定报 `canceled`，不随调度在 `skipped` / `canceled` 之间抖。失败节点未写的 Provide 仍会补一条跳过，那只是解开阻塞，不是下游的终态；
 - **`WithMaxRunning(n)`** 限制同时进入 `Run` 的节点数，**等数据不占名额**（否则限流会退化成死锁）；**排队等名额也能被取消打断**（排队节点以 `canceled` 收尾，不进入 `Run`；名额空出与取消同时就绪时以取消为准——拿到名额后再复查一次 ctx）；
 - **四个终态的判据**（`NodeFinishReason`）：`completed` = Run 正常返回（返回后未写的 Provide 被自动跳过不算失败）；`skipped` = 输入以跳过到达，或自己 Skip 了输出；`failed` = 节点真实错误，**含 panic 与 `Timeout` 切面的节点超时**；`canceled` = 这一轮被从外面拆了——首错取消、**父 ctx 被取消或截止时间到期**、排队等名额期间被取消。宿主按 reason 分流，所以「父 ctx 到期」不能报成 `failed`：那会把它显示成一个并不存在的节点缺陷；
