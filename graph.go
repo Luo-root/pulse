@@ -93,59 +93,87 @@ func (g *Graph) Add(n *Node) error {
 	if n == nil {
 		return fmt.Errorf("pulse: nil node")
 	}
+	return g.addAll([]*Node{n})
+}
+
+// addAll 批量登记节点，**整批 all-or-nothing**：先对「现有图 + 本批次」全量
+// 校验，再一次性提交。任一节点不过，图里不留这一批的任何痕迹（producer / 槽位 /
+// 节点表都不动）——装配糖（FanOut）要的正是这条：它一次装 N 个 worker，返回
+// 错误时不能留下半批节点在跑。
+//
+// Add 是它的单元素退化情形，判据与错误文案同源，所以两者行为一致。
+func (g *Graph) addAll(nodes []*Node) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.started {
 		return ErrGraphStarted
 	}
-	if n.id == "" {
-		return fmt.Errorf("pulse: empty node id")
-	}
-	for _, existing := range g.nodes {
-		if existing.id == n.id {
+
+	// —— 校验段：只读。批次内先出现的节点先占（同名 Key 同批出现两次也算冲突）——
+	batchIDs := make(map[string]struct{}, len(nodes))
+	batchClaims := make(map[string]string, len(nodes)) // key → 本批次里声明它的节点
+	for _, n := range nodes {
+		if n == nil {
+			return fmt.Errorf("pulse: nil node")
+		}
+		if n.id == "" {
+			return fmt.Errorf("pulse: empty node id")
+		}
+		if _, dup := batchIDs[n.id]; dup {
 			return fmt.Errorf("pulse: duplicate node id %q", n.id)
 		}
-	}
+		for _, existing := range g.nodes {
+			if existing.id == n.id {
+				return fmt.Errorf("pulse: duplicate node id %q", n.id)
+			}
+		}
 
-	// —— 校验段：只读 ——
-	seenReq := make(map[string]struct{}, len(n.requires))
-	for _, k := range n.requires {
-		if _, ok := seenReq[k.name]; ok {
-			return fmt.Errorf("pulse: node %s declares %q twice in Requires", n.id, k.name)
+		seenReq := make(map[string]struct{}, len(n.requires))
+		for _, k := range n.requires {
+			if _, ok := seenReq[k.name]; ok {
+				return fmt.Errorf("pulse: node %s declares %q twice in Requires", n.id, k.name)
+			}
+			seenReq[k.name] = struct{}{}
+			if err := g.keys.check(k); err != nil {
+				return err
+			}
 		}
-		seenReq[k.name] = struct{}{}
-		if err := g.keys.check(k); err != nil {
-			return err
+		seenProv := make(map[string]struct{}, len(n.provides))
+		for _, k := range n.provides {
+			if _, ok := seenReq[k.name]; ok {
+				return fmt.Errorf("pulse: node %s both requires and provides %q", n.id, k.name)
+			}
+			if _, ok := seenProv[k.name]; ok {
+				return fmt.Errorf("pulse: node %s declares %q twice in Provides", n.id, k.name)
+			}
+			seenProv[k.name] = struct{}{}
+			if err := g.keys.check(k); err != nil {
+				return err
+			}
+			if prev, ok := batchClaims[k.name]; ok && prev != n.id {
+				return fmt.Errorf("%w: %q already sourced by %s", ErrDuplicateSource, k.name, prev)
+			}
+			if err := g.sourceConflict(k.name, n.id); err != nil {
+				return err
+			}
+			batchClaims[k.name] = n.id
 		}
-	}
-	seenProv := make(map[string]struct{}, len(n.provides))
-	for _, k := range n.provides {
-		if _, ok := seenReq[k.name]; ok {
-			return fmt.Errorf("pulse: node %s both requires and provides %q", n.id, k.name)
-		}
-		if _, ok := seenProv[k.name]; ok {
-			return fmt.Errorf("pulse: node %s declares %q twice in Provides", n.id, k.name)
-		}
-		seenProv[k.name] = struct{}{}
-		if err := g.keys.check(k); err != nil {
-			return err
-		}
-		if err := g.sourceConflict(k.name, n.id); err != nil {
-			return err
-		}
+		batchIDs[n.id] = struct{}{}
 	}
 
 	// —— 提交段：到这一步不会再失败 ——
-	for _, k := range n.requires {
-		_ = g.keys.register(k)
-		g.slotOfLocked(k)
+	for _, n := range nodes {
+		for _, k := range n.requires {
+			_ = g.keys.register(k)
+			g.slotOfLocked(k)
+		}
+		for _, k := range n.provides {
+			_ = g.keys.register(k)
+			_ = g.claimSource(k.name, n.id)
+			g.slotOfLocked(k)
+		}
+		g.nodes = append(g.nodes, n)
 	}
-	for _, k := range n.provides {
-		_ = g.keys.register(k)
-		_ = g.claimSource(k.name, n.id)
-		g.slotOfLocked(k)
-	}
-	g.nodes = append(g.nodes, n)
 	return nil
 }
 

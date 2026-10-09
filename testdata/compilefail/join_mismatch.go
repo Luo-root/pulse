@@ -15,7 +15,7 @@ func main() {
 	a := pulse.NewKey[string]("compilefail.a")
 	out := pulse.NewKey[string]("compilefail.out")
 
-	_ = pulse.Join(g, "j", []pulse.Key[string]{a}, out, func(b pulse.Batch[int]) (string, error) {
+	_ = pulse.Join(g, "j", []pulse.Key[string]{a}, out, func(_ *pulse.RunCtx, b pulse.Batch[int]) (string, error) {
 		return "", nil
 	})
 }

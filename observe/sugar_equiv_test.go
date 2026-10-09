@@ -33,7 +33,7 @@ func TestSugarMatchesHandwrittenRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := pulse.Spread(sg, "worker", in, []pulse.Key[string]{r1, r2},
-		func(shard int, v string) (string, error) {
+		func(rc *pulse.RunCtx, shard int, v string) (string, error) {
 			if shard == 2 {
 				return "", pulse.NoValue()
 			}
@@ -42,7 +42,7 @@ func TestSugarMatchesHandwrittenRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := pulse.Join(sg, "collect", []pulse.Key[string]{r1, r2}, joined,
-		func(b pulse.Batch[string]) (string, error) {
+		func(rc *pulse.RunCtx, b pulse.Batch[string]) (string, error) {
 			return fmt.Sprintf("%d/%d", b.Len(), len(b.Missing)), nil
 		}); err != nil {
 		t.Fatal(err)
