@@ -37,6 +37,8 @@ type Observer interface {
 
 归因维度走 `Attrs`：`pulse.AttrGraph` + `pulse.AttrNode`（key 契约由**引擎**定义，`observe` 只消费不定义）。节点记录两个都带，运行级两条只带 `pulse.AttrGraph`——节点维度对「一次运行」没有意义。
 
+**嵌套层级**是第三个维度 `pulse.AttrPath`（不透明字符串、`/` 连接各层）：建子图的出口把 `ObserveConfig.Path` 填成 `sc.Path()`，那一层的**每一条**记录就都带它；为空**不写**这个 key——空串会让「根」与「忘了传」长得一样。分工是清楚的：`pulse.graph` 是**你起的图 id**，`pulse.path` 是**引擎记的层级**——同一张子图模板跑两遍就是两个图实例、两条 path，靠它分得开（见[编排](/guide/orchestration)的「图即节点」）。层级怎么拆是出口的事（按 `/` 分即可），引擎不提供结构化树。
+
 ## 最短接入
 
 ```go

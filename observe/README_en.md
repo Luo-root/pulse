@@ -36,6 +36,8 @@ The two run-level records **bracket** the run's node records (`started` precedes
 
 Attribution rides `Attrs` (`pulse.AttrGraph` / `pulse.AttrNode`; the key contract is defined by the engine, this package only consumes it): node records carry both, the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run".
 
+**Nesting depth** is the third dimension, `pulse.AttrPath`: when `ObserveConfig.Path` is non-empty (an egress that builds a child graph passes `sc.Path()`) **every** record carries it, and when it is empty the key is **not written** — an empty string would make "root" and "forgot to pass it" look alike, leaving an egress unable to use it for layering. It is a value on the **egress instance** (not something each record brings along), so nesting means one egress per level — exactly where `Sub`'s `build` runs. How to split the layers is the egress's business (`/` works); neither the engine nor this package offers a structured tree.
+
 **Duration accounting**: everything is **wall clock**, and callbacks run synchronously on the caller's goroutine — however slow the egress is, that is how long the segment is (the `pulse.graph_finished` window covers the whole run, egress writes included). `AsyncSink` only defers **landing**, it does not take the `Write` call out of the window. A segment rounded to `0` (rendered `-` by the built-in layout) means "too small to measure", not "there was no such segment".
 
 ## Egress
