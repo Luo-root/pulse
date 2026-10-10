@@ -18,6 +18,8 @@ topic ──┤        ├── join
 - Conversely, **every `Requires` must have a source**: a slot nobody writes can never arrive, so that graph can never finish — `Start()` rejects it on the spot and names the node and the Key (left to runtime it is just a hang, and a hang is not something you can debug).
 - **The dependency graph must also be acyclic**: having a source is not the same as being satisfiable. In a cycle every `Requires` has a producer, yet no node can enter `Run` first (the gate waits for all inputs), so every slot stays `pending` forever — `Start()` rejects that as well, reporting one concrete cycle: `pulse: dependency cycle: A -> B -> A (A requires "y", B requires "x")`. Keys from `Seed`/`SkipSeed` have already arrived before start, so they form no edge.
 
+Those two judgments also have a **read-only entry point**, `(*Graph).Validate()`: it runs the same checks but **does not change the graph's state** (no start, no goroutines), so you can keep adding nodes, seeding and starting afterwards. It exists for **assembly time** — with an assembly form like [YAML](/en/guide/assembly), where a child graph is only built once the run reaches it, you can ask every subgraph up front while loading, and the answer you get is word for word the one `Start()` would have given.
+
 ## Source nodes and Seed
 
 A graph's inputs have only two origins:

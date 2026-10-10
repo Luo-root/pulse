@@ -43,4 +43,43 @@ Notes:
 - Any `Seed.from.kind` other than `literal` requires the host to pass a `resolve` callback — **the engine does no IO**: reading files, env or request context is the host's job.
 - This package depends on `gopkg.in/yaml.v3`; the root `pulse` package does not depend on yaml.
 
+## Subgraphs: one step = one graph
+
+`graphs:` declares reusable subgraphs and `nodes[].graph` points a step at one — **a subgraph is the unit of topology reuse**, so reusing a flow does not force you to write a Go factory:
+
+```yaml
+version: 1
+graphs:
+  enrich:
+    nodes:
+      - id: work
+        uses: demo.enrich
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+seeds:
+  - key: {name: sg.input, type: string}
+    from: {kind: literal, value: "slot contract"}
+nodes:
+  - id: step1
+    graph: enrich
+    in:  {sg.topic: sg.input}      # child key: parent key (parent reads → child is seeded)
+    out: {sg.summary: sg.result}   # child key: parent key (child produces → parent is set)
+```
+
+It expands to the engine's `pulse.Sub` (see §5 "a graph as a node" in the design doc): the parent-side node's `Requires` / `Provides` follow from `in` / `out`, and the engine's static validation (sources / cycles / slots) still applies. Rules:
+
+- **The boundary is written where the wiring is**: `in` / `out` are always **`child key: parent key`**; a graph node may **not** also carry `requires` / `provides` — and conversely a **factory node may not carry `in` / `out`**: writing the wrong side silently does nothing, so both are reported at Load.
+- **Types are compared at Load**: both ends are resolved against `{name, type}` using the **same** `type` token — if the parent-side key is registered with another type, Load reports it. On the Go side that is a compile error; here it is an assembly error.
+- **Names are compared at Load**: referencing a graph that does not exist, binding a key no node of the child declares, or a graph with no nodes — all three are reported by name.
+- **Reference cycles are caught at Load**: nesting a graph inside a graph is allowed with no depth limit, but a cycle that cannot be built (`a → b → a`) is rejected with one **concrete** path (same shape as the engine's dependency-cycle error).
+- **A key fed by `in:` may not also be provided inside the child** → reported at Load: a key has exactly one source, so running that step would hit `ErrDuplicateSource`.
+- **A subgraph's `seeds`**: the entries that actually carry a value may only use `literal` (`env` / `file` / `context` need host IO, and `SeedPlan` belongs to the **parent** graph — reported at Load rather than halfway through a run; the `from` of a `skip: true` entry has no meaning and follows the top-level `seeds` reading). Names and types are reconciled against the registry, and **the same key seeded twice in one graph** is reported too (the second write would be silently ignored, and which value wins depends on declaration order).
+- **A subgraph seeds a key the parent also feeds with `in`** → reported at Load (the same slot would be seeded twice and the second write silently ignored, while both declarations look reasonable).
+- **Every `graphs:` declaration is checked**, including ones nothing references, and **once per reference site**: only the root level's nodes are actually added to the graph, since a child is built when the run reaches it — check the root alone and a mistake two levels down only blows up halfway through a run, while an unreferenced spec never blows up at all. The mechanism is a **build-only, never-run** throwaway graph per reference site going through the very same assembly code (the engine's assembly checks: node ids, duplicates, source conflicts, bindings), with that site's available sources seeded (the spec's own `seeds` plus the keys the parent feeds with `in:`), and finally the engine's own read-only check (`Graph.Validate`, see design doc §5) — so "a `Requires` nothing provides or seeds" and "dependency cycle" inside a subgraph are reported at `Load` as well, **word for word the same message `Start` would give**. Per reference site rather than per spec: the same graph referenced twice can have different `in:` sets, and a union check would read "the other site fed it" as "this site fed it as well".
+- **Check graphs never touch the host's context, and the root graph is built last**: the check graphs are all created on `context.Background()`; a failed `Load` returns `nil, nil, err`, so the caller has no handle to clean anything up — which is why every fallible check runs before a root graph exists. The root graph still inherits the host context (so cancellation reaches it), and the host releases it when `Wait` returns.
+- **Aspects**: a graph node may still carry `timeout` / `retry`, and they land on the **parent-side node** — `timeout: 30s` puts a time limit on the whole child graph; nodes **inside** the child keep their own.
+- **One subgraph referenced twice = two independent instances**: a fresh graph is built per run (the one-shot contract comes for free), and observation separates them by graph id and `pulse.path`.
+
+**Observation is per level**: `LoadOptions.ObserverFor(path)` builds an egress for each level, where `path` is that level's path (empty for the root, the node id for one level, `outer/inner` for two) — hand it to `observe.ObserveConfig.Path` and every record of that level carries `pulse.path`. Returning nil means the level follows whatever `LoadOptions.Graph` attached (the child inherits the parent's observer, just without a layer).
+
 See [`docs/design/pulse.md`](../docs/design/pulse.md) §5 for the design.

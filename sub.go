@@ -64,37 +64,50 @@ type SubBind struct {
 //
 // 跳过的输入照跳：父侧那条槽以跳过到达时，子图对应的键用 `SkipSeed` 种成跳过
 // （「跳过是到达」；子图自己的门按它自己的规则判）。
+//
+// 泛型参数在这里只做一件事：**逼两端用同一个 `T`**（编译期就红）。真正的实现
+// 在 `InRef`，读写走的是同一条非泛型路径。
 func In[T any](parent, child Key[T]) SubBind {
-	return SubBind{
-		parent: parent.asRef(),
-		child:  child.asRef(),
-		in:     true,
-		pull: func(rc *RunCtx) (any, error) {
-			v, err := Get(rc, parent)
-			if err != nil {
-				return nil, err
-			}
-			return v, nil
-		},
-		seed: func(g *Graph, v any, skip bool) error {
-			if skip {
-				return SkipSeed(g, child)
-			}
-			return Seed(g, child, v.(T))
-		},
-	}
+	return InRef(parent.asRef(), child.asRef())
 }
 
 // Out 声明一条子 → 父的绑定：子图产出 `child`，跑完之后写回父图的 `parent`。
 //
 // 与 `In` 同一条箭头读法（来源在前、去向在后）：`Out(子, 父)`。
 func Out[T any](child, parent Key[T]) SubBind {
+	return OutRef(child.asRef(), parent.asRef())
+}
+
+// InRef 是 `In` 的**动态版**：两端由已解析的 keyRef 给出。
+//
+// 给**声明式装配**（`pulse/yaml`）用——那里两端是运行期的 name+type 记号，
+// 编译期拿不到 `T`，所以「同一对必须同一个类型」只能在装图期对账：两端用
+// **同一个 type 记号**去查注册表，对不上就报。运行期还有一道兜底：子图声明的
+// 那条键与绑定的类型不符时，第一次跑就报（见 Sub 的运行体）。
+//
+// 手写装配**优先用 `In` / `Out`**：那边编译期就能红，便宜得多。
+func InRef(parent, child keyRef) SubBind {
 	return SubBind{
-		parent: parent.asRef(),
-		child:  child.asRef(),
-		push: func(rc *RunCtx, v any) error {
-			return Set(rc, parent, v.(T))
+		parent: parent,
+		child:  child,
+		in:     true,
+		pull:   func(rc *RunCtx) (any, error) { return getRef(rc, parent) },
+		seed: func(g *Graph, v any, skip bool) error {
+			if skip {
+				return g.seedRef(child, nil, true)
+			}
+			return g.seedRef(child, v, false)
 		},
+	}
+}
+
+// OutRef 是 `Out` 的动态版（见 `InRef` 的说明）：来源在前、去向在后
+// （`OutRef(子, 父)`）。
+func OutRef(child, parent keyRef) SubBind {
+	return SubBind{
+		parent: parent,
+		child:  child,
+		push:   func(rc *RunCtx, v any) error { return setRef(rc, parent, v) },
 	}
 }
 
@@ -241,9 +254,10 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 	}
 
 	// 3) 先**原子认领**这张子图：复用同一张图是这里最容易犯、也最难从「已经启动过」
-	//    四个字里看出该怎么改的错，所以放在任何改动与检查之前。必须是原子的——
-	//    否则并发的两次 Sub 会一起看到「没启动」，然后一起写下面这些字段
-	//    （`-race` 实测：`child.path = path` 那一行就是一处 DATA RACE）。
+	//    四个字里看出该怎么改的错，所以放在任何改动与检查之前，别让后面任何一条
+	//    检查抢了它的消息（种子冲突那条尤其会撞上来）。必须是原子的——否则并发的
+	//    两次 Sub 会一起看到「没启动」，然后一起写下面这些字段（`-race` 实测：
+	//    `child.path = path` 那一行就是一处 DATA RACE）。
 	if !child.claimSub() {
 		return subStartedErr(id, ErrGraphStarted)
 	}
@@ -274,10 +288,18 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 		child.observer = rc.g.observer
 	}
 
-	// 6) 种父侧输入。
+	// 6) 种父侧输入。种之前先确认这条键还是空的：子图自己在 build 里把它种上了
+	//    的话（或标成了跳过），这次种值会被幂等首写**静默忽略**——「父侧传进去的
+	//    值不见了」而没有任何报错，正是糖要消灭的那类错。想「父图给值、子图兜底
+	//    默认值」在一次性槽位上是表达不出来的，所以这里吵出来，别猜。
 	for i, b := range binds {
 		if !b.in {
 			continue
+		}
+		if st, _ := child.slotOf(b.child).snapshot(); st != slotPending {
+			return fmt.Errorf("pulse: Sub %q: the child graph already resolved key %s before the "+
+				"binding seeded it, so the value from the parent would be silently ignored "+
+				"(idempotent first write)", id, b.child)
 		}
 		if err := b.seed(child, vals[i].v, vals[i].skip); err != nil {
 			return subStartedErr(id, err)
