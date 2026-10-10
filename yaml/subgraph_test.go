@@ -2,6 +2,7 @@ package yaml_test
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -550,6 +551,9 @@ nodes:
 // 同一张子图被引用两次 = 两个独立实例：图 id 与 path 都不一样，各自跑一遍。
 func TestLoadSubgraphTwoInstances(t *testing.T) {
 	sink := &observe.MemorySink{}
+	// 两个实例会**并发**跑，所以这里得加锁：不加的话是这个用例自己制造一处
+	// DATA RACE（CI 上真撞到过——`-race` 报的是本文件这行 append）。
+	var gotMu sync.Mutex
 	var got []string
 	reg := pulse.NewRegistry()
 	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.topic"))
@@ -557,7 +561,9 @@ func TestLoadSubgraphTwoInstances(t *testing.T) {
 	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.input"))
 	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.result"))
 	reg.MustRegister("sg.work", func(rc *pulse.RunCtx) error {
+		gotMu.Lock()
 		got = append(got, rc.NodeID())
+		gotMu.Unlock()
 		return pulse.Set(rc, pulse.NewKey[string]("sg.summary"), "x")
 	})
 
@@ -604,8 +610,11 @@ nodes:
 	if err := g.Run(); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("两个实例各跑一遍 work，实得 %d 次：%v", len(got), got)
+	gotMu.Lock()
+	calls := append([]string(nil), got...)
+	gotMu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("两个实例各跑一遍 work，实得 %d 次：%v", len(calls), calls)
 	}
 	seen := map[string]bool{}
 	for _, rec := range sink.Snapshot() {
