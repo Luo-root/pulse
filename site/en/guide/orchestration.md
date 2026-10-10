@@ -220,6 +220,50 @@ Whatever is listed first is further outside. So `pulse.Timeout(d)` placed ahead 
 
 **The latch**: a single node's `Run` must not be entered concurrently (violating it → `ErrNextCalledTwice`), yet sequential re-entry is legal — that is exactly what `Retry` relies on.
 
+## Wiring conventions: make the silent mistakes unwritable
+
+The sections above explain **how the engine judges**; this one is about **how you write it**. Five rules, each one earned from a measured **silent** mistake — no error, no warning, and the run still returns `nil`. Nothing enforces these for you (there are no lint / vet hints: that would mean a separate binary and a CI change on your side, and it cannot recognise the case where `rc` is passed into a helper that reads the key), so they live here.
+
+**More than one output: state the whole batch, never half of it.** A node with outputs A / B that means to take A, but only writes `Skip(B)` and forgets `Set(A)`:
+
+```go
+return pulse.Skip(rc, OutB) // forgot Set(rc, OutA, v)
+```
+
+Measured: **neither downstream runs** (A was never written, B was skipped) and the run still returns `nil`. Write it with `Only` instead — take A, void every other output of this node:
+
+```go
+return pulse.Only(rc, OutA, v) // no hand-written Skip left, so "forgetting one" has no shape
+```
+
+Need several values at once? Keep hand-writing `Set` — `Only` says "this is the one".
+
+**Same-typed slots: take them by their source key, not by position.** `Keys(a, b)` and `Keys(b, a)` both compile — declaration order cannot be locked down at compile time. Measured: reading `b.Values()[0]` flips from `"from-a"` to `"from-b"` when you write the declaration backwards, and you will not notice when the values look alike; taking by key is immune:
+
+```go
+v, err := b.Get(SourceA) // independent of declaration order; *SkipError if that route arrived empty
+```
+
+**Keep the declaration next to the read.** A key declared in `Requires(X)` should be read in the same `Run`. Note that **"wait for arrival only, never take the value" is legitimate** (measured: declare it without reading and the node still executes) — that is exactly what a gate node is; what you must avoid is leaving readers unable to tell which kind you meant. If it really is just a gate, say so in one comment line.
+
+**Long jobs watch `rc.Context()`; do not `Set` and return.** Two measurements:
+
+- **Nobody looks at ctx → cancellation is swallowed as success**: cancel externally while the node works, and if the node never looks at `rc.Context()` then `Run()` returns `nil` (no node ever saw the cancellation — see [Core concepts](/en/guide/concepts)).
+- **Handing the work to a background goroutine → the error has nowhere to land**: `Set` the channel and return, leaving the actual sending to an unobserved goroutine. Measured: the run reports success (`Run() = nil`) while that goroutine *fails* after finishing its work — not a trace of it on the graph. Forgetting the `defer close` is worse: a downstream `for range` waits for the close and `Run()` never returns (an external ctx timeout cannot save you — the node does not return, so the run does not return).
+
+So: `select` on `rc.Context().Done()` inside long loops, and use `Produce` / `Consume` / `Tee` for streams — they own the close responsibility.
+
+**One stream output feeds one downstream.** Two consumers on the same output will **silently split** the values (both run, each getting a share). `Start()` now rejects that outright (naming the nodes), but write it right the first time — **broadcast** with `Tee` (one output per downstream), **compete** with `FanOut` (workers of the same group sharing an output is an explicit statement):
+
+```go
+err := pulse.Produce(g, "src", stream, sendAll)        // one stream
+err = pulse.Tee(g, "fan", stream, pulse.Keys(sA, sB))  // copied into two outputs
+err = pulse.Consume(g, "sinkA", sA, handle)            // one consumer per output
+err = pulse.Consume(g, "sinkB", sB, archive)
+```
+
+And make the consumer a **`select`, not `for range`**: in the same measured scenario (producer also ignoring ctx, buffer 8, 5 values, cancel at 15 ms) `for range` computed all 5 values and reported success, while `select` stopped at the 4th and returned `context canceled`. One honest caveat: whether the values still sitting in the buffer get computed is **best-effort** — when both branches are ready `select` picks at random, so it is not a hard guarantee.
+
 ## Where to read results
 
 `Graph` exposes no slot reads after `Run`. The products belong to the caller; two usual approaches:
