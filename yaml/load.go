@@ -168,14 +168,19 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 		ctx = context.Background()
 	}
 
-	// 根图先装：根侧那些**接线处**的毛病（绑了一条没登记的键、`in` 喂的键
-	// 子图根本不读……）由 `subBinds` 在装它的时候点着节点 id 报出来，而
-	// 下面按引用点起校验图时会拿这些绑定当边界——先装，报错才点得到位置上。
-	g, err := pulse.New(ctx, opts.GraphID, opts.Graph...)
+	// 根层那批节点先在**校验图**上走一遍：根侧那些接线处的毛病（绑了一条没
+	// 登记的键、`in` 喂的键子图根本不读、工厂节点写了 `in` / `out`……）由
+	// `subBinds` / `addNodes` 点着节点 id 报出来，而下面按引用点起校验图时会
+	// 拿这些绑定当边界——先走，报错才点得到位置上。
+	//
+	// 走的是同一段 `addNodes`，所以报文与真正装根图那次逐字相同；
+	// 而根图要等到**所有可能失败的校验都过完**才建（见函数末尾）——见下面
+	// 「宿主 ctx」那段注释。
+	root, err := pulse.New(context.Background(), "load-check:root", opts.Graph...)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := addNodes(g, doc.Nodes, "", doc.Graphs, reg, opts); err != nil {
+	if err := addNodes(root, doc.Nodes, "", doc.Graphs, reg, opts); err != nil {
 		return nil, nil, err
 	}
 
@@ -193,8 +198,12 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	// 按引用点而不是按 spec：同一张 spec 被两处引用时，两边的 `in:` 可能不一样，
 	// 只按并集校验会把「这一处没喂，运行到就一定报」的那张图放过去。
 	//
-	// 校验图不继承宿主的 ctx：它既不会跑，也没人会 cancel 它，从宿主 ctx 派生
-	// 出来的子 ctx 只会一直挂在宿主 ctx 上（热重载反复 Load = 越攒越多）。
+	// 校验图（连同上面那张根层校验图）都在 `context.Background()` 上建：
+	//
+	//   - 它们既不会跑、也没人会 cancel，从宿主 ctx 派生出来的子 ctx 只会一直
+	//     挂在宿主 ctx 上（热重载反复 Load = 越攒越多）；
+	//   - 校验失败时 `Load` 返回 `nil, nil, err`，调用方**连清理的把手都没有**
+	//     ——所以只要还有一步可能失败，就不要先动宿主的 ctx。
 	for _, site := range checkSites(doc) {
 		check, err := pulse.New(context.Background(), "load-check:"+site.graph)
 		if err != nil {
@@ -223,6 +232,9 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 		}
 	}
 
+	// 宿主的 seeds 也先在装图之前对完账：这条检查会失败，而它原来排在根图
+	// 后面——失败返回 `nil, nil, err` 时，那张刚建好的根图连同它派生出去的
+	// ctx 就没人认领了（同一份坏文档反复加载 = 宿主 ctx 越挂越多）。
 	plan := &SeedPlan{reg: reg}
 	for i, s := range doc.Seeds {
 		if _, err := reg.ResolveKey(s.Key.Name, s.Key.Type); err != nil {
@@ -234,6 +246,17 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 			Skip: s.Skip,
 			From: s.From,
 		})
+	}
+
+	// 所有**可能失败**的校验都过了，才动宿主的 ctx：从这里往下一路成功，
+	// `Load` 要么把图交出去（调用方接管它的生死），要么在 `New` 这一步就
+	// 因为 graphID 空拒掉（那个检查在函数开头做过）。
+	g, err := pulse.New(ctx, opts.GraphID, opts.Graph...)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := addNodes(g, doc.Nodes, "", doc.Graphs, reg, opts); err != nil {
+		return nil, nil, err
 	}
 	return g, plan, nil
 }
@@ -280,6 +303,13 @@ func addNodes(g *pulse.Graph, specs []NodeSpec, where string,
 			}
 
 		case n.Uses != "":
+			// 工厂节点的边界只有 `requires` / `provides` 一处说法。写了 `in` /
+			// `out` 不报的话，配置看着接好了、实际一个字都没生效（YAML 会照常
+			// 解码这两个字段）——与子图节点拒 `requires` / `provides` 对称。
+			if len(n.In) > 0 || len(n.Out) > 0 {
+				return fmt.Errorf("pulse/yaml: %snode %q: a factory node declares its boundary with requires/provides, not in/out",
+					at(where), n.ID)
+			}
 			run, ok := reg.Lookup(n.Uses)
 			if !ok {
 				return fmt.Errorf("pulse/yaml: %snode %q uses unknown factory %q", at(where), n.ID, n.Uses)

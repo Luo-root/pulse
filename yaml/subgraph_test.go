@@ -465,6 +465,20 @@ nodes:
 			want: `graph "mid": node "toBoth2": graph "both2" provides "c.both" inside`,
 		},
 		{
+			name: "第 2 层的工厂节点写了 in/out（边界只有一处说法）",
+			node: "confused",
+			body: `  mid:
+    nodes:
+      - id: confused
+        uses: f
+        requires: [{name: c.mid_in, type: string}]
+        provides: [{name: c.mid_out, type: string}]
+        in:  {c.mid_in: c.in}
+        out: {c.mid_out: c.out}
+`,
+			want: `graph "mid": node "confused": a factory node declares its boundary with requires/provides, not in/out`,
+		},
+		{
 			name: "子图 seed 的键名没登记",
 			node: "leaf",
 			body: `  mid:
@@ -1033,4 +1047,151 @@ func ctxChildren(t *testing.T, ctx context.Context) int {
 		return 0
 	}
 	return m.Len()
+}
+
+// 装图**失败**的那次 `Load` 不该在宿主 ctx 上留下任何东西：返回值只有
+// `(g, plan, err)`，失败时图不交出去，调用方连清理的把手都没有——所以
+// 「所有可能失败的校验」必须排在「动宿主 ctx 建根图」之前。同一份坏文档
+// 反复加载（热重载）时，留下的就是一堆没人认领的根图 ctx。
+//
+// 对照那一半同样重要：**成功**的 `Load` 照旧把根图挂在宿主 ctx 上（每张一个）
+// ——根图是宿主自己要的图，取消必须从宿主传得进去。修「失败不留东西」不能
+// 顺手把这条也掐掉（把根图也改成 `context.Background()` 就会：宿主取消再也
+// 传不到正在跑的图上）。
+func TestLoadFailureLeavesNothingOnHostContext(t *testing.T) {
+	const loads = 20
+	host, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reg := pulse.NewRegistry()
+	for _, k := range []string{"fc.in", "fc.a2", "fc.b2", "fc.cin", "fc.cout", "fc.a", "fc.b"} {
+		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
+	}
+	reg.MustRegister("f", func(*pulse.RunCtx) error { return nil })
+
+	const head = `
+version: 1
+seeds:
+  - key: {name: fc.in, type: string}
+    from: {kind: literal, value: "v"}
+graphs:
+  inner:
+    nodes:
+`
+	// 坏：inner 里 a 与 b 互相依赖（成环）——装图期就该拒。
+	const cycle = `      - id: a
+        uses: f
+        requires: [{name: fc.a, type: string}]
+        provides: [{name: fc.b, type: string}]
+      - id: b
+        uses: f
+        requires: [{name: fc.b, type: string}]
+        provides: [{name: fc.a, type: string}]
+      - id: leaf
+        uses: f
+        requires: [{name: fc.cin, type: string}]
+        provides: [{name: fc.cout, type: string}]
+`
+	// 好：同一形状，去掉那个环。
+	const noCycle = `      - id: leaf
+        uses: f
+        requires: [{name: fc.cin, type: string}]
+        provides: [{name: fc.cout, type: string}]
+`
+	const mid = `  mid:
+    nodes:
+      - id: toInner
+        graph: inner
+        in:  {fc.cin: fc.a2}
+        out: {fc.cout: fc.b2}
+nodes:
+  - id: step1
+    graph: mid
+    in:  {fc.a2: fc.in}
+    out: {fc.b2: fc.b2}
+`
+	bad := []byte(head + cycle + mid)
+	good := []byte(head + noCycle + mid)
+
+	if _, _, err := pulseyaml.Load(bad, reg, pulseyaml.LoadOptions{Context: host, GraphID: "FC"}); err == nil {
+		t.Fatal("这份文档本来就该装图失败（inner 里成环）")
+	}
+	before := ctxChildren(t, host)
+	for i := 0; i < loads; i++ {
+		if _, _, err := pulseyaml.Load(bad, reg, pulseyaml.LoadOptions{Context: host, GraphID: "FC"}); err == nil {
+			t.Fatalf("第 %d 次 Load 竟然成功了", i)
+		}
+	}
+	if got := ctxChildren(t, host) - before; got != 0 {
+		t.Fatalf("失败的 Load 在宿主 ctx 上留下了 %d 个子节点，应该是 0", got)
+	}
+
+	beforeGood := ctxChildren(t, host)
+	for i := 0; i < loads; i++ {
+		if _, _, err := pulseyaml.Load(good, reg, pulseyaml.LoadOptions{Context: host, GraphID: "FC"}); err != nil {
+			t.Fatalf("第 %d 次 Load: %v", i, err)
+		}
+	}
+	if got := ctxChildren(t, host) - beforeGood; got != loads {
+		t.Fatalf("成功的 Load 挂了 %d 个子节点，want %d（每张根图一个：根图必须继承宿主 ctx）", got, loads)
+	}
+}
+
+// `skip: true` 的 seed 只把槽标成跳过，`from` 没有语义——装配期的 `seedOne`
+// 与运行期的 `buildSub` 都是直接 `SkipSeed` 并忽略 `from`，顶层的
+// `SeedPlan.Apply` 也一样。所以子图里 `skip: true` 带着 `env` / `file` /
+// `context` 不该被拒；只有**要种值**的那条才必须给得出 `literal`。
+func TestLoadSubgraphSkipSeedIgnoresFrom(t *testing.T) {
+	reg := pulse.NewRegistry()
+	for _, k := range []string{"sk.in", "sk.a2", "sk.b2", "sk.cin", "sk.cout", "sk.seed"} {
+		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
+	}
+	reg.MustRegister("f", func(*pulse.RunCtx) error { return nil })
+
+	const head = `
+version: 1
+seeds:
+  - key: {name: sk.in, type: string}
+    from: {kind: literal, value: "v"}
+graphs:
+  inner:
+    seeds:
+      - {key: {name: sk.seed, type: string}, skip: true, from: {kind: env, env: "SOME_ENV"}}
+    nodes:
+      - id: leaf
+        uses: f
+        requires: [{name: sk.cin, type: string}]
+        provides: [{name: sk.cout, type: string}]
+  mid:
+    nodes:
+      - id: toInner
+        graph: inner
+        in:  {sk.cin: sk.a2}
+        out: {sk.cout: sk.b2}
+nodes:
+  - id: step1
+    graph: mid
+    in:  {sk.a2: sk.in}
+    out: {sk.b2: sk.b2}
+`
+	g, plan, err := pulseyaml.Load([]byte(head), reg, pulseyaml.LoadOptions{GraphID: "SK"})
+	if err != nil {
+		t.Fatalf("skip: true 的 seed 不该因为 from.kind 被拒：%v", err)
+	}
+	if err := plan.Apply(g, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatalf("Run = %v（跳过是到达，整轮该算成功）", err)
+	}
+
+	// 对照：同一条声明去掉 skip，`from` 就有了语义——仍然要在装图期拒。
+	g2, _, err := pulseyaml.Load(
+		[]byte(strings.Replace(head, "skip: true, ", "", 1)), reg, pulseyaml.LoadOptions{GraphID: "SK"})
+	if err == nil {
+		t.Fatal("要种值的那条只允许 literal，装图期就该拒")
+	}
+	if g2 != nil || !strings.Contains(err.Error(), `kind "env" is not supported in a subgraph`) {
+		t.Fatalf("报错该点明是 kind 不受支持：%v", err)
+	}
 }

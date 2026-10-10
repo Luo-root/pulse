@@ -326,8 +326,10 @@ func checkSites(doc Document) []checkSite {
 
 // checkSubSeeds 在 Load 期拦掉子图 seed 本身的毛病（C3 + 重复声明）：
 //
-//   - 要靠宿主 IO 的 seed（`env` / `file` / `context`）——子图的 `SeedPlan`
-//     不存在，只有 `literal` 能种；
+//   - **非 skip** 的 seed 要靠宿主 IO（`env` / `file` / `context`）——子图的
+//     `SeedPlan` 不存在，只有 `literal` 能种。`skip: true` 那条不算：它只把
+//     槽标成跳过，`from` 没有语义（`seedOne` 与顶层 `SeedPlan.Apply` 都是
+//     直接 `SkipSeed` 并忽略 `from`），所以照顶层的样子放行；
 //   - 同一张图里同一条键声明**两次** seed——第二次种值会被幂等首写静默忽略，
 //     到底哪个值生效取决于声明顺序，两行看着都像是对的。
 //
@@ -337,12 +339,14 @@ func checkSubSeeds(graphs map[string]GraphSpec) error {
 	for _, name := range sortedNames(graphs) {
 		seen := make(map[string]bool, len(graphs[name].Seeds))
 		for _, s := range graphs[name].Seeds {
-			switch s.From.Kind {
-			case "", "literal":
-			default:
-				return fmt.Errorf("pulse/yaml: graph %q seed %q: kind %q is not supported in a subgraph "+
-					"(only literal: env/file/context need host IO, and SeedPlan belongs to the parent graph)",
-					name, s.Key.Name, s.From.Kind)
+			if !s.Skip {
+				switch s.From.Kind {
+				case "", "literal":
+				default:
+					return fmt.Errorf("pulse/yaml: graph %q seed %q: kind %q is not supported in a subgraph "+
+						"(only literal: env/file/context need host IO, and SeedPlan belongs to the parent graph)",
+						name, s.Key.Name, s.From.Kind)
+				}
 			}
 			if seen[s.Key.Name] {
 				return fmt.Errorf("pulse/yaml: graph %q: key %q is seeded twice — the second one would be "+
