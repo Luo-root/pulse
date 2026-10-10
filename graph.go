@@ -28,6 +28,9 @@ type Graph struct {
 	aspects  []Aspect
 	observer Observer
 	maxRun   int // <=0 无限
+	// path 是本图在嵌套里的位置（节点 id 链，根图为空串）。由 Sub 在跑子图之前
+	// 盖上去——宿主不用管，所以也不会「忘了传」。#293 / #294。
+	path string
 
 	mu      sync.Mutex
 	started bool
