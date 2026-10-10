@@ -1116,8 +1116,8 @@ func TestAcquireReturnsSlotWhenCanceled(t *testing.T) {
 	if err := g.acquire(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("acquire = %v, want context.Canceled", err)
 	}
-	if n := len(g.sem); n != 0 {
-		t.Fatalf("取消后名额没放回去：len(sem) = %d", n)
+	if n := len(g.lim.sem); n != 0 {
+		t.Fatalf("取消后名额没放回去：len(lim.sem) = %d", n)
 	}
 	// 名额确实还能被正常用掉
 	if err := g.acquire(g.ctx); err != nil {

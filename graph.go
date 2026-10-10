@@ -27,7 +27,13 @@ type Graph struct {
 	nodes    []*Node
 	aspects  []Aspect
 	observer Observer
-	maxRun   int // <=0 无限
+	// lim 是这张图的**有效**名额表（nil = 无限）。默认自己一份；作为子图被 Sub
+	// 跑起来、而自己没声明过 WithMaxRunning 时，继承父图那一份（同一份计数）——
+	// 于是「一棵图树同时有几个节点在干活」由根图决定。见 limiter。
+	lim *limiter
+	// limSet 记录这张图**自己**声明过名额。声明了就用自己的、不再继承；
+	// n<=0 也算声明（那是「这一子树不限额」的口子）。
+	limSet bool
 	// path 是本图在嵌套里的位置（节点 id 链，根图为空串）。由 Sub 在跑子图之前
 	// 盖上去——宿主不用管，所以也不会「忘了传」。#293 / #294。
 	path string
@@ -51,11 +57,29 @@ type Graph struct {
 // Option 配置 Graph。
 type Option func(*Graph)
 
-// WithMaxRunning 限制同时进入 Run 的节点数。n<=0 表示无限（默认）。
+// WithMaxRunning 限制**这棵图树里**同时在 Run 里**干活**的节点数。n<=0 表示无限
+// （默认）。
+//
+// 名额是**整棵树共享一份计数**：作为子图跑起来、且自己没声明过 WithMaxRunning 时，
+// 它继承父图那一份；`Sub` 那一步**不吃名额**（它整段都在等子图跑完，占着就等于把
+// 父侧的额度锁在「等」上）。所以「根图声明 n」= 整棵树同时最多 n 个节点在干活。
+// 子图自己声明 m 就用它自己那份（含 m<=0 的「这一子树不限」）。
+//
+// 父图的节点与子图的节点是**同一份额度里的竞争者，互不为对方让路**：额度够就并发，
+// 不够才排队（实测同一张图：额度 4 时父图 1 个节点 + 子图 2 个节点一起跑完 201ms；
+// 额度 2 时同样三个活儿要 402ms 分两批）。额度管的是「干活」——观察者眼里 `running`
+// 的行数可以比 n 多，多出来的就是各层 `Sub` 那几步在等子图（那不是并发度超了）。
+//
+// 与流式糖的关系：流式校验按**有效**名额容量判（继承来的也算），所以父图额度养不起
+// 子图里那条流时，会在子图 Start 那一刻被拒，而不是跑到一半死锁。
+//
 // 等数据不占名额；排队等名额期间 ctx 取消同样打断（节点不进入 Run，
 // 终态为 canceled），不会把名额交给一个已取消的节点。
 func WithMaxRunning(n int) Option {
-	return func(g *Graph) { g.maxRun = n }
+	return func(g *Graph) {
+		g.lim = newLimiter(n)
+		g.limSet = true
+	}
 }
 
 // WithAspects 安装全局切面（先于节点切面，外层先跑）。
@@ -84,9 +108,6 @@ func New(ctx context.Context, graphID string, opts ...Option) (*Graph, error) {
 	}
 	for _, o := range opts {
 		o(g)
-	}
-	if g.maxRun > 0 {
-		g.sem = make(chan struct{}, g.maxRun)
 	}
 	return g, nil
 }
@@ -440,13 +461,13 @@ func (g *Graph) checkStreamLocked() error {
 			live = append(live, n)
 		}
 	}
-	if g.maxRun > 0 && g.maxRun < len(live) {
+	if c := g.lim.capacity(); c > 0 && c < len(live) {
 		ids := make([]string, 0, len(live))
 		for _, n := range live {
 			ids = append(ids, n.id)
 		}
 		return fmt.Errorf("pulse: stream needs %d slots at the same time, but WithMaxRunning(%d): %s",
-			len(live), g.maxRun, strings.Join(ids, ", "))
+			len(live), c, strings.Join(ids, ", "))
 	}
 	for _, n := range stream {
 		for _, k := range n.provides {
@@ -660,31 +681,12 @@ func (g *Graph) fail(err error) {
 	g.mu.Unlock()
 }
 
-// acquire 占用一个运行名额。ctx 取消时不再排队，**拿到名额后再看一次**：
-// 「名额空出」与「取消」同时就绪时 select 会随机挑一个分支，少了这一眼就会
-// 在取消之后仍进入 Run（实测这条路径并不罕见）。留给调用方的名额不该用在
-// 一个已取消的节点上。
-func (g *Graph) acquire(ctx context.Context) error {
-	if g.sem == nil {
-		return nil
-	}
-	select {
-	case g.sem <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	if err := ctx.Err(); err != nil {
-		<-g.sem // 放回名额
-		return err
-	}
-	return nil
-}
+// acquire 占用这张图**有效**名额表里的一个名额（nil = 无限，直接放行）。
+// 取消语义见 limiter.acquire。
+func (g *Graph) acquire(ctx context.Context) error { return g.lim.acquire(ctx) }
 
-func (g *Graph) release() {
-	if g.sem != nil {
-		<-g.sem
-	}
-}
+// release 归还名额。没占过、或名额表无限，都安全。
+func (g *Graph) release() { g.lim.release() }
 
 func (g *Graph) runNode(n *Node) {
 	defer g.wg.Done()
@@ -725,10 +727,15 @@ func (g *Graph) runNode(n *Node) {
 		if len(n.requires) > 0 && len(skipped) == len(n.requires) {
 			return skipErr(skipped...)
 		}
-		if err := g.acquire(rc.ctx); err != nil {
-			return err
+		// Sub 那一步**不吃名额**：它整段（build + 子图 + 桥回）都在等子图跑完，
+		// 占着名额就等于把父侧额度锁在「等」上——名额共享之后那就是死锁
+		// （限额 ≤ 嵌套深度时必现，实测见 .workbase/probe-sharedsem）。
+		if !n.sub {
+			if err := g.acquire(rc.ctx); err != nil {
+				return err
+			}
+			defer g.release()
 		}
-		defer g.release()
 		emitRunning()
 		defer func() {
 			if rec := recover(); rec != nil {

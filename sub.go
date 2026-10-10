@@ -150,10 +150,13 @@ func OutRef(child, parent keyRef) SubBind {
 //   - 子图失败 → 本节点失败，**首错原样冒泡**（`errors.Is` 成立），首错取消父图；
 //   - 取消 → 原样带出（子图 ctx 派生自本节点）。
 //
-// 槽位与运行名额**各自独立**，这条算术要记住：父图 `WithMaxRunning` 管的是
-// **同时有几张子图在跑**（本节点在父图里占一个名额，占满整段子图运行），
-// 子图内部的并发由子图自己的 `WithMaxRunning` 管——所以嵌套会突破父图的上限
-// （实测：父 `maxRun=1` + 子 `maxRun=2` 时，同时进入 `Run` 的节点峰值 3）。
+// 运行名额**整棵树共享一份**（除非子图自己声明 `WithMaxRunning`）：子图没声明就
+// 继承父图的有效名额，而 `Sub` 那一步自己**不吃名额**（它整段都在等子图跑完，
+// 占着就等于把父侧额度锁在「等」上）。于是「根图声明 n」= 整棵树同时最多 n 个
+// 节点在干活；子图自己声明 `m` 就换成它自己那份（`m<=0` = 这一子树不限）。
+// 父图节点与子图节点争的是**同一份**额度、互不让路：额度够就并发，不够才排队。
+// 旧行为是「各管各的」，嵌套能突破父图上限（实测父 1 + 子 2 峰值 3）——那正是
+// 本轮改掉的坑。
 //
 // **子图是一次性的**：`build` 每次运行都要造一张新图（一次性契约）。把子图建在
 // 闭包外面复用 → `ErrGraphStarted`，这时报出来的是一句能照着改的话。认领是
@@ -211,6 +214,7 @@ func Sub(g *Graph, id string, binds []SubBind, build func(*SubCtx) (*Graph, erro
 	n := NewNode(id, requires, provides, func(rc *RunCtx) error {
 		return runSub(rc, id, binds, build)
 	}, aspects...)
+	n.sub = true // 这一步不吃运行名额：它整段都在等子图跑完（见 WithMaxRunning）
 	if err := g.Add(n); err != nil {
 		return fmt.Errorf("pulse: Sub %q: %w", id, err)
 	}
@@ -286,6 +290,14 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 	//    里按 `sc.Path()` 给每一层各建一个出口（见 `ObserveConfig.Path`）。
 	if child.observer == nil {
 		child.observer = rc.g.observer
+	}
+
+	// 5b) 名额：子图自己声明过 `WithMaxRunning` 就用它自己那份；没声明则继承父图的
+	//     ——与观察者同一个模式（漏了会静默变成「各管各的」，运行期看就是这个坑）。
+	//     继承之后「整棵树同时几个节点在干活」由根图那一次声明决定；`Sub` 那一步
+	//     自己不吃名额（见 Graph.runNode）。
+	if !child.limSet {
+		child.lim = rc.g.lim
 	}
 
 	// 6) 种父侧输入。种之前先确认这条键还是空的：子图自己在 build 里把它种上了
