@@ -221,7 +221,7 @@ func buildSub(sc *pulse.SubCtx, graphName string, spec GraphSpec,
 	if err != nil {
 		return nil, err
 	}
-	if err := addNodes(child, spec.Nodes, graphs, reg, opts); err != nil {
+	if err := addNodes(child, spec.Nodes, graphName, graphs, reg, opts); err != nil {
 		return nil, err
 	}
 	// 子图的 seeds：只允许 literal（C3）——env / file / context 那几种要靠宿主

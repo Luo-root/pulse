@@ -163,16 +163,33 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	if err := checkSubSeeds(doc.Graphs); err != nil {
 		return nil, nil, err
 	}
-
 	ctx := opts.Context
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// 每一张 spec 的**节点**也在这一刻查完。落进图的只有根层那批，子图要等运行到
+	// 才装——只查根层的话，第 2 层往后写错工厂名或绑定的毛病会「装图全过、跑到
+	// 一半才炸」，谁也引用不到的 spec 更是永远不炸。
+	//
+	// 做法是给每张 spec 起一个**只装不跑**的空图，把同一段装图代码走一遍：`Sub` /
+	// `Add` 在装配期做的检查（id、重复、来源、绑定）一个不少，子图却不会被真的
+	// 建起来（build 只是被存进节点，没有人调用它）。
+	for _, name := range sortedNames(doc.Graphs) {
+		check, err := pulse.New(ctx, "load-check:"+name)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := addNodes(check, doc.Graphs[name].Nodes, name, doc.Graphs, reg, opts); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	g, err := pulse.New(ctx, opts.GraphID, opts.Graph...)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := addNodes(g, doc.Nodes, doc.Graphs, reg, opts); err != nil {
+	if err := addNodes(g, doc.Nodes, "", doc.Graphs, reg, opts); err != nil {
 		return nil, nil, err
 	}
 
@@ -197,57 +214,72 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 //
 // 子图里的子图走的是同一个函数（`buildSub` 递归调它），所以嵌套不设深度上限；
 // 引用环已经在 `checkGraphRefs` 拦掉了，这里不会转圈。
-func addNodes(g *pulse.Graph, specs []NodeSpec, graphs map[string]GraphSpec,
-	reg *pulse.Registry, opts LoadOptions) error {
+//
+// `where` 是这批声明属于哪张子图（根层传空串），只用于把报错点到位——子图里的
+// 毛病不写清是哪一张，读的人还得自己找。
+func addNodes(g *pulse.Graph, specs []NodeSpec, where string,
+	graphs map[string]GraphSpec, reg *pulse.Registry, opts LoadOptions) error {
 
 	for i, n := range specs {
 		if n.ID == "" {
-			return fmt.Errorf("pulse/yaml: nodes[%d] missing id", i)
+			return fmt.Errorf("pulse/yaml: %snodes[%d] missing id", at(where), i)
 		}
 		aspects := nodeAspects(n)
 		switch {
 		case n.Graph != "" && n.Uses != "":
-			return fmt.Errorf("pulse/yaml: node %q: uses and graph are mutually exclusive", n.ID)
+			return fmt.Errorf("pulse/yaml: %snode %q: uses and graph are mutually exclusive", at(where), n.ID)
 
 		case n.Graph != "":
 			spec, ok := graphs[n.Graph]
 			if !ok {
-				return fmt.Errorf("pulse/yaml: node %q references unknown graph %q", n.ID, n.Graph)
+				return fmt.Errorf("pulse/yaml: %snode %q references unknown graph %q", at(where), n.ID, n.Graph)
 			}
 			binds, err := subBinds(n, n.Graph, spec, reg)
 			if err != nil {
-				return fmt.Errorf("pulse/yaml: node %q: %w", n.ID, err)
+				// subBinds 的报错自己就带 `node %q:` 那句，这里只补「哪张 spec」——
+				// 再加一层 node id 会打成 `node "x": node "x": …`。
+				return fmt.Errorf("pulse/yaml: %s%w", at(where), err)
 			}
 			graphName := n.Graph
 			err = pulse.Sub(g, n.ID, binds, func(sc *pulse.SubCtx) (*pulse.Graph, error) {
 				return buildSub(sc, graphName, spec, graphs, reg, opts)
 			}, aspects...)
 			if err != nil {
-				return fmt.Errorf("pulse/yaml: add subgraph node %q: %w", n.ID, err)
+				// `pulse.Sub` 的报错也都点着节点 id，不用再补一层。
+				return fmt.Errorf("pulse/yaml: %s%w", at(where), err)
 			}
 
 		case n.Uses != "":
 			run, ok := reg.Lookup(n.Uses)
 			if !ok {
-				return fmt.Errorf("pulse/yaml: node %q uses unknown factory %q", n.ID, n.Uses)
+				return fmt.Errorf("pulse/yaml: %snode %q uses unknown factory %q", at(where), n.ID, n.Uses)
 			}
 			requires, err := reg.KeyRefs(toNameTypes(n.Requires))
 			if err != nil {
-				return fmt.Errorf("pulse/yaml: node %q requires: %w", n.ID, err)
+				return fmt.Errorf("pulse/yaml: %snode %q requires: %w", at(where), n.ID, err)
 			}
 			provides, err := reg.KeyRefs(toNameTypes(n.Provides))
 			if err != nil {
-				return fmt.Errorf("pulse/yaml: node %q provides: %w", n.ID, err)
+				return fmt.Errorf("pulse/yaml: %snode %q provides: %w", at(where), n.ID, err)
 			}
 			if err := g.Add(pulse.NewNode(n.ID, requires, provides, run, aspects...)); err != nil {
-				return fmt.Errorf("pulse/yaml: add node %q: %w", n.ID, err)
+				return fmt.Errorf("pulse/yaml: %snode %q: %w", at(where), n.ID, err)
 			}
 
 		default:
-			return fmt.Errorf("pulse/yaml: node %q missing uses or graph", n.ID)
+			return fmt.Errorf("pulse/yaml: %snode %q missing uses or graph", at(where), n.ID)
 		}
 	}
 	return nil
+}
+
+// at 给一条装图期报错标出「这是哪张 spec 里的」：根层为空串（不写），子图写
+// `graph "name": `。
+func at(where string) string {
+	if where == "" {
+		return ""
+	}
+	return fmt.Sprintf("graph %q: ", where)
 }
 
 // nodeAspects 是节点切面：先列的更靠外 → Timeout 在外、Retry 在内。

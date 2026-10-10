@@ -244,6 +244,182 @@ nodes:
 	}
 }
 
+// 第 2 层及以下写错的东西，**装图期**就要报完：落进图的只有根层那批，子图要等
+// 运行到才装——只查根层的话，这些毛病会「装图全过、跑到一半才炸」，谁也引用不到
+// 的 spec 更是永远不炸（它们本来就是最贵的两类）。
+//
+// 每一行都压在第 2 层（`mid`）或更深，根层那批另有用例。这里同时钉住两件事：
+// 报错点在**哪张 spec**（不点名的话读的人还得自己找），以及引擎那边的装配期
+// 检查（`Sub` / `Add`）也纳进来了——它们原来是等运行到才跑的。
+func TestLoadChecksEveryGraphSpec(t *testing.T) {
+	const head = `
+version: 1
+seeds:
+  - key: {name: c.in, type: string}
+    from: {kind: literal, value: "v"}
+graphs:
+`
+	const tail = `
+nodes:
+  - id: step1
+    graph: mid
+    in:  {c.mid_in: c.in}
+    out: {c.mid_out: c.out}
+`
+
+	cases := []struct {
+		name string
+		node string
+		body string
+		want string
+	}{
+		{
+			name: "第 2 层的绑定指向子图里没人读的键",
+			node: "toInner",
+			body: `  mid:
+    nodes:
+      - id: toInner
+        graph: inner
+        in:  {c.nope: c.mid_in}
+        out: {c.cout: c.mid_out}
+  inner:
+    nodes:
+      - id: leaf
+        uses: f
+        requires: [{name: c.cin, type: string}]
+        provides: [{name: c.cout, type: string}]
+`,
+			want: `graph "mid": node "toInner": graph "inner" reads "c.nope" in the binding`,
+		},
+		{
+			name: "第 3 层的工厂名不存在",
+			node: "leaf",
+			body: `  mid:
+    nodes:
+      - id: toDeep
+        graph: deep
+        in:  {c.cin: c.mid_in}
+        out: {c.cout: c.mid_out}
+  deep:
+    nodes:
+      - id: leaf
+        uses: does.not.exist
+        requires: [{name: c.cin, type: string}]
+        provides: [{name: c.cout, type: string}]
+`,
+			want: `graph "deep": node "leaf" uses unknown factory "does.not.exist"`,
+		},
+		{
+			name: "谁也引用不到的 spec 里工厂名也不存在",
+			node: "who",
+			body: `  mid:
+    nodes:
+      - id: toInner
+        graph: inner
+        in:  {c.cin: c.mid_in}
+        out: {c.cout: c.mid_out}
+  inner:
+    nodes:
+      - id: leaf
+        uses: f
+        requires: [{name: c.cin, type: string}]
+        provides: [{name: c.cout, type: string}]
+  unused:
+    nodes:
+      - id: who
+        uses: nope.not.registered
+        requires: [{name: c.cin, type: string}]
+        provides: [{name: c.cout, type: string}]
+`,
+			want: `graph "unused": node "who" uses unknown factory "nope.not.registered"`,
+		},
+		{
+			name: "第 2 层两个节点写同一条键（引擎的来源冲突）",
+			node: "also",
+			body: `  mid:
+    nodes:
+      - id: toInner
+        graph: inner
+        in:  {c.cin: c.mid_in}
+        out: {c.cout: c.mid_out}
+      - id: also
+        uses: f
+        requires: [{name: c.mid_in, type: string}]
+        provides: [{name: c.mid_out, type: string}]
+  inner:
+    nodes:
+      - id: leaf
+        uses: f
+        requires: [{name: c.cin, type: string}]
+        provides: [{name: c.cout, type: string}]
+`,
+			want: `graph "mid": node "also": pulse: key already has a source: "c.mid_out"`,
+		},
+		{
+			name: "第 2 层两个节点同名（引擎的重复 id）",
+			node: "dup",
+			body: `  mid:
+    nodes:
+      - id: dup
+        uses: f
+        requires: [{name: c.mid_in, type: string}]
+        provides: [{name: c.mid_out, type: string}]
+      - id: dup
+        uses: f
+        requires: [{name: c.mid_in, type: string}]
+        provides: [{name: c.mid_out, type: string}]
+`,
+			want: `graph "mid": node "dup": pulse: duplicate node id "dup"`,
+		},
+		{
+			name: "第 2 层的子键既 in 又 out（引擎 Sub 的装配期检查）",
+			node: "toBoth",
+			body: `  mid:
+    nodes:
+      - id: toBoth
+        graph: both
+        in:  {c.both: c.mid_in}
+        out: {c.both: c.mid_out}
+  both:
+    nodes:
+      - id: reads
+        uses: f
+        requires: [{name: c.both, type: string}]
+        provides: [{name: c.side, type: string}]
+      - id: writes
+        uses: f
+        requires: [{name: c.side, type: string}]
+        provides: [{name: c.both, type: string}]
+`,
+			want: `graph "mid": pulse: Sub "toBoth": child key "c.both" is bound twice`,
+		},
+	}
+
+	reg := pulse.NewRegistry()
+	for _, k := range []string{"c.in", "c.cin", "c.cout", "c.side", "c.both", "c.nope", "c.mid_in", "c.mid_out", "c.out"} {
+		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
+	}
+	reg.MustRegister("f", func(rc *pulse.RunCtx) error { return nil })
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := pulseyaml.Load([]byte(head+tc.body+tail), reg, pulseyaml.LoadOptions{GraphID: "P"})
+			if err == nil {
+				t.Fatal("装图期就该报，别留到运行期")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("报错没点到位置上：\n got %v\nwant 含 %q", err, tc.want)
+			}
+			// 节点 id 只该补一层：`addNodes` 与 `subBinds` 各补一次就成了
+			// `node "x": node "x": …`（原来正是这么打的）。
+			doubled := `node "` + tc.node + `": node "` + tc.node + `"`
+			if strings.Contains(err.Error(), doubled) {
+				t.Fatalf("节点 id 被补了两层：%v", err)
+			}
+		})
+	}
+}
+
 // 引用环：a → b → a 装不出图，Load 期拦并给出具体路径（与引擎报依赖环同形）。
 func TestLoadSubgraphCycle(t *testing.T) {
 	reg := pulse.NewRegistry()
