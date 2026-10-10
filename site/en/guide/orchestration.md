@@ -109,6 +109,7 @@ Both callbacks receive **this node's own `*RunCtx`** as their first parameter: a
 `Key[<-chan T]` always worked; what was missing is not "one more channel wrapper" but the six things every producing / consuming node has to hand-write (creation and publication, close responsibility, the loop, cancellation, error propagation, backpressure and slots). The classic mistake is **`Set`-ing the channel and then returning**: the node is already `completed`, the actual sending lives on in an unobserved background goroutine — errors never reach the graph and cancellation cannot wake it.
 
 ```go
+// The simplest shape is a Produce + Consume pair: one output, one consumer
 err := pulse.Produce(g, "src", stream, func(rc *pulse.RunCtx, send func(int) error) error {
 	for _, v := range values {
 		if err := send(v); err != nil { // cancellation escapes a blocked send
@@ -117,16 +118,20 @@ err := pulse.Produce(g, "src", stream, func(rc *pulse.RunCtx, send func(int) err
 	}
 	return nil
 })
-err = pulse.Consume(g, "sink", stream, func(rc *pulse.RunCtx, v int) error {
+// For N downstreams, insert a Tee: it copies one stream into N outputs, one consumer each
+err = pulse.Tee(g, "fan", stream, pulse.Keys(sA, sB)) // broadcast: both downstreams see everything
+err = pulse.Consume(g, "sinkA", sA, func(rc *pulse.RunCtx, v int) error {
 	return handle(v)
 })
-err = pulse.Tee(g, "fan", stream, pulse.Keys(sA, sB)) // broadcast: both downstreams see everything
+err = pulse.Consume(g, "sinkB", sB, func(rc *pulse.RunCtx, v int) error {
+	return archive(v)
+})
 ```
 
 - **The producer stays alive until it is done**: the channel is closed only in the `defer` that runs when the node returns (success / error / cancellation / panic all take it, so there is no double close), and `send` selects between sending and `rc.Context().Done()`.
 - **The consumer uses `select`, not `for range`**: the latter keeps computing the buffered values after a cancellation *and still reports success*; `select` exits the moment the run is cancelled and returns the cancellation reason.
 - **An empty stream is not a skip**: nothing sent, outputs closed normally → the downstream still enters `Run` (zero callbacks, `completed`, the run succeeds).
-- **Slots**: both ends of a stream must be live at once — at assembly time the sugar can only do a quick local check, and `Start()` re-checks the **whole graph**: every stream node must fit in the slot budget at the same time, otherwise the graph is rejected outright instead of hanging at runtime. That also rejects "small stream + big buffer" configurations — whether they work depends on the data volume, so they must not be relied on. **Every stream output also needs a consumer**: a dangling output is rejected at `Start()` too (a sender blocking on an unread output waits forever).
+- **Slots**: both ends of a stream must be live at once — at assembly time the sugar can only do a quick local check, and `Start()` re-checks the **whole stream graph**: every stream node *and every reader of a stream output* (a consumer may be hand-written) must fit in the slot budget at the same time, otherwise the graph is rejected outright instead of hanging at runtime. That also rejects "small stream + big buffer" configurations — whether they work depends on the data volume, so they must not be relied on. On top of that, **every stream output needs a consumer — exactly one**: a dangling output is rejected at `Start()` (a sender blocking on an unread output waits forever), and a second reader is rejected too, because two independent readers silently split the values between them. To broadcast, give each downstream its own `Tee` output; to compete, use one `FanOut`.
 - **Don't confuse `FanOut` with `Tee`**: use `FanOut` to *compete* (each item handled once), `Tee` to give every downstream everything. Plain values do not need `Tee` — one `Provides` with N `Requires` is already a broadcast; only channels get split.
 
 ## Branching: call Skip on the path you did not take

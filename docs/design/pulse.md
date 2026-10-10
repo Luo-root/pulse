@@ -324,13 +324,19 @@ err := pulse.Produce(g, "src", stream, func(rc *pulse.RunCtx, send func(int) err
     return nil
 })
 
+// 最简单的形状是 Produce + Consume 一对（一个出口接一个消费端）。
 // 消费：循环是 select（收到值 / ctx 取消），不是 for range
 err = pulse.Consume(g, "sink", stream, func(rc *pulse.RunCtx, v int) error {
     return handle(v)
 })
 
-// 广播：一根流复制给 N 个下游，每个都拿到完整、同序的数据
-err = pulse.Tee(g, "fan", stream, pulse.Keys(sA, sB, sC))
+// 广播：一根流复制给 N 个下游，每个都拿到完整、同序的数据。
+// 注意 Tee 的输入是**另一条**流：一条出口只喂一个下游，要 N 个下游
+// 就得让 Tee 提供 N 条出口，再一条接一个消费端（装配校验见下表最后一行）
+err = pulse.Tee(g, "fan", otherStream, pulse.Keys(sA, sB, sC))
+err = pulse.Consume(g, "sinkA", sA, func(rc *pulse.RunCtx, v int) error { return handle(v) })
+err = pulse.Consume(g, "sinkB", sB, func(rc *pulse.RunCtx, v int) error { return archive(v) })
+err = pulse.Consume(g, "sinkC", sC, func(rc *pulse.RunCtx, v int) error { return audit(v) })
 ```
 
 | 件 | 展开成 | 语义来源 |
@@ -338,7 +344,7 @@ err = pulse.Tee(g, "fan", stream, pulse.Keys(sA, sB, sC))
 | `Produce` | 一个节点：`Provides(out)`，`Set` 出 channel 后**活着发完** | 关闭只在返回时的 `defer`（成功 / 出错 / 取消 / panic 都走它，没有双次 close）；`send` 在发送与 `rc.Context().Done()` 上 `select` |
 | `Consume` | 一个节点：`Requires(in)`，`select` 循环读 | **不能用 `for range`**：实测它会「取消之后把缓冲区算完」并且整轮报成功（没人看见取消 → `Run()` 返回 `nil`，见 #286） |
 | `Tee` | 一个节点：`Requires(in)` + `Provides(outs...)`，逐条转发 | 广播：每个下游拿到完整同序数据；**背压按最慢的下游算** |
-| 装配校验 | `checkStreamSlots`（装配期快速失败）+ `Graph.checkStreamLocked`（`Start` 的权威校验） | 「流的两端必须同时活着」是**组合**性质的约束：糖在装配那一刻看不全整张图，所以局部检查只做即时反馈，`Start` 按**全部流节点**要名额（实测：`maxRun=2` 下 `Produce → Tee → Consume` 三个流节点会装配全过、运行期死锁），并要求每条流出口都有人 `Requires`（没人读的出口会让发送端永久堵住） |
+| 装配校验 | `checkStreamSlots`（装配期快速失败）+ `Graph.checkStreamLocked`（`Start` 的权威校验） | 「流的两端必须同时活着」是**组合**性质的约束：糖在装配那一刻看不全整张图，所以局部检查只做即时反馈，`Start` 按**整张流图**要名额——流节点 + **每条流出口的读取者**（消费者可以手写，它同样得占一个名额才读得到；实测：`maxRun=2` 下 `Produce → Tee → Consume` 与 `Produce → Tee → 手写 sink` 都会装配全过、运行期死锁），并要求每条流出口都有人 `Requires`、且**只喂一个下游**（没人读的出口会让发送端永久堵住；两个各写各的读取者会在静默里瓜分值——同一个 `FanOut` 组的 worker 共读是显式声明，不算多消费者） |
 
 **为什么「要复制」的只有流这一类**（实测四种分发形态）：普通值——一个 `Provides`、N 个下游各自 `Requires` 同一个 Key——3 个下游都拿到完整值；一组值（slice 当一个值）同理；**只有 channel 会抢**：同一条 channel 给 3 个下游，6 个值被瓜分（合计 6，不是 18）；复制成 3 条 channel 才是 18。所以「抢」用 `FanOut`、「每个都拿到」用 `Tee`，两者不互相替代。
 

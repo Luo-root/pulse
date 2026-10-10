@@ -224,7 +224,7 @@ func FanOut[I, O any](g *Graph, id string, in Key[I], outs []Key[O],
 	for i, out := range outs {
 		shard := i + 1
 		worker := id + "-" + strconv.Itoa(shard)
-		workers[i] = NewNode(worker, Requires(in), Provides(out), func(rc *RunCtx) error {
+		n := NewNode(worker, Requires(in), Provides(out), func(rc *RunCtx) error {
 			// 门已经等到输入到达（就绪或跳过）：跳过的那条在这里读回来是
 			// *SkipError，本实例随之以跳过收尾，与手写节点一模一样。
 			v, err := Get(rc, in)
@@ -237,6 +237,10 @@ func FanOut[I, O any](g *Graph, id string, in Key[I], outs []Key[O],
 			}
 			return Set(rc, out, got)
 		}, aspects...)
+		// 同组 worker 共读一条流出口是显式的「抢」：Start 的流式校验据此把
+		// 「一组 FanOut」与「两个各写各的消费者」分开，见 checkStreamLocked。
+		n.compete = id
+		workers[i] = n
 	}
 	if err := g.addAll(workers); err != nil {
 		return fmt.Errorf("pulse: FanOut %q: %w", id, err)

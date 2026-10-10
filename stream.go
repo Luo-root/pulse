@@ -47,8 +47,8 @@ func newStreamConfig(opts []StreamOption) streamConfig {
 //
 // 但它**证明不了组合图安全**——糖在装配那一刻看不全整张图（上游生产端可能还没
 // 装、下游消费端可能是后加的）。真正的判据在 `Start`（见 Graph.checkStreamLocked）：
-// 全部流节点要同时有名额，且每条流出口都得有人消费。两处一起才完整：这里给的是
-// 即时反馈，那里才是权威校验。
+// 整张流图（流节点 + 流出口的读取者）要同时有名额，且每条流出口都得有人消费、
+// **只喂一个下游**。两处一起才完整：这里给的是即时反馈，那里才是权威校验。
 func checkStreamSlots(g *Graph, id, kind string, need int) error {
 	if g.maxRun > 0 && g.maxRun < need {
 		return fmt.Errorf("pulse: %s %q: WithMaxRunning(%d) cannot host this stream: "+
@@ -71,10 +71,12 @@ func checkStreamSlots(g *Graph, id, kind string, need int) error {
 //     注意它走的是「值到了」这条路（槽位里放的是 channel），**不是跳过**；想要
 //     「没有值」的语义就别 `Set` 那条 channel。
 //   - **名额**：生产端与消费端必须同时活着。装配期先做一次快速检查
-//     （`WithMaxRunning ≥ 2`），`Start` 再按**整张图**复核——全部流节点要同时有
-//     名额（实测：`WithMaxRunning(2)` 下 `Produce → Tee → Consume` 三个流节点
-//     会装配全过、运行期死锁），且每条出口都得有人消费。代价是禁掉「小流 +
-//     大缓冲」这类能凑合跑的配置——那种配置的成败取决于数据量，不该被依赖。
+//     （`WithMaxRunning ≥ 2`），`Start` 再按**整张流图**复核——流节点与**每条
+//     流出口的读取者**都要同时有名额（实测：`WithMaxRunning(2)` 下
+//     `Produce → Tee → Consume` 装配全过、运行期死锁；把消费端换成手写的
+//     `NewNode` 一样死锁——读取者同样得占一个名额才读得到），且每条出口都得有
+//     人消费、**只喂一个下游**。代价是禁掉「小流 + 大缓冲」这类能凑合跑的
+//     配置——那种配置的成败取决于数据量，不该被依赖。
 //
 // 生产端不开切面：`Retry` 会撞上「已发布的槽」（幂等首写 → 第二次 attempt 直接
 // `ErrConflict`），`Timeout` 与「节点活着发完」冲突（它只把流掐断，消费端看到的
@@ -191,12 +193,16 @@ func Consume[T any](g *Graph, id string, in Key[<-chan T],
 //     的算）。这是固有权衡——想让慢下游不拖累别人，得自己给它 `WithBuffer`，或
 //     让它自己丢。
 //   - **名额**：Tee 与它的 N 个下游要同时活着 ⇒ 装配期快速检查
-//     `WithMaxRunning ≥ N+1`，`Start` 再按整张图复核（同 `Produce`，含上游）。
+//     `WithMaxRunning ≥ N+1`，`Start` 再按整张流图复核（同 `Produce`，含上游与
+//     每个下游）。
 //   - **每条出口都得有人要**：`outs` 里任何一条没有下游 `Requires`，`Start` 就
 //     拒绝——发送端会永久堵在那条无缓冲出口上（缓冲只把死锁推到缓冲写满）。
 //   - **空流**：一次都没发、全部出口正常关闭 → 下游零次回调、整轮成功（与
 //     `Produce` 同一条口径：空流是「值到了」，不是「跳过」）。
-//   - 一条出口只能给一个下游；要再分一层就再接一个 `Tee`。
+//   - **一条出口只喂一个下游**：第二个读取者会在**静默**里和第一个瓜分值，而
+//     Tee 承诺的是「每个下游拿到完整同序的数据」，所以 `Start` 直接拒。要再分
+//     一层就再接一个 `Tee`；要「抢」（每个数据只做一次）就用 `FanOut`——同一组
+//     worker 共读一条出口是显式声明，不算多消费者。
 func Tee[T any](g *Graph, id string, in Key[<-chan T], outs []Key[<-chan T],
 	opts ...StreamOption) error {
 	if g == nil {

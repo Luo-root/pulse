@@ -414,8 +414,203 @@ func TestStreamOutputNeedsConsumer(t *testing.T) {
 	}
 }
 
-// 隔离消费端：取消与「有值可读 / channel 已关闭」同时就绪时，取消必须赢。
+// 手写消费者同样要占一个名额：`Start` 要的「整张流图」= 流节点 + 流出口的读取者。
 //
+// 复现（修之前）：`WithMaxRunning(2)` 下 `Produce(src) → Tee([a]) → 手写 sink(a)`
+// 装配全过——局部检查各看各的（`Produce` 要 2、`Tee` 要 `len(outs)+1 == 2`），
+// 手写消费者不在任何一处统计里；运行时 `Produce` 与 `Tee` 占满两个名额，`Tee`
+// 堵在向 `a` 发送、手写 sink 排队等名额 → 挂死到外部超时（实测 400ms 超时，
+// 一个值都没过）。
+//
+// 修之后：三个节点一起要名额 → `maxRun=2` 在 `Start` 直接拒；给够 3 个就跑得通。
+func TestStreamSlotsCountHandWrittenReader(t *testing.T) {
+	src := NewKey[<-chan int]("s.hw.src")
+	a := NewKey[<-chan int]("s.hw.a")
+	var got atomic.Int32
+
+	// 糖之外的那条路：手写节点自己 Get 出 channel、自己收。
+	sink := func(rc *RunCtx) error {
+		ch, err := Get(rc, a)
+		if err != nil {
+			return err
+		}
+		for range ch {
+			got.Add(1)
+		}
+		return nil
+	}
+	build := func(g *Graph) {
+		t.Helper()
+		if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error {
+			for i := 0; i < 5; i++ {
+				if err := send(i); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := Tee(g, "tee", src, Keys(a)); err != nil {
+			t.Fatal(err)
+		}
+		if err := g.Add(NewNode("sink", Requires(a), nil, sink)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	g := mustNew(t, context.Background(), "hw-2", WithMaxRunning(2))
+	build(g)
+	err := g.Start()
+	if err == nil || !strings.Contains(err.Error(), "slots at the same time") {
+		t.Fatalf("手写消费者没算进名额：Start = %v, want 名额不足的装配错误", err)
+	}
+	if !strings.Contains(err.Error(), "sink") {
+		t.Fatalf("报错要点名那个读取者：%v", err)
+	}
+
+	// 同一张图给够名额（三个节点同时活着）就跑得通——错的只是名额，不是图本身。
+	g2 := mustNew(t, context.Background(), "hw-3", WithMaxRunning(3))
+	build(g2)
+	if err := g2.Run(); err != nil {
+		t.Fatalf("名额给够（3）应当跑得通：%v", err)
+	}
+	if n := got.Load(); n != 5 {
+		t.Fatalf("手写消费者拿到 %d 个值，want 5", n)
+	}
+}
+
+// 一条流出口只喂一个下游：两个各写各的读取者会在**静默**里瓜分值，
+// 而 Tee 的承诺是「每个下游拿到完整、同序的数据」。
+//
+// 实测（修之前）：`Tee([a])` 加两个 `Consume(a)` 装配全过，10 个值被 8/2 瓜分、
+// 整轮 err=nil。`Produce` 的出口同理（两个手写读取者 10/0）——两边都跑、都只
+// 拿到一部分，谁也不会报错。
+//
+// 「抢」是 `FanOut` 的用法（N 个 worker 共读一条流），所以**同组不算多消费者**，
+// 见 TestFanOutCompetesOnStreamOutput。
+func TestStreamOutputRejectsSplitReaders(t *testing.T) {
+	ctx := context.Background()
+
+	// 1) Tee 的一条出口挂两个 Consume
+	{
+		src := NewKey[<-chan int]("s.split1.src")
+		a := NewKey[<-chan int]("s.split1.a")
+		g := mustNew(t, ctx, "split-tee")
+		if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if err := Tee(g, "tee", src, Keys(a)); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"sink-1", "sink-2"} {
+			if err := Consume(g, id, a, func(rc *RunCtx, v int) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := g.Start()
+		if err == nil || !strings.Contains(err.Error(), "split between them") {
+			t.Fatalf("Tee 出口两个读取者：Start = %v, want 瓜分错误", err)
+		}
+		if !strings.Contains(err.Error(), "sink-1") || !strings.Contains(err.Error(), "sink-2") {
+			t.Fatalf("报错要列出两个读取者：%v", err)
+		}
+	}
+
+	// 2) Produce 的出口挂两个手写读取者
+	{
+		src := NewKey[<-chan int]("s.split2.src")
+		g := mustNew(t, ctx, "split-produce")
+		if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"r1", "r2"} {
+			if err := g.Add(NewNode(id, Requires(src), nil, func(rc *RunCtx) error {
+				ch, err := Get(rc, src)
+				if err != nil {
+					return err
+				}
+				for range ch {
+				}
+				return nil
+			})); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := g.Start()
+		if err == nil || !strings.Contains(err.Error(), "split between them") {
+			t.Fatalf("Produce 出口两个读取者：Start = %v, want 瓜分错误", err)
+		}
+	}
+
+	// 3) 两次独立的 FanOut 各自读同一条出口：各是一组，仍算多消费者
+	{
+		src := NewKey[<-chan int]("s.split3.src")
+		o1 := NewKey[int]("s.split3.o1")
+		o2 := NewKey[int]("s.split3.o2")
+		o3 := NewKey[int]("s.split3.o3")
+		o4 := NewKey[int]("s.split3.o4")
+		g := mustNew(t, ctx, "split-two-fanout")
+		if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		drain := func(rc *RunCtx, shard int, in <-chan int) (int, error) {
+			for range in {
+			}
+			return shard, nil
+		}
+		if err := FanOut(g, "w", src, Keys(o1, o2), drain); err != nil {
+			t.Fatal(err)
+		}
+		if err := FanOut(g, "v", src, Keys(o3, o4), drain); err != nil {
+			t.Fatal(err)
+		}
+		err := g.Start()
+		if err == nil || !strings.Contains(err.Error(), "split between them") {
+			t.Fatalf("两组 FanOut 读同一条出口：Start = %v, want 瓜分错误", err)
+		}
+	}
+}
+
+// FanOut 挂在一根流上正是「抢」——同组 worker 共读一条出口是**显式**声明，
+// 不是静默瓜分，`Start` 必须放过（文档点名推荐的玩法）。
+//
+// 这条钉的是**契约**（修之前也通过）：P2 的拦截不能把 FanOut 一起拦掉。
+func TestFanOutCompetesOnStreamOutput(t *testing.T) {
+	src := NewKey[<-chan int]("s.fanout.src")
+	o1 := NewKey[int]("s.fanout.o1")
+	o2 := NewKey[int]("s.fanout.o2")
+	g := mustNew(t, context.Background(), "fanout-stream")
+
+	if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error {
+		for i := 0; i < 10; i++ {
+			if err := send(i); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var counts [2]atomic.Int32
+	if err := FanOut(g, "w", src, Keys(o1, o2),
+		func(rc *RunCtx, shard int, in <-chan int) (int, error) {
+			for range in {
+				counts[shard-1].Add(1)
+			}
+			return shard, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatalf("FanOut 抢一根流应当跑得通：%v", err)
+	}
+	if total := counts[0].Load() + counts[1].Load(); total != 10 {
+		t.Fatalf("两个 worker 合计拿到 %d 个值，want 10（抢：每个值只做一次）", total)
+	}
+}
+
+// 隔离消费端：取消与「有值可读 / channel 已关闭」同时就绪时，取消必须赢。
 // 这条钉的是「进分支后复查 ctx」那一行——select 在两个分支都就绪时随机挑
 // （与 `acquire` 同一条纪律），少了复查就会在取消之后继续调 fn，甚至把
 // 「channel 已关闭」走成 `return nil`、把取消报成成功。

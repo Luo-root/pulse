@@ -108,6 +108,7 @@ err = pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2, r3),
 `Key[<-chan T]` 早就能用，缺的不是「再包一层 channel」，而是每个生产 / 消费节点都要手写的六件事（创建与发布、关闭责任、循环、取消、错误回传、背压与名额）。最典型的一处写错是 **`Set` 出 channel 就 `return`**：节点已经 `completed`，真正的发送留在没人观测的后台 goroutine 里——错误回不到图上、取消也叫不醒它。
 
 ```go
+// 最简单的形状是 Produce + Consume 一对：一个出口接一个消费端
 err := pulse.Produce(g, "src", stream, func(rc *pulse.RunCtx, send func(int) error) error {
 	for _, v := range values {
 		if err := send(v); err != nil { // 取消能从堵住的发送里出来
@@ -116,16 +117,20 @@ err := pulse.Produce(g, "src", stream, func(rc *pulse.RunCtx, send func(int) err
 	}
 	return nil
 })
-err = pulse.Consume(g, "sink", stream, func(rc *pulse.RunCtx, v int) error {
+// 要 N 个下游就在中间加一个 Tee：它把一根流复制成 N 条出口，每条出口只喂一个下游
+err = pulse.Tee(g, "fan", stream, pulse.Keys(sA, sB)) // 广播：两个下游各拿完整数据
+err = pulse.Consume(g, "sinkA", sA, func(rc *pulse.RunCtx, v int) error {
 	return handle(v)
 })
-err = pulse.Tee(g, "fan", stream, pulse.Keys(sA, sB)) // 广播：两个下游各拿完整数据
+err = pulse.Consume(g, "sinkB", sB, func(rc *pulse.RunCtx, v int) error {
+	return archive(v)
+})
 ```
 
 - **生产端活着发完**：channel 的关闭只在节点返回时的 `defer` 里（成功 / 出错 / 取消 / panic 都走它，不会双次 close），`send` 在发送与 `rc.Context().Done()` 上 `select`。
 - **消费端用 `select`，不是 `for range`**：后者在取消之后会把缓冲区里的值**继续算完**，而且整轮还报成功；`select` 在取消那一刻退出并返回取消原因。
 - **空流不是跳过**：一次都没发、出口正常关闭 → 下游照样进入 `Run`（零次回调、`completed`、整轮成功）。
-- **名额**：流的两端必须同时活着——装配那一刻糖只能做一次快速检查，`Start()` 还会按**整张图**复核：全部流节点要同时有名额，否则直接拒（不留到运行时卡死）。所以「小流量 + 大缓冲」这种凑合跑的配置会被拒——它的成败取决于数据量，不该被依赖。另外**每条流出口都得有人消费**，漏挂一个下游同样在 `Start()` 被拒（没人读的出口会让发送端永久堵在那里）。
+- **名额**：流的两端必须同时活着——装配那一刻糖只能做一次快速检查，`Start()` 还会按**整张流图**复核：流节点与**每条流出口的读取者**（消费者也可以手写）要同时有名额，否则直接拒（不留到运行时卡死）。所以「小流量 + 大缓冲」这种凑合跑的配置会被拒——它的成败取决于数据量，不该被依赖。另外**每条流出口都得有人消费、且只喂一个下游**：漏挂下游同样在 `Start()` 被拒（没人读的出口会让发送端永久堵在那里）；第二个读取者也会被拒——两个各写各的读者会在**静默**里瓜分值，要广播就每条下游开一条 `Tee` 出口，要「抢」就用一个 `FanOut`。
 - **`FanOut` 与 `Tee` 别混**：抢（每个数据只做一次）用 `FanOut`；每个下游都要拿到全部数据用 `Tee`。普通值不需要 `Tee`——一个 `Provides` 加 N 个 `Requires` 本来就是广播，只有 channel 会被瓜分。
 
 ## 分支：对未选中的路调 Skip

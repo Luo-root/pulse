@@ -16,6 +16,10 @@ type Node struct {
 	// "tee"）。Start 的流式校验要按它认流节点：名额是**同时活着**的约束，
 	// 而糖在装配那一刻看不全整张图。手写节点为空串。
 	streamKind string
+	// compete 非空表示这个节点是某次 `FanOut` 的 worker（值 = 那次调用的 id）。
+	// 一条流出口只喂一个下游；**同一组** worker 共读一条出口是显式声明的
+	// 「抢」（FanOut 本来就是这么用的），不算静默瓜分——见 Graph.checkStreamLocked。
+	compete string
 }
 
 // Requires 声明本节点依赖的输入槽。
