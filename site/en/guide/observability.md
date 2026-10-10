@@ -37,6 +37,8 @@ The two run-level records **bracket** the run's node records: a host no longer h
 
 The attribution dimensions ride `Attrs`: `pulse.AttrGraph` + `pulse.AttrNode` (the key contract is defined by the **engine**; `observe` only consumes it, never defines it). Node records carry both; the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run".
 
+**Nesting depth** is the third dimension, `pulse.AttrPath` (an opaque string, layers joined by `/`): an egress that builds a child graph sets `ObserveConfig.Path` to `sc.Path()`, and then **every** record of that layer carries it; when it is empty the key is **not written** — an empty string would make "root" and "forgot to pass it" look alike. The split of duties is clear: `pulse.graph` is the **graph id you chose**, `pulse.path` is the **layering the engine recorded** — running one child template twice means two graph instances and two paths, which is what makes them separable (see "A graph as a node" in [Orchestration](/en/guide/orchestration)). How to split the layers is the egress's business (`/` works); the engine offers no structured tree.
+
 ## Shortest wiring
 
 ```go
