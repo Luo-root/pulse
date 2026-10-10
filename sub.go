@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // SubCtx 是 `Sub` 交给 build 的三样东西：**取消域**、建议的图 id、嵌套路径。
@@ -27,6 +28,9 @@ func (sc *SubCtx) GraphID() string { return sc.id }
 
 // Path 是这条嵌套的**节点 id 链**：根图为 `""`，一层子图是 `"step1"`，
 // 再深一层是 `"step1/inner"`。不透明字符串，层级由出口自行拆分（#294 的口径）。
+//
+// 要让它进观测记录，就在 `build` 里把它交给**这一层**的出口
+// （`observe.ObserveConfig.Path`）——继承父图的出口带的是父层的路径。
 func (sc *SubCtx) Path() string { return sc.path }
 
 // Observer 是父图挂的观察者（父图没挂时为 nil）。
@@ -128,7 +132,11 @@ func OutRef(child, parent keyRef) SubBind {
 // **它收掉的三处手工搭最容易错、而且错了没有声音的地方**：
 //
 //  1. 观察者——子图没挂观察者时自动继承父图的。手工搭漏挂的话，父图照常跑完、
-//     `Run()` 照常返回 nil，只是子图的记录一条都不出现；
+//     `Run()` 照常返回 nil，只是子图的记录一条都不出现。
+//     **但继承只保证「记录不丢」，不保证层级归因**：出口实例上的 `pulse.path`
+//     是建它那一刻定下的，继承来的那份带的还是**父层**的路径——实测两层嵌套里
+//     最内层那 4 条记录全被记成中间层的 `path`，归因错比缺更难查。要 `pulse.path`
+//     就在 `build` 里按 `sc.Path()` 给这一层**各建一个出口**（见 `ObserveConfig.Path`）；
 //  2. 取消域——`sc.Context()` 派生自本节点，父图 / 本节点被取消时子图看得见。
 //     手工搭用 `context.Background()` 建子图，取消会被吞；
 //  3. 桥接——父 → 子走 `Seed`，子 → 父由 `Sub` 读子图的槽写回。手工搭时子 →
@@ -148,7 +156,10 @@ func OutRef(child, parent keyRef) SubBind {
 // （实测：父 `maxRun=1` + 子 `maxRun=2` 时，同时进入 `Run` 的节点峰值 3）。
 //
 // **子图是一次性的**：`build` 每次运行都要造一张新图（一次性契约）。把子图建在
-// 闭包外面复用 → `ErrGraphStarted`，这时报出来的是一句能照着改的话。
+// 闭包外面复用 → `ErrGraphStarted`，这时报出来的是一句能照着改的话。认领是
+// **原子**的（在改这张图的 `path` / observer / 种值**之前**就认掉），所以并发的
+// 两次 `Sub` 复用同一张图也只会有一方拿到它，另一方当场拿到同一句话——不会两边
+// 一起写同一张图。
 //
 // `aspects` 作用于**父侧这个节点**（例如 `pulse.Timeout(30*time.Second)` =
 // 整张子图限时，是最自然的用法）。
@@ -159,6 +170,15 @@ func Sub(g *Graph, id string, binds []SubBind, build func(*SubCtx) (*Graph, erro
 	}
 	if id == "" {
 		return fmt.Errorf("pulse: Sub: empty node id")
+	}
+	// 这个 id 会成为 `SubCtx.Path()` 里的一段，而 path 的层与层之间正是用 `/`
+	// 拼的：放行 `a/b` 的话，它与「`a` 里再嵌一个 `b`」拼出**同一条** path
+	// （实测两条都是 `"a/b"`，连 `GraphID()` 也是），层级再也拆不回来。
+	// 别的节点 id 含 `/` 无所谓——它们不进 path。
+	if strings.ContainsRune(id, '/') {
+		return fmt.Errorf("pulse: Sub %q: node id must not contain '/': "+
+			"that is the separator between layers in a nested path, so this step would come out "+
+			"indistinguishable from a subgraph nested one level deeper", id)
 	}
 	if build == nil {
 		return fmt.Errorf("pulse: Sub %q: nil build", id)
@@ -233,8 +253,18 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 		return fmt.Errorf("pulse: Sub %q: build returned a nil graph", id)
 	}
 
-	// 3) 建完先校验绑定：子图没声明这条键、或类型对不上，都要**现在**说——
+	// 3) 先**原子认领**这张子图：复用同一张图是这里最容易犯、也最难从「已经启动过」
+	//    四个字里看出该怎么改的错，所以放在任何改动与检查之前，别让后面任何一条
+	//    检查抢了它的消息（种子冲突那条尤其会撞上来）。必须是原子的——否则并发的
+	//    两次 Sub 会一起看到「没启动」，然后一起写下面这些字段（`-race` 实测：
+	//    `child.path = path` 那一行就是一处 DATA RACE）。
+	if !child.claimSub() {
+		return subStartedErr(id, ErrGraphStarted)
+	}
+
+	// 4) 建完先校验绑定：子图没声明这条键、或类型对不上，都要**现在**说——
 	//    别留到「种进去没人看」（Seed 对未知键会静默建槽，然后什么都不会发生）。
+	//    认领之后没人能再动这张图，所以这些读也是安全的。
 	for _, b := range binds {
 		typ, ok := child.keys.typeOf(b.child.name)
 		if !ok {
@@ -248,15 +278,12 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 	}
 	child.path = path // 更深一层嵌套靠它算 path
 
-	// 4) 复用同一张子图先拦：子图是一次性的，而这条错最容易犯、也最难从
-	//    「已经启动过」四个字里看出该怎么改——所以放在种值之前，别让后面
-	//    任何一条检查抢了它的消息（种子冲突那条尤其会撞上来）。
-	if child.isStarted() {
-		return subStartedErr(id, ErrGraphStarted)
-	}
-
 	// 5) 观察者：子图自己挂了就用它自己的；没挂则继承父图的——漏挂是**静默**的
 	//    （父图照常跑完，子图的记录一条都不出现），所以默认接上。
+	//
+	//    **继承只保证「记录不丢」，不保证层级归因**：出口实例上的 `pulse.path` 是
+	//    建它那一刻定下的，继承来的那份带的还是**父层**的 path。嵌套要在 `build`
+	//    里按 `sc.Path()` 给每一层各建一个出口（见 `ObserveConfig.Path`）。
 	if child.observer == nil {
 		child.observer = rc.g.observer
 	}
