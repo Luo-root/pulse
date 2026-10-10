@@ -2,7 +2,7 @@ import { defineConfig } from 'vitepress'
 
 // 版本号单源：footer 引用它——发版时只改这一处（站点文档描述的是 main 上的 API，
 // 不要在这里把「文档内容 = 某个 tag 的内容」写成声明）。
-const VERSION = 'v0.4.0'
+const VERSION = 'v0.4.1'
 
 // 包文档侧边栏：pulse 只有三个包——根包 pulse（引擎，文档在指南里）、
 // observe（图观测）、yaml（声明式装图）。后两者有包 README，由 sync-docs.mjs 同步成页面。
