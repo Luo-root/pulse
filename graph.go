@@ -289,6 +289,10 @@ func (g *Graph) Start() error {
 		g.mu.Unlock()
 		return err
 	}
+	if err := g.checkStreamLocked(); err != nil {
+		g.mu.Unlock()
+		return err
+	}
 	g.started = true
 	nodes := append([]*Node(nil), g.nodes...)
 	g.wg.Add(len(nodes) + 1) // +1：started 那一发落地前，其他 goroutine 的 Wait 不该溜过去
@@ -318,6 +322,112 @@ func (g *Graph) checkSourcesLocked() error {
 		}
 	}
 	return nil
+}
+
+// checkStreamLocked 是流式糖（Produce / Consume / Tee）在 Start 的静态校验。
+// 调用方持 g.mu。三条都是「静态可判定、运行期表现为挂死或静默丢数据」的病：
+//
+//  1. **名额是「同时活着」的约束，而糖在装配那一刻看不全整张图。** 一条流上
+//     生产端 / 复制端堵在发送上、消费端堵在读上，链上每个节点都得同时在名额表
+//     里；逐个 helper 的局部检查**证明不了组合图安全**——实测
+//     `WithMaxRunning(2)` 下 `Produce → Tee([a]) → Consume(a)`（三个流节点）
+//     装配全过，运行期直接死锁，只能等外部超时。这里按**整张流图**要名额：糖装
+//     出来的流节点 + **每条流出口的读取者**——读取者可以是手写的 `NewNode`
+//     （糖之外的那条路），它同样得拿到名额才进得去 Run、才读得到那条流：实测
+//     `Produce → Tee([a]) → 手写 sink(a)` 在 `maxRun=2` 下也是装配全过、运行
+//     期死锁，`maxRun=3` 才跑得通。偏保守（两条互不相关的流也会要求名额之和），
+//     但引擎的名额是逐个申请的、没有 gang 调度，凑合的分配同样会死锁——宁可拒
+//     得早。
+//  2. **流节点的每条出口都得有人 Requires。** `checkSourcesLocked` 只判「每个
+//     Requires 有来源」，不判「每个 Provides 有消费者」；漏挂一个消费者（或
+//     Tee 的某条出口没接下游）时，发送端会永久堵在那条无缓冲出口上——缓冲只把
+//     死锁推到「缓冲写满」。
+//  3. **一条流出口只喂一个下游**（或**一组** `FanOut` worker）。同一个出口被两个
+//     各写各的节点 `Requires` 时，两边都会跑、各自只拿到一部分值：实测
+//     `Tee([a])` 加两个 `Consume(a)` 装配全过，10 个值被 8/2 瓜分，而 Tee 的
+//     承诺是「每个下游拿到完整、同序的数据」。瓜分是**静默**的，所以在 Start 拒。
+//     「抢」是 `FanOut` 的用法（N 个 worker 共读一条流，本来就是显式声明），
+//     同一组不算多消费者——否则会把文档点名推荐的玩法一起拒掉。
+func (g *Graph) checkStreamLocked() error {
+	var stream []*Node
+	outlets := make(map[string]struct{})
+	for _, n := range g.nodes {
+		if n.streamKind == "" {
+			continue
+		}
+		stream = append(stream, n)
+		for _, k := range n.provides {
+			outlets[k.name] = struct{}{}
+		}
+	}
+	if len(stream) == 0 {
+		return nil
+	}
+
+	// 流图 = 流节点 + 读取流出口的节点（手写消费者也算：它同样要占一个名额才读得到）。
+	readers := make(map[string][]*Node, len(outlets)) // 出口 Key 名 → 读取它的节点
+	var live []*Node
+	for _, n := range g.nodes {
+		isStream, touched := n.streamKind != "", false
+		seen := make(map[string]struct{}, len(n.requires))
+		for _, k := range n.requires {
+			if _, ok := outlets[k.name]; !ok {
+				continue
+			}
+			if _, dup := seen[k.name]; dup {
+				continue // 同一个 Key 声明两次仍只是一个读取者
+			}
+			seen[k.name] = struct{}{}
+			readers[k.name] = append(readers[k.name], n)
+			touched = true
+		}
+		if isStream || touched {
+			live = append(live, n)
+		}
+	}
+	if g.maxRun > 0 && g.maxRun < len(live) {
+		ids := make([]string, 0, len(live))
+		for _, n := range live {
+			ids = append(ids, n.id)
+		}
+		return fmt.Errorf("pulse: stream needs %d slots at the same time, but WithMaxRunning(%d): %s",
+			len(live), g.maxRun, strings.Join(ids, ", "))
+	}
+	for _, n := range stream {
+		for _, k := range n.provides {
+			rs := readers[k.name]
+			if len(rs) == 0 {
+				return fmt.Errorf("pulse: node %q provides %q but nothing consumes it: "+
+					"a stream output nobody reads blocks the sender forever", n.id, k.name)
+			}
+			if len(rs) > 1 && !sameFanOut(rs) {
+				ids := make([]string, 0, len(rs))
+				for _, r := range rs {
+					ids = append(ids, r.id)
+				}
+				return fmt.Errorf("pulse: stream output %q is read by %d nodes (%s), "+
+					"so its values would be split between them: one stream output feeds one downstream — "+
+					"add a Tee output per downstream to broadcast, or make it one FanOut to compete",
+					k.name, len(rs), strings.Join(ids, ", "))
+			}
+		}
+	}
+	return nil
+}
+
+// sameFanOut 判这一串读取者是不是**同一次 FanOut** 的 worker：几个 worker 共读
+// 一条流本来就是 FanOut 的用法（「抢」），是显式声明；两个各写各的节点共读同一条
+// 出口则是静默瓜分。调用方保证 rs 非空。
+func sameFanOut(rs []*Node) bool {
+	if rs[0].compete == "" {
+		return false
+	}
+	for _, r := range rs[1:] {
+		if r.compete != rs[0].compete {
+			return false
+		}
+	}
+	return true
 }
 
 // checkAcyclicLocked 判「依赖关系无环」。调用方持 g.mu。

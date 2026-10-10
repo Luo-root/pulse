@@ -309,6 +309,62 @@ func main() {
 
 `FanOut` 的 N 是**装配期固定**的：引擎的拓扑不随数据变，数据条数不定的并行请在节点内部做业务循环，别指望运行时长出节点。
 
+### 流式：`Produce` / `Consume` / `Tee`
+
+`Key[<-chan T]` 早就能用，缺的不是「再包一层 channel」，而是每个生产 / 消费节点都要手动协调的六件事（创建与发布、发送端的关闭责任、生产 / 消费循环、取消响应、错误回传、背压与名额）。手写这套形状最典型的一处写错是 **`Set` 出 channel 就 `return`**：节点已经 `completed`，真正的发送留在无人观测的后台 goroutine 里——错误回不到图上、取消也叫不醒它，`defer close` 还经常漏。
+
+```go
+// 生产：channel 的创建 / 发布 / 关闭 / 取消都在这次 Run 里，节点活着发完
+err := pulse.Produce(g, "src", stream, func(rc *pulse.RunCtx, send func(int) error) error {
+    for _, v := range values {
+        if err := send(v); err != nil { // 取消能从堵住的发送里出来
+            return err
+        }
+    }
+    return nil
+})
+
+// 最简单的形状是 Produce + Consume 一对（一个出口接一个消费端）。
+// 消费：循环是 select（收到值 / ctx 取消），不是 for range
+err = pulse.Consume(g, "sink", stream, func(rc *pulse.RunCtx, v int) error {
+    return handle(v)
+})
+
+// 广播：一根流复制给 N 个下游，每个都拿到完整、同序的数据。
+// 注意 Tee 的输入是**另一条**流：一条出口只喂一个下游，要 N 个下游
+// 就得让 Tee 提供 N 条出口，再一条接一个消费端（装配校验见下表最后一行）
+err = pulse.Tee(g, "fan", otherStream, pulse.Keys(sA, sB, sC))
+err = pulse.Consume(g, "sinkA", sA, func(rc *pulse.RunCtx, v int) error { return handle(v) })
+err = pulse.Consume(g, "sinkB", sB, func(rc *pulse.RunCtx, v int) error { return archive(v) })
+err = pulse.Consume(g, "sinkC", sC, func(rc *pulse.RunCtx, v int) error { return audit(v) })
+```
+
+| 件 | 展开成 | 语义来源 |
+|---|---|---|
+| `Produce` | 一个节点：`Provides(out)`，`Set` 出 channel 后**活着发完** | 关闭只在返回时的 `defer`（成功 / 出错 / 取消 / panic 都走它，没有双次 close）；`send` 在发送与 `rc.Context().Done()` 上 `select` |
+| `Consume` | 一个节点：`Requires(in)`，`select` 循环读 | **不能用 `for range`**：实测它会「取消之后把缓冲区算完」并且整轮报成功（没人看见取消 → `Run()` 返回 `nil`，见 #286） |
+| `Tee` | 一个节点：`Requires(in)` + `Provides(outs...)`，逐条转发 | 广播：每个下游拿到完整同序数据；**背压按最慢的下游算** |
+| 装配校验 | `checkStreamSlots`（装配期快速失败）+ `Graph.checkStreamLocked`（`Start` 的权威校验） | 「流的两端必须同时活着」是**组合**性质的约束：糖在装配那一刻看不全整张图，所以局部检查只做即时反馈，`Start` 按**整张流图**要名额——流节点 + **每条流出口的读取者**（消费者可以手写，它同样得占一个名额才读得到；实测：`maxRun=2` 下 `Produce → Tee → Consume` 与 `Produce → Tee → 手写 sink` 都会装配全过、运行期死锁），并要求每条流出口都有人 `Requires`、且**只喂一个下游**（没人读的出口会让发送端永久堵住；两个各写各的读取者会在静默里瓜分值——同一个 `FanOut` 组的 worker 共读是显式声明，不算多消费者） |
+
+**为什么「要复制」的只有流这一类**（实测四种分发形态）：普通值——一个 `Provides`、N 个下游各自 `Requires` 同一个 Key——3 个下游都拿到完整值；一组值（slice 当一个值）同理；**只有 channel 会抢**：同一条 channel 给 3 个下游，6 个值被瓜分（合计 6，不是 18）；复制成 3 条 channel 才是 18。所以「抢」用 `FanOut`、「每个都拿到」用 `Tee`，两者不互相替代。
+
+**空流不是跳过**：一次都没 `send`、出口正常关闭 → 下游**照样进入 `Run`**（零次回调、终态 `completed`、整轮成功）。槽位里放的是 channel，走的是「值到了」这条路；想要「没有值」的语义就别 `Set` 那条 channel。
+
+**切面不开**：`Produce` / `Consume` 都先不给切面。`Retry` 撞「已发布的槽」（幂等首写 → 第二次 attempt 直接 `ErrConflict`；消费侧则因为流的位置不可回退，重试只会拿到后半段），`Timeout` 只把流掐断、消费端看到的只是「提前关闭」——两个切面在这里都没有干净语义。
+
+### 排他分支：`Only`
+
+```go
+if cond {
+    return pulse.Only(rc, OutA, v) // 写 A，本节点其余 Provides 全部作废
+}
+return pulse.Only(rc, OutB, w)
+```
+
+它**不判断条件**——走哪条还是调用方 `if` 出来的。它消灭的是**漏表态**：手写分支要 1 次 `Set` 加 N−1 次 `Skip`，少写一边是静默的——实测「只 `Skip(B)`、忘了 `Set(A)`」时 A、B 两条下游**都不跑**（未写的 `Provide` 被自动跳过），而 `Run()` 仍返回 `nil`、没有任何提示。用 `Only` 的调用方不再自己写 `Skip`，这个错在形态上就不存在了。
+
+反面：重复表态会**变吵**——先 `Set` 过别的出口再 `Only`，会给那条已就绪的槽补一次 `Skip` → `ErrConflict`（而手写 `Set` 两次是被静默忽略的）。所以 `Only` 要**代替** `Set`，需要同时写出多个值的节点继续手写 `Set`。
+
 ## 6. 并发与读语义
 
 - 节点各自一个 goroutine；`RunCtx` 的 context 是唯一取消通道；

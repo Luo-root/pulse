@@ -32,6 +32,13 @@ func (s *slot) snapshot() (slotState, any) {
 	return s.state, s.value
 }
 
+// isReady 报槽位是否已经就绪（有值）。只读一眼，不参与任何序列化。
+func (s *slot) isReady() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state == slotReady
+}
+
 // resolveValue 幂等首写为就绪。已就绪：忽略。已跳过：冲突。
 func (s *slot) resolveValue(v any) error {
 	s.mu.Lock()

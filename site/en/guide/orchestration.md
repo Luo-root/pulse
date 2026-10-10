@@ -104,6 +104,36 @@ Both callbacks receive **this node's own `*RunCtx`** as their first parameter: a
 
 **What the compiler locks**: the element type (`Keys(...)` and `Batch[T]` must share one `T`) and the arity (`Join` takes one batch, `FanOut` opens one instance per output slot). It does **not** lock the order of same-typed slots — `Keys(a, b)` and `Keys(b, a)` (both `Key[string]`) **both compile**. Measured: positional reading shifts (`Values()[0]` goes from `"from-a"` to `"from-b"`) while `Get(a)` returns `"from-a"` either way — that is exactly what the source names on `Batch` buy, and swapping the order only changes declaration order.
 
+## Streaming: Produce / Consume / Tee
+
+`Key[<-chan T]` always worked; what was missing is not "one more channel wrapper" but the six things every producing / consuming node has to hand-write (creation and publication, close responsibility, the loop, cancellation, error propagation, backpressure and slots). The classic mistake is **`Set`-ing the channel and then returning**: the node is already `completed`, the actual sending lives on in an unobserved background goroutine — errors never reach the graph and cancellation cannot wake it.
+
+```go
+// The simplest shape is a Produce + Consume pair: one output, one consumer
+err := pulse.Produce(g, "src", stream, func(rc *pulse.RunCtx, send func(int) error) error {
+	for _, v := range values {
+		if err := send(v); err != nil { // cancellation escapes a blocked send
+			return err
+		}
+	}
+	return nil
+})
+// For N downstreams, insert a Tee: it copies one stream into N outputs, one consumer each
+err = pulse.Tee(g, "fan", stream, pulse.Keys(sA, sB)) // broadcast: both downstreams see everything
+err = pulse.Consume(g, "sinkA", sA, func(rc *pulse.RunCtx, v int) error {
+	return handle(v)
+})
+err = pulse.Consume(g, "sinkB", sB, func(rc *pulse.RunCtx, v int) error {
+	return archive(v)
+})
+```
+
+- **The producer stays alive until it is done**: the channel is closed only in the `defer` that runs when the node returns (success / error / cancellation / panic all take it, so there is no double close), and `send` selects between sending and `rc.Context().Done()`.
+- **The consumer uses `select`, not `for range`**: the latter keeps computing the buffered values after a cancellation *and still reports success*; `select` exits the moment the run is cancelled and returns the cancellation reason.
+- **An empty stream is not a skip**: nothing sent, outputs closed normally → the downstream still enters `Run` (zero callbacks, `completed`, the run succeeds).
+- **Slots**: both ends of a stream must be live at once — at assembly time the sugar can only do a quick local check, and `Start()` re-checks the **whole stream graph**: every stream node *and every reader of a stream output* (a consumer may be hand-written) must fit in the slot budget at the same time, otherwise the graph is rejected outright instead of hanging at runtime. That also rejects "small stream + big buffer" configurations — whether they work depends on the data volume, so they must not be relied on. On top of that, **every stream output needs a consumer — exactly one**: a dangling output is rejected at `Start()` (a sender blocking on an unread output waits forever), and a second reader is rejected too, because two independent readers silently split the values between them. To broadcast, give each downstream its own `Tee` output; to compete, use one `FanOut`.
+- **Don't confuse `FanOut` with `Tee`**: use `FanOut` to *compete* (each item handled once), `Tee` to give every downstream everything. Plain values do not need `Tee` — one `Provides` with N `Requires` is already a broadcast; only channels get split.
+
 ## Branching: call Skip on the path you did not take
 
 There is no `if` primitive — branching is "mark the `Provide`s you did not take as skipped":
@@ -116,6 +146,8 @@ return pulse.Set(rc, Translated, translate(summary))
 ```
 
 That is a **single-slot** optional output: both branches speak about the same slot (write or skip), hence a single downstream. A multi-slot branch must **speak on both sides** — `Set` the chosen one, `Skip` the other; skip only one and the unwritten ones are auto-skipped, leaving both downstreams unexecuted (see the branch example in [Core concepts](/en/guide/concepts)).
+
+`pulse.Only` says that sentence in one call: `return pulse.Only(rc, OutA, v)` writes A and voids every other output of the node. N outputs go from "1 `Set` + N−1 `Skip`s" to one line, and **the caller no longer writes `Skip` at all** — the omission described above cannot take that shape any more. It **does not test any condition**: which branch to take is still your `if`. The flip side is worth knowing too: repeated statements get loud — `Set` another output first and then `Only` yields `ErrConflict` (two hand-written `Set`s are silently ignored).
 
 It matters to tell the two terminal states apart: **the node that wrote the skip is itself `completed`**; it is the **downstream** node that never executed — because no input brought a value — that is `skipped`. Details and real records: [Core concepts · slot tri-state](/en/guide/concepts).
 

@@ -224,7 +224,7 @@ func FanOut[I, O any](g *Graph, id string, in Key[I], outs []Key[O],
 	for i, out := range outs {
 		shard := i + 1
 		worker := id + "-" + strconv.Itoa(shard)
-		workers[i] = NewNode(worker, Requires(in), Provides(out), func(rc *RunCtx) error {
+		n := NewNode(worker, Requires(in), Provides(out), func(rc *RunCtx) error {
 			// 门已经等到输入到达（就绪或跳过）：跳过的那条在这里读回来是
 			// *SkipError，本实例随之以跳过收尾，与手写节点一模一样。
 			v, err := Get(rc, in)
@@ -237,6 +237,10 @@ func FanOut[I, O any](g *Graph, id string, in Key[I], outs []Key[O],
 			}
 			return Set(rc, out, got)
 		}, aspects...)
+		// 同组 worker 共读一条流出口是显式的「抢」：Start 的流式校验据此把
+		// 「一组 FanOut」与「两个各写各的消费者」分开，见 checkStreamLocked。
+		n.compete = id
+		workers[i] = n
 	}
 	if err := g.addAll(workers); err != nil {
 		return fmt.Errorf("pulse: FanOut %q: %w", id, err)
@@ -264,4 +268,43 @@ func collectBatch[T any](rc *RunCtx, ins []Key[T]) (Batch[T], error) {
 		}
 	}
 	return b, nil
+}
+
+// Only 是排他分支的一句话写法：写这一条，本节点其余 Provides 全部作废。
+//
+// 它**不判断任何条件**——走哪条仍然是调用方 if 出来的。Only 负责把「我走这条，
+// 别的作废」压成一次表态，消灭的是**漏表态**这一类写错：手写分支要写 1 次 Set
+// 加 N−1 次 Skip，少写一边是**静默的**——只 Skip(B)、忘了 Set(A) 时，A、B 两条
+// 下游都不跑（未写的 Provide 被自动跳过），而整轮仍返回 nil、没有任何提示。
+// 用 Only 的调用方不再自己写 Skip，「漏表态」在形态上就不存在了。
+//
+// 另一面：重复表态会**变吵**。若先 Set 过别的出口再 Only，Only 会给那条已就绪
+// 的槽补一次 Skip，直接 `ErrConflict`；而手写 Set 两次是被静默忽略的。所以
+// Only 要**代替** Set，不要与之并用——需要同时写出多个值的节点继续手写 Set。
+func Only[T any](rc *RunCtx, k Key[T], v T) error {
+	if rc == nil || rc.node == nil {
+		return fmt.Errorf("pulse: Only: nil run context")
+	}
+	want := k.asRef().name
+	// 先预检、再发布：sibling 里已经有**就绪**的槽就当场冲突，别先把 k 发出去、
+	// 再在补 Skip 时才失败——那会让本节点在这次错误之前多发布一条出口，下游甚至
+	// 可能已经被唤醒（引擎不回滚已发布的值）。
+	// 跳过过的 sibling 不算冲突：Skip 幂等，补一次是 no-op。
+	for _, p := range rc.node.provides {
+		if p.name != want && rc.g.slotOf(p).isReady() {
+			return ErrConflict
+		}
+	}
+	if err := Set(rc, k, v); err != nil {
+		return err
+	}
+	for _, p := range rc.node.provides {
+		if p.name == want {
+			continue
+		}
+		if err := skipRef(rc, p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
