@@ -139,7 +139,7 @@ err := pulse.Sub(parent, "step1",
 
 Terminal states map exactly like hand-written nesting: child succeeds → this node succeeds (ready outputs are `Set`, skipped ones `Skip`); **every output skipped** → this node finishes as `skipped` (not a failure); child fails → this node fails and the **first error propagates untouched** (`errors.Is` holds); cancellation → the child sees it.
 
-**Slots are per graph**: the parent's `WithMaxRunning` governs *how many child graphs run at once* (the `Sub` node holds one parent slot for the whole child run), while concurrency inside the child is governed by the child's own `WithMaxRunning` — so nesting **exceeds the parent's cap**. Measured: parent `maxRun=1` + child `maxRun=2` → peak of **3** nodes inside `Run` at the same time (1 parent + 2 child).
+**Slots are shared tree-wide**: `WithMaxRunning(n)` caps how many nodes of the whole tree sit inside `Run` at once — a child that declares nothing inherits the parent's share, and the `Sub` step takes no slot of its own (from start to finish it is waiting for the child). Declaring `WithMaxRunning(m)` inside a child overrides that subtree (`m<=0` = unlimited there); declarative assembly takes the tree-wide budget as `LoadOptions.MaxRunning`.
 
 **A child graph is one-shot**: `build` must return a new graph on every run. Build `pulse.New` outside the closure and reuse it, and you get a sentence that tells you how to fix it (`ErrGraphStarted` stays in the error chain):
 
@@ -252,7 +252,7 @@ The same `canceled` covers the other two ways "this run was torn down from outsi
 g, _ := pulse.New(ctx, "demo", pulse.WithMaxRunning(4))
 ```
 
-`WithMaxRunning(n)` caps how many nodes are **inside `Run` at the same time**. **Waiting for data does not take a slot** — otherwise rate limiting would degrade into deadlock (every node holding a slot is waiting for data, and nobody can make progress).
+`WithMaxRunning(n)` caps how many nodes are **inside `Run` at the same time**, and that budget is **shared by the whole graph tree**: a child that declares nothing inherits the parent's share, and the `Sub` step takes no slot of its own (from start to finish it is waiting for the child) — so declaring 4 on the root means at most 4 nodes of the tree are working at once. Declaring `WithMaxRunning(m)` inside a child overrides that subtree (`m<=0` = unlimited there); declarative assembly takes the tree-wide budget as `LoadOptions.MaxRunning`. **Waiting for data does not take a slot** — otherwise rate limiting would degrade into deadlock (every node holding a slot is waiting for data, and nobody can make progress).
 
 **Queuing for a slot is interruptible too**: when the ctx is canceled (or a first error cancels the graph), nodes still queued never enter `Run` and finish as `canceled` — with only their wait record — so a freed slot is never handed to an already-canceled node.
 

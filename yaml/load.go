@@ -123,9 +123,16 @@ func (p *SeedPlan) Apply(g *pulse.Graph, resolve func(SeedFrom) (any, error)) er
 type LoadOptions struct {
 	Context context.Context
 	GraphID string
-	// Graph 是根图的选项（WithObserver / WithMaxRunning / WithAspects…）。
+	// Graph 是根图的选项（WithObserver / WithAspects…）。
 	// 子图也拿同一批选项 —— 所以挂在这里的观察者会到每一层。
+	//
+	// **别在这里放 pulse.WithMaxRunning**：这批选项会被原样传给每一层，于是额度
+	// 变成「每层各一份」。整棵树的额度用下面的 MaxRunning 字段。
 	Graph []pulse.Option
+	// MaxRunning 是**整棵声明树**的并发额度（<=0 = 无限，默认）：根图拿它建名额，
+	// 子图在运行期**继承同一份**（引擎的默认继承，`Sub` 那一步自己不吃名额），
+	// 所以这里写的是「整棵树同时最多几个节点在干活」，不是「每层各几个」。
+	MaxRunning int
 	// ObserverFor 按层建出口：声明式装配里每一层是另一张图，而一个出口实例
 	// 只能带一条 `pulse.path`，所以「按层各建一个」得由宿主决定。path 是这一层
 	// 的路径（引擎给：一层子图是它的节点 id，再深一层是 `outer/inner`），
@@ -251,7 +258,11 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	// 所有**可能失败**的校验都过了，才动宿主的 ctx：从这里往下一路成功，
 	// `Load` 要么把图交出去（调用方接管它的生死），要么在 `New` 这一步就
 	// 因为 graphID 空拒掉（那个检查在函数开头做过）。
-	g, err := pulse.New(ctx, opts.GraphID, opts.Graph...)
+	rootOpts := append([]pulse.Option(nil), opts.Graph...)
+	if opts.MaxRunning > 0 {
+		rootOpts = append(rootOpts, pulse.WithMaxRunning(opts.MaxRunning)) // 放最后：整棵树的额度压过 Graph 里的每层一份
+	}
+	g, err := pulse.New(ctx, opts.GraphID, rootOpts...)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -796,9 +796,10 @@ func TestSubNestedPath(t *testing.T) {
 	}
 }
 
-// 名额各管各的（票面 A2）：父图 WithMaxRunning(1) 管的是「同时有几张子图在跑」，
-// 子图内部的并发由子图自己的 WithMaxRunning 管——子图里两个节点必须能重叠。
-func TestSubSlotsArePerGraph(t *testing.T) {
+// 自己声明就用自己的（覆盖继承）：父图 WithMaxRunning(1)，子图声明 WithMaxRunning(2)
+// → 子图那一层换成它自己那份，两个节点必须能重叠。
+// 「整棵树共享」是**默认**行为（见 limiter_test.go 的继承用例）；声明是显式覆盖。
+func TestSubDeclaredLimitOverridesInheritance(t *testing.T) {
 	in := NewKey[string]("s.slot.in")
 	cin := NewKey[string]("s.slot.cin")
 
@@ -831,7 +832,7 @@ func TestSubSlotsArePerGraph(t *testing.T) {
 					select {
 					case <-both:
 					case <-time.After(2 * time.Second):
-						return errors.New("子图的两个节点没能重叠：名额被父图的 WithMaxRunning 卡住了")
+						return errors.New("子图的两个节点没能重叠：声明了 WithMaxRunning(2) 就该用它自己那份")
 					}
 					mu.Lock()
 					if inside > peak {
@@ -848,12 +849,12 @@ func TestSubSlotsArePerGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
-		t.Fatalf("父子名额各管各的，嵌套应当跑得通：%v", err)
+		t.Fatalf("子图声明了自己的名额，嵌套应当跑得通：%v", err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if peak != 2 {
-		t.Fatalf("子图内部同时进 Run 的峰值 = %d，want 2（父图 WithMaxRunning(1) 不该管到子图内部）", peak)
+		t.Fatalf("子图内部同时进 Run 的峰值 = %d，want 2（子图声明了 2，覆盖继承）", peak)
 	}
 }
 

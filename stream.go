@@ -50,9 +50,9 @@ func newStreamConfig(opts []StreamOption) streamConfig {
 // 整张流图（流节点 + 流出口的读取者）要同时有名额，且每条流出口都得有人消费、
 // **只喂一个下游**。两处一起才完整：这里给的是即时反馈，那里才是权威校验。
 func checkStreamSlots(g *Graph, id, kind string, need int) error {
-	if g.maxRun > 0 && g.maxRun < need {
+	if c := g.lim.capacity(); c > 0 && c < need {
 		return fmt.Errorf("pulse: %s %q: WithMaxRunning(%d) cannot host this stream: "+
-			"%d nodes must be live at the same time", kind, id, g.maxRun, need)
+			"%d nodes must be live at the same time", kind, id, c, need)
 	}
 	return nil
 }
