@@ -13,7 +13,7 @@ import (
 
 // 图即节点（#293）：建图 / 桥接 / 取消域 / 观察者四件事都由 Sub 收齐。
 //
-// 这些用例对着探针实测的结论写（`.workbase/probe-subgraph`，五组实测已抄进票面）：
+// 这些用例对着五组探针实测的结论写（结论抄在 #293 票面）：
 // 手工嵌套能做到的，糖必须做到，且**观测不能断链**——那是手工搭最容易漏、
 // 又最没声音的一处。
 func TestSubBridgesValues(t *testing.T) {
@@ -620,6 +620,111 @@ func TestSubRejectsReusedChildGraph(t *testing.T) {
 	}
 }
 
+// 并发的两次 Sub 复用同一张**尚未启动**的子图：认领必须是**原子**的，所以只有
+// 一方拿到它，另一方当场拿到那句翻译——而且**不许有数据竞争**。
+//
+// 这是变异对照抓出来的一处洞：修复前这里没有认领，两边都会看到「还没启动」，
+// 然后一起写子图的 path（`-race` 实测就是 `child.path = path` 那一行报 DATA RACE）。
+//
+// 跑多轮是因为赢面太窄：把认领的锁去掉（读与写不在同一临界区）时，一轮里两边
+// 也可能恰好错开——实测单轮抓不到、多轮才抓到。多轮让「两边同时读到旧值」这条
+// 路径有机会出现，出现了就是一处并发写。
+func TestSubConcurrentReuseIsClaimedAtomically(t *testing.T) {
+	inA := NewKey[string]("s.race.inA")
+	inB := NewKey[string]("s.race.inB")
+	cin := NewKey[string]("s.race.cin")
+	cout := NewKey[string]("s.race.cout")
+	outA := NewKey[string]("s.race.outA")
+	outB := NewKey[string]("s.race.outB")
+
+	for round := range 20 {
+		// 共享子图：建一次，两个 Sub 的 build 都把它交出去（正是引擎要拦的复用）。
+		// 两个 Sub 绑**同一条**子键，种值幂等，所以两边都走得到「认领」那一刻。
+		shared, err := New(context.Background(), "SHARED")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := shared.Add(NewNode("w", Requires(cin), Provides(cout),
+			func(rc *RunCtx) error { return Set(rc, cout, "x") })); err != nil {
+			t.Fatal(err)
+		}
+
+		// 让两边在 build 里对齐再一起碰共享图；带超时是为了万一只有一个节点跑到，
+		// 也别把整个测试挂死（认领失败的一方**不碰**这张图，对齐只需「同时到」）。
+		var arrive sync.WaitGroup
+		arrive.Add(2)
+		release := make(chan struct{})
+		go func() {
+			arrive.Wait()
+			close(release)
+		}()
+		build := func(sc *SubCtx) (*Graph, error) {
+			arrive.Done()
+			select {
+			case <-release:
+			case <-time.After(2 * time.Second):
+			}
+			return shared, nil
+		}
+
+		g := mustNew(t, context.Background(), "P")
+		if err := Seed(g, inA, "a"); err != nil {
+			t.Fatal(err)
+		}
+		if err := Seed(g, inB, "b"); err != nil {
+			t.Fatal(err)
+		}
+		if err := Sub(g, "sA", []SubBind{In(inA, cin), Out(cout, outA)}, build); err != nil {
+			t.Fatal(err)
+		}
+		if err := Sub(g, "sB", []SubBind{In(inB, cin), Out(cout, outB)}, build); err != nil {
+			t.Fatal(err)
+		}
+
+		err = g.Run()
+		if err == nil {
+			t.Fatalf("第 %d 轮：并发复用同一张子图应当报错", round)
+		}
+		if !strings.Contains(err.Error(), "build must return a new one on every run") {
+			t.Fatalf("第 %d 轮：抢不到认领的一方要拿到那句翻译，got %v", round, err)
+		}
+		if !errors.Is(err, ErrGraphStarted) {
+			t.Fatalf("第 %d 轮：翻译不该吃掉哨兵，got %v", round, err)
+		}
+	}
+}
+
+// 节点 id 里的 `/` 是 path 的层级分隔符：装配期就拒——否则 `a/b` 与「a 里嵌 b」
+// 拼出**同一条** path（实测两条都是 `"a/b"`，连 GraphID 也一样），层级再也拆不回来。
+func TestSubRejectsSlashInNodeID(t *testing.T) {
+	in := NewKey[string]("s.slash.in")
+	cin := NewKey[string]("s.slash.cin")
+	cout := NewKey[string]("s.slash.cout")
+	out := NewKey[string]("s.slash.out")
+
+	build := func(sc *SubCtx) (*Graph, error) {
+		child, err := New(sc.Context(), sc.GraphID())
+		if err != nil {
+			return nil, err
+		}
+		return child, child.Add(NewNode("n", Requires(cin), Provides(cout),
+			func(rc *RunCtx) error { return Set(rc, cout, "x") }))
+	}
+
+	g := mustNew(t, context.Background(), "P")
+	err := Sub(g, "a/b", []SubBind{In(in, cin), Out(cout, out)}, build)
+	if err == nil {
+		t.Fatal("节点 id 里的 / 会让 path 的层级拆不开，装配期就该拒")
+	}
+	if !strings.Contains(err.Error(), "must not contain '/'") {
+		t.Fatalf("要说明为什么拒，got %v", err)
+	}
+	// 想表达「更深一层」的话，嵌套本来就能写；别的节点 id 含 `/` 不受影响。
+	if err := Sub(g, "a", []SubBind{In(in, cin), Out(cout, out)}, build); err != nil {
+		t.Fatalf("正常的 id 不该被拒：%v", err)
+	}
+}
+
 // 翻译函数本身：只翻「已经启动过」这一类，别的错误原样过。
 func TestSubStartedErrTranslation(t *testing.T) {
 	got := subStartedErr("b", ErrGraphStarted)
@@ -773,6 +878,174 @@ func TestSubSlotsArePerGraph(t *testing.T) {
 	defer mu.Unlock()
 	if peak != 2 {
 		t.Fatalf("子图内部同时进 Run 的峰值 = %d，want 2（父图 WithMaxRunning(1) 不该管到子图内部）", peak)
+	}
+}
+
+// deepNest 造「图套图套图」：每层子图里再嵌一层，最后一层挂叶子节点。
+// 每层的 SubCtx 事实（path / 图 id）都留痕——「深度不设限」得有用例钉着，
+// 不能只有两层。
+type deepNest struct {
+	in, out   Key[string]
+	cin, cout Key[string]
+
+	mu   sync.Mutex
+	seen []string // 每层一条 "<path>|<graphID>"
+}
+
+func (d *deepNest) build(cur, max int, leaf func(*RunCtx) error) func(*SubCtx) (*Graph, error) {
+	return func(sc *SubCtx) (*Graph, error) {
+		d.mu.Lock()
+		d.seen = append(d.seen, sc.Path()+"|"+sc.GraphID())
+		d.mu.Unlock()
+
+		child, err := New(sc.Context(), sc.GraphID())
+		if err != nil {
+			return nil, err
+		}
+		if cur == max {
+			return child, child.Add(NewNode("leaf", Requires(d.cin), Provides(d.cout), leaf))
+		}
+		return child, Sub(child, fmt.Sprintf("L%d", cur+1),
+			[]SubBind{In(d.cin, d.cin), Out(d.cout, d.cout)},
+			d.build(cur+1, max, leaf))
+	}
+}
+
+func (d *deepNest) levels() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.seen...)
+}
+
+func newDeepNest(suffix string) *deepNest {
+	return &deepNest{
+		in:   NewKey[string]("s.deep" + suffix + ".in"),
+		out:  NewKey[string]("s.deep" + suffix + ".out"),
+		cin:  NewKey[string]("s.deep" + suffix + ".cin"),
+		cout: NewKey[string]("s.deep" + suffix + ".cout"),
+	}
+}
+
+// 三层：每层的 path / 图 id 逐层接上，最深的产物一层层桥回最外层，
+// 观测是一对**三层**的括号。
+func TestSubDeepNesting(t *testing.T) {
+	d := newDeepNest("a")
+	log := &graphLog{}
+	g := mustNew(t, context.Background(), "P", WithObserver(log.observer()))
+	if err := Seed(g, d.in, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sub(g, "L1", []SubBind{In(d.in, d.cin), Out(d.cout, d.out)},
+		d.build(1, 3, func(rc *RunCtx) error {
+			v, err := Get(rc, d.cin)
+			if err != nil {
+				return err
+			}
+			return Set(rc, d.cout, v+"|最深")
+		})); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := g.Add(NewNode("sink", Requires(d.out), nil, func(rc *RunCtx) error {
+		v, err := Get(rc, d.out)
+		if err != nil {
+			return err
+		}
+		got = v
+		return nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"L1|P/L1",
+		"L1/L2|P/L1/L2",
+		"L1/L2/L3|P/L1/L2/L3",
+	}
+	if levels := d.levels(); !reflect.DeepEqual(levels, want) {
+		t.Fatalf("逐层的 path|图 id：\n got %v\nwant %v", levels, want)
+	}
+	if got != "v|最深" {
+		t.Fatalf("最深层的产物没桥回最外层：%q", got)
+	}
+	// 观测：四张图各一对括号，由内向外逐层收。只看**图级**记录——父图里那两
+	// 个节点是并发的，节点级记录的先后不保证，混在一起比整条序列会飘。
+	wantOrder := []string{
+		"start:P",
+		"start:P/L1",
+		"start:P/L1/L2",
+		"start:P/L1/L2/L3",
+		"finish:P/L1/L2/L3=completed",
+		"finish:P/L1/L2=completed",
+		"finish:P/L1=completed",
+		"finish:P=completed",
+	}
+	var graphRows []string
+	for _, row := range log.snapshot() {
+		if strings.HasPrefix(row, "start:") || strings.HasPrefix(row, "finish:") {
+			graphRows = append(graphRows, row)
+		}
+	}
+	if !reflect.DeepEqual(graphRows, wantOrder) {
+		t.Fatalf("三层嵌套的观测括号不对：\n got %v\nwant %v", graphRows, wantOrder)
+	}
+}
+
+// 最深那一层失败：首错要原样冒到最外层（中途三层不许改写它）。
+func TestSubDeepFailureBubblesFromDeepest(t *testing.T) {
+	d := newDeepNest("b")
+	boom := errors.New("最深层的失败")
+	g := mustNew(t, context.Background(), "P")
+	if err := Seed(g, d.in, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sub(g, "L1", []SubBind{In(d.in, d.cin), Out(d.cout, d.out)},
+		d.build(1, 3, func(rc *RunCtx) error { return boom })); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); !errors.Is(err, boom) {
+		t.Fatalf("Run = %v，want 最深层的原错（errors.Is）", err)
+	}
+}
+
+// 最外层取消：最深那一层的节点要看得见（取消域一层层派生下去）。
+func TestSubDeepCancelReachesDeepest(t *testing.T) {
+	d := newDeepNest("c")
+	ctx, cancel := context.WithCancel(context.Background())
+	g := mustNew(t, ctx, "P")
+	deepest := make(chan error, 1)
+	if err := Seed(g, d.in, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sub(g, "L1", []SubBind{In(d.in, d.cin), Out(d.cout, d.out)},
+		d.build(1, 3, func(rc *RunCtx) error {
+			select {
+			case <-rc.Context().Done():
+				deepest <- rc.Context().Err()
+				return rc.Context().Err()
+			case <-time.After(2 * time.Second):
+				deepest <- nil
+				return nil
+			}
+		})); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+	}()
+	if err := g.Run(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run = %v，want context.Canceled", err)
+	}
+	select {
+	case got := <-deepest:
+		if !errors.Is(got, context.Canceled) {
+			t.Fatalf("最深三层之下的节点看到的是 %v，want context.Canceled", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("最深层的节点始终没退出")
 	}
 }
 
