@@ -70,3 +70,13 @@ func (r *keyRegistry) check(k keyRef) error {
 	}
 	return nil
 }
+
+// typeOf 返回这个键名在本图里登记过的类型；没登记过返回 false。
+// 供图即节点（sub.go）比对「父侧绑定的类型」与「子图声明的类型」用——两条槽
+// 属于两张图，各自登记，所以这里必须是显式的一问一答，不能靠注册表拒绝。
+func (r *keyRegistry) typeOf(name string) (reflect.Type, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.seen[name]
+	return t, ok
+}
