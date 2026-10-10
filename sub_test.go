@@ -620,6 +620,111 @@ func TestSubRejectsReusedChildGraph(t *testing.T) {
 	}
 }
 
+// 并发的两次 Sub 复用同一张**尚未启动**的子图：认领必须是**原子**的，所以只有
+// 一方拿到它，另一方当场拿到那句翻译——而且**不许有数据竞争**。
+//
+// 这是变异对照抓出来的一处洞：修复前这里没有认领，两边都会看到「还没启动」，
+// 然后一起写子图的 path（`-race` 实测就是 `child.path = path` 那一行报 DATA RACE）。
+//
+// 跑多轮是因为赢面太窄：把认领的锁去掉（读与写不在同一临界区）时，一轮里两边
+// 也可能恰好错开——实测单轮抓不到、多轮才抓到。多轮让「两边同时读到旧值」这条
+// 路径有机会出现，出现了就是一处并发写。
+func TestSubConcurrentReuseIsClaimedAtomically(t *testing.T) {
+	inA := NewKey[string]("s.race.inA")
+	inB := NewKey[string]("s.race.inB")
+	cin := NewKey[string]("s.race.cin")
+	cout := NewKey[string]("s.race.cout")
+	outA := NewKey[string]("s.race.outA")
+	outB := NewKey[string]("s.race.outB")
+
+	for round := range 20 {
+		// 共享子图：建一次，两个 Sub 的 build 都把它交出去（正是引擎要拦的复用）。
+		// 两个 Sub 绑**同一条**子键，种值幂等，所以两边都走得到「认领」那一刻。
+		shared, err := New(context.Background(), "SHARED")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := shared.Add(NewNode("w", Requires(cin), Provides(cout),
+			func(rc *RunCtx) error { return Set(rc, cout, "x") })); err != nil {
+			t.Fatal(err)
+		}
+
+		// 让两边在 build 里对齐再一起碰共享图；带超时是为了万一只有一个节点跑到，
+		// 也别把整个测试挂死（认领失败的一方**不碰**这张图，对齐只需「同时到」）。
+		var arrive sync.WaitGroup
+		arrive.Add(2)
+		release := make(chan struct{})
+		go func() {
+			arrive.Wait()
+			close(release)
+		}()
+		build := func(sc *SubCtx) (*Graph, error) {
+			arrive.Done()
+			select {
+			case <-release:
+			case <-time.After(2 * time.Second):
+			}
+			return shared, nil
+		}
+
+		g := mustNew(t, context.Background(), "P")
+		if err := Seed(g, inA, "a"); err != nil {
+			t.Fatal(err)
+		}
+		if err := Seed(g, inB, "b"); err != nil {
+			t.Fatal(err)
+		}
+		if err := Sub(g, "sA", []SubBind{In(inA, cin), Out(cout, outA)}, build); err != nil {
+			t.Fatal(err)
+		}
+		if err := Sub(g, "sB", []SubBind{In(inB, cin), Out(cout, outB)}, build); err != nil {
+			t.Fatal(err)
+		}
+
+		err = g.Run()
+		if err == nil {
+			t.Fatalf("第 %d 轮：并发复用同一张子图应当报错", round)
+		}
+		if !strings.Contains(err.Error(), "build must return a new one on every run") {
+			t.Fatalf("第 %d 轮：抢不到认领的一方要拿到那句翻译，got %v", round, err)
+		}
+		if !errors.Is(err, ErrGraphStarted) {
+			t.Fatalf("第 %d 轮：翻译不该吃掉哨兵，got %v", round, err)
+		}
+	}
+}
+
+// 节点 id 里的 `/` 是 path 的层级分隔符：装配期就拒——否则 `a/b` 与「a 里嵌 b」
+// 拼出**同一条** path（实测两条都是 `"a/b"`，连 GraphID 也一样），层级再也拆不回来。
+func TestSubRejectsSlashInNodeID(t *testing.T) {
+	in := NewKey[string]("s.slash.in")
+	cin := NewKey[string]("s.slash.cin")
+	cout := NewKey[string]("s.slash.cout")
+	out := NewKey[string]("s.slash.out")
+
+	build := func(sc *SubCtx) (*Graph, error) {
+		child, err := New(sc.Context(), sc.GraphID())
+		if err != nil {
+			return nil, err
+		}
+		return child, child.Add(NewNode("n", Requires(cin), Provides(cout),
+			func(rc *RunCtx) error { return Set(rc, cout, "x") }))
+	}
+
+	g := mustNew(t, context.Background(), "P")
+	err := Sub(g, "a/b", []SubBind{In(in, cin), Out(cout, out)}, build)
+	if err == nil {
+		t.Fatal("节点 id 里的 / 会让 path 的层级拆不开，装配期就该拒")
+	}
+	if !strings.Contains(err.Error(), "must not contain '/'") {
+		t.Fatalf("要说明为什么拒，got %v", err)
+	}
+	// 想表达「更深一层」的话，嵌套本来就能写；别的节点 id 含 `/` 不受影响。
+	if err := Sub(g, "a", []SubBind{In(in, cin), Out(cout, out)}, build); err != nil {
+		t.Fatalf("正常的 id 不该被拒：%v", err)
+	}
+}
+
 // 翻译函数本身：只翻「已经启动过」这一类，别的错误原样过。
 func TestSubStartedErrTranslation(t *testing.T) {
 	got := subStartedErr("b", ErrGraphStarted)

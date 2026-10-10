@@ -34,6 +34,10 @@ type Graph struct {
 
 	mu      sync.Mutex
 	started bool
+	// claimed 是「这张图已经被一次 Sub 运行认领」。与 started 分开是因为认领必须
+	// 早于 Sub 对它的任何改动（改 path、挂 observer、种值），而 started 要到
+	// Start 才置上——两者之间那一整段，并发的两次 Sub 会一起写同一批字段。
+	claimed bool
 	done    bool // Wait 返回过：此后 cancel 只是收尾，不再算运行结果
 	err     error
 	sem     chan struct{}
@@ -89,6 +93,28 @@ func New(ctx context.Context, graphID string, opts ...Option) (*Graph, error) {
 
 // ID 返回图身份（New 的 graphID）。
 func (g *Graph) ID() string { return g.id }
+
+// claimSub 把这张图**原子**地认领给一次 Sub 运行：返回 false 表示它已经用过
+// （被别的 Sub 认领过，或已经启动过）。供 Sub 在跑子图之前拦「复用同一张图」。
+//
+// 为什么不是「看一眼 started」：看一眼与随后的写（Sub 要改 path、挂 observer、
+// 再种值）之间没有原子性。两个并发的 Sub 复用同一张尚未启动的图时，两边都会看到
+// 「没启动」，然后一起写同一批字段——`-race` 实测就是一处 DATA RACE。认领放在
+// 所有改动**之前**，抢不到的一方当场拿到 `ErrGraphStarted` 走人：既不再碰这张图，
+// 也照样拿得到那句「怎么改」的翻译。
+//
+// 认领**比 started 严**：它是一次性消费的标记——图交出去一次就用掉了，即使这一轮
+// 因为校验没过而没真正启动，也不还回来。一次性契约下正确写法本来就是「每次 build
+// 造一张新的」，留一个「失败了还能拿回来重来」的缝，只会让复用更难被发现。
+func (g *Graph) claimSub() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.claimed || g.started {
+		return false
+	}
+	g.claimed = true
+	return true
+}
 
 // Add 登记节点。图启动后拒绝。
 //
