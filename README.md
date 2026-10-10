@@ -13,7 +13,7 @@
 <div align="center">
   <a href="https://go.dev/"><img alt="Go 1.25.0" src="https://img.shields.io/badge/Go-1.25.0-blue.svg" /></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg" /></a>
-  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.4.0"><img alt="Release v0.4.0" src="https://img.shields.io/badge/release-v0.4.0-2563eb.svg" /></a>
+  <a href="https://github.com/Luo-root/pulse/releases/tag/v0.4.1"><img alt="Release v0.4.1" src="https://img.shields.io/badge/release-v0.4.1-2563eb.svg" /></a>
   <a href="https://luo-root.github.io/pulse/"><img alt="文档" src="https://img.shields.io/badge/docs-%E4%B8%AD%E6%96%87%20%7C%20English-2563eb.svg" /></a>
   <a href="docs/design/pulse.md"><img alt="设计文档" src="https://img.shields.io/badge/设计-pulse.md-2563eb.svg" /></a>
 </div>
