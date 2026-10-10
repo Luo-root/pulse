@@ -32,7 +32,9 @@ const (
 //
 // 归因走 Attrs：节点记录带 pulse.AttrGraph + pulse.AttrNode，运行级记录只带
 // pulse.AttrGraph（节点维度对它没有意义）——key 契约由**事实归属包** pulse
-// 定义，本包只消费。Status 为 running（等待段 / 运行级 started）或终态
+// 定义，本包只消费。`cfg.Path` 非空时**每条**记录再带一个 pulse.AttrPath
+// （嵌套层级，引擎给值；空则不写，见 ObserveConfig.Path）。Status 为
+// running（等待段 / 运行级 started）或终态
 // （finish reason）。跳过节点只有一条 skipped 等待记录，无运行记录。
 //
 // 记录顺序即引擎事件的顺序：运行级 started 排在本轮全部节点记录之前，
@@ -76,10 +78,20 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 		}
 	}
 
+	// withPath 补上嵌套层级归因（#294）：三段归因挨着写，读起来才是「同一组的
+	// 三个维度」。`cfg.Path` 为空**不写**这个 key——根图的记录本来就没有层级，
+	// 写空串会让「根」与「忘了传」长得一样（`Attrs` 是有才有）。
+	withPath := func(rec *Record) {
+		if cfg.Path != "" {
+			Set(&rec.Attrs, pulse.AttrPath, cfg.Path)
+		}
+	}
+
 	seg := func(graphID, nodeID, event, status string, d time.Duration, err error) {
 		rec := newRec(event, status, d, err)
 		Set(&rec.Attrs, pulse.AttrGraph, graphID)
 		Set(&rec.Attrs, pulse.AttrNode, nodeID)
+		withPath(&rec)
 		cfg.Sink.Write(rec)
 	}
 
@@ -87,6 +99,7 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 	graphSeg := func(graphID, event, status string, d time.Duration, err error) {
 		rec := newRec(event, status, d, err)
 		Set(&rec.Attrs, pulse.AttrGraph, graphID)
+		withPath(&rec)
 		cfg.Sink.Write(rec)
 	}
 

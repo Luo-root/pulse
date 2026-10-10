@@ -33,6 +33,18 @@ const (
 	// AttrGraph 是产生生命周期事件的图 ID（New 的 graphID）：不同业务
 	// 用不同图组装（node 可跨图复用），多图共用 scope 时区分所属图。
 	AttrGraph = "pulse.graph"
+	// AttrPath 是产生生命周期事件的**嵌套层级路径**：不透明字符串，`/` 连接
+	// 各层（每一层是子图在它父图里的那个节点 id），**层级由出口自行拆分**——
+	// 引擎不提供结构化树，也不定义「第几段」的语义。
+	//
+	// 值来自 Sub：根图的记录**不写**这个 key（`Attrs` 是「有才有」，空串会让
+	// 「根」与「忘了传」长得一样），一层子图是 `"step1"`、再深一层是
+	// `"step1/inner"`（见 sub.go 的 SubCtx.Path）。
+	//
+	// 与 AttrGraph 的分工：`pulse.graph` 是**你起的图 id**（多图复用同一出口时
+	// 的归因），`pulse.path` 是**引擎记的层级**——同一张子图模板跑两遍就是两个
+	// 图实例、两条 path，靠它分得开。
+	AttrPath = "pulse.path"
 )
 
 // Observer 观察单次 Graph 运行：图级两条 + 每个节点三条。
