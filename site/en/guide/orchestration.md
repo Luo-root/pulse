@@ -148,7 +148,7 @@ pulse: Sub "b": the child graph was already started:
 a graph runs once, so build must return a new one on every run (pulse: graph already started)
 ```
 
-`aspects` land on **the parent-side node** — `pulse.Timeout(30*time.Second)` puts a time limit on the whole child graph.
+`aspects` land on **the parent-side node** — `pulse.Timeout(30*time.Second)` puts a time limit on the whole child graph. A parent's **graph-level** aspects (`WithAspects`) are also **inherited into the child** (prepended outside the child node's own aspects; `WithoutAspects()` opts out) — but do not use that to bound a subtree, see [Aspect order](#aspect-order).
 
 ## Streaming: Produce / Consume / Tee
 
@@ -263,6 +263,10 @@ global aspects (pulse.WithAspects) → node aspects (NewNode's aspects…) → t
 ```
 
 Whatever is listed first is further outside. So `pulse.Timeout(d)` placed ahead of `pulse.Retry(...)` gives you "the **total** duration is bounded, each attempt retries on its own" — timeout outside, retry inside. Written the other way round it is "each attempt gets its own limit".
+
+**Across graphs**: a parent's graph-level aspects are **inherited into the child**, prepended **outside** the child node's own aspects (stacked, not replaced). So in a three-level nest the innermost node carries the tree's graph-level aspects (prepended) plus its own — it does **not** stack once per level. A child that wants none of the parent's batches writes `pulse.WithoutAspects()` (aspects the child declares itself still apply; writing only that means no graph-level aspects at this layer at all).
+
+**Use graph-level aspects sparingly; prefer node-level ones.** `WithAspects` lands on **every** node of the layer at once — including the `Sub` step (which is really a whole child graph behind it) — and it keeps stacking onto every node inside the child. `Timeout` is the aspect most easily bitten by that mismatch of scale: one graph-level `Timeout(d)` is at the same time "each ordinary node of the parent's limit", "the `Sub` step's limit (i.e. the whole child graph)" and "each node inside the child's limit" — three things that are not the same order of magnitude, sharing one `d`, while **a child graph times out far more easily than a plain node**. Put a limit on the one node that needs it: `NewNode(..., pulse.Timeout(...))` for an ordinary node, `Sub(..., pulse.Timeout(...))` for a whole child graph. Keep graph-level aspects for the ones you genuinely want applied uniformly across the tree (tracing / metrics). Note also that **cutting only detaches "inheritance onto the child's nodes"**: the parent's own `Sub` step is still wrapped by the parent's graph-level aspects — "this subtree has to run long" cannot be fixed by cutting alone.
 
 **The latch**: a single node's `Run` must not be entered concurrently (violating it → `ErrNextCalledTwice`), yet sequential re-entry is legal — that is exactly what `Retry` relies on.
 

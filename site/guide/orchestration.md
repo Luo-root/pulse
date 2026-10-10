@@ -147,7 +147,7 @@ pulse: Sub "b": the child graph was already started:
 a graph runs once, so build must return a new one on every run (pulse: graph already started)
 ```
 
-`aspects` 落在**父侧那个节点**上——`pulse.Timeout(30*time.Second)` 就是给整张子图限时。
+`aspects` 落在**父侧那个节点**上——`pulse.Timeout(30*time.Second)` 就是给整张子图限时。父图的**图级**切面（`WithAspects`）还会**继承进子图**（前置在子图节点自己的切面外面，叠加；不想要就 `WithoutAspects()`）——但别靠它给子树限时，见下面的[切面顺序](#切面顺序)。
 
 ## 流式：Produce / Consume / Tee
 
@@ -262,6 +262,10 @@ g, _ := pulse.New(ctx, "demo", pulse.WithMaxRunning(4))
 ```
 
 先写的更靠外。所以 `pulse.Timeout(d)` 加在 `pulse.Retry(...)` 前面，得到的是「**总时长**受限，每次尝试各自重试」——超时在外、重试在内。反过来写则是「每次尝试各自限时」。
+
+**跨图**：父图的图级切面会**继承进子图**，拼在子图节点自己的切面**外面**（叠加，不是替换）。所以三层嵌套时，最内层节点身上的链 = 这棵树的图级切面（前置）+ 它自己声明的，**不会一层叠一遍**。子图不想要父图那批就写 `pulse.WithoutAspects()`（自己 `WithAspects` 写的照挂；只写它 = 这一层一个图级切面都不要）。
+
+**图级切面慎用，尽量用节点级切面。** `WithAspects` 一次落在这一层**所有**节点上——包括 `Sub` 那一步（它背后是一整张子图），而且会继续往下叠到子图里的每个节点。`Timeout` 最容易被这里的量级差咬到：一个图级 `Timeout(d)` 同时是「父图普通节点各自的时限」「`Sub` 那一步（= 整张子图）的时限」「子图里每个节点的时限」——三个**不是一个量级**的东西共用一个 `d`，而**子图天生比普通节点更容易超时**。要限时就写在该限时的那一个节点上：普通节点用 `NewNode(..., pulse.Timeout(...))`，整张子图用 `Sub(..., pulse.Timeout(...))`；图级留给「全树都要一致施加」的那类（追踪 / 指标）。另外**切断只解开「继承到子图节点上」这一段**：父图那一步 `Sub` 仍然被父图的图级切面包着——「这棵子树要长跑」不能只靠切断。
 
 **门闩**：单节点的 `Run` 不得并发进入（违反 → `ErrNextCalledTwice`），但顺序重入合法——`Retry` 正是靠它。
 

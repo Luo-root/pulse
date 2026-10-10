@@ -123,11 +123,14 @@ func (p *SeedPlan) Apply(g *pulse.Graph, resolve func(SeedFrom) (any, error)) er
 type LoadOptions struct {
 	Context context.Context
 	GraphID string
-	// Graph 是根图的选项（WithObserver / WithAspects…）。
-	// 子图也拿同一批选项 —— 所以挂在这里的观察者会到每一层。
+	// Graph 是**根图**的选项（WithObserver / WithAspects / WithMaxRunning…）。
+	// 子图**不再拿这批**——三个图级选项都靠**继承**往下走（观察者、名额、图级切面），
+	// 所以「挂在这里的观察者会到每一层」这件事仍然成立，只是走的是继承而不是逐层声明。
 	//
-	// **别在这里放 pulse.WithMaxRunning**：这批选项会被原样传给每一层，于是额度
-	// 变成「每层各一份」。整棵树的额度用下面的 MaxRunning 字段。
+	// 之所以不再逐层传：`Option` 是不透明闭包，没法挑着传；而逐层再声明一遍会把
+	// **图级切面**叠成每层一份（两层两份、三层三份，见 pulse.WithAspects）。曾经在这里
+	// 放 `WithMaxRunning` 会变成「每层各一份」，现在它与下面的 MaxRunning 等价——两个
+	// 都写时 **MaxRunning 生效**（它拼在这批的最后）。
 	Graph []pulse.Option
 	// MaxRunning 是**整棵声明树**的并发额度（<=0 = 无限，默认）：根图拿它建名额，
 	// 子图在运行期**继承同一份**（引擎的默认继承，`Sub` 那一步自己不吃名额），
@@ -138,7 +141,7 @@ type LoadOptions struct {
 	// 的路径（引擎给：一层子图是它的节点 id，再深一层是 `outer/inner`），
 	// 宿主拿它填 observe.ObserveConfig.Path 就能把层级写进记录。
 	//
-	// 返回 nil = 这一层按 Graph 里挂的那条走（子图会继承父图的观察者）。
+	// 返回 nil = 这一层按继承走（子图会继承父图的观察者）。
 	ObserverFor func(path string) pulse.Observer
 }
 

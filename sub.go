@@ -300,6 +300,19 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 		child.lim = rc.g.lim
 	}
 
+	// 5c) 图级切面：默认**继承**（把父图那批**前置**——继承的在外、子图自己声明的在内，
+	//     与「先写的更靠外」同一条规则），`WithoutAspects()` 切断。
+	//
+	//     这里读的是父图的**有效**切面（它自己继承来的已经在里面了），所以继承是传递的；
+	//     写进 child.aspects 之后子图的节点才会读到它（那些 goroutine 由 child.Run 起，
+	//     有 happens-before）。
+	//
+	//     注意**父图那一步 `Sub` 仍然被父图的图级切面包着**——那是父图对自己节点做的事，
+	//     不是继承，切断解不开它。
+	if !child.aspectsCut {
+		child.aspects = append(append([]Aspect{}, rc.g.aspects...), child.aspects...)
+	}
+
 	// 6) 种父侧输入。种之前先确认这条键还是空的：子图自己在 build 里把它种上了
 	//    的话（或标成了跳过），这次种值会被幂等首写**静默忽略**——「父侧传进去的
 	//    值不见了」而没有任何报错，正是糖要消灭的那类错。想「父图给值、子图兜底

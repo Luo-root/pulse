@@ -1262,3 +1262,46 @@ nodes:
 		t.Fatalf("整棵树同时进 Run 的峰值 = %d，want 1（MaxRunning 是整棵树的额度，不是每层各一份）", got)
 	}
 }
+
+// `LoadOptions.Graph` 里挂的图级切面**每一层各套一次**，不许翻倍。
+//
+// 这条是**回归闸门**：`buildSub` 曾经把 `opts.Graph` 原样传给每一层。引擎加了
+// 「图级切面默认继承」（决策 M）之后，那个写法会让子图同时拿到「继承来的 + 自己
+// 声明的那份」——把 `buildSub` 改回逐层传，这条必红（3 → 4）。
+func TestLoadAspectsReachEveryLayerOnce(t *testing.T) {
+	var mu sync.Mutex
+	hits := 0
+	counting := func(rc *pulse.RunCtx, next func(*pulse.RunCtx) error) error {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		return next(rc)
+	}
+
+	var got string
+	reg := subReg(t, &got)
+	g, plan, err := pulseyaml.Load([]byte(subDoc), reg, pulseyaml.LoadOptions{
+		GraphID: "P",
+		Graph:   []pulse.Option{pulse.WithAspects(counting)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Apply(g, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if got != "about slot contract" {
+		t.Fatalf("子图产物没桥回父图：%q", got)
+	}
+	// 三个节点：根图的 step1（那一步）+ 根图的 sink + 子图的 enrich/work。
+	// 子图那个节点走的是**继承**（父图那批前置），所以它身上也只有一层。
+	mu.Lock()
+	n := hits
+	mu.Unlock()
+	if n != 3 {
+		t.Fatalf("图级切面被套了 %d 次，want 3（三个节点各一次；翻倍说明子图既继承又自己声明了一遍）", n)
+	}
+}
