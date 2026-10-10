@@ -106,6 +106,9 @@ func (g *Graph) ID() string { return g.id }
 // 认领**比 started 严**：它是一次性消费的标记——图交出去一次就用掉了，即使这一轮
 // 因为校验没过而没真正启动，也不还回来。一次性契约下正确写法本来就是「每次 build
 // 造一张新的」，留一个「失败了还能拿回来重来」的缝，只会让复用更难被发现。
+//
+// 实现上它取代了早先那个只读的 `isStarted()`：只读一眼拦不住并发，而认领顺带
+// 覆盖了「已经启动过」那一半（`g.started`）。
 func (g *Graph) claimSub() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -284,7 +287,8 @@ func (g *Graph) Run() error {
 
 // Start 异步提交全部节点。
 //
-// 提交前做一次**只读校验**，两条判据都能在这一刻静态判定：
+// 提交前做一次**只读校验**（与 `Validate` 同一套判据：装配期可以先问一遍，
+// 别等启动时才知道），两条判据都能在这一刻静态判定：
 //
 //   - 每个 `Requires` 都必须有来源（外部 `Seed`/`SkipSeed`，或某个节点的
 //     `Provides`）。没有来源的槽永远不会被写入；
@@ -310,15 +314,7 @@ func (g *Graph) Start() error {
 		g.mu.Unlock()
 		return ErrGraphStarted
 	}
-	if err := g.checkSourcesLocked(); err != nil {
-		g.mu.Unlock()
-		return err
-	}
-	if err := g.checkAcyclicLocked(); err != nil {
-		g.mu.Unlock()
-		return err
-	}
-	if err := g.checkStreamLocked(); err != nil {
+	if err := g.validateLocked(); err != nil {
 		g.mu.Unlock()
 		return err
 	}
@@ -335,6 +331,36 @@ func (g *Graph) Start() error {
 		go g.runNode(n)
 	}
 	return nil
+}
+
+// Validate 只读校验这张图跑不跑得起来：判据与 Start 完全同一套（每个
+// `Requires` 都有来源 / 依赖无环 / 流式名额与出口），但**不改图的状态**——
+// 不置 `started`、不建 goroutine、不碰槽位，所以校验完照样能接着 `Add` /
+// `Seed` / `Start`。
+//
+// 给**装配期**用：声明式装配（`pulse/yaml`）在装图那一刻就把每张子图的静态
+// 毛病报出来，而不是等它第一次运行到才炸——那些毛病里「没人提供、没人 seed」
+// 和「依赖成环」都是读一遍声明就能定的，留到运行期只会表现成挂死或一句
+// 看不出病因的超时。
+//
+// 已经启动的图直接通过：它在 `Start` 那一刻就过了同一套判据，此后 `Add` /
+// `Seed` 都不再被接受，图的内容没变过。
+func (g *Graph) Validate() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.validateLocked()
+}
+
+// validateLocked 是 Start 与 Validate 共用的那一套判据：**一份判据，两个入口**，
+// 所以「装配期提前报的那句」与「启动时拒的那句」逐字相同。调用方持 g.mu。
+func (g *Graph) validateLocked() error {
+	if err := g.checkSourcesLocked(); err != nil {
+		return err
+	}
+	if err := g.checkAcyclicLocked(); err != nil {
+		return err
+	}
+	return g.checkStreamLocked()
 }
 
 // checkSourcesLocked 判「每个 Requires 都有来源」。调用方持 g.mu。
