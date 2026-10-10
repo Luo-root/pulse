@@ -1,10 +1,14 @@
 package yaml_test
 
 import (
+	"context"
+	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/Luo-root/pulse"
 	"github.com/Luo-root/pulse/observe"
@@ -394,12 +398,144 @@ nodes:
 `,
 			want: `graph "mid": pulse: Sub "toBoth": child key "c.both" is bound twice`,
 		},
+		{
+			name: "第 3 层的依赖成环（引擎 Start 的静态判据）",
+			node: "toInner",
+			body: `  mid:
+    nodes:
+      - id: toInner
+        graph: inner
+        in:  {c.cin: c.mid_in}
+        out: {c.cout: c.mid_out}
+  inner:
+    nodes:
+      - id: a
+        uses: f
+        requires: [{name: c.side, type: string}]
+        provides: [{name: c.both, type: string}]
+      - id: b
+        uses: f
+        requires: [{name: c.both, type: string}]
+        provides: [{name: c.side, type: string}]
+      - id: leaf
+        uses: f
+        requires: [{name: c.cin, type: string}]
+        provides: [{name: c.cout, type: string}]
+`,
+			want: `graph "inner" (as referenced by node "toInner" of graph "mid"): pulse: dependency cycle: a -> b -> a`,
+		},
+		{
+			name: "第 2 层有个节点读一条没人提供、也没人 seed 的键",
+			node: "toInner",
+			body: `  mid:
+    nodes:
+      - id: toInner
+        graph: inner
+        in:  {c.cin: c.mid_in}
+        out: {c.cout: c.mid_out}
+  inner:
+    nodes:
+      - id: leaf
+        uses: f
+        requires: [{name: c.cin, type: string}, {name: c.nope, type: string}]
+        provides: [{name: c.cout, type: string}]
+`,
+			want: `graph "inner" (as referenced by node "toInner" of graph "mid"): pulse: node "leaf" requires "c.nope" but nothing provides or seeds it`,
+		},
+		{
+			name: "in: 喂的那条子侧键，子图自己也提供（两个来源）",
+			node: "toBoth2",
+			body: `  mid:
+    nodes:
+      - id: toBoth2
+        graph: both2
+        in:  {c.both: c.mid_in}
+        out: {c.side: c.mid_out}
+  both2:
+    nodes:
+      - id: maker
+        uses: f
+        requires: []
+        provides: [{name: c.both, type: string}]
+      - id: user
+        uses: f
+        requires: [{name: c.both, type: string}]
+        provides: [{name: c.side, type: string}]
+`,
+			want: `graph "mid": node "toBoth2": graph "both2" provides "c.both" inside`,
+		},
+		{
+			name: "子图 seed 的键名没登记",
+			node: "leaf",
+			body: `  mid:
+    nodes:
+      - id: toInner
+        graph: inner
+        in:  {c.cin: c.mid_in}
+        out: {c.cout: c.mid_out}
+  inner:
+    seeds:
+      - key: {name: c.ghost, type: string}
+        from: {kind: literal, value: "s"}
+    nodes:
+      - id: leaf
+        uses: f
+        requires: [{name: c.cin, type: string}]
+        provides: [{name: c.cout, type: string}]
+`,
+			want: `graph "inner" seed "c.ghost": pulse: key "c.ghost" not registered`,
+		},
+		{
+			name: "子图 seed 的类型记号写错",
+			node: "leaf",
+			body: `  mid:
+    nodes:
+      - id: toInner
+        graph: inner
+        in:  {c.cin: c.mid_in}
+        out: {c.cout: c.mid_out}
+  inner:
+    seeds:
+      - key: {name: c.num, type: string}
+        from: {kind: literal, value: "s"}
+    nodes:
+      - id: leaf
+        uses: f
+        requires: [{name: c.cin, type: string}]
+        provides: [{name: c.cout, type: string}]
+`,
+			want: `graph "inner" seed "c.num": pulse: key "c.num" type "string" does not match registered "int"`,
+		},
+		{
+			name: "子图同一条键声明了两次 seed",
+			node: "leaf",
+			body: `  mid:
+    nodes:
+      - id: toInner
+        graph: inner
+        in:  {c.cin: c.mid_in}
+        out: {c.cout: c.mid_out}
+  inner:
+    seeds:
+      - key: {name: c.both, type: string}
+        from: {kind: literal, value: "a"}
+      - key: {name: c.both, type: string}
+        from: {kind: literal, value: "b"}
+    nodes:
+      - id: leaf
+        uses: f
+        requires: [{name: c.cin, type: string}]
+        provides: [{name: c.cout, type: string}]
+`,
+			want: `graph "inner": key "c.both" is seeded twice`,
+		},
 	}
 
 	reg := pulse.NewRegistry()
 	for _, k := range []string{"c.in", "c.cin", "c.cout", "c.side", "c.both", "c.nope", "c.mid_in", "c.mid_out", "c.out"} {
 		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
 	}
+	pulse.MustRegisterKey(reg, pulse.NewKey[int]("c.num"))
 	reg.MustRegister("f", func(rc *pulse.RunCtx) error { return nil })
 
 	for _, tc := range cases {
@@ -757,4 +893,144 @@ nodes:
 	if !strings.Contains(err.Error(), "step1") {
 		t.Fatalf("超时要点名是哪一步：%v", err)
 	}
+}
+
+// 同一张 spec 被两处引用时，两边的 `in:` 可以不一样，而「子图里这条键有没有
+// 来源」是**按引用点**成立的：有一处没喂，那张图跑到就一定会挂。所以校验也按
+// 引用点各来一遍，而不是按 spec 取并集——并集会把「另一处喂了」记成这一处也喂了，
+// 于是这张图要等真的跑到那一层才由引擎拒掉。
+func TestLoadChecksEveryReferenceSite(t *testing.T) {
+	reg := pulse.NewRegistry()
+	for _, k := range []string{"rs.in", "rs.a2", "rs.b2", "rs.unused", "rs.cin", "rs.cout"} {
+		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
+	}
+	reg.MustRegister("f", func(*pulse.RunCtx) error { return nil })
+
+	const head = `
+version: 1
+seeds:
+  - key: {name: rs.in, type: string}
+    from: {kind: literal, value: "v"}
+graphs:
+  inner:
+    nodes:
+      - id: leaf
+        uses: f
+        requires: [{name: rs.cin, type: string}]
+        provides: [{name: rs.cout, type: string}]
+  mid:
+    nodes:
+      - id: fed
+        graph: inner
+        in:  {rs.cin: rs.a2}
+        out: {rs.cout: rs.b2}
+  notmid:
+    nodes:
+      - id: hungry
+        graph: inner
+`
+	const tail = `
+nodes:
+  - id: top
+    graph: mid
+    in:  {rs.a2: rs.in}
+    out: {rs.b2: rs.b2}
+  - id: top2
+    graph: notmid
+%s
+`
+	const top2NoIn = `    out: {rs.unused: rs.unused}`
+	const top2Fed = `    in:  {rs.a2: rs.in}
+    out: {rs.unused: rs.unused}`
+
+	broken := head + "        out: {rs.cout: rs.unused}\n" + fmt.Sprintf(tail, top2NoIn)
+	_, _, err := pulseyaml.Load([]byte(broken), reg, pulseyaml.LoadOptions{GraphID: "P"})
+	if err == nil {
+		t.Fatal("第二处引用没喂 rs.cin，装图期就该报——别等跑到那一层")
+	}
+	// 报错要说清是**哪一处**引用看到的：同一张图在两处看到的东西不一样
+	if !strings.Contains(err.Error(), `graph "inner" (as referenced by node "hungry" of graph "notmid")`) {
+		t.Fatalf("报错没点明引用点：%v", err)
+	}
+	if !strings.Contains(err.Error(), `requires "rs.cin" but nothing provides or seeds it`) {
+		t.Fatalf("报错没点明是哪条键：%v", err)
+	}
+
+	// 对照组：两处都接上，整份文档就该全过——不能因为「有一处没喂」把两处都判死
+	fixed := head + "        in:  {rs.cin: rs.a2}\n        out: {rs.cout: rs.unused}\n" + fmt.Sprintf(tail, top2Fed)
+	if _, _, err := pulseyaml.Load([]byte(fixed), reg, pulseyaml.LoadOptions{GraphID: "P"}); err != nil {
+		t.Fatalf("两处都接上后不该再报：%v", err)
+	}
+}
+
+// 校验图不继承宿主的 ctx：那些图既不会跑、也没人会 cancel 它们，从宿主 ctx 派生
+// 出来的子节点只会一直挂在宿主 ctx 上（热重载反复 Load = 越攒越多）。
+//
+// 直接可观测面就是宿主 ctx 的 children 表——标准库把派生出来的子节点挂在这张表
+// 上，只有 cancel 或父 ctx 取消才摘掉。拿不到这张表（context 内部形状变了）就跳过：
+// 这条断言盯的是「别往上面挂」，不是某种实现细节。
+func TestLoadDoesNotRegisterCheckGraphsOnHostContext(t *testing.T) {
+	const loads = 20
+	host, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reg := pulse.NewRegistry()
+	for _, k := range []string{"hc.in", "hc.a2", "hc.b2", "hc.cin", "hc.cout"} {
+		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
+	}
+	reg.MustRegister("f", func(*pulse.RunCtx) error { return nil })
+
+	doc := []byte(`
+version: 1
+seeds:
+  - key: {name: hc.in, type: string}
+    from: {kind: literal, value: "v"}
+graphs:
+  inner:
+    nodes:
+      - id: leaf
+        uses: f
+        requires: [{name: hc.cin, type: string}]
+        provides: [{name: hc.cout, type: string}]
+  mid:
+    nodes:
+      - id: toInner
+        graph: inner
+        in:  {hc.cin: hc.a2}
+        out: {hc.cout: hc.b2}
+nodes:
+  - id: step1
+    graph: mid
+    in:  {hc.a2: hc.in}
+    out: {hc.b2: hc.b2}
+`)
+	before := ctxChildren(t, host)
+	for i := 0; i < loads; i++ {
+		if _, _, err := pulseyaml.Load(doc, reg, pulseyaml.LoadOptions{Context: host, GraphID: "HC"}); err != nil {
+			t.Fatalf("第 %d 次 Load: %v", i, err)
+		}
+	}
+	// 根图是宿主自己要的那张图，挂在宿主 ctx 上是对的（宿主跑完 Wait 就会释放），
+	// 所以上限是「一次 Load 一个」；校验图（这份文档两张 spec）再挂上去就翻三倍。
+	if got := ctxChildren(t, host) - before; got > loads {
+		t.Fatalf("Load 往宿主 ctx 上挂了 %d 个子节点，最多只该有 %d（每张根图一个）", got, loads)
+	}
+}
+
+// ctxChildren 读一个可取消 ctx 挂着的子节点数（context 包的内部表）。
+func ctxChildren(t *testing.T, ctx context.Context) int {
+	t.Helper()
+	v := reflect.ValueOf(ctx)
+	if v.Kind() != reflect.Ptr || v.Elem().Kind() != reflect.Struct {
+		t.Skip("context 的内部形状变了：拿不到 children 表")
+	}
+	f := v.Elem().FieldByName("children")
+	if !f.IsValid() || f.Kind() != reflect.Map || !f.CanAddr() {
+		t.Skip("context 的内部形状变了：拿不到 children 表")
+	}
+	m := reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
+	if m.IsNil() {
+		return 0
+	}
+	return m.Len()
 }

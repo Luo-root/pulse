@@ -177,6 +177,19 @@ func subBinds(n NodeSpec, graphName string, child GraphSpec, reg *pulse.Registry
 			return nil, fmt.Errorf("node %q: graph %q reads %q in the binding but no node of it requires that key",
 				n.ID, graphName, childKey)
 		}
+		if provided[childKey] {
+			// 子图**自己**就有节点提供这条键：再让父侧 `in:` 喂一次，这条槽
+			// 就有了两个来源。引擎的纪律是「一条键恰好一个来源」，所以跑到
+			// 这个节点时会撞来源冲突——而这在装图期读一遍声明就能定。
+			//
+			// 除非这条键**同时**还挂在 `out:` 里：那种形状先让 `pulse.Sub` 报
+			// 「同一个子键绑了两次」——错在绑定的形状，不在来源，那句话更贴。
+			if _, both := n.Out[childKey]; !both {
+				return nil, fmt.Errorf("node %q: graph %q provides %q inside, so the binding cannot also feed it with in: — "+
+					"a key has exactly one source, and the parent's seed would hit %s the first time this step runs",
+					n.ID, graphName, childKey, pulse.ErrDuplicateSource)
+			}
+		}
 		if seeded[childKey] {
 			return nil, fmt.Errorf("node %q: graph %q seeds %q and the binding also feeds it with in: — "+
 				"one of the two is redundant, and the one from the parent would be silently ignored",
@@ -228,23 +241,101 @@ func buildSub(sc *pulse.SubCtx, graphName string, spec GraphSpec,
 	// IO，而 SeedPlan 是**父图**的产物；把子图的计划向上冒泡是另一件事，
 	// 等真有需要再说。校验在 Load 期做（checkSubSeeds）。
 	for _, s := range spec.Seeds {
-		if s.Skip {
-			if err := pulse.SkipSeedByName(child, reg, s.Key.Name, s.Key.Type); err != nil {
-				return nil, fmt.Errorf("pulse/yaml: graph %q seed %q: %w", graphName, s.Key.Name, err)
-			}
-			continue
-		}
-		if err := pulse.SeedByName(child, reg, s.Key.Name, s.Key.Type, s.From.Value); err != nil {
-			return nil, fmt.Errorf("pulse/yaml: graph %q seed %q: %w", graphName, s.Key.Name, err)
+		if err := seedOne(child, graphName, s, reg); err != nil {
+			return nil, err
 		}
 	}
 	return child, nil
 }
 
-// checkSubSeeds 在 Load 期拦掉子图里那些「要靠宿主 IO」的 seed（C3）。
-// 留在运行期报也行，但那是「装图全过、跑到一半才炸」，而这是静态可判定的。
+// seedOne 把子图声明里的一条 seed 种进 g，供**装配期**（Load 的校验图）与
+// **运行期**（buildSub 建出来的那张图）共用：同一个函数 ⇒ 两边拒的东西永远
+// 一致（键没登记、类型写错、值是 nil——这些都是静态可判定的，装配期报出来
+// 比跑到那一层才报好）。
+func seedOne(g *pulse.Graph, graphName string, s SeedSpec, reg *pulse.Registry) error {
+	if s.Skip {
+		if err := pulse.SkipSeedByName(g, reg, s.Key.Name, s.Key.Type); err != nil {
+			return fmt.Errorf("pulse/yaml: graph %q seed %q: %w", graphName, s.Key.Name, err)
+		}
+		return nil
+	}
+	if err := pulse.SeedByName(g, reg, s.Key.Name, s.Key.Type, s.From.Value); err != nil {
+		return fmt.Errorf("pulse/yaml: graph %q seed %q: %w", graphName, s.Key.Name, err)
+	}
+	return nil
+}
+
+// checkSite 是「装配期要静态校验的一张图」，按**引用点**列出来。
+type checkSite struct {
+	graph string   // 被校验的 spec 名
+	owner string   // 引用它的那张图（"" = 根层）
+	node  string   // 引用它的节点 id（谁也引用不到时为空）
+	bound []string // 这个引用点用 `in:` 喂进来的子侧键（按名排序）
+}
+
+// via 说明这张图是**哪个引用点**在看它，附在校验报错后面：同一张 spec 被两处
+// 引用时两边的 `in:` 可以不一样，同一句「这条键没来源」在两处看到的含义不同
+// ——不说清是哪一处，读的人还得自己找。无人引用时为空串。
+func (s checkSite) via() string {
+	if s.node == "" {
+		return ""
+	}
+	if s.owner == "" {
+		return fmt.Sprintf(" (as referenced by node %q of the root graph)", s.node)
+	}
+	return fmt.Sprintf(" (as referenced by node %q of graph %q)", s.node, s.owner)
+}
+
+// checkSites 列出所有要静态校验的图：**每个引用点各一条**，加上谁也引用不到
+// 的 spec 各一条。
+//
+// 为什么按引用点而不是按 spec：同一张 spec 被两处引用时，两边的 `in:` 可以不
+// 一样，而「子图里这条键有没有来源」正是**按引用点**成立的——有一处没喂，
+// 那张图跑到就一定会挂。按并集校验会把这种图放过去。
+//
+// 谁也引用不到的 spec 也过一遍（没有任何外部来源那种形状）：它是死配置，
+// 但「写错了没人报」比「报了」难查得多。
+func checkSites(doc Document) []checkSite {
+	var sites []checkSite
+	referenced := make(map[string]bool, len(doc.Graphs))
+	add := func(owner string, specs []NodeSpec) {
+		for _, n := range specs {
+			if n.Graph == "" {
+				continue
+			}
+			referenced[n.Graph] = true
+			sites = append(sites, checkSite{
+				graph: n.Graph,
+				owner: owner,
+				node:  n.ID,
+				bound: sortedMapKeys(n.In),
+			})
+		}
+	}
+	add("", doc.Nodes) // 根图的节点先过：报错顺序跟着读文档的顺序走
+	for _, name := range sortedNames(doc.Graphs) {
+		add(name, doc.Graphs[name].Nodes)
+	}
+	for _, name := range sortedNames(doc.Graphs) {
+		if !referenced[name] {
+			sites = append(sites, checkSite{graph: name})
+		}
+	}
+	return sites
+}
+
+// checkSubSeeds 在 Load 期拦掉子图 seed 本身的毛病（C3 + 重复声明）：
+//
+//   - 要靠宿主 IO 的 seed（`env` / `file` / `context`）——子图的 `SeedPlan`
+//     不存在，只有 `literal` 能种；
+//   - 同一张图里同一条键声明**两次** seed——第二次种值会被幂等首写静默忽略，
+//     到底哪个值生效取决于声明顺序，两行看着都像是对的。
+//
+// 键名 / 类型 / 值能不能对上登记表，由装配期的校验图**种一遍**来判
+// （seedOne 与运行期同一个函数）。
 func checkSubSeeds(graphs map[string]GraphSpec) error {
 	for _, name := range sortedNames(graphs) {
+		seen := make(map[string]bool, len(graphs[name].Seeds))
 		for _, s := range graphs[name].Seeds {
 			switch s.From.Kind {
 			case "", "literal":
@@ -253,6 +344,12 @@ func checkSubSeeds(graphs map[string]GraphSpec) error {
 					"(only literal: env/file/context need host IO, and SeedPlan belongs to the parent graph)",
 					name, s.Key.Name, s.From.Kind)
 			}
+			if seen[s.Key.Name] {
+				return fmt.Errorf("pulse/yaml: graph %q: key %q is seeded twice — the second one would be "+
+					"silently ignored (idempotent first write), so which value wins depends on declaration order",
+					name, s.Key.Name)
+			}
+			seen[s.Key.Name] = true
 		}
 	}
 	return nil

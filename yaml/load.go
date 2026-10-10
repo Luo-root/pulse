@@ -168,29 +168,59 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 		ctx = context.Background()
 	}
 
-	// 每一张 spec 的**节点**也在这一刻查完。落进图的只有根层那批，子图要等运行到
-	// 才装——只查根层的话，第 2 层往后写错工厂名或绑定的毛病会「装图全过、跑到
-	// 一半才炸」，谁也引用不到的 spec 更是永远不炸。
-	//
-	// 做法是给每张 spec 起一个**只装不跑**的空图，把同一段装图代码走一遍：`Sub` /
-	// `Add` 在装配期做的检查（id、重复、来源、绑定）一个不少，子图却不会被真的
-	// 建起来（build 只是被存进节点，没有人调用它）。
-	for _, name := range sortedNames(doc.Graphs) {
-		check, err := pulse.New(ctx, "load-check:"+name)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := addNodes(check, doc.Graphs[name].Nodes, name, doc.Graphs, reg, opts); err != nil {
-			return nil, nil, err
-		}
-	}
-
+	// 根图先装：根侧那些**接线处**的毛病（绑了一条没登记的键、`in` 喂的键
+	// 子图根本不读……）由 `subBinds` 在装它的时候点着节点 id 报出来，而
+	// 下面按引用点起校验图时会拿这些绑定当边界——先装，报错才点得到位置上。
 	g, err := pulse.New(ctx, opts.GraphID, opts.Graph...)
 	if err != nil {
 		return nil, nil, err
 	}
 	if err := addNodes(g, doc.Nodes, "", doc.Graphs, reg, opts); err != nil {
 		return nil, nil, err
+	}
+
+	// 每一张 spec 的**节点**也在这一刻查完，而且连 `Start` 那套静态判据一起
+	// 跑（`Validate`）。落进图的只有根层那批，子图要等运行到才装——只查根层
+	// 的话，第 2 层往后写错工厂名、绑定的毛病会「装图全过、跑到一半才炸」，
+	// 谁也引用不到的 spec 更是永远不炸；而「没人提供、没人 seed」的键与
+	// 「依赖成环」这两条原来更要等到子图第一次 `Run` 才由引擎拒掉。
+	//
+	// 做法是给每个**引用点**起一张「只装不跑」的校验图，把同一段装图代码走一遍
+	// （`Sub` / `Add` 在装配期做的检查一个不少），再把它那一层拿得到的**来源**
+	// 种上：spec 自己的 `seeds`，加上父侧 `in:` 喂进来的那几条键——子图里的
+	// 节点读这些键是**有来源**的，种不上就会把合法图误报成「没人提供」。
+	//
+	// 按引用点而不是按 spec：同一张 spec 被两处引用时，两边的 `in:` 可能不一样，
+	// 只按并集校验会把「这一处没喂，运行到就一定报」的那张图放过去。
+	//
+	// 校验图不继承宿主的 ctx：它既不会跑，也没人会 cancel 它，从宿主 ctx 派生
+	// 出来的子 ctx 只会一直挂在宿主 ctx 上（热重载反复 Load = 越攒越多）。
+	for _, site := range checkSites(doc) {
+		check, err := pulse.New(context.Background(), "load-check:"+site.graph)
+		if err != nil {
+			return nil, nil, err
+		}
+		spec := doc.Graphs[site.graph]
+		if err := addNodes(check, spec.Nodes, site.graph, doc.Graphs, reg, opts); err != nil {
+			return nil, nil, err
+		}
+		for _, s := range spec.Seeds {
+			if err := seedOne(check, site.graph, s, reg); err != nil {
+				return nil, nil, err
+			}
+		}
+		for _, k := range site.bound {
+			tag, ok := reg.TypeTagOf(k)
+			if !ok {
+				return nil, nil, fmt.Errorf("pulse/yaml: graph %q: bound key %q is not registered", site.graph, k)
+			}
+			if err := pulse.SkipSeedByName(check, reg, k, tag); err != nil {
+				return nil, nil, fmt.Errorf("pulse/yaml: graph %q: %w", site.graph, err)
+			}
+		}
+		if err := check.Validate(); err != nil {
+			return nil, nil, fmt.Errorf("pulse/yaml: graph %q%s: %w", site.graph, site.via(), err)
+		}
 	}
 
 	plan := &SeedPlan{reg: reg}
