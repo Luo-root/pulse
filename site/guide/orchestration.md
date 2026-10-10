@@ -219,6 +219,50 @@ g, _ := pulse.New(ctx, "demo", pulse.WithMaxRunning(4))
 
 **门闩**：单节点的 `Run` 不得并发进入（违反 → `ErrNextCalledTwice`），但顺序重入合法——`Retry` 正是靠它。
 
+## 接线书写规范：让静默的错写不出来
+
+上面几节讲的是「引擎怎么判」，这一节讲**怎么写字**。五条规矩，每条都对应一次实测到的**静默**错误——不报错、不告警，整轮还返回 `nil`。规矩没有强制手段（不做 lint / vet 提示：那要单独做成一个二进制、让使用方改自己的 CI，而把 `rc` 传进 helper 里读 Key 的情形认不出来），所以它写在这里。
+
+**出口多于一条：整批表态，别只写一半。** 节点有 A / B 两条出口、意图走 A，却只写了 `Skip(B)`、忘了 `Set(A)`：
+
+```go
+return pulse.Skip(rc, OutB) // 忘了 Set(rc, OutA, v)
+```
+
+实测：**两条下游都不跑**（A 没被写、B 被跳过），整轮仍返回 `nil`。写法是用 `Only` 一次说完——写 A，本节点其余出口全部作废：
+
+```go
+return pulse.Only(rc, OutA, v) // 调用方不再自己写 Skip，「漏写」在形态上就不存在
+```
+
+要同时写多个值就继续手写 `Set`（`Only` 说的是「只走这一条」）。
+
+**同类型多槽位：按来源 Key 取，不要按位置。** `Keys(a, b)` 与 `Keys(b, a)` 都编译——顺序编译期锁不住。实测：按位置读 `b.Values()[0]`，把声明顺序写反就从 `"from-a"` 变成 `"from-b"`，值长得像的时候根本看不出来；按 Key 取不受影响：
+
+```go
+v, err := b.Get(SourceA) // 与声明顺序无关；这一路以跳过到达时回 *SkipError
+```
+
+**声明与读取放在一起。** `Requires(X)` 声明的 Key，就在同一段 `Run` 里读。注意**「只等到达、不取值」是合法用法**（实测：声明了不读，节点照样执行）——闸门节点正是靠它成立的；要避免的是**别让人看不出是哪一种**：确实只当闸门，就写一行注释说清楚。
+
+**长任务盯 `rc.Context()`；`Set` 完别就 `return`。** 两条实测：
+
+- **没人看 ctx = 取消被吞成成功**：外部中途取消、节点全程不看 `rc.Context()`，`Run()` 返回 `nil`（没有任何节点看见取消，口径见[核心概念](/guide/concepts)）。
+- **活留给后台 goroutine = 错误无处安放**：`Set` 出 channel 就 `return`，真正的发送留在无人观测的 goroutine 里。实测：图报成功（`Run() = nil`），而那个 goroutine 干完活之后**失败了**——图上一点痕迹都没有；忘了 `defer close` 更要命，下游 `for range` 等关闭，`Run()` 永远不返回（外部 ctx 超时也救不了：节点自己不返回，图就不返回）。
+
+写法：长循环里 `select` 一下 `rc.Context().Done()`；要传流就用 `Produce` / `Consume` / `Tee`，关闭责任交给它们。
+
+**一根流出口只喂一个下游。** 同一条流出口挂两个消费者，值会被**静默瓜分**（两个都跑、各自只拿到一部分）。现在 `Start()` 会直接拒（报错点名是哪几个节点），但写法上应该一次写对——**广播**用 `Tee`（一条出口一个下游），**抢**用 `FanOut`（同一组 worker 共读是显式声明）：
+
+```go
+err := pulse.Produce(g, "src", stream, sendAll)        // 一条流
+err = pulse.Tee(g, "fan", stream, pulse.Keys(sA, sB))  // 复制成两条出口
+err = pulse.Consume(g, "sinkA", sA, handle)            // 一条出口一个消费者
+err = pulse.Consume(g, "sinkB", sB, archive)
+```
+
+消费端**用 `select` 而不是 `for range`**：实测同一场景（生产端也不看 ctx、缓冲 8 发 5 个、15ms 时取消）——`for range` 把 5 个值全算完并且报成功；`select` 在第 4 个值上停下并返回 `context canceled`。要如实知道的一点：「取消时缓冲区里剩下的值算不算」是**尽力而为**——两个分支同时就绪时 `select` 随机挑，这不是硬保证。
+
 ## 结果从哪读
 
 `Graph` 没有 `Run` 之后的公开读槽。产物归调用方，两条常规做法：
