@@ -103,6 +103,48 @@ err = pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2, r3),
 
 **编译期锁住什么**：元素类型（`Keys(...)` 与 `Batch[T]` 必须同一个 `T`）与个数（`Join` 收一束、`FanOut` 按输出槽开实例）。**锁不住同类型多槽位的顺序**——`Keys(a, b)` 与 `Keys(b, a)`（都是 `Key[string]`）**都编译**。实测：按位置读会错位（`Values()[0]` 从 `"from-a"` 变成 `"from-b"`），按 `Get(a)` 取两次都是 `"from-a"`——这就是 `Batch` 带来源名要买的东西，写反顺序只是声明顺序变了。
 
+## 图即节点：把一张图当一步
+
+一张图可以当**一个节点**嵌进更大的图——流程按层组合，而不是铺成一张越来越大的平图。
+
+```go
+err := pulse.Sub(parent, "step1",
+	[]pulse.SubBind{pulse.In(topic, childIn), pulse.Out(childOut, summary)},
+	func(sc *pulse.SubCtx) (*pulse.Graph, error) {
+		child, err := pulse.New(sc.Context(), sc.GraphID(), pulse.WithMaxRunning(2))
+		if err != nil {
+			return nil, err
+		}
+		if err := child.Add( /* …读 childIn、写 childOut 的节点… */ ); err != nil {
+			return nil, err
+		}
+		return child, nil
+	})
+```
+
+`In` / `Out` 是**箭头读法**：来源在前、去向在后（`In(父, 子)`、`Out(子, 父)`）。父图那个节点声明什么，完全由它们推出来——**边界写在接线处**，读父图一眼看清这一步吃什么、吐什么。两端同一个 `T` 编译期就锁住。
+
+**这三件事不用你再记**（手工搭的时候，漏了都不会报错）：
+
+| 手工搭要记得 | 漏了的后果 | `Sub` 的做法 |
+|---|---|---|
+| 把观察者挂到子图 | 父图照常跑完、`Run()` 返回 `nil`，子图的记录**一条都不出现** | 子图没挂观察者时**自动继承**父图的（挂了自己的就用它自己的） |
+| 子图 ctx 派生自 `rc.Context()` | 用 `context.Background()` 建子图时父图取消子图看不见，它会照常跑完 | `sc.Context()` 派生自本节点 |
+| 手写两端桥接 | 子 → 父只能让子图的节点把结果写进**闭包变量**（`Graph` 没有公开读槽 API），谁绑谁全靠人记 | `In` / `Out` 声明一次，跑完自动桥回 |
+
+终态映射和手写嵌套一样：子图成功 → 本节点成功（输出就绪的 `Set`、跳过的 `Skip`）；**全部输出都跳过** → 本节点以 `skipped` 收尾（不是失败）；子图失败 → 本节点失败、**首错原样冒泡**（`errors.Is` 成立）；取消 → 子图看得见。
+
+**名额各管各的**：父图 `WithMaxRunning` 管的是「同时有几张子图在跑」（`Sub` 节点在父图里占一个名额、占满整段子图运行），子图内部的并发由子图自己的 `WithMaxRunning` 管——所以嵌套会**突破父图的上限**。实测父 `maxRun=1` + 子 `maxRun=2`：同时进入 `Run` 的节点峰值 **3**（父图 1 + 子图 2）。
+
+**子图是一次性的**：`build` 每次运行都要造一张新图。把 `pulse.New` 写在闭包外面复用，得到一句能照着改的话（`ErrGraphStarted` 仍在错误链里）：
+
+```
+pulse: Sub "b": the child graph was already started:
+a graph runs once, so build must return a new one on every run (pulse: graph already started)
+```
+
+`aspects` 落在**父侧那个节点**上——`pulse.Timeout(30*time.Second)` 就是给整张子图限时。
+
 ## 流式：Produce / Consume / Tee
 
 `Key[<-chan T]` 早就能用，缺的不是「再包一层 channel」，而是每个生产 / 消费节点都要手写的六件事（创建与发布、关闭责任、循环、取消、错误回传、背压与名额）。最典型的一处写错是 **`Set` 出 channel 就 `return`**：节点已经 `completed`，真正的发送留在没人观测的后台 goroutine 里——错误回不到图上、取消也叫不醒它。

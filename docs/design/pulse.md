@@ -365,6 +365,58 @@ return pulse.Only(rc, OutB, w)
 
 反面：重复表态会**变吵**——先 `Set` 过别的出口再 `Only`，会给那条已就绪的槽补一次 `Skip` → `ErrConflict`（而手写 `Set` 两次是被静默忽略的）。所以 `Only` 要**代替** `Set`，需要同时写出多个值的节点继续手写 `Set`。
 
+### 图即节点：`Sub`
+
+一张图可以当**一个节点**嵌进更大的图，于是流程按层组合，而不是铺成一张越来越大的平图。手工搭今天就能跑（父节点里 `pulse.New` + 桥接 + `child.Run()`），缺的是把建图 / 桥接 / 取消域 / 观察者四件事收进一次调用：
+
+```go
+err := pulse.Sub(parent, "step1",
+    []pulse.SubBind{pulse.In(topic, childIn), pulse.Out(childOut, summary)},
+    func(sc *pulse.SubCtx) (*pulse.Graph, error) {
+        child, err := pulse.New(sc.Context(), sc.GraphID(), pulse.WithMaxRunning(2))
+        if err != nil {
+            return nil, err
+        }
+        // …给 child 装节点：读 childIn、写 childOut…
+        return child, nil
+    })
+```
+
+`In` / `Out` 是**箭头读法**：来源在前、去向在后（`In(父, 子)`、`Out(子, 父)`）。父图那个节点的 `Requires` / `Provides` 由它们推出来——**边界写在接线处**，读父图一眼看清这一步吃什么、吐什么；两端同一个 `T` 编译期就锁住（`In(a, b)` 里一个是 `Key[string]`、一个是 `Key[int]` 直接编译不过），父图的静态校验（来源 / 环 / 流式名额）照常生效。
+
+**三处手工搭会静默出错的地方，正是它要消灭的**：
+
+| 手工搭要记得 | 漏了的后果 | `Sub` 的做法 |
+|---|---|---|
+| 把观察者挂到子图 | 父图照常跑完、`Run()` 返回 `nil`，子图的记录**一条都不出现** | 子图没挂观察者时**自动继承**父图的（子图挂了自己的就用它自己的） |
+| 子图 ctx 派生自 `rc.Context()` | 用 `context.Background()` 建子图时父图取消子图看不见，它会照常跑完 | `sc.Context()` 派生自本节点 |
+| 手写两端桥接 | 父 → 子是 `Seed`；子 → 父只能让子图的节点把结果写进**闭包变量**（`Graph` 没有公开读槽 API），谁绑谁全靠人记 | `In` / `Out` 声明一次，跑完自动桥回 |
+
+语义与手写嵌套逐条一致：子图成功 → 本节点成功，输出按槽位桥回（就绪 → `Set`，跳过 → `Skip`）；**全部输出都跳过** → 本节点 `NoValue()`（节点级跳过，不是失败）；子图失败 → 本节点失败、**首错原样冒泡**（`errors.Is` 成立）；父图 / 本节点取消 → 子图看得见（子 ctx 是派生的）。
+
+**名额各管各的**：父图 `WithMaxRunning` 管的是「同时有几张子图在跑」——`Sub` 节点在父图里占一个名额、占满整段子图运行；子图内部的并发由子图自己的 `WithMaxRunning` 管。所以嵌套会**突破父图的上限**：实测父 `maxRun=1` + 子 `maxRun=2` 时，同时进入 `Run` 的节点峰值 **3**（父图 1 + 子图 2）。要硬上限就得把子图的 `WithMaxRunning` 自己算进预算里。
+
+**子图是一次性的**：`build` 每次运行都要造一张新图。把 `pulse.New` 写在闭包外面复用，报出来的是一句能照着改的话（`ErrGraphStarted` 仍在错误链里）：
+
+```
+pulse: Sub "b": the child graph was already started:
+a graph runs once, so build must return a new one on every run (pulse: graph already started)
+```
+
+`aspects` 落在**父侧那个节点**上：`pulse.Timeout(30*time.Second)` 就是给整张子图限时（切面覆盖「等输入 + 执行」整段）。
+
+观察者那条链自动接上——父图挂了 observer 时 `build` 里什么都不用写，同一个出口就看得见嵌套的全过程，两图靠 `pulse.graph` 分得开（实测 10 条，父图的两条把子图的两条夹在中间）：
+
+```
+start:P
+wait:P/step1 → run:P/step1
+    start:P/step1
+    wait:P/step1/inner → run:P/step1/inner → done:P/step1/inner=completed
+    finish:P/step1=completed
+done:P/step1=completed
+finish:P=completed
+```
+
 ## 6. 并发与读语义
 
 - 节点各自一个 goroutine；`RunCtx` 的 context 是唯一取消通道；

@@ -104,6 +104,48 @@ Both callbacks receive **this node's own `*RunCtx`** as their first parameter: a
 
 **What the compiler locks**: the element type (`Keys(...)` and `Batch[T]` must share one `T`) and the arity (`Join` takes one batch, `FanOut` opens one instance per output slot). It does **not** lock the order of same-typed slots — `Keys(a, b)` and `Keys(b, a)` (both `Key[string]`) **both compile**. Measured: positional reading shifts (`Values()[0]` goes from `"from-a"` to `"from-b"`) while `Get(a)` returns `"from-a"` either way — that is exactly what the source names on `Batch` buy, and swapping the order only changes declaration order.
 
+## A graph as a node: one graph, one step
+
+A graph can be embedded into a larger graph as **a single node** — flows compose in layers instead of growing into one ever-wider flat graph.
+
+```go
+err := pulse.Sub(parent, "step1",
+	[]pulse.SubBind{pulse.In(topic, childIn), pulse.Out(childOut, summary)},
+	func(sc *pulse.SubCtx) (*pulse.Graph, error) {
+		child, err := pulse.New(sc.Context(), sc.GraphID(), pulse.WithMaxRunning(2))
+		if err != nil {
+			return nil, err
+		}
+		if err := child.Add( /* …nodes that read childIn and write childOut… */ ); err != nil {
+			return nil, err
+		}
+		return child, nil
+	})
+```
+
+`In` / `Out` read as **arrows**: source first, destination second (`In(parent, child)`, `Out(child, parent)`). What the parent-side node declares follows entirely from them — **the boundary is written where the wiring is**, so reading the parent graph tells you what this step eats and what it produces. Both ends must share one `T`, which the compiler locks.
+
+**Three things you no longer have to remember** (wire it by hand and missing any of them is silent):
+
+| Wiring by hand means remembering | What you get if you forget | What `Sub` does |
+|---|---|---|
+| attach the observer to the child graph | the parent graph runs fine and `Run()` returns `nil`, while **not one child record appears** | a child with no observer of its own **inherits the parent's** (one of its own wins) |
+| derive the child ctx from `rc.Context()` | build the child from `context.Background()` and a parent cancel is invisible — it runs to completion anyway | `sc.Context()` derives from this node |
+| hand-write both bridges | child → parent can only go through a **closure variable** (`Graph` has no public slot read API), and who is bound to whom lives in your head | declare `In` / `Out` once; the bridge happens when the child finishes |
+
+Terminal states map exactly like hand-written nesting: child succeeds → this node succeeds (ready outputs are `Set`, skipped ones `Skip`); **every output skipped** → this node finishes as `skipped` (not a failure); child fails → this node fails and the **first error propagates untouched** (`errors.Is` holds); cancellation → the child sees it.
+
+**Slots are per graph**: the parent's `WithMaxRunning` governs *how many child graphs run at once* (the `Sub` node holds one parent slot for the whole child run), while concurrency inside the child is governed by the child's own `WithMaxRunning` — so nesting **exceeds the parent's cap**. Measured: parent `maxRun=1` + child `maxRun=2` → peak of **3** nodes inside `Run` at the same time (1 parent + 2 child).
+
+**A child graph is one-shot**: `build` must return a new graph on every run. Build `pulse.New` outside the closure and reuse it, and you get a sentence that tells you how to fix it (`ErrGraphStarted` stays in the error chain):
+
+```
+pulse: Sub "b": the child graph was already started:
+a graph runs once, so build must return a new one on every run (pulse: graph already started)
+```
+
+`aspects` land on **the parent-side node** — `pulse.Timeout(30*time.Second)` puts a time limit on the whole child graph.
+
 ## Streaming: Produce / Consume / Tee
 
 `Key[<-chan T]` always worked; what was missing is not "one more channel wrapper" but the six things every producing / consuming node has to hand-write (creation and publication, close responsibility, the loop, cancellation, error propagation, backpressure and slots). The classic mistake is **`Set`-ing the channel and then returning**: the node is already `completed`, the actual sending lives on in an unobserved background goroutine — errors never reach the graph and cancellation cannot wake it.
