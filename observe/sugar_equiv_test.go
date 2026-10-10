@@ -64,7 +64,7 @@ func TestSugarMatchesHandwrittenRecords(t *testing.T) {
 	}
 	for i, out := range []pulse.Key[string]{r1, r2} {
 		out, shard := out, i+1
-		if err := hg.Add(pulse.NewNode("worker-"+fmt.Sprint(shard), pulse.Requires(in), pulse.Provides(out),
+		if err := hg.Add(pulse.NewNode("worker-"+fmt.Sprint(shard), "", pulse.Requires(in), pulse.Provides(out),
 			func(rc *pulse.RunCtx) error {
 				v, err := pulse.Get(rc, in)
 				if err != nil {
@@ -78,7 +78,7 @@ func TestSugarMatchesHandwrittenRecords(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := hg.Add(pulse.NewNode("collect", pulse.Requires(r1, r2), pulse.Provides(joined),
+	if err := hg.Add(pulse.NewNode("collect", "", pulse.Requires(r1, r2), pulse.Provides(joined),
 		func(rc *pulse.RunCtx) error {
 			n, missing := 0, 0
 			for _, k := range []pulse.Key[string]{r1, r2} {
@@ -131,7 +131,7 @@ func TestOnlyMatchesHandwrittenRecords(t *testing.T) {
 	// addUse 两侧共用：同名的下游、同样的读法。
 	addUse := func(g *pulse.Graph, id string, k pulse.Key[string], hit *bool) {
 		t.Helper()
-		if err := g.Add(pulse.NewNode(id, pulse.Requires(k), nil, func(rc *pulse.RunCtx) error {
+		if err := g.Add(pulse.NewNode(id, "", pulse.Requires(k), nil, func(rc *pulse.RunCtx) error {
 			v, err := pulse.Get(rc, k)
 			if err != nil {
 				return err
@@ -154,7 +154,7 @@ func TestOnlyMatchesHandwrittenRecords(t *testing.T) {
 	}
 	sugarUseA, sugarUseB := false, false
 	sg := mustGraph(t, "only", pulse.WithObserver(sugarObs))
-	if err := sg.Add(pulse.NewNode("route", nil, pulse.Provides(a, b), func(rc *pulse.RunCtx) error {
+	if err := sg.Add(pulse.NewNode("route", "", nil, pulse.Provides(a, b), func(rc *pulse.RunCtx) error {
 		return pulse.Only(rc, a, "走A")
 	})); err != nil {
 		t.Fatal(err)
@@ -173,7 +173,7 @@ func TestOnlyMatchesHandwrittenRecords(t *testing.T) {
 	}
 	handUseA, handUseB := false, false
 	hg := mustGraph(t, "only", pulse.WithObserver(handObs))
-	if err := hg.Add(pulse.NewNode("route", nil, pulse.Provides(a, b), func(rc *pulse.RunCtx) error {
+	if err := hg.Add(pulse.NewNode("route", "", nil, pulse.Provides(a, b), func(rc *pulse.RunCtx) error {
 		if err := pulse.Set(rc, a, "走A"); err != nil {
 			return err
 		}
@@ -269,7 +269,7 @@ func TestStreamSugarMatchesHandwrittenRecords(t *testing.T) {
 	}
 	handGot := map[string][]int{}
 	hg := mustGraph(t, "st", pulse.WithObserver(handObs))
-	if err := hg.Add(pulse.NewNode("src", nil, pulse.Provides(stream), func(rc *pulse.RunCtx) error {
+	if err := hg.Add(pulse.NewNode("src", "", nil, pulse.Provides(stream), func(rc *pulse.RunCtx) error {
 		ch := make(chan int)
 		defer close(ch) // 关闭只在 defer：成功 / 出错 / 取消都走它，不会双次 close
 		if err := pulse.Set(rc, stream, ch); err != nil {
@@ -286,7 +286,7 @@ func TestStreamSugarMatchesHandwrittenRecords(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := hg.Add(pulse.NewNode("fan", pulse.Requires(stream), pulse.Provides(sA, sB),
+	if err := hg.Add(pulse.NewNode("fan", "", pulse.Requires(stream), pulse.Provides(sA, sB),
 		func(rc *pulse.RunCtx) error {
 			src, err := pulse.Get(rc, stream)
 			if err != nil {
@@ -329,7 +329,7 @@ func TestStreamSugarMatchesHandwrittenRecords(t *testing.T) {
 		k  pulse.Key[<-chan int]
 	}{{"sinkA", sA}, {"sinkB", sB}} {
 		id, k := c.id, c.k
-		if err := hg.Add(pulse.NewNode(id, pulse.Requires(k), nil, func(rc *pulse.RunCtx) error {
+		if err := hg.Add(pulse.NewNode(id, "", pulse.Requires(k), nil, func(rc *pulse.RunCtx) error {
 			ch, err := pulse.Get(rc, k)
 			if err != nil {
 				return err

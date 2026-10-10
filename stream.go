@@ -96,7 +96,7 @@ func Produce[T any](g *Graph, id string, out Key[<-chan T],
 		return err
 	}
 	cfg := newStreamConfig(opts)
-	n := NewNode(id, nil, Provides(out), func(rc *RunCtx) error {
+	n := NewNode(id, "", nil, Provides(out), func(rc *RunCtx) error {
 		ch := make(chan T, cfg.buf)
 		defer close(ch)
 		if err := Set(rc, out, ch); err != nil {
@@ -144,7 +144,7 @@ func Consume[T any](g *Graph, id string, in Key[<-chan T],
 	if fn == nil {
 		return fmt.Errorf("pulse: Consume %q: nil fn", id)
 	}
-	n := NewNode(id, Requires(in), nil, func(rc *RunCtx) error {
+	n := NewNode(id, "", Requires(in), nil, func(rc *RunCtx) error {
 		ch, err := Get(rc, in)
 		if err != nil {
 			return err // 跳过到达 → 本节点跳过（级联），不是失败
@@ -218,7 +218,7 @@ func Tee[T any](g *Graph, id string, in Key[<-chan T], outs []Key[<-chan T],
 		return err
 	}
 	cfg := newStreamConfig(opts)
-	n := NewNode(id, Requires(in), Provides(outs...), func(rc *RunCtx) error {
+	n := NewNode(id, "", Requires(in), Provides(outs...), func(rc *RunCtx) error {
 		src, err := Get(rc, in)
 		if err != nil {
 			return err // 上游跳过 → 整批一起跳过（级联）

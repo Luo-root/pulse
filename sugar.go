@@ -162,7 +162,7 @@ func Join[T, O any](g *Graph, id string, ins []Key[T], out Key[O],
 	for i, k := range ins {
 		requires[i] = k.asRef()
 	}
-	err := g.Add(NewNode(id, requires, Provides(out), func(rc *RunCtx) error {
+	err := g.Add(NewNode(id, "", requires, Provides(out), func(rc *RunCtx) error {
 		b, err := collectBatch(rc, ins)
 		if err != nil {
 			return err
@@ -224,7 +224,7 @@ func FanOut[I, O any](g *Graph, id string, in Key[I], outs []Key[O],
 	for i, out := range outs {
 		shard := i + 1
 		worker := id + "-" + strconv.Itoa(shard)
-		n := NewNode(worker, Requires(in), Provides(out), func(rc *RunCtx) error {
+		n := NewNode(worker, "", Requires(in), Provides(out), func(rc *RunCtx) error {
 			// 门已经等到输入到达（就绪或跳过）：跳过的那条在这里读回来是
 			// *SkipError，本实例随之以跳过收尾，与手写节点一模一样。
 			v, err := Get(rc, in)

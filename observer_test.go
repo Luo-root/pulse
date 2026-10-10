@@ -83,7 +83,7 @@ func TestObserverLinearWaitRunFinished(t *testing.T) {
 	if err := Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(NewNode("n", Requires(in), Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("n", "", Requires(in), Provides(out), func(rc *RunCtx) error {
 		v, err := Get(rc, in)
 		if err != nil {
 			return err
@@ -124,7 +124,7 @@ func TestObserverSkipHasFinishedNoRunning(t *testing.T) {
 	if err := SkipSeed(g, a); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(NewNode("down", Requires(a), Provides(b), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("down", "", Requires(a), Provides(b), func(rc *RunCtx) error {
 		t.Fatal("Run must not execute when input skipped")
 		return nil
 	})); err != nil {
@@ -150,7 +150,7 @@ func TestObserverRetryEmitsOnce(t *testing.T) {
 	out := NewKey[string]("obs.retry.out")
 	var attempts atomic.Int32
 	g := mustNew(t, context.Background(), "test", WithObserver(obs))
-	if err := g.Add(NewNode("flaky", nil, Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("flaky", "", nil, Provides(out), func(rc *RunCtx) error {
 		if attempts.Add(1) < 3 {
 			return errors.New("try again")
 		}
@@ -180,7 +180,7 @@ func TestObserverPanicIsolated(t *testing.T) {
 	}
 	out := NewKey[int]("obs.panic.out")
 	g := mustNew(t, context.Background(), "test", WithObserver(boom))
-	if err := g.Add(NewNode("ok", nil, Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("ok", "", nil, Provides(out), func(rc *RunCtx) error {
 		return Set(rc, out, 1)
 	})); err != nil {
 		t.Fatal(err)
@@ -199,13 +199,13 @@ func TestObserverTimeoutFinishedFailedNoRunning(t *testing.T) {
 	// 整图，blocked 的等待段会以 canceled 收场，就测不到「等待段超时」这条路径。
 	// 所以超时挂在 blocked 自己的切面上。
 	g := mustNew(t, context.Background(), "test", WithObserver(obs))
-	if err := g.Add(NewNode("late", nil, Provides(in), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("late", "", nil, Provides(in), func(rc *RunCtx) error {
 		<-rc.Context().Done()
 		return rc.Context().Err()
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(NewNode("blocked", Requires(in), Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("blocked", "", Requires(in), Provides(out), func(rc *RunCtx) error {
 		t.Fatal("should not run")
 		return nil
 	}, Timeout(30*time.Millisecond))); err != nil {
@@ -247,7 +247,7 @@ func TestMultiObserverIsolatesPanickingMember(t *testing.T) {
 	if err := Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(NewNode("n", Requires(in), Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("n", "", Requires(in), Provides(out), func(rc *RunCtx) error {
 		v, err := Get(rc, in)
 		if err != nil {
 			return err
@@ -283,7 +283,7 @@ func TestObserverGraphBrackets(t *testing.T) {
 	if err := Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(NewNode("n", Requires(in), Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("n", "", Requires(in), Provides(out), func(rc *RunCtx) error {
 		v, err := Get(rc, in)
 		if err != nil {
 			return err
@@ -322,7 +322,7 @@ func TestObserverGraphFinishedFailed(t *testing.T) {
 	out := NewKey[string]("obs.ff.out")
 	boom := errors.New("node boom")
 	g := mustNew(t, context.Background(), "failgraph", WithObserver(obs))
-	if err := g.Add(NewNode("bad", nil, Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("bad", "", nil, Provides(out), func(rc *RunCtx) error {
 		return boom
 	})); err != nil {
 		t.Fatal(err)
@@ -352,7 +352,7 @@ func TestObserverGraphFinishedCanceled(t *testing.T) {
 	obs := &recordingObserver{}
 	out := NewKey[string]("obs.fc.out")
 	g := mustNew(t, ctx, "cancelgraph", WithObserver(obs))
-	if err := g.Add(NewNode("blocker", nil, Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("blocker", "", nil, Provides(out), func(rc *RunCtx) error {
 		<-rc.Context().Done()
 		return rc.Context().Err()
 	})); err != nil {
@@ -388,7 +388,7 @@ func TestObserverGraphEventsOnce(t *testing.T) {
 	obs := &recordingObserver{}
 	out := NewKey[string]("obs.once.out")
 	g := mustNew(t, context.Background(), "once", WithObserver(obs))
-	if err := g.Add(NewNode("n", nil, Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("n", "", nil, Provides(out), func(rc *RunCtx) error {
 		return Set(rc, out, "ok")
 	})); err != nil {
 		t.Fatal(err)
@@ -418,7 +418,7 @@ func TestObserverNoGraphEventsOnRejectedStart(t *testing.T) {
 	obs := &recordingObserver{}
 	missing := NewKey[string]("obs.missing")
 	g := mustNew(t, context.Background(), "rejected", WithObserver(obs))
-	if err := g.Add(NewNode("n", Requires(missing), nil, func(rc *RunCtx) error {
+	if err := g.Add(NewNode("n", "", Requires(missing), nil, func(rc *RunCtx) error {
 		return nil
 	})); err != nil {
 		t.Fatal(err)
@@ -497,7 +497,7 @@ func TestObserverWaitWaitsForStartSubmission(t *testing.T) {
 			want := []string{"GS", "GF"}
 			if tc.node {
 				out := NewKey[string]("startwait.out")
-				if err := g.Add(NewNode("n", nil, Provides(out), func(rc *RunCtx) error {
+				if err := g.Add(NewNode("n", "", nil, Provides(out), func(rc *RunCtx) error {
 					return Set(rc, out, "ok")
 				})); err != nil {
 					t.Fatal(err)
@@ -551,7 +551,7 @@ func TestObserverConcurrentWaitBothSeeFinished(t *testing.T) {
 	}
 	out := NewKey[string]("cwfe.out")
 	g := mustNew(t, context.Background(), "concurrentwait", WithObserver(obs))
-	if err := g.Add(NewNode("n", nil, Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("n", "", nil, Provides(out), func(rc *RunCtx) error {
 		return Set(rc, out, "ok")
 	})); err != nil {
 		t.Fatal(err)
@@ -615,7 +615,7 @@ func TestObserverFuncGraphFieldsFire(t *testing.T) {
 	}
 	out := NewKey[string]("obs.of.out")
 	g := mustNew(t, context.Background(), "fn", WithObserver(obs))
-	if err := g.Add(NewNode("n", nil, Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("n", "", nil, Provides(out), func(rc *RunCtx) error {
 		return Set(rc, out, "ok")
 	})); err != nil {
 		t.Fatal(err)

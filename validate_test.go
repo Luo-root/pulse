@@ -20,8 +20,8 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 
 	t.Run("依赖成环：与 Start 报同一句话", func(t *testing.T) {
 		g := mustNew(t, context.Background(), "test")
-		mustAdd(t, g, NewNode("A", Requires(y), Provides(x), func(rc *RunCtx) error { return nil }))
-		mustAdd(t, g, NewNode("B", Requires(x), Provides(y), func(rc *RunCtx) error { return nil }))
+		mustAdd(t, g, NewNode("A", "", Requires(y), Provides(x), func(rc *RunCtx) error { return nil }))
+		mustAdd(t, g, NewNode("B", "", Requires(x), Provides(y), func(rc *RunCtx) error { return nil }))
 
 		verr := g.Validate()
 		if verr == nil {
@@ -43,7 +43,7 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 
 	t.Run("无来源的 Requires", func(t *testing.T) {
 		g := mustNew(t, context.Background(), "test")
-		mustAdd(t, g, NewNode("waiter", Requires(kA), nil, func(rc *RunCtx) error { return nil }))
+		mustAdd(t, g, NewNode("waiter", "", Requires(kA), nil, func(rc *RunCtx) error { return nil }))
 		err := g.Validate()
 		if err == nil {
 			t.Fatal("Validate 放行了一张等不到值的图")
@@ -62,13 +62,13 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 
 	t.Run("通过之后还能接着装、接着跑", func(t *testing.T) {
 		g := mustNew(t, context.Background(), "test")
-		mustAdd(t, g, NewNode("n", nil, Provides(kB), func(rc *RunCtx) error {
+		mustAdd(t, g, NewNode("n", "", nil, Provides(kB), func(rc *RunCtx) error {
 			return Set(rc, kB, "v")
 		}))
 		if err := g.Validate(); err != nil {
 			t.Fatalf("干净的图不该被 Validate 拒：%v", err)
 		}
-		mustAdd(t, g, NewNode("m", Requires(kB), nil, func(rc *RunCtx) error { return nil }))
+		mustAdd(t, g, NewNode("m", "", Requires(kB), nil, func(rc *RunCtx) error { return nil }))
 		if err := g.Validate(); err != nil {
 			t.Fatalf("补节点后仍该通过：%v", err)
 		}

@@ -22,7 +22,7 @@ var (
 // mustNew 构造测试图：graphID 必填校验通过后返回图实例。
 func mustNew(t *testing.T, ctx context.Context, graphID string, opts ...Option) *Graph {
 	t.Helper()
-	g, err := New(ctx, graphID, opts...)
+	g, err := New(ctx, graphID, "", opts...)
 	if err != nil {
 		t.Fatalf("New(%q): %v", graphID, err)
 	}
@@ -31,10 +31,10 @@ func mustNew(t *testing.T, ctx context.Context, graphID string, opts ...Option) 
 
 func TestLinear(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("n1", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("n1", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Set(rc, kA, "hello")
 	}))
-	mustAdd(t, g, NewNode("n2", Requires(kA), Provides(kB), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("n2", "", Requires(kA), Provides(kB), func(rc *RunCtx) error {
 		v, err := Get(rc, kA)
 		if err != nil {
 			return err
@@ -58,15 +58,15 @@ func TestLinear(t *testing.T) {
 func TestFanIn(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
 	var order atomic.Int32
-	mustAdd(t, g, NewNode("a", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("a", "", nil, Provides(kA), func(rc *RunCtx) error {
 		order.Add(1)
 		return Set(rc, kA, "A")
 	}))
-	mustAdd(t, g, NewNode("b", nil, Provides(kB), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("b", "", nil, Provides(kB), func(rc *RunCtx) error {
 		order.Add(1)
 		return Set(rc, kB, "B")
 	}))
-	mustAdd(t, g, NewNode("c", Deps(Requires(kA), Requires(kB)), Provides(kC), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("c", "", Deps(Requires(kA), Requires(kB)), Provides(kC), func(rc *RunCtx) error {
 		if order.Load() != 2 {
 			t.Fatalf("fan-in ran before both parents, order=%d", order.Load())
 		}
@@ -87,13 +87,13 @@ func TestFanIn(t *testing.T) {
 func TestBranchSkip(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
 	var leftRan, rightRan atomic.Bool
-	mustAdd(t, g, NewNode("split", nil, Deps(Provides(kL), Provides(kR)), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("split", "", nil, Deps(Provides(kL), Provides(kR)), func(rc *RunCtx) error {
 		if err := Set(rc, kL, "go-left"); err != nil {
 			return err
 		}
 		return Skip(rc, kR)
 	}))
-	mustAdd(t, g, NewNode("left", Requires(kL), Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("left", "", Requires(kL), Provides(kA), func(rc *RunCtx) error {
 		leftRan.Store(true)
 		v, err := Get(rc, kL)
 		if err != nil {
@@ -101,7 +101,7 @@ func TestBranchSkip(t *testing.T) {
 		}
 		return Set(rc, kA, v)
 	}))
-	mustAdd(t, g, NewNode("right", Requires(kR), Provides(kB), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("right", "", Requires(kR), Provides(kB), func(rc *RunCtx) error {
 		rightRan.Store(true)
 		return Set(rc, kB, "should-not")
 	}))
@@ -120,14 +120,14 @@ func TestBranchSkip(t *testing.T) {
 func TestCascadeSkip(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
 	var bRan, cRan atomic.Bool
-	mustAdd(t, g, NewNode("a", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("a", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Skip(rc, kA)
 	}))
-	mustAdd(t, g, NewNode("b", Requires(kA), Provides(kB), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("b", "", Requires(kA), Provides(kB), func(rc *RunCtx) error {
 		bRan.Store(true)
 		return Set(rc, kB, "x")
 	}))
-	mustAdd(t, g, NewNode("c", Requires(kB), Provides(kC), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("c", "", Requires(kB), Provides(kC), func(rc *RunCtx) error {
 		cRan.Store(true)
 		return Set(rc, kC, "y")
 	}))
@@ -159,7 +159,7 @@ func TestPartialArrivalRunsNode(t *testing.T) {
 	// 三个候选：两个有产出，第三个这轮没产出——这是合法的跳过，不是失败。
 	for i, k := range []Key[string]{c1, c2, c3} {
 		k, want := k, fmt.Sprintf("v%d", i+1)
-		mustAdd(t, g, NewNode(fmt.Sprintf("cand%d", i+1), nil, Provides(k), func(rc *RunCtx) error {
+		mustAdd(t, g, NewNode(fmt.Sprintf("cand%d", i+1), "", nil, Provides(k), func(rc *RunCtx) error {
 			if i == 2 {
 				return Skip(rc, k)
 			}
@@ -167,7 +167,7 @@ func TestPartialArrivalRunsNode(t *testing.T) {
 		}))
 	}
 	// 汇聚节点要求全部三路：按老行为它会因 cand3 的跳过而整个不执行。
-	mustAdd(t, g, NewNode("join",
+	mustAdd(t, g, NewNode("join", "",
 		Deps(Requires(c1), Requires(c2), Requires(c3)), Provides(joined),
 		func(rc *RunCtx) error {
 			var got []string
@@ -222,7 +222,7 @@ func TestAllInputsSkippedSkipsNode(t *testing.T) {
 	if err := SkipSeed(g, b); err != nil {
 		t.Fatal(err)
 	}
-	mustAdd(t, g, NewNode("sink", Deps(Requires(a), Requires(b)), Provides(out), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("sink", "", Deps(Requires(a), Requires(b)), Provides(out), func(rc *RunCtx) error {
 		ran.Store(true)
 		return Set(rc, out, "should-not")
 	}))
@@ -259,13 +259,13 @@ func TestPartialArrivalGetSkippedInput(t *testing.T) {
 	}}
 
 	g := mustNew(t, context.Background(), "test", WithObserver(obs))
-	mustAdd(t, g, NewNode("src", nil, Provides(have), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("src", "", nil, Provides(have), func(rc *RunCtx) error {
 		return Set(rc, have, "v")
 	}))
-	mustAdd(t, g, NewNode("gone", nil, Provides(miss), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("gone", "", nil, Provides(miss), func(rc *RunCtx) error {
 		return Skip(rc, miss)
 	}))
-	mustAdd(t, g, NewNode("reader", Deps(Requires(have), Requires(miss)), Provides(out),
+	mustAdd(t, g, NewNode("reader", "", Deps(Requires(have), Requires(miss)), Provides(out),
 		func(rc *RunCtx) error {
 			if _, err := Get(rc, miss); err != nil {
 				gotErr = err
@@ -318,10 +318,10 @@ func TestWaitAllStrictFanIn(t *testing.T) {
 	if err := SkipSeed(g, b); err != nil {
 		t.Fatal(err)
 	}
-	mustAdd(t, g, NewNode("src", nil, Provides(a), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("src", "", nil, Provides(a), func(rc *RunCtx) error {
 		return Set(rc, a, "v")
 	}))
-	mustAdd(t, g, NewNode("strict", req, Provides(out), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("strict", "", req, Provides(out), func(rc *RunCtx) error {
 		runs.Add(1)
 		if err := WaitAll(rc, req...); err != nil {
 			return err // 显式声明：缺一条就别跑我
@@ -364,10 +364,10 @@ func TestWaitAllStrictKeepsPublishedOutput(t *testing.T) {
 	if err := SkipSeed(g, b); err != nil {
 		t.Fatal(err)
 	}
-	mustAdd(t, g, NewNode("src", nil, Provides(a), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("src", "", nil, Provides(a), func(rc *RunCtx) error {
 		return Set(rc, a, "v")
 	}))
-	mustAdd(t, g, NewNode("strict", req, Deps(Provides(published), Provides(unwritten)),
+	mustAdd(t, g, NewNode("strict", "", req, Deps(Provides(published), Provides(unwritten)),
 		func(rc *RunCtx) error {
 			if err := Set(rc, published, "kept"); err != nil {
 				return err
@@ -393,10 +393,10 @@ func TestWaitAllStrictKeepsPublishedOutput(t *testing.T) {
 
 func TestDuplicateProviderRejected(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("a", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("a", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Set(rc, kA, "1")
 	}))
-	err := g.Add(NewNode("b", nil, Provides(kA), func(rc *RunCtx) error {
+	err := g.Add(NewNode("b", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Set(rc, kA, "2")
 	}))
 	if err == nil {
@@ -406,7 +406,7 @@ func TestDuplicateProviderRejected(t *testing.T) {
 
 func TestSelfEdgeRejected(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	err := g.Add(NewNode("loop", Requires(kA), Provides(kA), func(rc *RunCtx) error {
+	err := g.Add(NewNode("loop", "", Requires(kA), Provides(kA), func(rc *RunCtx) error {
 		return nil
 	}))
 	if err == nil {
@@ -419,7 +419,7 @@ func TestSeedAndNodeProviderConflict(t *testing.T) {
 	if err := Seed(g, kA, "in"); err != nil {
 		t.Fatal(err)
 	}
-	err := g.Add(NewNode("load", nil, Provides(kA), func(rc *RunCtx) error {
+	err := g.Add(NewNode("load", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Set(rc, kA, "from-node")
 	}))
 	if !errors.Is(err, ErrDuplicateSource) {
@@ -427,7 +427,7 @@ func TestSeedAndNodeProviderConflict(t *testing.T) {
 	}
 
 	g2 := mustNew(t, context.Background(), "test")
-	mustAdd(t, g2, NewNode("load", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g2, NewNode("load", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Set(rc, kA, "from-node")
 	}))
 	err = Seed(g2, kA, "in")
@@ -441,7 +441,7 @@ func TestSkipSeedAndNodeProviderConflict(t *testing.T) {
 	if err := SkipSeed(g, kA); err != nil {
 		t.Fatal(err)
 	}
-	err := g.Add(NewNode("load", nil, Provides(kA), func(rc *RunCtx) error {
+	err := g.Add(NewNode("load", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Set(rc, kA, "from-node")
 	}))
 	if !errors.Is(err, ErrDuplicateSource) {
@@ -449,7 +449,7 @@ func TestSkipSeedAndNodeProviderConflict(t *testing.T) {
 	}
 
 	g2 := mustNew(t, context.Background(), "test")
-	mustAdd(t, g2, NewNode("load", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g2, NewNode("load", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Set(rc, kA, "from-node")
 	}))
 	err = SkipSeed(g2, kA)
@@ -519,8 +519,8 @@ func TestStartRejectsDependencyCycle(t *testing.T) {
 	y := NewKey[int]("y")
 
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("A", Requires(y), Provides(x), func(rc *RunCtx) error { return nil }))
-	mustAdd(t, g, NewNode("B", Requires(x), Provides(y), func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("A", "", Requires(y), Provides(x), func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("B", "", Requires(x), Provides(y), func(rc *RunCtx) error { return nil }))
 
 	err := g.Start()
 	if err == nil {
@@ -552,9 +552,9 @@ func TestStartCycleIgnoresSeededEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A/B/C 三节点环；A 另外吃一条 Seed（那条边不参与环）
-	mustAdd(t, g, NewNode("A", Deps(Requires(x), Requires(seed)), Provides(y), func(rc *RunCtx) error { return nil }))
-	mustAdd(t, g, NewNode("B", Requires(y), Provides(z), func(rc *RunCtx) error { return nil }))
-	mustAdd(t, g, NewNode("C", Requires(z), Provides(x), func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("A", "", Deps(Requires(x), Requires(seed)), Provides(y), func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("B", "", Requires(y), Provides(z), func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("C", "", Requires(z), Provides(x), func(rc *RunCtx) error { return nil }))
 
 	err := g.Start()
 	if err == nil {
@@ -575,13 +575,13 @@ func TestStartHandlesMultiKeyFromOneProvider(t *testing.T) {
 	out := NewKey[int]("mk.out")
 
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("up", nil, Deps(Provides(p), Provides(q)), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("up", "", nil, Deps(Provides(p), Provides(q)), func(rc *RunCtx) error {
 		if err := Set(rc, p, 1); err != nil {
 			return err
 		}
 		return Set(rc, q, 2)
 	}))
-	mustAdd(t, g, NewNode("down", Deps(Requires(p), Requires(q)), Provides(out), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("down", "", Deps(Requires(p), Requires(q)), Provides(out), func(rc *RunCtx) error {
 		a, err := Get(rc, p)
 		if err != nil {
 			return err
@@ -610,21 +610,21 @@ func TestStartAcceptsDiamondWithSeed(t *testing.T) {
 	if err := Seed(g, seed, 1); err != nil {
 		t.Fatal(err)
 	}
-	mustAdd(t, g, NewNode("L", Requires(seed), Provides(left), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("L", "", Requires(seed), Provides(left), func(rc *RunCtx) error {
 		v, err := Get(rc, seed)
 		if err != nil {
 			return err
 		}
 		return Set(rc, left, v+1)
 	}))
-	mustAdd(t, g, NewNode("R", Requires(seed), Provides(right), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("R", "", Requires(seed), Provides(right), func(rc *RunCtx) error {
 		v, err := Get(rc, seed)
 		if err != nil {
 			return err
 		}
 		return Set(rc, right, v+2)
 	}))
-	mustAdd(t, g, NewNode("D", Deps(Requires(left), Requires(right)), Provides(out), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("D", "", Deps(Requires(left), Requires(right)), Provides(out), func(rc *RunCtx) error {
 		a, err := Get(rc, left)
 		if err != nil {
 			return err
@@ -655,7 +655,7 @@ func TestAspectSequentialNextAllowed(t *testing.T) {
 		// 顺序再调一次：应成功（第二次 core 因槽位已写而 Set 静默）。
 		return next(rc)
 	})
-	mustAdd(t, g, NewNode("n", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("n", "", nil, Provides(kA), func(rc *RunCtx) error {
 		runs.Add(1)
 		return Set(rc, kA, "value")
 	}, aspect))
@@ -684,7 +684,7 @@ func TestAspectConcurrentNextCalledOnce(t *testing.T) {
 		}
 		return ErrNextCalledTwice
 	})
-	mustAdd(t, g, NewNode("n", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("n", "", nil, Provides(kA), func(rc *RunCtx) error {
 		started <- struct{}{}
 		<-release
 		runs.Add(1)
@@ -712,7 +712,7 @@ func TestRetryDoesNotRerunSkippedNode(t *testing.T) {
 	}
 
 	var runs, inner atomic.Int32
-	mustAdd(t, g, NewNode("down", Requires(in), Provides(out), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("down", "", Requires(in), Provides(out), func(rc *RunCtx) error {
 		runs.Add(1) // 断言在主 goroutine 上做（节点跑在自己的 goroutine 里）
 		return nil
 	}, Aspect(func(rc *RunCtx, next func(*RunCtx) error) error {
@@ -743,7 +743,7 @@ func TestRetryDoesNotRerunSkippedNode(t *testing.T) {
 
 func TestEmptyNodeIDRejected(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	err := g.Add(NewNode("", nil, Provides(kA), func(rc *RunCtx) error { return nil }))
+	err := g.Add(NewNode("", "", nil, Provides(kA), func(rc *RunCtx) error { return nil }))
 	if err == nil {
 		t.Fatal("expected empty id error")
 	}
@@ -751,7 +751,7 @@ func TestEmptyNodeIDRejected(t *testing.T) {
 
 func TestDuplicateRequiresRejected(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	err := g.Add(NewNode("n", Deps(Requires(kA), Requires(kA)), Provides(kB), func(rc *RunCtx) error { return nil }))
+	err := g.Add(NewNode("n", "", Deps(Requires(kA), Requires(kA)), Provides(kB), func(rc *RunCtx) error { return nil }))
 	if err == nil {
 		t.Fatal("expected duplicate requires error")
 	}
@@ -759,7 +759,7 @@ func TestDuplicateRequiresRejected(t *testing.T) {
 
 func TestDuplicateProvidesRejected(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	err := g.Add(NewNode("n", nil, Deps(Provides(kA), Provides(kA)), func(rc *RunCtx) error { return nil }))
+	err := g.Add(NewNode("n", "", nil, Deps(Provides(kA), Provides(kA)), func(rc *RunCtx) error { return nil }))
 	if err == nil {
 		t.Fatal("expected duplicate provides error")
 	}
@@ -767,8 +767,8 @@ func TestDuplicateProvidesRejected(t *testing.T) {
 
 func TestDuplicateNodeIDRejected(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("n", nil, Provides(kA), func(rc *RunCtx) error { return Skip(rc, kA) }))
-	err := g.Add(NewNode("n", nil, Provides(kB), func(rc *RunCtx) error { return Skip(rc, kB) }))
+	mustAdd(t, g, NewNode("n", "", nil, Provides(kA), func(rc *RunCtx) error { return Skip(rc, kA) }))
+	err := g.Add(NewNode("n", "", nil, Provides(kB), func(rc *RunCtx) error { return Skip(rc, kB) }))
 	if err == nil {
 		t.Fatal("expected duplicate id error")
 	}
@@ -778,10 +778,10 @@ func TestNodeErrorCancels(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
 	boom := errors.New("boom")
 	var bRan atomic.Bool
-	mustAdd(t, g, NewNode("a", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("a", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return boom
 	}))
-	mustAdd(t, g, NewNode("b", Requires(kA), Provides(kB), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("b", "", Requires(kA), Provides(kB), func(rc *RunCtx) error {
 		bRan.Store(true)
 		return Set(rc, kB, "x")
 	}))
@@ -798,11 +798,11 @@ func TestTimeoutInterruptsWait(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
 	// kA 必须有来源（Start 的来源校验），但它迟迟不写：slow 会真的**在等**，
 	// 这条用例测的就是超时能不能打断等待段。
-	mustAdd(t, g, NewNode("late", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("late", "", nil, Provides(kA), func(rc *RunCtx) error {
 		<-rc.Context().Done()
 		return rc.Context().Err()
 	}))
-	mustAdd(t, g, NewNode("slow", Requires(kA), Provides(kB), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("slow", "", Requires(kA), Provides(kB), func(rc *RunCtx) error {
 		_, err := Get(rc, kA)
 		return err
 	}, Timeout(30*time.Millisecond)))
@@ -818,7 +818,7 @@ func TestTimeoutInterruptsWait(t *testing.T) {
 // 哪个节点的哪个 Key 没有来源。
 func TestStartRejectsUnsourcedRequires(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("waiter", Requires(kA), nil, func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("waiter", "", Requires(kA), nil, func(rc *RunCtx) error { return nil }))
 
 	err := g.Start()
 	if err == nil {
@@ -831,7 +831,7 @@ func TestStartRejectsUnsourcedRequires(t *testing.T) {
 	if werr := g.Wait(); !errors.Is(werr, ErrGraphNotStarted) {
 		t.Fatalf("Start 失败后图不该是已启动状态：Wait() = %v", werr)
 	}
-	mustAdd(t, g, NewNode("producer", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("producer", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Set(rc, kA, "v")
 	}))
 	if err := g.Run(); err != nil {
@@ -846,14 +846,14 @@ func TestStartAcceptsSeededAndProvidedRequires(t *testing.T) {
 	if err := Seed(g, kA, "seeded"); err != nil {
 		t.Fatal(err)
 	}
-	mustAdd(t, g, NewNode("first", Requires(kA), Provides(kB), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("first", "", Requires(kA), Provides(kB), func(rc *RunCtx) error {
 		v, err := Get(rc, kA)
 		if err != nil {
 			return err
 		}
 		return Set(rc, kB, v+"!")
 	}))
-	mustAdd(t, g, NewNode("second", Requires(kB), nil, func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("second", "", Requires(kB), nil, func(rc *RunCtx) error {
 		v, err := Get(rc, kB)
 		if err != nil {
 			return err
@@ -874,7 +874,7 @@ func TestStartAcceptsSeededAndProvidedRequires(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ran atomic.Bool
-	mustAdd(t, g2, NewNode("skipped-input", Requires(kA), nil, func(rc *RunCtx) error {
+	mustAdd(t, g2, NewNode("skipped-input", "", Requires(kA), nil, func(rc *RunCtx) error {
 		ran.Store(true)
 		return nil
 	}))
@@ -902,12 +902,12 @@ func TestParentDeadlineIsCanceled(t *testing.T) {
 	}}
 	g := mustNew(t, ctx, "test", WithObserver(obs))
 	// producer 有来源关系但从不写入：waiter 一直在等，直到父 ctx 到期。
-	mustAdd(t, g, NewNode("producer", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("producer", "", nil, Provides(kA), func(rc *RunCtx) error {
 		<-rc.Context().Done()
 		return rc.Context().Err()
 	}))
 	var waiterRan atomic.Bool
-	mustAdd(t, g, NewNode("waiter", Requires(kA), nil, func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("waiter", "", Requires(kA), nil, func(rc *RunCtx) error {
 		waiterRan.Store(true)
 		return nil
 	}))
@@ -930,7 +930,7 @@ func TestParentDeadlineIsCanceled(t *testing.T) {
 
 func TestRecoveryPanic(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("p", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("p", "", nil, Provides(kA), func(rc *RunCtx) error {
 		panic("explode")
 	}))
 	err := g.Run()
@@ -955,8 +955,8 @@ func TestMaxRunningSerializes(t *testing.T) {
 		// 无 Provides：漏写自动 skip，无所谓
 		return nil
 	}
-	mustAdd(t, g, NewNode("x", nil, nil, run))
-	mustAdd(t, g, NewNode("y", nil, nil, run))
+	mustAdd(t, g, NewNode("x", "", nil, nil, run))
+	mustAdd(t, g, NewNode("y", "", nil, nil, run))
 	if err := g.Run(); err != nil {
 		t.Fatal(err)
 	}
@@ -991,7 +991,7 @@ func TestCancelInterruptsQueuedNode(t *testing.T) {
 	k := NewKey[string]("queue.k")
 	kReady := make(chan struct{})
 	releaseA := make(chan struct{})
-	mustAdd(t, g, NewNode("a", nil, Provides(k), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("a", "", nil, Provides(k), func(rc *RunCtx) error {
 		if err := Set(rc, k, "v"); err != nil {
 			return err
 		}
@@ -1001,7 +1001,7 @@ func TestCancelInterruptsQueuedNode(t *testing.T) {
 	}))
 
 	var entered atomic.Int32
-	mustAdd(t, g, NewNode("b", Requires(k), nil, func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("b", "", Requires(k), nil, func(rc *RunCtx) error {
 		entered.Add(1)
 		return nil
 	}))
@@ -1038,8 +1038,8 @@ func TestCancelInterruptsQueuedNode(t *testing.T) {
 
 func TestKeyTypeConflict(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("a", nil, Provides(NewKey[string]("dup")), func(rc *RunCtx) error { return nil }))
-	err := g.Add(NewNode("b", nil, Provides(NewKey[int]("dup")), func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("a", "", nil, Provides(NewKey[string]("dup")), func(rc *RunCtx) error { return nil }))
+	err := g.Add(NewNode("b", "", nil, Provides(NewKey[int]("dup")), func(rc *RunCtx) error { return nil }))
 	if err == nil {
 		t.Fatal("expected type conflict")
 	}
@@ -1047,7 +1047,7 @@ func TestKeyTypeConflict(t *testing.T) {
 
 func TestUndeclaredWrite(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("a", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("a", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Set(rc, kB, "nope")
 	}))
 	if err := g.Run(); err == nil {
@@ -1057,7 +1057,7 @@ func TestUndeclaredWrite(t *testing.T) {
 
 func TestSetSkipConflict(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("a", nil, Provides(kA), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("a", "", nil, Provides(kA), func(rc *RunCtx) error {
 		if err := Set(rc, kA, "v"); err != nil {
 			return err
 		}
@@ -1083,7 +1083,7 @@ func TestTimeoutWaitsForInnerRun(t *testing.T) {
 	var bodyDone atomic.Bool
 
 	g := mustNew(t, context.Background(), "test", WithAspects(Timeout(20*time.Millisecond)))
-	mustAdd(t, g, NewNode("slow", nil, Provides(out), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("slow", "", nil, Provides(out), func(rc *RunCtx) error {
 		time.Sleep(120 * time.Millisecond)
 		bodyDone.Store(true)
 		return Set(rc, out, "late")
@@ -1138,15 +1138,15 @@ func TestAddIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	// a 先被登记/claim，b 才冲突 → 失败的 Add 不能留下 a 的占位
-	if err := g.Add(NewNode("bad", nil, Deps(Provides(a), Provides(b)), func(rc *RunCtx) error { return nil })); err == nil {
+	if err := g.Add(NewNode("bad", "", nil, Deps(Provides(a), Provides(b)), func(rc *RunCtx) error { return nil })); err == nil {
 		t.Fatal("expect duplicate source error")
 	}
-	if err := g.Add(NewNode("good", nil, Provides(a), func(rc *RunCtx) error { return Set(rc, a, "x") })); err != nil {
+	if err := g.Add(NewNode("good", "", nil, Provides(a), func(rc *RunCtx) error { return Set(rc, a, "x") })); err != nil {
 		t.Fatalf("失败 Add 留下了 a 的 producer 占位：%v", err)
 	}
 
 	var got atomic.Bool
-	mustAdd(t, g, NewNode("down", Requires(a), nil, func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("down", "", Requires(a), nil, func(rc *RunCtx) error {
 		v, err := Get(rc, a)
 		if err != nil {
 			return err
@@ -1167,7 +1167,7 @@ func TestAddIsAtomic(t *testing.T) {
 func TestSeedFailureLeavesNoTrace(t *testing.T) {
 	shared := NewKey[string]("seed.trace")
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("owner", nil, Provides(shared), func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("owner", "", nil, Provides(shared), func(rc *RunCtx) error { return nil }))
 
 	// 同名不同类型：类型校验失败，不能把 name 的类型改成 int
 	if err := Seed(g, NewKey[int]("seed.trace"), 1); err == nil {
@@ -1195,8 +1195,8 @@ func TestWaitReasonStableAfterFailure(t *testing.T) {
 			}
 		}}
 		g := mustNew(t, context.Background(), "test", WithObserver(obs))
-		mustAdd(t, g, NewNode("boom", nil, Provides(k), func(rc *RunCtx) error { return errors.New("boom") }))
-		mustAdd(t, g, NewNode("waiter", Requires(k), nil, func(rc *RunCtx) error {
+		mustAdd(t, g, NewNode("boom", "", nil, Provides(k), func(rc *RunCtx) error { return errors.New("boom") }))
+		mustAdd(t, g, NewNode("waiter", "", Requires(k), nil, func(rc *RunCtx) error {
 			t.Fatal("waiter 不该进入 Run")
 			return nil
 		}))
@@ -1221,7 +1221,7 @@ func TestRetryDoesNotRollbackPublishedSlots(t *testing.T) {
 	downstreamDone := make(chan struct{})
 
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("flaky", nil, Provides(out),
+	mustAdd(t, g, NewNode("flaky", "", nil, Provides(out),
 		func(rc *RunCtx) error {
 			n := attempts.Add(1)
 			if err := Set(rc, out, fmt.Sprintf("attempt-%d", n)); err != nil {
@@ -1238,7 +1238,7 @@ func TestRetryDoesNotRollbackPublishedSlots(t *testing.T) {
 		},
 		Retry(3, 0),
 	))
-	mustAdd(t, g, NewNode("downstream", Requires(out), nil, func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("downstream", "", Requires(out), nil, func(rc *RunCtx) error {
 		downstreamRuns.Add(1)
 		close(downstreamDone)
 		return nil
@@ -1264,7 +1264,7 @@ func TestRetryDoesNotRollbackPublishedSlots(t *testing.T) {
 func TestWaitReleasesGraphCtx(t *testing.T) {
 	out := NewKey[string]("ctx.out")
 	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("n", nil, Provides(out), func(rc *RunCtx) error { return Set(rc, out, "v") }))
+	mustAdd(t, g, NewNode("n", "", nil, Provides(out), func(rc *RunCtx) error { return Set(rc, out, "v") }))
 	if err := g.Run(); err != nil {
 		t.Fatal(err)
 	}
@@ -1280,7 +1280,7 @@ func TestWaitReleasesGraphCtx(t *testing.T) {
 	defer cancelParent()
 	out2 := NewKey[string]("ctx.out2")
 	g2 := mustNew(t, parent, "test")
-	mustAdd(t, g2, NewNode("n", nil, Provides(out2), func(rc *RunCtx) error { return nil }))
+	mustAdd(t, g2, NewNode("n", "", nil, Provides(out2), func(rc *RunCtx) error { return nil }))
 	if err := g2.Run(); err != nil {
 		t.Fatal(err)
 	}
@@ -1303,7 +1303,7 @@ func inspect(g *Graph) *RunCtx {
 }
 
 func TestGraphIDRequired(t *testing.T) {
-	if _, err := New(context.Background(), ""); err == nil {
+	if _, err := New(context.Background(), "", ""); err == nil {
 		t.Fatal("empty graph id must be rejected")
 	}
 }

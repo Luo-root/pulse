@@ -163,7 +163,7 @@ func OutRef(child, parent keyRef) SubBind {
 //
 // `aspects` 作用于**父侧这个节点**（例如 `pulse.Timeout(30*time.Second)` =
 // 整张子图限时，是最自然的用法）。
-func Sub(g *Graph, id string, binds []SubBind, build func(*SubCtx) (*Graph, error),
+func Sub(g *Graph, id, description string, binds []SubBind, build func(*SubCtx) (*Graph, error),
 	aspects ...Aspect) error {
 	if g == nil {
 		return fmt.Errorf("pulse: Sub %q: nil graph", id)
@@ -208,7 +208,7 @@ func Sub(g *Graph, id string, binds []SubBind, build func(*SubCtx) (*Graph, erro
 		provides = append(provides, b.parent)
 	}
 
-	n := NewNode(id, requires, provides, func(rc *RunCtx) error {
+	n := NewNode(id, description, requires, provides, func(rc *RunCtx) error {
 		return runSub(rc, id, binds, build)
 	}, aspects...)
 	if err := g.Add(n); err != nil {

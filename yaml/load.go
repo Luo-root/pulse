@@ -14,6 +14,10 @@ import (
 type Document struct {
 	// Version 缺省或 1 接受；其它值拒绝。
 	Version int `yaml:"version"`
+	// Description 是人可读的说明，落到**根图**的 `Description()`（`""` = 没写）。
+	// 它不参与任何语义、校验与拓扑结果，只出现在 `Topology()` / `Snapshot()` 这类
+	// 给人看的出口上。子图各写各的（`graphs.<名>.description`）。
+	Description string `yaml:"description"`
 	// Graphs 是可复用子图（名字在文档内唯一）：`nodes[].graph` 指向它。
 	// 子图引用的是这张**扁平**的表，递归靠「图引用图」表达，环在 Load 期拦。
 	Graphs map[string]GraphSpec `yaml:"graphs"`
@@ -57,6 +61,9 @@ type RetrySpec struct {
 // （`graph`：这张图就是这一步的拓扑，边界由 `in` / `out` 声明）。
 type NodeSpec struct {
 	ID string `yaml:"id"`
+	// Description 落到这个节点（子图节点则落在**父侧那个 `Sub` 节点**上）的
+	// `Description()`；`""` = 没写。不参与任何语义与校验。
+	Description string `yaml:"description"`
 	// Uses 是注册表里的工厂名（工厂节点）。
 	Uses string `yaml:"uses"`
 	// Graph 是 Document.Graphs 里的子图名（子图节点）：这个节点 = 装一张子图。
@@ -176,7 +183,7 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	// 走的是同一段 `addNodes`，所以报文与真正装根图那次逐字相同；
 	// 而根图要等到**所有可能失败的校验都过完**才建（见函数末尾）——见下面
 	// 「宿主 ctx」那段注释。
-	root, err := pulse.New(context.Background(), "load-check:root", opts.Graph...)
+	root, err := pulse.New(context.Background(), "load-check:root", "", opts.Graph...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -205,7 +212,7 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	//   - 校验失败时 `Load` 返回 `nil, nil, err`，调用方**连清理的把手都没有**
 	//     ——所以只要还有一步可能失败，就不要先动宿主的 ctx。
 	for _, site := range checkSites(doc) {
-		check, err := pulse.New(context.Background(), "load-check:"+site.graph)
+		check, err := pulse.New(context.Background(), "load-check:"+site.graph, "")
 		if err != nil {
 			return nil, nil, err
 		}
@@ -251,7 +258,7 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	// 所有**可能失败**的校验都过了，才动宿主的 ctx：从这里往下一路成功，
 	// `Load` 要么把图交出去（调用方接管它的生死），要么在 `New` 这一步就
 	// 因为 graphID 空拒掉（那个检查在函数开头做过）。
-	g, err := pulse.New(ctx, opts.GraphID, opts.Graph...)
+	g, err := pulse.New(ctx, opts.GraphID, doc.Description, opts.Graph...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -294,7 +301,7 @@ func addNodes(g *pulse.Graph, specs []NodeSpec, where string,
 				return fmt.Errorf("pulse/yaml: %s%w", at(where), err)
 			}
 			graphName := n.Graph
-			err = pulse.Sub(g, n.ID, binds, func(sc *pulse.SubCtx) (*pulse.Graph, error) {
+			err = pulse.Sub(g, n.ID, n.Description, binds, func(sc *pulse.SubCtx) (*pulse.Graph, error) {
 				return buildSub(sc, graphName, spec, graphs, reg, opts)
 			}, aspects...)
 			if err != nil {
@@ -322,7 +329,7 @@ func addNodes(g *pulse.Graph, specs []NodeSpec, where string,
 			if err != nil {
 				return fmt.Errorf("pulse/yaml: %snode %q provides: %w", at(where), n.ID, err)
 			}
-			if err := g.Add(pulse.NewNode(n.ID, requires, provides, run, aspects...)); err != nil {
+			if err := g.Add(pulse.NewNode(n.ID, n.Description, requires, provides, run, aspects...)); err != nil {
 				return fmt.Errorf("pulse/yaml: %snode %q: %w", at(where), n.ID, err)
 			}
 

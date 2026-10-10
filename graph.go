@@ -15,7 +15,9 @@ import (
 // 可跨图复用），Observer 回调随事实携带它，供观测折叠区分「运行的
 // 是哪张图」（观测 key 见 pulse.AttrGraph）。
 type Graph struct {
-	id     string
+	id string
+	// desc 是 New 时给的说明（`""` = 没写）。只由构造函数写入，没有 setter。
+	desc   string
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -67,7 +69,13 @@ func WithAspects(as ...Aspect) Option {
 // 区分「运行的是哪张图」。graphID 不做唯一性约束：同 id 的图并存
 // （含并发）时观测记录同键，需要区分请用不同 id。ctx 取消会打断
 // 所有等待。
-func New(ctx context.Context, graphID string, opts ...Option) (*Graph, error) {
+//
+// `description` 是人可读的说明（`""` = 没写，合法）：不参与任何语义、校验与拓扑结果，
+// 只出现在 `Topology()` / `Snapshot()` 这类**给人看**的出口上；入图后不再变（没有
+// setter）。**它与 `graphID` 都是 string，写反了照样编译**——而写反的后果比节点那处
+// 更重：观测记录里的 `pulse.graph` 带的正是图 id，写反会让归因整片错（同样只有
+// 使用风险，测试兜不住调用点）。见 `NewNode` 的同一段说明。
+func New(ctx context.Context, graphID, description string, opts ...Option) (*Graph, error) {
 	if graphID == "" {
 		return nil, errors.New("pulse: graph id is required (observe instance identity)")
 	}
@@ -77,6 +85,7 @@ func New(ctx context.Context, graphID string, opts ...Option) (*Graph, error) {
 	c, cancel := context.WithCancel(ctx)
 	g := &Graph{
 		id:       graphID,
+		desc:     description,
 		ctx:      c,
 		cancel:   cancel,
 		slots:    make(map[string]*slot),
@@ -93,6 +102,9 @@ func New(ctx context.Context, graphID string, opts ...Option) (*Graph, error) {
 
 // ID 返回图身份（New 的 graphID）。
 func (g *Graph) ID() string { return g.id }
+
+// Description 是 New 时给的说明（`""` = 没写）。
+func (g *Graph) Description() string { return g.desc }
 
 // claimSub 把这张图**原子**地认领给一次 Sub 运行：返回 false 表示它已经用过
 // （被别的 Sub 认领过，或已经启动过）。供 Sub 在跑子图之前拦「复用同一张图」。

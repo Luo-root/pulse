@@ -29,16 +29,16 @@ func TestSubBridgesValues(t *testing.T) {
 	if err := Seed(g, topic, "slot contract"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step1",
+	if err := Sub(g, "step1", "",
 		[]SubBind{In(topic, childIn), Out(childOut, summary)},
 		func(sc *SubCtx) (*Graph, error) {
 			gotID, gotPath = sc.GraphID(), sc.Path()
 			seenObserver = sc.Observer() != nil
-			child, err := New(sc.Context(), sc.GraphID())
+			child, err := New(sc.Context(), sc.GraphID(), "")
 			if err != nil {
 				return nil, err
 			}
-			return child, child.Add(NewNode("work", Requires(childIn), Provides(childOut),
+			return child, child.Add(NewNode("work", "", Requires(childIn), Provides(childOut),
 				func(rc *RunCtx) error {
 					v, err := Get(rc, childIn)
 					if err != nil {
@@ -68,7 +68,7 @@ func TestSubBridgesValues(t *testing.T) {
 	}
 
 	var bridged string
-	if err := g.Add(NewNode("sink", Requires(summary), nil, func(rc *RunCtx) error {
+	if err := g.Add(NewNode("sink", "", Requires(summary), nil, func(rc *RunCtx) error {
 		v, err := Get(rc, summary)
 		if err != nil {
 			return err
@@ -137,13 +137,13 @@ func TestSubKeepsObservationChain(t *testing.T) {
 	if err := Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step1", []SubBind{In(in, cin), Out(cout, out)},
+	if err := Sub(g, "step1", "", []SubBind{In(in, cin), Out(cout, out)},
 		func(sc *SubCtx) (*Graph, error) {
-			child, err := New(sc.Context(), sc.GraphID())
+			child, err := New(sc.Context(), sc.GraphID(), "")
 			if err != nil {
 				return nil, err
 			}
-			return child, child.Add(NewNode("inner", Requires(cin), Provides(cout),
+			return child, child.Add(NewNode("inner", "", Requires(cin), Provides(cout),
 				func(rc *RunCtx) error {
 					v, err := Get(rc, cin)
 					if err != nil {
@@ -182,13 +182,13 @@ func TestSubDoesNotClobberChildObserver(t *testing.T) {
 	if err := Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step1", []SubBind{In(in, cin), Out(cout, NewKey[string]("s.co.out"))},
+	if err := Sub(g, "step1", "", []SubBind{In(in, cin), Out(cout, NewKey[string]("s.co.out"))},
 		func(sc *SubCtx) (*Graph, error) {
-			child, err := New(sc.Context(), sc.GraphID(), WithObserver(childLog.observer()))
+			child, err := New(sc.Context(), sc.GraphID(), "", WithObserver(childLog.observer()))
 			if err != nil {
 				return nil, err
 			}
-			return child, child.Add(NewNode("inner", Requires(cin), Provides(cout),
+			return child, child.Add(NewNode("inner", "", Requires(cin), Provides(cout),
 				func(rc *RunCtx) error { return Set(rc, cout, "y") }))
 		}); err != nil {
 		t.Fatal(err)
@@ -225,13 +225,13 @@ func TestSubChildFailureBubbles(t *testing.T) {
 	obs := &recordingObserver{}
 	g := mustNew(t, context.Background(), "P", WithObserver(obs))
 
-	if err := Sub(g, "step1", []SubBind{Out(cout, out)},
+	if err := Sub(g, "step1", "", []SubBind{Out(cout, out)},
 		func(sc *SubCtx) (*Graph, error) {
-			child, err := New(sc.Context(), sc.GraphID())
+			child, err := New(sc.Context(), sc.GraphID(), "")
 			if err != nil {
 				return nil, err
 			}
-			return child, child.Add(NewNode("inner", nil, Provides(cout),
+			return child, child.Add(NewNode("inner", "", nil, Provides(cout),
 				func(rc *RunCtx) error { return boom }))
 		}); err != nil {
 		t.Fatal(err)
@@ -256,13 +256,13 @@ func TestSubChildSeesParentCancel(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step1", []SubBind{In(in, cin)},
+	if err := Sub(g, "step1", "", []SubBind{In(in, cin)},
 		func(sc *SubCtx) (*Graph, error) {
-			child, err := New(sc.Context(), sc.GraphID())
+			child, err := New(sc.Context(), sc.GraphID(), "")
 			if err != nil {
 				return nil, err
 			}
-			return child, child.Add(NewNode("slow", Requires(cin), nil, func(crc *RunCtx) error {
+			return child, child.Add(NewNode("slow", "", Requires(cin), nil, func(crc *RunCtx) error {
 				select {
 				case <-crc.Context().Done():
 					seenc <- crc.Context().Err()
@@ -306,11 +306,11 @@ func TestSubOutputSkipMapping(t *testing.T) {
 	cAll := NewKey[string]("s.os.c.all")
 
 	build := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
-		if err := child.Add(NewNode("w1", Requires(in), Provides(cReady, cSkipped),
+		if err := child.Add(NewNode("w1", "", Requires(in), Provides(cReady, cSkipped),
 			func(rc *RunCtx) error {
 				if err := Set(rc, cReady, "值"); err != nil {
 					return err
@@ -319,7 +319,7 @@ func TestSubOutputSkipMapping(t *testing.T) {
 			})); err != nil {
 			return nil, err
 		}
-		return child, child.Add(NewNode("w2", Requires(in), Provides(cAll),
+		return child, child.Add(NewNode("w2", "", Requires(in), Provides(cAll),
 			func(rc *RunCtx) error { return Skip(rc, cAll) }))
 	}
 
@@ -328,17 +328,17 @@ func TestSubOutputSkipMapping(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "part", []SubBind{
+	if err := Sub(g, "part", "", []SubBind{
 		In(in, in), Out(cReady, ready), Out(cSkipped, skipped),
 	}, build); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "none", []SubBind{In(in, in), Out(cAll, all)}, build); err != nil {
+	if err := Sub(g, "none", "", []SubBind{In(in, in), Out(cAll, all)}, build); err != nil {
 		t.Fatal(err)
 	}
 
 	sawReady, sawSkipped, sawAllDownstream := false, false, false
-	if err := g.Add(NewNode("useReady", Requires(ready), nil, func(rc *RunCtx) error {
+	if err := g.Add(NewNode("useReady", "", Requires(ready), nil, func(rc *RunCtx) error {
 		sawReady = true
 		return nil
 	})); err != nil {
@@ -346,7 +346,7 @@ func TestSubOutputSkipMapping(t *testing.T) {
 	}
 	// 跳过那条的下游要**带着另一条有值的输入**才会进 Run（门是「有没有值」）——
 	// 进去之后再读那条被跳过的键，才是 *SkipError。
-	if err := g.Add(NewNode("useSkipped", Deps(Requires(ready), Requires(skipped)), nil,
+	if err := g.Add(NewNode("useSkipped", "", Deps(Requires(ready), Requires(skipped)), nil,
 		func(rc *RunCtx) error {
 			sawSkipped = true
 			if _, err := Get(rc, skipped); !errors.Is(err, ErrSkipped) {
@@ -356,7 +356,7 @@ func TestSubOutputSkipMapping(t *testing.T) {
 		})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(NewNode("useAll", Requires(all), nil, func(rc *RunCtx) error {
+	if err := g.Add(NewNode("useAll", "", Requires(all), nil, func(rc *RunCtx) error {
 		sawAllDownstream = true
 		return nil
 	})); err != nil {
@@ -391,19 +391,19 @@ func TestSubSkippedInputStaysSkipped(t *testing.T) {
 	pout := NewKey[string]("s.si.out")
 
 	g := mustNew(t, context.Background(), "P")
-	if err := g.Add(NewNode("maybe", nil, Provides(giver),
+	if err := g.Add(NewNode("maybe", "", nil, Provides(giver),
 		func(rc *RunCtx) error { return Skip(rc, giver) })); err != nil {
 		t.Fatal(err)
 	}
 	built := false
-	if err := Sub(g, "step1", []SubBind{In(giver, cin), Out(cout, pout)},
+	if err := Sub(g, "step1", "", []SubBind{In(giver, cin), Out(cout, pout)},
 		func(sc *SubCtx) (*Graph, error) {
 			built = true
-			child, err := New(sc.Context(), sc.GraphID())
+			child, err := New(sc.Context(), sc.GraphID(), "")
 			if err != nil {
 				return nil, err
 			}
-			return child, child.Add(NewNode("inner", Requires(cin), Provides(cout),
+			return child, child.Add(NewNode("inner", "", Requires(cin), Provides(cout),
 				func(rc *RunCtx) error { return Set(rc, cout, "x") }))
 		}); err != nil {
 		t.Fatal(err)
@@ -432,14 +432,14 @@ func TestSubSkippedInputStaysSkipped(t *testing.T) {
 	}
 	var sawValue string
 	var sawSkip error
-	if err := Sub(g2, "step1", []SubBind{
+	if err := Sub(g2, "step1", "", []SubBind{
 		In(okIn, cin2), In(skipIn, cSkip), Out(cout2, pout2),
 	}, func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
-		return child, child.Add(NewNode("inner", Deps(Requires(cin2), Requires(cSkip)),
+		return child, child.Add(NewNode("inner", "", Deps(Requires(cin2), Requires(cSkip)),
 			Provides(cout2), func(rc *RunCtx) error {
 				v, err := Get(rc, cin2)
 				if err != nil {
@@ -453,7 +453,7 @@ func TestSubSkippedInputStaysSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	var bridged string
-	if err := g2.Add(NewNode("sink", Requires(pout2), nil, func(rc *RunCtx) error {
+	if err := g2.Add(NewNode("sink", "", Requires(pout2), nil, func(rc *RunCtx) error {
 		v, err := Get(rc, pout2)
 		if err != nil {
 			return err
@@ -480,11 +480,11 @@ func TestSubSkippedInputStaysSkipped(t *testing.T) {
 // 绑定写错的三种，都要在跑到一半之前报出来，而不是静默什么都不发生。
 func TestSubBindMistakesAreLoud(t *testing.T) {
 	ok := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
-		return child, child.Add(NewNode("n", nil, nil, func(rc *RunCtx) error { return nil }))
+		return child, child.Add(NewNode("n", "", nil, nil, func(rc *RunCtx) error { return nil }))
 	}
 
 	// 1) 子图没声明这条键
@@ -494,7 +494,7 @@ func TestSubBindMistakesAreLoud(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "missing", []SubBind{In(in, missing)}, ok); err != nil {
+	if err := Sub(g, "missing", "", []SubBind{In(in, missing)}, ok); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err == nil || !strings.Contains(err.Error(), "does not declare") {
@@ -507,20 +507,20 @@ func TestSubBindMistakesAreLoud(t *testing.T) {
 	same := NewKey[string]("s.bm.same")
 	childInt := NewKey[int]("s.bm.same")
 	typed := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
 		if err := Seed(child, childInt, 1); err != nil {
 			return nil, err
 		}
-		return child, child.Add(NewNode("n", Requires(childInt), nil, func(rc *RunCtx) error { return nil }))
+		return child, child.Add(NewNode("n", "", Requires(childInt), nil, func(rc *RunCtx) error { return nil }))
 	}
 	g2 := mustNew(t, context.Background(), "P2")
 	if err := Seed(g2, same, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g2, "typed", []SubBind{In(same, NewKey[string]("s.bm.same"))}, typed); err != nil {
+	if err := Sub(g2, "typed", "", []SubBind{In(same, NewKey[string]("s.bm.same"))}, typed); err != nil {
 		t.Fatal(err)
 	}
 	if err := g2.Run(); err == nil || !strings.Contains(err.Error(), "type mismatch") {
@@ -535,16 +535,16 @@ func TestSubBindMistakesAreLoud(t *testing.T) {
 	if err := Seed(g3, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g3, "reversed", []SubBind{In(in, in), Out(pout, cout)},
+	if err := Sub(g3, "reversed", "", []SubBind{In(in, in), Out(pout, cout)},
 		func(sc *SubCtx) (*Graph, error) {
-			child, err := New(sc.Context(), sc.GraphID())
+			child, err := New(sc.Context(), sc.GraphID(), "")
 			if err != nil {
 				return nil, err
 			}
 			if err := Seed(child, in, "v"); err != nil {
 				return nil, err
 			}
-			return child, child.Add(NewNode("n", Requires(in), Provides(cout),
+			return child, child.Add(NewNode("n", "", Requires(in), Provides(cout),
 				func(rc *RunCtx) error { return Set(rc, cout, "x") }))
 		}); err != nil {
 		t.Fatal(err)
@@ -573,22 +573,22 @@ func TestSubRejectsReusedChildGraph(t *testing.T) {
 		if cached != nil {
 			return cached, nil
 		}
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
-		if err := child.Add(NewNode("n", Requires(cin), Provides(cout),
+		if err := child.Add(NewNode("n", "", Requires(cin), Provides(cout),
 			func(rc *RunCtx) error { return Set(rc, cout, "x") })); err != nil {
 			return nil, err
 		}
 		cached = child
 		return child, nil
 	}
-	if err := Sub(g, "a", []SubBind{In(in, cin), Out(cout, outA)}, build); err != nil {
+	if err := Sub(g, "a", "", []SubBind{In(in, cin), Out(cout, outA)}, build); err != nil {
 		t.Fatal(err)
 	}
 	// b 排在 a 之后（它读 a 的产物），于是 b 一定拿到那张已经启动的图。
-	if err := Sub(g, "b", []SubBind{In(outA, cin), Out(cout, outB)}, build); err != nil {
+	if err := Sub(g, "b", "", []SubBind{In(outA, cin), Out(cout, outB)}, build); err != nil {
 		t.Fatal(err)
 	}
 	err := g.Run()
@@ -625,11 +625,11 @@ func TestSubConcurrentReuseIsClaimedAtomically(t *testing.T) {
 	for round := range 20 {
 		// 共享子图：建一次，两个 Sub 的 build 都把它交出去（正是引擎要拦的复用）。
 		// 两个 Sub 绑**同一条**子键，种值幂等，所以两边都走得到「认领」那一刻。
-		shared, err := New(context.Background(), "SHARED")
+		shared, err := New(context.Background(), "SHARED", "")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := shared.Add(NewNode("w", Requires(cin), Provides(cout),
+		if err := shared.Add(NewNode("w", "", Requires(cin), Provides(cout),
 			func(rc *RunCtx) error { return Set(rc, cout, "x") })); err != nil {
 			t.Fatal(err)
 		}
@@ -659,10 +659,10 @@ func TestSubConcurrentReuseIsClaimedAtomically(t *testing.T) {
 		if err := Seed(g, inB, "b"); err != nil {
 			t.Fatal(err)
 		}
-		if err := Sub(g, "sA", []SubBind{In(inA, cin), Out(cout, outA)}, build); err != nil {
+		if err := Sub(g, "sA", "", []SubBind{In(inA, cin), Out(cout, outA)}, build); err != nil {
 			t.Fatal(err)
 		}
-		if err := Sub(g, "sB", []SubBind{In(inB, cin), Out(cout, outB)}, build); err != nil {
+		if err := Sub(g, "sB", "", []SubBind{In(inB, cin), Out(cout, outB)}, build); err != nil {
 			t.Fatal(err)
 		}
 
@@ -688,16 +688,16 @@ func TestSubRejectsSlashInNodeID(t *testing.T) {
 	out := NewKey[string]("s.slash.out")
 
 	build := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
-		return child, child.Add(NewNode("n", Requires(cin), Provides(cout),
+		return child, child.Add(NewNode("n", "", Requires(cin), Provides(cout),
 			func(rc *RunCtx) error { return Set(rc, cout, "x") }))
 	}
 
 	g := mustNew(t, context.Background(), "P")
-	err := Sub(g, "a/b", []SubBind{In(in, cin), Out(cout, out)}, build)
+	err := Sub(g, "a/b", "", []SubBind{In(in, cin), Out(cout, out)}, build)
 	if err == nil {
 		t.Fatal("节点 id 里的 / 会让 path 的层级拆不开，装配期就该拒")
 	}
@@ -705,7 +705,7 @@ func TestSubRejectsSlashInNodeID(t *testing.T) {
 		t.Fatalf("要说明为什么拒，got %v", err)
 	}
 	// 想表达「更深一层」的话，嵌套本来就能写；别的节点 id 含 `/` 不受影响。
-	if err := Sub(g, "a", []SubBind{In(in, cin), Out(cout, out)}, build); err != nil {
+	if err := Sub(g, "a", "", []SubBind{In(in, cin), Out(cout, out)}, build); err != nil {
 		t.Fatalf("正常的 id 不该被拒：%v", err)
 	}
 }
@@ -738,21 +738,21 @@ func TestSubNestedPath(t *testing.T) {
 	if err := Seed(g, in, "叶子"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "outer", []SubBind{In(in, cin), Out(cout, pout)},
+	if err := Sub(g, "outer", "", []SubBind{In(in, cin), Out(cout, pout)},
 		func(sc *SubCtx) (*Graph, error) {
 			outerPath = sc.Path()
-			child, err := New(sc.Context(), sc.GraphID())
+			child, err := New(sc.Context(), sc.GraphID(), "")
 			if err != nil {
 				return nil, err
 			}
-			if err := Sub(child, "inner", []SubBind{In(cin, cin), Out(cout, cout)},
+			if err := Sub(child, "inner", "", []SubBind{In(cin, cin), Out(cout, cout)},
 				func(sc *SubCtx) (*Graph, error) {
 					innerPath, innerID = sc.Path(), sc.GraphID()
-					grand, err := New(sc.Context(), sc.GraphID())
+					grand, err := New(sc.Context(), sc.GraphID(), "")
 					if err != nil {
 						return nil, err
 					}
-					return grand, grand.Add(NewNode("leaf", Requires(cin), Provides(cout),
+					return grand, grand.Add(NewNode("leaf", "", Requires(cin), Provides(cout),
 						func(rc *RunCtx) error {
 							v, err := Get(rc, cin)
 							if err != nil {
@@ -769,7 +769,7 @@ func TestSubNestedPath(t *testing.T) {
 	}
 
 	var bridged string
-	if err := g.Add(NewNode("sink", Requires(pout), nil, func(rc *RunCtx) error {
+	if err := g.Add(NewNode("sink", "", Requires(pout), nil, func(rc *RunCtx) error {
 		v, err := Get(rc, pout)
 		if err != nil {
 			return err
@@ -819,14 +819,14 @@ func TestSubSlotsArePerGraph(t *testing.T) {
 		mu.Unlock()
 	}
 
-	if err := Sub(g, "step1", []SubBind{In(in, cin)},
+	if err := Sub(g, "step1", "", []SubBind{In(in, cin)},
 		func(sc *SubCtx) (*Graph, error) {
-			child, err := New(sc.Context(), sc.GraphID(), WithMaxRunning(2))
+			child, err := New(sc.Context(), sc.GraphID(), "", WithMaxRunning(2))
 			if err != nil {
 				return nil, err
 			}
 			for _, id := range []string{"w1", "w2"} {
-				if err := child.Add(NewNode(id, Requires(cin), nil, func(rc *RunCtx) error {
+				if err := child.Add(NewNode(id, "", Requires(cin), nil, func(rc *RunCtx) error {
 					enter()
 					select {
 					case <-both:
@@ -877,16 +877,16 @@ func TestSubRejectsChildSeedingBoundKey(t *testing.T) {
 			if err := Seed(g, in, "父侧的值"); err != nil {
 				t.Fatal(err)
 			}
-			if err := Sub(g, "step1", []SubBind{In(in, cin), Out(cout, out)},
+			if err := Sub(g, "step1", "", []SubBind{In(in, cin), Out(cout, out)},
 				func(sc *SubCtx) (*Graph, error) {
-					child, err := New(sc.Context(), sc.GraphID())
+					child, err := New(sc.Context(), sc.GraphID(), "")
 					if err != nil {
 						return nil, err
 					}
 					if err := tc.seed(child); err != nil {
 						return nil, err
 					}
-					return child, child.Add(NewNode("n", Requires(cin), Provides(cout),
+					return child, child.Add(NewNode("n", "", Requires(cin), Provides(cout),
 						func(rc *RunCtx) error {
 							v, err := Get(rc, cin)
 							if err != nil {
@@ -922,14 +922,14 @@ func (d *deepNest) build(cur, max int, leaf func(*RunCtx) error) func(*SubCtx) (
 		d.seen = append(d.seen, sc.Path()+"|"+sc.GraphID())
 		d.mu.Unlock()
 
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
 		if cur == max {
-			return child, child.Add(NewNode("leaf", Requires(d.cin), Provides(d.cout), leaf))
+			return child, child.Add(NewNode("leaf", "", Requires(d.cin), Provides(d.cout), leaf))
 		}
-		return child, Sub(child, fmt.Sprintf("L%d", cur+1),
+		return child, Sub(child, fmt.Sprintf("L%d", cur+1), "",
 			[]SubBind{In(d.cin, d.cin), Out(d.cout, d.cout)},
 			d.build(cur+1, max, leaf))
 	}
@@ -959,7 +959,7 @@ func TestSubDeepNesting(t *testing.T) {
 	if err := Seed(g, d.in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "L1", []SubBind{In(d.in, d.cin), Out(d.cout, d.out)},
+	if err := Sub(g, "L1", "", []SubBind{In(d.in, d.cin), Out(d.cout, d.out)},
 		d.build(1, 3, func(rc *RunCtx) error {
 			v, err := Get(rc, d.cin)
 			if err != nil {
@@ -970,7 +970,7 @@ func TestSubDeepNesting(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got string
-	if err := g.Add(NewNode("sink", Requires(d.out), nil, func(rc *RunCtx) error {
+	if err := g.Add(NewNode("sink", "", Requires(d.out), nil, func(rc *RunCtx) error {
 		v, err := Get(rc, d.out)
 		if err != nil {
 			return err
@@ -1025,7 +1025,7 @@ func TestSubDeepFailureBubblesFromDeepest(t *testing.T) {
 	if err := Seed(g, d.in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "L1", []SubBind{In(d.in, d.cin), Out(d.cout, d.out)},
+	if err := Sub(g, "L1", "", []SubBind{In(d.in, d.cin), Out(d.cout, d.out)},
 		d.build(1, 3, func(rc *RunCtx) error { return boom })); err != nil {
 		t.Fatal(err)
 	}
@@ -1043,7 +1043,7 @@ func TestSubDeepCancelReachesDeepest(t *testing.T) {
 	if err := Seed(g, d.in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "L1", []SubBind{In(d.in, d.cin), Out(d.cout, d.out)},
+	if err := Sub(g, "L1", "", []SubBind{In(d.in, d.cin), Out(d.cout, d.out)},
 		d.build(1, 3, func(rc *RunCtx) error {
 			select {
 			case <-rc.Context().Done():
@@ -1078,26 +1078,26 @@ func TestSubAssemblyErrors(t *testing.T) {
 	in := NewKey[string]("s.ae.in")
 	cin := NewKey[string]("s.ae.cin")
 	g := mustNew(t, context.Background(), "P")
-	ok := func(sc *SubCtx) (*Graph, error) { return New(sc.Context(), sc.GraphID()) }
+	ok := func(sc *SubCtx) (*Graph, error) { return New(sc.Context(), sc.GraphID(), "") }
 
-	if err := Sub(nil, "x", []SubBind{In(in, cin)}, ok); err == nil {
+	if err := Sub(nil, "x", "", []SubBind{In(in, cin)}, ok); err == nil {
 		t.Fatal("nil graph 应当报错")
 	}
-	if err := Sub(g, "", []SubBind{In(in, cin)}, ok); err == nil {
+	if err := Sub(g, "", "", []SubBind{In(in, cin)}, ok); err == nil {
 		t.Fatal("空 id 应当报错")
 	}
-	if err := Sub(g, "x", []SubBind{In(in, cin)}, nil); err == nil {
+	if err := Sub(g, "x", "", []SubBind{In(in, cin)}, nil); err == nil {
 		t.Fatal("nil build 应当报错")
 	}
-	if err := Sub(g, "x", nil, ok); err == nil {
+	if err := Sub(g, "x", "", nil, ok); err == nil {
 		t.Fatal("没有绑定应当报错")
 	}
 	// 同一条子侧键绑两次：第二次种值会被静默忽略，装配期就拒。
-	if err := Sub(g, "x", []SubBind{In(in, cin), In(in, cin)}, ok); err == nil {
+	if err := Sub(g, "x", "", []SubBind{In(in, cin), In(in, cin)}, ok); err == nil {
 		t.Fatal("子侧键绑两次应当报错")
 	}
 	// 零值 SubBind（手写 SubBind{} 而不是用 In / Out）
-	if err := Sub(g, "x", []SubBind{{}}, ok); err == nil {
+	if err := Sub(g, "x", "", []SubBind{{}}, ok); err == nil {
 		t.Fatal("零值 bind 应当报错")
 	}
 	if n := len(g.nodes); n != 0 {

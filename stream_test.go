@@ -242,7 +242,7 @@ func TestConsumeSkipsWhenUpstreamSkips(t *testing.T) {
 	obs := &recordingObserver{}
 	g := mustNew(t, context.Background(), "upskip", WithObserver(obs))
 
-	if err := g.Add(NewNode("maybe", nil, Provides(in), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("maybe", "", nil, Provides(in), func(rc *RunCtx) error {
 		return Skip(rc, in) // 这一次没有值
 	})); err != nil {
 		t.Fatal(err)
@@ -276,13 +276,13 @@ func TestOnlyWritesChosenAndSkipsRest(t *testing.T) {
 	obs := &recordingObserver{}
 	g := mustNew(t, context.Background(), "only", WithObserver(obs))
 
-	if err := g.Add(NewNode("route", nil, Provides(a, b), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("route", "", nil, Provides(a, b), func(rc *RunCtx) error {
 		return Only(rc, a, "走A")
 	})); err != nil {
 		t.Fatal(err)
 	}
 	useA, useB := false, false
-	if err := g.Add(NewNode("useA", Requires(a), nil, func(rc *RunCtx) error {
+	if err := g.Add(NewNode("useA", "", Requires(a), nil, func(rc *RunCtx) error {
 		useA = true
 		v, err := Get(rc, a)
 		if err != nil {
@@ -295,7 +295,7 @@ func TestOnlyWritesChosenAndSkipsRest(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(NewNode("useB", Requires(b), nil, func(rc *RunCtx) error {
+	if err := g.Add(NewNode("useB", "", Requires(b), nil, func(rc *RunCtx) error {
 		useB = true
 		return nil
 	})); err != nil {
@@ -322,7 +322,7 @@ func TestOnlyConflictsWithEarlierSet(t *testing.T) {
 	b := NewKey[string]("s.dup_b")
 	g := mustNew(t, context.Background(), "onlydup")
 
-	if err := g.Add(NewNode("route", nil, Provides(a, b), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("route", "", nil, Provides(a, b), func(rc *RunCtx) error {
 		if err := Set(rc, b, "先写了B"); err != nil {
 			return err
 		}
@@ -454,7 +454,7 @@ func TestStreamSlotsCountHandWrittenReader(t *testing.T) {
 		if err := Tee(g, "tee", src, Keys(a)); err != nil {
 			t.Fatal(err)
 		}
-		if err := g.Add(NewNode("sink", Requires(a), nil, sink)); err != nil {
+		if err := g.Add(NewNode("sink", "", Requires(a), nil, sink)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -525,7 +525,7 @@ func TestStreamOutputRejectsSplitReaders(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, id := range []string{"r1", "r2"} {
-			if err := g.Add(NewNode(id, Requires(src), nil, func(rc *RunCtx) error {
+			if err := g.Add(NewNode(id, "", Requires(src), nil, func(rc *RunCtx) error {
 				ch, err := Get(rc, src)
 				if err != nil {
 					return err
