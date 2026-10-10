@@ -156,14 +156,8 @@ func (rc *RunCtx) must(k keyRef, write bool) error {
 func Get[T any](rc *RunCtx, k Key[T]) (T, error) {
 	var zero T
 	ref := k.asRef()
-	if err := rc.must(ref, false); err != nil {
-		return zero, err
-	}
-	v, err := rc.g.slotOf(ref).wait(rc.ctx)
+	v, err := getRef(rc, ref)
 	if err != nil {
-		if err == ErrSkipped {
-			return zero, skipErr(ref.name)
-		}
 		return zero, err
 	}
 	out, ok := v.(T)
@@ -171,6 +165,23 @@ func Get[T any](rc *RunCtx, k Key[T]) (T, error) {
 		return zero, fmt.Errorf("pulse: key %q type assertion failed", ref.name)
 	}
 	return out, nil
+}
+
+// getRef 是 Get 的非泛型内核：只有 keyRef 可用的地方（`Only` 之类的糖、
+// 子图绑定）走这里，类型断言留给调用方。`Get` 在它之上做一次断言，
+// 判据与读语义完全同源。
+func getRef(rc *RunCtx, ref keyRef) (any, error) {
+	if err := rc.must(ref, false); err != nil {
+		return nil, err
+	}
+	v, err := rc.g.slotOf(ref).wait(rc.ctx)
+	if err != nil {
+		if err == ErrSkipped {
+			return nil, skipErr(ref.name)
+		}
+		return nil, err
+	}
+	return v, nil
 }
 
 // TryGet 非阻塞读取。ok=true 表示已就绪；skipped=true 表示已跳过。
@@ -196,8 +207,12 @@ func TryGet[T any](rc *RunCtx, k Key[T]) (v T, ok bool, skipped bool, err error)
 }
 
 // Set 幂等首写为就绪。二次调用忽略。与已跳过冲突则报错。
-func Set[T any](rc *RunCtx, k Key[T], v T) error {
-	ref := k.asRef()
+func Set[T any](rc *RunCtx, k Key[T], v T) error { return setRef(rc, k.asRef(), v) }
+
+// setRef 是 Set 的非泛型内核：只有 keyRef 可用的地方（糖、子图桥接）走这里。
+// 槽位的类型不靠它兜——同一个键名在本图里只能有一种类型（`keyRegistry`
+// 在 Add / Seed 就拒了同名跨型），所以写进来的值一定是对的那一种。
+func setRef(rc *RunCtx, ref keyRef, v any) error {
 	if err := rc.must(ref, true); err != nil {
 		return err
 	}
