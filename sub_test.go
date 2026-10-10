@@ -143,9 +143,6 @@ func TestSubKeepsObservationChain(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			if err := Seed(child, cin, "x"); err != nil {
-				return nil, err
-			}
 			return child, child.Add(NewNode("inner", Requires(cin), Provides(cout),
 				func(rc *RunCtx) error {
 					v, err := Get(rc, cin)
@@ -189,9 +186,6 @@ func TestSubDoesNotClobberChildObserver(t *testing.T) {
 		func(sc *SubCtx) (*Graph, error) {
 			child, err := New(sc.Context(), sc.GraphID(), WithObserver(childLog.observer()))
 			if err != nil {
-				return nil, err
-			}
-			if err := Seed(child, cin, "x"); err != nil {
 				return nil, err
 			}
 			return child, child.Add(NewNode("inner", Requires(cin), Provides(cout),
@@ -316,9 +310,6 @@ func TestSubOutputSkipMapping(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		if err := Seed(child, in, "v"); err != nil {
-			return nil, err
-		}
 		if err := child.Add(NewNode("w1", Requires(in), Provides(cReady, cSkipped),
 			func(rc *RunCtx) error {
 				if err := Set(rc, cReady, "值"); err != nil {
@@ -410,9 +401,6 @@ func TestSubSkippedInputStaysSkipped(t *testing.T) {
 			built = true
 			child, err := New(sc.Context(), sc.GraphID())
 			if err != nil {
-				return nil, err
-			}
-			if err := Seed(child, cin, "不该种上"); err != nil {
 				return nil, err
 			}
 			return child, child.Add(NewNode("inner", Requires(cin), Provides(cout),
@@ -589,9 +577,6 @@ func TestSubRejectsReusedChildGraph(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		if err := Seed(child, cin, "v"); err != nil {
-			return nil, err
-		}
 		if err := child.Add(NewNode("n", Requires(cin), Provides(cout),
 			func(rc *RunCtx) error { return Set(rc, cout, "x") })); err != nil {
 			return nil, err
@@ -655,17 +640,11 @@ func TestSubNestedPath(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			if err := Seed(child, cin, "叶子"); err != nil {
-				return nil, err
-			}
 			if err := Sub(child, "inner", []SubBind{In(cin, cin), Out(cout, cout)},
 				func(sc *SubCtx) (*Graph, error) {
 					innerPath, innerID = sc.Path(), sc.GraphID()
 					grand, err := New(sc.Context(), sc.GraphID())
 					if err != nil {
-						return nil, err
-					}
-					if err := Seed(grand, cin, "叶子"); err != nil {
 						return nil, err
 					}
 					return grand, grand.Add(NewNode("leaf", Requires(cin), Provides(cout),
@@ -741,9 +720,6 @@ func TestSubSlotsArePerGraph(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			if err := Seed(child, cin, "v"); err != nil {
-				return nil, err
-			}
 			for _, id := range []string{"w1", "w2"} {
 				if err := child.Add(NewNode(id, Requires(cin), nil, func(rc *RunCtx) error {
 					enter()
@@ -773,6 +749,54 @@ func TestSubSlotsArePerGraph(t *testing.T) {
 	defer mu.Unlock()
 	if peak != 2 {
 		t.Fatalf("子图内部同时进 Run 的峰值 = %d，want 2（父图 WithMaxRunning(1) 不该管到子图内部）", peak)
+	}
+}
+
+// 子图在 build 里自己种了某条**被绑定**的键 → 父侧传进来的值会被幂等首写静默
+// 忽略（「值不见了」而没有报错），所以这里当场吵出来。
+func TestSubRejectsChildSeedingBoundKey(t *testing.T) {
+	in := NewKey[string]("s.cs.in")
+	cin := NewKey[string]("s.cs.cin")
+	cout := NewKey[string]("s.cs.cout")
+	out := NewKey[string]("s.cs.out")
+
+	for _, tc := range []struct {
+		name string
+		seed func(*Graph) error
+	}{
+		{"Seed", func(child *Graph) error { return Seed(child, cin, "子图自己的默认值") }},
+		{"SkipSeed", func(child *Graph) error { return SkipSeed(child, cin) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := mustNew(t, context.Background(), "P")
+			if err := Seed(g, in, "父侧的值"); err != nil {
+				t.Fatal(err)
+			}
+			if err := Sub(g, "step1", []SubBind{In(in, cin), Out(cout, out)},
+				func(sc *SubCtx) (*Graph, error) {
+					child, err := New(sc.Context(), sc.GraphID())
+					if err != nil {
+						return nil, err
+					}
+					if err := tc.seed(child); err != nil {
+						return nil, err
+					}
+					return child, child.Add(NewNode("n", Requires(cin), Provides(cout),
+						func(rc *RunCtx) error {
+							v, err := Get(rc, cin)
+							if err != nil {
+								return err
+							}
+							return Set(rc, cout, v)
+						}))
+				}); err != nil {
+				t.Fatal(err)
+			}
+			err := g.Run()
+			if err == nil || !strings.Contains(err.Error(), "silently ignored") {
+				t.Fatalf("Run = %v，want 「父侧的值会被静默忽略」", err)
+			}
+		})
 	}
 }
 

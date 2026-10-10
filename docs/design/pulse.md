@@ -191,6 +191,40 @@ nodes:
 
 时间字段用 Go 的 `ParseDuration` 形式（`30s` / `100ms`），不写裸数字。
 
+### YAML 里的子图：`graphs` / `graph`
+
+声明式装配里「一步 = 一张图」不用写 Go 工厂：`graphs:` 声明可复用的子图，`nodes[].graph` 指向它。
+
+```yaml
+version: 1
+graphs:
+  enrich:
+    nodes:
+      - id: work
+        uses: demo.enrich
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+nodes:
+  - id: step1
+    graph: enrich
+    in:  {sg.topic: sg.input}      # 子键: 父键（父读 → 子 Seed）
+    out: {sg.summary: sg.result}   # 子键: 父键（子产出 → 父 Set）
+```
+
+它展开成 `pulse.Sub`（见下面「图即节点」）：父侧那个节点的 `Requires` / `Provides` 由 `in` / `out` 推出来，引擎的静态校验照常生效。**YAML 只是把引擎已有的能力写出来**——引擎没有的能力它变不出来；这一层新增的是**装图期的对账**，五条判据都静态可判定，所以都在 `Load` 报，不留到运行期：
+
+| 检查 | 判据 |
+|---|---|
+| 引用 | `graph:` 指向的名字必须在同一份文档的 `graphs` 里；子图必须有节点 |
+| 环 | 子图之间「图引用图」的环（含自引用）→ 报出一条**具体**路径 `a -> b -> a`；递归本身允许、深度不设限 |
+| 类型 | 两端各按 `{name, type}` 查表，且用**同一个** type 记号——父侧那条键登记成别的类型就报 |
+| 名字 | `in` / `out` 的子侧键必须真被那张图里的某个节点读 / 写，否则报 |
+| seed | 子图的 `seeds` 只允许 `literal`（`env` / `file` / `context` 要靠宿主 IO，而 `SeedPlan` 是**父图**的产物）；子图 seed 了某条键、父侧又用 `in` 喂它 → 报（两次种同一条槽，第二次会被幂等首写静默忽略） |
+
+子图节点**不能**再写 `requires` / `provides`：边界只有 `in` / `out` 一处说法。切面（`timeout` / `retry`）落在**父侧那个节点**上——`timeout: 30s` 就是给整张子图限时。
+
+**观测按层给**：`LoadOptions.ObserverFor(path)` 按层建出口（一个出口实例只能带一条 `pulse.path`，所以「按层各建一个」由宿主决定）。同一张子图被引用两次就是两个独立实例，靠 graph id 与 `pulse.path` 分得开（见第二部分）。
+
 ### 语法糖：`FanOut` / `Join`
 
 手写装图要三次对齐同一个名字（`NewNode` 声明、`Get` 读、`Set` 写），三处都可能漂移。糖把名字收进**函数签名**：

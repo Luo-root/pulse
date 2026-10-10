@@ -1,0 +1,575 @@
+package yaml_test
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Luo-root/pulse"
+	"github.com/Luo-root/pulse/observe"
+	pulseyaml "github.com/Luo-root/pulse/yaml"
+)
+
+// #295：YAML 里「一步 = 一张子图」。这一层只把引擎已有的能力（pulse.Sub）
+// 写出来——拓扑归 YAML，Run 还是归注册的工厂。
+const subDoc = `
+version: 1
+graphs:
+  enrich:
+    nodes:
+      - id: work
+        uses: sg.work
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+seeds:
+  - key: {name: sg.input, type: string}
+    from: {kind: literal, value: "slot contract"}
+nodes:
+  - id: step1
+    graph: enrich
+    in:  {sg.topic: sg.input}
+    out: {sg.summary: sg.result}
+  - id: sink
+    uses: sg.sink
+    requires: [{name: sg.result, type: string}]
+`
+
+// subReg 建一张登记表：四个键 + 两个工厂（`sg.work` 读 sg.topic 写 sg.summary；
+// `sg.sink` 把父图最后那条值捞进 sink）。
+func subReg(t *testing.T, sink *string) *pulse.Registry {
+	t.Helper()
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.topic"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.summary"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.input"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.result"))
+	reg.MustRegister("sg.work", func(rc *pulse.RunCtx) error {
+		v, err := pulse.Get(rc, pulse.NewKey[string]("sg.topic"))
+		if err != nil {
+			return err
+		}
+		return pulse.Set(rc, pulse.NewKey[string]("sg.summary"), "about "+v)
+	})
+	reg.MustRegister("sg.sink", func(rc *pulse.RunCtx) error {
+		v, err := pulse.Get(rc, pulse.NewKey[string]("sg.result"))
+		if err != nil {
+			return err
+		}
+		*sink = v
+		return nil
+	})
+	return reg
+}
+
+// mustObs 按层建一条观测出口（path 为空 = 这一层是根）。
+func mustObs(t *testing.T, sink *observe.MemorySink, path string) pulse.Observer {
+	t.Helper()
+	o, err := observe.NewRecordObserver(observe.ObserveConfig{
+		Sink: sink, HostID: "h", TraceID: "tr", Path: path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+// 端到端：YAML 装「父图里一个节点 = 一张子图」，值桥得回来，观测里子图记录
+// 带 pulse.path（出口按层建，见 LoadOptions.ObserverFor）。
+func TestLoadSubgraphEndToEnd(t *testing.T) {
+	sink := &observe.MemorySink{}
+	var got string
+	reg := subReg(t, &got)
+
+	g, plan, err := pulseyaml.Load([]byte(subDoc), reg, pulseyaml.LoadOptions{
+		GraphID: "P",
+		// 根图那条出口自己建（Path 留空 = 根这一层不写 pulse.path）。
+		Graph: []pulse.Option{pulse.WithObserver(mustObs(t, sink, ""))},
+		ObserverFor: func(path string) pulse.Observer {
+			return mustObs(t, sink, path)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Apply(g, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if got != "about slot contract" {
+		t.Fatalf("子图产物没桥回父图：%q", got)
+	}
+
+	// 观测：子图那几条带 path=step1（图归因是它自己的 graph id），父图自己的不带。
+	child, parent, childNodeRows := 0, 0, 0
+	for _, rec := range sink.Snapshot() {
+		gid, _ := observe.Get[string](rec.Attrs, pulse.AttrGraph)
+		p, hasPath := observe.Get[string](rec.Attrs, pulse.AttrPath)
+		switch gid {
+		case "P/step1":
+			child++
+			if !hasPath || p != "step1" {
+				t.Fatalf("子图记录应当带 path=step1，实得 (%q, %v)：%+v", p, hasPath, rec)
+			}
+			// 运行级那两条没有节点维度，节点记录才有。
+			if n, ok := observe.Get[string](rec.Attrs, pulse.AttrNode); ok {
+				childNodeRows++
+				if n != "work" {
+					t.Fatalf("子图的节点归因 = %q，want work", n)
+				}
+			}
+		case "P":
+			parent++
+			if hasPath {
+				t.Fatalf("父图自己的记录不该带 path：%+v", rec)
+			}
+		default:
+			t.Fatalf("不该出现的图归因 %q", gid)
+		}
+	}
+	if child != 4 { // 运行级两条 + work 节点两条
+		t.Fatalf("子图记录数 = %d，want 4", child)
+	}
+	if childNodeRows != 2 {
+		t.Fatalf("子图里带节点归因的记录数 = %d，want 2（work 的等待段与执行段）", childNodeRows)
+	}
+	if parent != 6 { // 运行级两条 + step1 / sink 各两条
+		t.Fatalf("父图记录数 = %d，want 6", parent)
+	}
+}
+
+// 类型不匹配：两端各按 {name, type} 查表，且用**同一个** type 记号——父侧那条
+// 键登记成别的类型，装图期就报。
+func TestLoadSubgraphTypeMismatch(t *testing.T) {
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.topic"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[int]("sg.count")) // 父侧那条是 int
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.summary"))
+	reg.MustRegister("f", func(*pulse.RunCtx) error { return nil })
+
+	doc := []byte(`
+version: 1
+graphs:
+  g1:
+    nodes:
+      - id: n
+        uses: f
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+nodes:
+  - id: step1
+    graph: g1
+    in: {sg.topic: sg.count}
+`)
+	_, _, err := pulseyaml.Load(doc, reg, pulseyaml.LoadOptions{GraphID: "P"})
+	if err == nil {
+		t.Fatal("类型不匹配应当在 Load 期报错")
+	}
+	for _, want := range []string{"sg.count", "does not match registered"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误里要点名 %q：%v", want, err)
+		}
+	}
+}
+
+// 名字写错：引用一张不存在的子图 / 绑定一条子图没声明的键，两条都在 Load 期报。
+func TestLoadSubgraphNamesAreChecked(t *testing.T) {
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.topic"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.summary"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.input"))
+	reg.MustRegister("f", func(*pulse.RunCtx) error { return nil })
+
+	_, _, err := pulseyaml.Load([]byte(`
+version: 1
+graphs:
+  g1:
+    nodes:
+      - id: n
+        uses: f
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+nodes:
+  - id: step1
+    graph: nope
+    in: {sg.topic: sg.input}
+`), reg, pulseyaml.LoadOptions{GraphID: "P"})
+	if err == nil || !strings.Contains(err.Error(), `references unknown graph "nope"`) {
+		t.Fatalf("want unknown graph，got %v", err)
+	}
+
+	_, _, err = pulseyaml.Load([]byte(`
+version: 1
+graphs:
+  g1:
+    nodes:
+      - id: n
+        uses: f
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+nodes:
+  - id: step1
+    graph: g1
+    in: {sg.typo: sg.input}
+`), reg, pulseyaml.LoadOptions{GraphID: "P"})
+	if err == nil || !strings.Contains(err.Error(), `no node of it requires that key`) {
+		t.Fatalf("want undeclared binding，got %v", err)
+	}
+
+	// 根**引用不到**的那张子图里写错名字也要报：装图期的校验是**全量**的，
+	// 不是只走一遍可达路径（今天用不到、明天接上去才炸是最难查的一种）。
+	_, _, err = pulseyaml.Load([]byte(`
+version: 1
+graphs:
+  unused:
+    nodes:
+      - id: n
+        graph: nope
+        in: {sg.topic: sg.input}
+  g1:
+    nodes:
+      - id: n
+        uses: f
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+nodes:
+  - id: step1
+    graph: g1
+    in: {sg.topic: sg.input}
+    out: {sg.summary: sg.summary}
+`), reg, pulseyaml.LoadOptions{GraphID: "P"})
+	if err == nil || !strings.Contains(err.Error(), `references unknown graph "nope"`) {
+		t.Fatalf("不可达的子图声明也要校验，got %v", err)
+	}
+}
+
+// 引用环：a → b → a 装不出图，Load 期拦并给出具体路径（与引擎报依赖环同形）。
+func TestLoadSubgraphCycle(t *testing.T) {
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.a"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.b"))
+	_, _, err := pulseyaml.Load([]byte(`
+version: 1
+graphs:
+  a:
+    nodes:
+      - id: toB
+        graph: b
+        in: {sg.a: sg.a}
+        out: {sg.b: sg.b}
+  b:
+    nodes:
+      - id: toA
+        graph: a
+        in: {sg.a: sg.a}
+        out: {sg.b: sg.b}
+nodes:
+  - id: step1
+    graph: a
+    in: {sg.a: sg.a}
+    out: {sg.b: sg.b}
+`), reg, pulseyaml.LoadOptions{GraphID: "P"})
+	if err == nil {
+		t.Fatal("引用环应当在 Load 期报错")
+	}
+	if !strings.Contains(err.Error(), "graph reference cycle") || !strings.Contains(err.Error(), "a -> b -> a") {
+		t.Fatalf("要报出具体那条环：%v", err)
+	}
+}
+
+// 子图的 seed 只允许 literal：env / file / context 要靠宿主 IO，而 SeedPlan
+// 是父图的产物——装图期就把话说清楚，别留到跑到一半。
+func TestLoadSubgraphSeedKindRestricted(t *testing.T) {
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.topic"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.summary"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.result"))
+	reg.MustRegister("f", func(*pulse.RunCtx) error { return nil })
+
+	_, _, err := pulseyaml.Load([]byte(`
+version: 1
+graphs:
+  g1:
+    seeds:
+      - key: {name: sg.topic, type: string}
+        from: {kind: env, env: TOPIC}
+    nodes:
+      - id: n
+        uses: f
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+nodes:
+  - id: step1
+    graph: g1
+    out: {sg.summary: sg.result}
+`), reg, pulseyaml.LoadOptions{GraphID: "P"})
+	if err == nil || !strings.Contains(err.Error(), `kind "env" is not supported in a subgraph`) {
+		t.Fatalf("want seed kind error，got %v", err)
+	}
+}
+
+// 子图自己 seed 了某条键、父侧又用 in 喂它：两次种同一条槽，第二次会被幂等
+// 首写静默忽略——装图期点名哪张图、哪个节点、哪条键。
+func TestLoadSubgraphSeedVsBindConflict(t *testing.T) {
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.topic"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.summary"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.input"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.result"))
+	reg.MustRegister("f", func(*pulse.RunCtx) error { return nil })
+
+	_, _, err := pulseyaml.Load([]byte(`
+version: 1
+graphs:
+  g1:
+    seeds:
+      - key: {name: sg.topic, type: string}
+        from: {kind: literal, value: "默认值"}
+    nodes:
+      - id: n
+        uses: f
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+nodes:
+  - id: step1
+    graph: g1
+    in: {sg.topic: sg.input}
+    out: {sg.summary: sg.result}
+`), reg, pulseyaml.LoadOptions{GraphID: "P"})
+	if err == nil || !strings.Contains(err.Error(), "silently ignored") {
+		t.Fatalf("want seed/bind conflict，got %v", err)
+	}
+}
+
+// 子图节点的边界由 in / out 声明，不能再用 requires / provides（重载会让
+// 「这一步吃什么」有两处说法）。
+func TestLoadSubgraphNodeRejectsRequires(t *testing.T) {
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.topic"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.summary"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.input"))
+	reg.MustRegister("f", func(*pulse.RunCtx) error { return nil })
+
+	_, _, err := pulseyaml.Load([]byte(`
+version: 1
+graphs:
+  g1:
+    nodes:
+      - id: n
+        uses: f
+        provides: [{name: sg.summary, type: string}]
+nodes:
+  - id: step1
+    graph: g1
+    in: {sg.topic: sg.input}
+    out: {sg.summary: sg.summary}
+    requires: [{name: sg.input, type: string}]
+`), reg, pulseyaml.LoadOptions{GraphID: "P"})
+	if err == nil || !strings.Contains(err.Error(), "not requires/provides") {
+		t.Fatalf("want in/out-only boundary error，got %v", err)
+	}
+}
+
+// 同一张子图被引用两次 = 两个独立实例：图 id 与 path 都不一样，各自跑一遍。
+func TestLoadSubgraphTwoInstances(t *testing.T) {
+	sink := &observe.MemorySink{}
+	var got []string
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.topic"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.summary"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.input"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.result"))
+	reg.MustRegister("sg.work", func(rc *pulse.RunCtx) error {
+		got = append(got, rc.NodeID())
+		return pulse.Set(rc, pulse.NewKey[string]("sg.summary"), "x")
+	})
+
+	doc := []byte(`
+version: 1
+graphs:
+  enrich:
+    nodes:
+      - id: work
+        uses: sg.work
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+seeds:
+  - key: {name: sg.input, type: string}
+    from: {kind: literal, value: "v"}
+nodes:
+  - id: a
+    graph: enrich
+    in:  {sg.topic: sg.input}
+    out: {sg.summary: sg.summary}
+  - id: b
+    graph: enrich
+    in:  {sg.topic: sg.input}
+    out: {sg.summary: sg.summary}
+`)
+	// 两个实例都写 sg.summary → 父侧那条键会被两个节点同时 Provides，引擎拒。
+	// 所以这里各写各的：用两条不同的父侧键。
+	doc = []byte(strings.Replace(string(doc),
+		"  - id: b\n    graph: enrich\n    in:  {sg.topic: sg.input}\n    out: {sg.summary: sg.summary}",
+		"  - id: b\n    graph: enrich\n    in:  {sg.topic: sg.input}\n    out: {sg.summary: sg.result}",
+		1))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.result"))
+
+	g, plan, err := pulseyaml.Load(doc, reg, pulseyaml.LoadOptions{
+		GraphID:     "P",
+		ObserverFor: func(path string) pulse.Observer { return mustObs(t, sink, path) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Apply(g, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("两个实例各跑一遍 work，实得 %d 次：%v", len(got), got)
+	}
+	seen := map[string]bool{}
+	for _, rec := range sink.Snapshot() {
+		if p, ok := observe.Get[string](rec.Attrs, pulse.AttrPath); ok {
+			gid, _ := observe.Get[string](rec.Attrs, pulse.AttrGraph)
+			seen[gid+"|"+p] = true
+		}
+	}
+	for _, want := range []string{"P/a|a", "P/b|b"} {
+		if !seen[want] {
+			t.Fatalf("两个实例要靠 graph id + path 分得开，缺 %q（实得 %v）", want, seen)
+		}
+	}
+}
+
+// 子图里再挂子图：装图与路径都往下走一层。
+func TestLoadSubgraphNested(t *testing.T) {
+	var got string
+	sink := &observe.MemorySink{}
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.topic"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.summary"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.input"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.result"))
+	reg.MustRegister("sg.leaf", func(rc *pulse.RunCtx) error {
+		v, err := pulse.Get(rc, pulse.NewKey[string]("sg.topic"))
+		if err != nil {
+			return err
+		}
+		return pulse.Set(rc, pulse.NewKey[string]("sg.summary"), v+"!")
+	})
+	reg.MustRegister("sg.sink", func(rc *pulse.RunCtx) error {
+		v, err := pulse.Get(rc, pulse.NewKey[string]("sg.result"))
+		if err != nil {
+			return err
+		}
+		got = v
+		return nil
+	})
+
+	g, plan, err := pulseyaml.Load([]byte(`
+version: 1
+graphs:
+  inner:
+    nodes:
+      - id: leaf
+        uses: sg.leaf
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+  outer:
+    nodes:
+      - id: mid
+        graph: inner
+        in:  {sg.topic: sg.topic}
+        out: {sg.summary: sg.summary}
+seeds:
+  - key: {name: sg.input, type: string}
+    from: {kind: literal, value: "叶子"}
+nodes:
+  - id: step1
+    graph: outer
+    in:  {sg.topic: sg.input}
+    out: {sg.summary: sg.result}
+  - id: sink
+    uses: sg.sink
+    requires: [{name: sg.result, type: string}]
+`), reg, pulseyaml.LoadOptions{
+		GraphID:     "P",
+		ObserverFor: func(path string) pulse.Observer { return mustObs(t, sink, path) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Apply(g, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if got != "叶子!" {
+		t.Fatalf("两层之后桥回父侧的是 %q", got)
+	}
+	// 最里层那几条记录的 path 是两层接起来的。
+	deep := 0
+	for _, rec := range sink.Snapshot() {
+		if p, ok := observe.Get[string](rec.Attrs, pulse.AttrPath); ok && p == "step1/mid" {
+			deep++
+		}
+	}
+	if deep != 4 { // 运行级两条 + leaf 节点两条
+		t.Fatalf("最里层记录数 = %d，want 4（path=step1/mid）", deep)
+	}
+}
+
+// 切面落在父侧那个节点上：`timeout` 就是给整张子图限时。
+func TestLoadSubgraphTimeoutLimitsWholeChild(t *testing.T) {
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.topic"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.summary"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.input"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("sg.result"))
+	reg.MustRegister("sg.slow", func(rc *pulse.RunCtx) error {
+		select {
+		case <-rc.Context().Done():
+			return rc.Context().Err()
+		case <-time.After(2 * time.Second):
+			return nil
+		}
+	})
+
+	g, plan, err := pulseyaml.Load([]byte(`
+version: 1
+graphs:
+  slow:
+    nodes:
+      - id: wait
+        uses: sg.slow
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+seeds:
+  - key: {name: sg.input, type: string}
+    from: {kind: literal, value: "v"}
+nodes:
+  - id: step1
+    graph: slow
+    timeout: 20ms
+    in:  {sg.topic: sg.input}
+    out: {sg.summary: sg.result}
+`), reg, pulseyaml.LoadOptions{GraphID: "P"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Apply(g, nil); err != nil {
+		t.Fatal(err)
+	}
+	err = g.Run()
+	if err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("Run = %v，want 父侧节点的 timeout", err)
+	}
+	if !strings.Contains(err.Error(), "step1") {
+		t.Fatalf("超时要点名是哪一步：%v", err)
+	}
+}

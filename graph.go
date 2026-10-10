@@ -90,6 +90,14 @@ func New(ctx context.Context, graphID string, opts ...Option) (*Graph, error) {
 // ID 返回图身份（New 的 graphID）。
 func (g *Graph) ID() string { return g.id }
 
+// isStarted 报这张图是否已经启动过（一次性契约）。只读一眼，带锁。
+// 供 Sub 在跑子图之前拦「复用同一张图」用。
+func (g *Graph) isStarted() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.started
+}
+
 // Add 登记节点。图启动后拒绝。
 //
 // 两段式：先全量校验（只读），全部通过才提交。半途失败必须什么都不留——

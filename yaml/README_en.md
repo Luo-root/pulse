@@ -43,4 +43,40 @@ Notes:
 - Any `Seed.from.kind` other than `literal` requires the host to pass a `resolve` callback — **the engine does no IO**: reading files, env or request context is the host's job.
 - This package depends on `gopkg.in/yaml.v3`; the root `pulse` package does not depend on yaml.
 
+## Subgraphs: one step = one graph
+
+`graphs:` declares reusable subgraphs and `nodes[].graph` points a step at one — **a subgraph is the unit of topology reuse**, so reusing a flow does not force you to write a Go factory:
+
+```yaml
+version: 1
+graphs:
+  enrich:
+    nodes:
+      - id: work
+        uses: demo.enrich
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+seeds:
+  - key: {name: sg.input, type: string}
+    from: {kind: literal, value: "slot contract"}
+nodes:
+  - id: step1
+    graph: enrich
+    in:  {sg.topic: sg.input}      # child key: parent key (parent reads → child is seeded)
+    out: {sg.summary: sg.result}   # child key: parent key (child produces → parent is set)
+```
+
+It expands to the engine's `pulse.Sub` (see §5 "a graph as a node" in the design doc): the parent-side node's `Requires` / `Provides` follow from `in` / `out`, and the engine's static validation (sources / cycles / slots) still applies. Rules:
+
+- **The boundary is written where the wiring is**: `in` / `out` are always **`child key: parent key`**; a graph node may **not** also carry `requires` / `provides` — the boundary has exactly one statement.
+- **Types are compared at Load**: both ends are resolved against `{name, type}` using the **same** `type` token — if the parent-side key is registered with another type, Load reports it. On the Go side that is a compile error; here it is an assembly error.
+- **Names are compared at Load**: referencing a graph that does not exist, binding a key no node of the child declares, or a graph with no nodes — all three are reported by name.
+- **Reference cycles are caught at Load**: nesting a graph inside a graph is allowed with no depth limit, but a cycle that cannot be built (`a → b → a`) is rejected with one **concrete** path (same shape as the engine's dependency-cycle error).
+- **A subgraph's `seeds` may only use `literal`**: `env` / `file` / `context` need host IO, and `SeedPlan` belongs to the **parent** graph — reported at Load rather than halfway through a run.
+- **A subgraph seeds a key the parent also feeds with `in`** → reported at Load (the same slot would be seeded twice and the second write silently ignored, while both declarations look reasonable).
+- **Aspects**: a graph node may still carry `timeout` / `retry`, and they land on the **parent-side node** — `timeout: 30s` puts a time limit on the whole child graph; nodes **inside** the child keep their own.
+- **One subgraph referenced twice = two independent instances**: a fresh graph is built per run (the one-shot contract comes for free), and observation separates them by graph id and `pulse.path`.
+
+**Observation is per level**: `LoadOptions.ObserverFor(path)` builds an egress for each level, where `path` is that level's path (empty for the root, the node id for one level, `outer/inner` for two) — hand it to `observe.ObserveConfig.Path` and every record of that level carries `pulse.path`. Returning nil means the level follows whatever `LoadOptions.Graph` attached (the child inherits the parent's observer, just without a layer).
+
 See [`docs/design/pulse.md`](../docs/design/pulse.md) §5 for the design.

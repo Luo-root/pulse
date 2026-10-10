@@ -109,6 +109,9 @@ run ok: yaml-demo
 | `nodes[].id` | Node ID, required; the attribution key for observation |
 | `nodes[].uses` | Required; names a factory on the `Registry` |
 | `nodes[].requires` / `provides` | `{name, type}` lists |
+| `graphs` | Declarations of reusable subgraphs (names are unique within the document); a subgraph does not carry its own `graphs` |
+| `nodes[].graph` | This node = assemble one subgraph (mutually exclusive with `uses`) |
+| `nodes[].in` / `out` | The boundary of a graph node, always **`child key: parent key`** |
 | `nodes[].timeout` | Assembled into `pulse.Timeout`, **outside** |
 | `nodes[].retry` | `{attempts, delay}`, assembled into `pulse.Retry`, **inside** |
 
@@ -118,7 +121,41 @@ A few points:
 - **Time fields** use Go's `ParseDuration` form (`30s` / `100ms`); never write a bare number.
 - **Aspect order**: whatever is listed first is further outside → `timeout` outside, `retry` inside, i.e. "the total duration is bounded, each attempt retries on its own".
 - **The engine does no IO**. When `from.kind` is not `literal`, `Load` only hands it to `plan.Apply(g, resolve)` as-is; reading files, reading environment variables and pulling a context out of a request are all the host's job.
-- The `observer` field is a documentation hint and `Load` ignores it — observers go through `LoadOptions.Graph` (`pulse.WithObserver(...)`).
+- The `observer` field is a documentation hint and `Load` ignores it — observers go through `LoadOptions.Graph` (`pulse.WithObserver(...)`) and `LoadOptions.ObserverFor` (per level, see below).
+
+## Subgraphs: one step = one graph
+
+`graphs:` declares reusable subgraphs and `nodes[].graph` points a step at one — **a subgraph is the unit of topology reuse**, so reusing a flow does not force you to write a Go factory:
+
+```yaml
+version: 1
+graphs:
+  enrich:
+    nodes:
+      - id: work
+        uses: demo.enrich
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+seeds:
+  - key: {name: sg.input, type: string}
+    from: {kind: literal, value: "slot contract"}
+nodes:
+  - id: step1
+    graph: enrich
+    in:  {sg.topic: sg.input}      # child key: parent key (parent reads → child is seeded)
+    out: {sg.summary: sg.result}   # child key: parent key (child produces → parent is set)
+```
+
+It expands to `pulse.Sub` from [a graph as a node](/en/guide/orchestration): the parent-side node's `Requires` / `Provides` follow from `in` / `out`, and the engine's static validation (sources / cycles / slots) still applies. Rules:
+
+- **The boundary is written where the wiring is**: `in` / `out` are always `child key: parent key`; a graph node may **not** also carry `requires` / `provides`.
+- **Types and names are both compared at `Load`**: each end is resolved against `{name, type}` with the **same** type token (a parent-side key registered with another type is reported); referencing a graph that does not exist, binding a key no node of the child declares, or a graph with no nodes — all three are reported by name.
+- **Reference cycles are caught at `Load`**: nesting a graph inside a graph is allowed with no depth limit, while `a → b → a` is rejected with one concrete path.
+- **A subgraph's `seeds` may only use `literal`** (`env` / `file` / `context` need host IO, and `SeedPlan` belongs to the parent graph); a subgraph **seeding a key the parent also feeds with `in`** is likewise an assembly error — the same slot would be seeded twice and the second write silently ignored.
+- **Aspects land on the parent-side node**: `timeout: 30s` puts a time limit on the whole child graph, while nodes **inside** the child keep their own.
+- **One subgraph referenced twice = two independent instances**: a fresh graph is built per run, and observation separates them by graph id and `pulse.path`.
+
+**Observation is per level**: `LoadOptions.ObserverFor(path)` builds an egress for each level (empty for the root, the node id for one level, `outer/inner` for two) — hand it to `observe.ObserveConfig.Path` and every record of that level carries `pulse.path`, which is what makes nested logs and traces fold back into a tree.
 
 ## Edges and pitfalls
 

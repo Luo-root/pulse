@@ -103,9 +103,6 @@ func TestPathSeparatesTwoInstances(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		if err := pulse.Seed(child, cin, "x"); err != nil {
-			return nil, err
-		}
 		return child, child.Add(pulse.NewNode("inner", pulse.Requires(cin), pulse.Provides(cout),
 			func(rc *pulse.RunCtx) error {
 				v, err := pulse.Get(rc, cin)

@@ -109,6 +109,9 @@ run ok: yaml-demo
 | `nodes[].id` | 节点 ID，必填；观测归因键 |
 | `nodes[].uses` | 必填，对应 `Registry` 上的具名工厂 |
 | `nodes[].requires` / `provides` | `{name, type}` 列表 |
+| `graphs` | 可复用子图的声明（名字在文档内唯一），子图自己不写 `graphs` |
+| `nodes[].graph` | 这个节点 = 装一张子图（与 `uses` 二选一） |
+| `nodes[].in` / `out` | 子图节点的边界，一律「**子键: 父键**」 |
 | `nodes[].timeout` | 装成 `pulse.Timeout`，**在外** |
 | `nodes[].retry` | `{attempts, delay}`，装成 `pulse.Retry`，**在内** |
 
@@ -118,7 +121,41 @@ run ok: yaml-demo
 - **时间字段**用 Go 的 `ParseDuration` 形式（`30s` / `100ms`），不写裸数字。
 - **切面顺序**：先列的更靠外 → `timeout` 在外、`retry` 在内，即「总时长受限、每次尝试各自重试」。
 - **引擎不做 IO**。`from.kind` 不是 `literal` 时，`Load` 只把它原样交给 `plan.Apply(g, resolve)`；读文件、读环境变量、从请求取 context 都是宿主的事。
-- `observer` 字段是文档提示位，`Load` 忽略它——观察者走 `LoadOptions.Graph`（`pulse.WithObserver(...)`）。
+- `observer` 字段是文档提示位，`Load` 忽略它——观察者走 `LoadOptions.Graph`（`pulse.WithObserver(...)`）与 `LoadOptions.ObserverFor`（按层，见下）。
+
+## 子图：一步 = 一张图
+
+`graphs:` 声明可复用的子图，`nodes[].graph` 把某一步指向它——**子图是拓扑的复用单元**，不用为了复用一段流程去写 Go 工厂：
+
+```yaml
+version: 1
+graphs:
+  enrich:
+    nodes:
+      - id: work
+        uses: demo.enrich
+        requires: [{name: sg.topic, type: string}]
+        provides: [{name: sg.summary, type: string}]
+seeds:
+  - key: {name: sg.input, type: string}
+    from: {kind: literal, value: "slot contract"}
+nodes:
+  - id: step1
+    graph: enrich
+    in:  {sg.topic: sg.input}      # 子键: 父键（父读 → 子 Seed）
+    out: {sg.summary: sg.result}   # 子键: 父键（子产出 → 父 Set）
+```
+
+它展开成[图即节点](/guide/orchestration)的 `pulse.Sub`：父侧那个节点的 `Requires` / `Provides` 由 `in` / `out` 推出来，引擎的静态校验（来源 / 环 / 名额）照常生效。规则：
+
+- **边界写在接线处**：`in` / `out` 一律「子键: 父键」；子图节点**不能**再写 `requires` / `provides`。
+- **类型与名字都在 `Load` 期比**：两端各按 `{name, type}` 查表且用**同一个** type 记号（父侧那条键登记成别的类型就报）；引用不存在的子图、绑定子图里没人声明的键、子图没有节点，三条都点名报错。
+- **引用环在 `Load` 期拦**：子图里再挂子图允许、深度不设限；`a → b → a` 会被拦并给出具体路径。
+- **子图的 `seeds` 只允许 `literal`**（`env` / `file` / `context` 要靠宿主 IO，而 `SeedPlan` 是父图的产物）；**子图 seed 了某条键、父侧又用 `in` 喂它**也在装图期报——两次种同一条槽，第二次会被静默忽略。
+- **切面落在父侧那个节点上**：`timeout: 30s` 就是给整张子图限时；子图**里面**的节点各写各的。
+- **同一张子图被引用两次 = 两个独立实例**：每次运行新装一张图，观测里靠 graph id 与 `pulse.path` 分得开。
+
+**观测按层给**：`LoadOptions.ObserverFor(path)` 按层建出口（`path` 根为空串、一层子图是它的节点 id、两层是 `outer/inner`），交给 `observe.ObserveConfig.Path` 就让那一层的每条记录都带 `pulse.path`——嵌套的日志 / 追踪才拼得回树。
 
 ## 边界与坑
 

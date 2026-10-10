@@ -13,10 +13,13 @@ import (
 // Document 是声明式流程图的解码形态。
 type Document struct {
 	// Version 缺省或 1 接受；其它值拒绝。
-	Version int        `yaml:"version"`
-	Seeds   []SeedSpec `yaml:"seeds"`
-	Nodes   []NodeSpec `yaml:"nodes"`
-	// Observer 仅文档提示位：Load 忽略。观察者走 LoadOptions.Graph / WithObserver。
+	Version int `yaml:"version"`
+	// Graphs 是可复用子图（名字在文档内唯一）：`nodes[].graph` 指向它。
+	// 子图引用的是这张**扁平**的表，递归靠「图引用图」表达，环在 Load 期拦。
+	Graphs map[string]GraphSpec `yaml:"graphs"`
+	Seeds  []SeedSpec           `yaml:"seeds"`
+	Nodes  []NodeSpec           `yaml:"nodes"`
+	// Observer 仅文档提示位：Load 忽略。观察者走 LoadOptions.Graph / ObserverFor。
 	Observer string `yaml:"observer"`
 }
 
@@ -49,13 +52,23 @@ type RetrySpec struct {
 }
 
 // NodeSpec 一个声明式节点（拓扑归 YAML）。
+//
+// 两种形态二选一：**工厂节点**（`uses`：Run 来自注册表）或**子图节点**
+// （`graph`：这张图就是这一步的拓扑，边界由 `in` / `out` 声明）。
 type NodeSpec struct {
-	ID       string        `yaml:"id"`
-	Uses     string        `yaml:"uses"`
-	Requires []KeySpec     `yaml:"requires"`
-	Provides []KeySpec     `yaml:"provides"`
-	Timeout  time.Duration `yaml:"timeout"`
-	Retry    *RetrySpec    `yaml:"retry"`
+	ID string `yaml:"id"`
+	// Uses 是注册表里的工厂名（工厂节点）。
+	Uses string `yaml:"uses"`
+	// Graph 是 Document.Graphs 里的子图名（子图节点）：这个节点 = 装一张子图。
+	Graph string `yaml:"graph"`
+	// In 是父 → 子的绑定，一律 `子键: 父键`（子图要的键 ← 父图的键）。
+	In map[string]string `yaml:"in"`
+	// Out 是子 → 父的绑定，同样 `子键: 父键`（子图产出的键 → 父图的键）。
+	Out      map[string]string `yaml:"out"`
+	Requires []KeySpec         `yaml:"requires"`
+	Provides []KeySpec         `yaml:"provides"`
+	Timeout  time.Duration     `yaml:"timeout"`
+	Retry    *RetrySpec        `yaml:"retry"`
 }
 
 // SeedPlanEntry 是装图返回给宿主的 Seed 计划项。
@@ -110,7 +123,16 @@ func (p *SeedPlan) Apply(g *pulse.Graph, resolve func(SeedFrom) (any, error)) er
 type LoadOptions struct {
 	Context context.Context
 	GraphID string
-	Graph   []pulse.Option
+	// Graph 是根图的选项（WithObserver / WithMaxRunning / WithAspects…）。
+	// 子图也拿同一批选项 —— 所以挂在这里的观察者会到每一层。
+	Graph []pulse.Option
+	// ObserverFor 按层建出口：声明式装配里每一层是另一张图，而一个出口实例
+	// 只能带一条 `pulse.path`，所以「按层各建一个」得由宿主决定。path 是这一层
+	// 的路径（引擎给：一层子图是它的节点 id，再深一层是 `outer/inner`），
+	// 宿主拿它填 observe.ObserveConfig.Path 就能把层级写进记录。
+	//
+	// 返回 nil = 这一层按 Graph 里挂的那条走（子图会继承父图的观察者）。
+	ObserverFor func(path string) pulse.Observer
 }
 
 // Load 把 YAML 文档装成 Graph + SeedPlan。
@@ -131,7 +153,16 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	if opts.GraphID == "" {
 		return nil, nil, fmt.Errorf("pulse/yaml: graph id is required (LoadOptions.GraphID, observe instance identity)")
 	}
-	_ = doc.Observer // 明确忽略；宿主用 LoadOptions.Graph 挂 Observer
+	_ = doc.Observer // 明确忽略；宿主用 LoadOptions.Graph / ObserverFor 挂 Observer
+
+	// 子图先做静态校验：引用、环、seed 取值方式三类都是「装不出图」或
+	// 「跑到一半才炸」的病，而都能在这一刻判定（C4 / C5）。
+	if err := checkGraphRefs(doc.Graphs); err != nil {
+		return nil, nil, err
+	}
+	if err := checkSubSeeds(doc.Graphs); err != nil {
+		return nil, nil, err
+	}
 
 	ctx := opts.Context
 	if ctx == nil {
@@ -141,38 +172,8 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	if err != nil {
 		return nil, nil, err
 	}
-
-	for i, n := range doc.Nodes {
-		if n.ID == "" {
-			return nil, nil, fmt.Errorf("pulse/yaml: nodes[%d] missing id", i)
-		}
-		if n.Uses == "" {
-			return nil, nil, fmt.Errorf("pulse/yaml: node %q missing uses", n.ID)
-		}
-		run, ok := reg.Lookup(n.Uses)
-		if !ok {
-			return nil, nil, fmt.Errorf("pulse/yaml: node %q uses unknown factory %q", n.ID, n.Uses)
-		}
-		requires, err := reg.KeyRefs(toNameTypes(n.Requires))
-		if err != nil {
-			return nil, nil, fmt.Errorf("pulse/yaml: node %q requires: %w", n.ID, err)
-		}
-		provides, err := reg.KeyRefs(toNameTypes(n.Provides))
-		if err != nil {
-			return nil, nil, fmt.Errorf("pulse/yaml: node %q provides: %w", n.ID, err)
-		}
-		// NewNode 切面：先列的更靠外 → Timeout 在外、Retry 在内。
-		var aspects []pulse.Aspect
-		if n.Timeout > 0 {
-			aspects = append(aspects, pulse.Timeout(n.Timeout))
-		}
-		if n.Retry != nil {
-			aspects = append(aspects, pulse.Retry(n.Retry.Attempts, n.Retry.Delay))
-		}
-		node := pulse.NewNode(n.ID, requires, provides, run, aspects...)
-		if err := g.Add(node); err != nil {
-			return nil, nil, fmt.Errorf("pulse/yaml: add node %q: %w", n.ID, err)
-		}
+	if err := addNodes(g, doc.Nodes, doc.Graphs, reg, opts); err != nil {
+		return nil, nil, err
 	}
 
 	plan := &SeedPlan{reg: reg}
@@ -188,6 +189,78 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 		})
 	}
 	return g, plan, nil
+}
+
+// addNodes 把一批节点声明装进 g。工厂节点与子图节点在这里分流：子图节点被
+// 翻成一个 `pulse.Sub`——父侧的 Requires / Provides 由 `in` / `out` 推出来，
+// 子图本身交给 build 工厂在**每次运行时**新装一张（一次性契约天然满足）。
+//
+// 子图里的子图走的是同一个函数（`buildSub` 递归调它），所以嵌套不设深度上限；
+// 引用环已经在 `checkGraphRefs` 拦掉了，这里不会转圈。
+func addNodes(g *pulse.Graph, specs []NodeSpec, graphs map[string]GraphSpec,
+	reg *pulse.Registry, opts LoadOptions) error {
+
+	for i, n := range specs {
+		if n.ID == "" {
+			return fmt.Errorf("pulse/yaml: nodes[%d] missing id", i)
+		}
+		aspects := nodeAspects(n)
+		switch {
+		case n.Graph != "" && n.Uses != "":
+			return fmt.Errorf("pulse/yaml: node %q: uses and graph are mutually exclusive", n.ID)
+
+		case n.Graph != "":
+			spec, ok := graphs[n.Graph]
+			if !ok {
+				return fmt.Errorf("pulse/yaml: node %q references unknown graph %q", n.ID, n.Graph)
+			}
+			binds, err := subBinds(n, n.Graph, spec, reg)
+			if err != nil {
+				return fmt.Errorf("pulse/yaml: node %q: %w", n.ID, err)
+			}
+			graphName := n.Graph
+			err = pulse.Sub(g, n.ID, binds, func(sc *pulse.SubCtx) (*pulse.Graph, error) {
+				return buildSub(sc, graphName, spec, graphs, reg, opts)
+			}, aspects...)
+			if err != nil {
+				return fmt.Errorf("pulse/yaml: add subgraph node %q: %w", n.ID, err)
+			}
+
+		case n.Uses != "":
+			run, ok := reg.Lookup(n.Uses)
+			if !ok {
+				return fmt.Errorf("pulse/yaml: node %q uses unknown factory %q", n.ID, n.Uses)
+			}
+			requires, err := reg.KeyRefs(toNameTypes(n.Requires))
+			if err != nil {
+				return fmt.Errorf("pulse/yaml: node %q requires: %w", n.ID, err)
+			}
+			provides, err := reg.KeyRefs(toNameTypes(n.Provides))
+			if err != nil {
+				return fmt.Errorf("pulse/yaml: node %q provides: %w", n.ID, err)
+			}
+			if err := g.Add(pulse.NewNode(n.ID, requires, provides, run, aspects...)); err != nil {
+				return fmt.Errorf("pulse/yaml: add node %q: %w", n.ID, err)
+			}
+
+		default:
+			return fmt.Errorf("pulse/yaml: node %q missing uses or graph", n.ID)
+		}
+	}
+	return nil
+}
+
+// nodeAspects 是节点切面：先列的更靠外 → Timeout 在外、Retry 在内。
+// 子图节点同样适用——那里的 `timeout: 30s` 意思是「整张子图限时」。
+func nodeAspects(n NodeSpec) []pulse.Aspect {
+	var aspects []pulse.Aspect
+	if n.Timeout > 0 {
+		aspects = append(aspects, pulse.Timeout(n.Timeout))
+	}
+	if n.Retry != nil {
+		aspects = append(aspects, pulse.Retry(n.Retry.Attempts, n.Retry.Delay))
+	}
+	return aspects
 }
 
 // LoadFile 读路径再 Load。
