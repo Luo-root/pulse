@@ -20,7 +20,7 @@ type Graph struct {
 	cancel context.CancelFunc
 
 	keys     keyRegistry
-	producer map[string]string // key → "seed" 或 node id；每种来源至多一个
+	producer map[string]source // key → 来源（外部 seed 或某个节点）；每种来源至多一个。见 source.go
 	slots    map[string]*slot
 	slotsMu  sync.Mutex
 
@@ -80,7 +80,7 @@ func New(ctx context.Context, graphID string, opts ...Option) (*Graph, error) {
 		ctx:      c,
 		cancel:   cancel,
 		slots:    make(map[string]*slot),
-		producer: make(map[string]string),
+		producer: make(map[string]source),
 	}
 	for _, o := range opts {
 		o(g)
@@ -147,7 +147,7 @@ func (g *Graph) addAll(nodes []*Node) error {
 
 	// —— 校验段：只读。批次内先出现的节点先占（同名 Key 同批出现两次也算冲突）——
 	batchIDs := make(map[string]struct{}, len(nodes))
-	batchClaims := make(map[string]string, len(nodes)) // key → 本批次里声明它的节点
+	batchClaims := make(map[string]source, len(nodes)) // key → 本批次里声明它的节点
 	for _, n := range nodes {
 		if n == nil {
 			return fmt.Errorf("pulse: nil node")
@@ -186,13 +186,14 @@ func (g *Graph) addAll(nodes []*Node) error {
 			if err := g.keys.check(k); err != nil {
 				return err
 			}
-			if prev, ok := batchClaims[k.name]; ok && prev != n.id {
+			claim := nodeSource(n.id)
+			if prev, ok := batchClaims[k.name]; ok && !prev.same(claim) {
 				return fmt.Errorf("%w: %q already sourced by %s", ErrDuplicateSource, k.name, prev)
 			}
-			if err := g.sourceConflict(k.name, n.id); err != nil {
+			if err := g.sourceConflict(k.name, claim); err != nil {
 				return err
 			}
-			batchClaims[k.name] = n.id
+			batchClaims[k.name] = claim
 		}
 		batchIDs[n.id] = struct{}{}
 	}
@@ -205,7 +206,7 @@ func (g *Graph) addAll(nodes []*Node) error {
 		}
 		for _, k := range n.provides {
 			_ = g.keys.register(k)
-			_ = g.claimSource(k.name, n.id)
+			_ = g.claimSource(k.name, nodeSource(n.id))
 			g.slotOfLocked(k)
 		}
 		g.nodes = append(g.nodes, n)
@@ -234,11 +235,11 @@ func (g *Graph) seedRef(ref keyRef, v any, skip bool) error {
 	if err := g.keys.check(ref); err != nil {
 		return err
 	}
-	if err := g.sourceConflict(ref.name, "seed"); err != nil {
+	if err := g.sourceConflict(ref.name, seedSource); err != nil {
 		return err
 	}
 	_ = g.keys.register(ref)
-	_ = g.claimSource(ref.name, "seed")
+	_ = g.claimSource(ref.name, seedSource)
 	if skip {
 		return g.slotOfLocked(ref).resolveSkip()
 	}
@@ -246,7 +247,9 @@ func (g *Graph) seedRef(ref keyRef, v any, skip bool) error {
 }
 
 // claimSource 保证每个 Key 只有一种来源：外部 Seed/SkipSeed，或恰好一个节点。
-func (g *Graph) claimSource(name, owner string) error {
+// 来源按**结构化**比较（见 source.same），不按字符串——一个真叫 `seed` 的节点
+// 与外部来源是两种来源，撞不出「同源」。
+func (g *Graph) claimSource(name string, owner source) error {
 	if err := g.sourceConflict(name, owner); err != nil {
 		return err
 	}
@@ -255,11 +258,12 @@ func (g *Graph) claimSource(name, owner string) error {
 }
 
 // sourceConflict 是 claimSource 的**只读预演**：判据与错误文案同源，但不写表。
-func (g *Graph) sourceConflict(name, owner string) error {
-	if prev, ok := g.producer[name]; ok && prev != owner {
-		return fmt.Errorf("%w: %q already sourced by %s", ErrDuplicateSource, name, prev)
+func (g *Graph) sourceConflict(name string, owner source) error {
+	prev, ok := g.producer[name]
+	if !ok || !prev.present() || prev.same(owner) {
+		return nil // 表里没有、或落了个零值（按没有来源处理）、或本来就是同一个来源
 	}
-	return nil
+	return fmt.Errorf("%w: %q already sourced by %s", ErrDuplicateSource, name, prev)
 }
 
 func (g *Graph) slotOf(k keyRef) *slot {
@@ -365,13 +369,14 @@ func (g *Graph) validateLocked() error {
 
 // checkSourcesLocked 判「每个 Requires 都有来源」。调用方持 g.mu。
 //
-// 判据是 producer 表里有没有这个 Key：外部 Seed/SkipSeed 记为 "seed"，
-// 节点 Provides 记为节点 id；某种来源至多一个（see claimSource）。Requires
-// 本身不登记来源，所以「表里没有」= 没人会写它。
+// 判据是 producer 表里有没有这个 Key **且那条来源真的存在**：外部 Seed/SkipSeed 记为
+// `sourceSeed`，节点 Provides 记为 `sourceNode`；某种来源至多一个（see claimSource）。
+// Requires 本身不登记来源，所以「表里没有」= 没人会写它。零值（`sourceNone`）按「没有
+// 来源」处理——它不该落表，万一落了也不能当有来源，否则等它的节点会永远停在 pending。
 func (g *Graph) checkSourcesLocked() error {
 	for _, n := range g.nodes {
 		for _, k := range n.requires {
-			if _, ok := g.producer[k.name]; !ok {
+			if src, ok := g.producer[k.name]; !ok || !src.present() {
 				return fmt.Errorf("pulse: node %q requires %q but nothing provides or seeds it", n.id, k.name)
 			}
 		}
@@ -490,9 +495,12 @@ func sameFanOut(rs []*Node) bool {
 // 与 checkSourcesLocked 互补：**有来源不等于能满足**。环里的槽谁也等不来谁，
 // 门（等全部输入到达）就永远不开——这不是可执行的反馈环，而是不可完成的拓扑。
 //
-// 建图：N 的某条 Requires 由节点 M 提供 → 边 M → N（M 必须先跑完）。来源是
-// "seed" 的 Key 不建边——Seed/SkipSeed 在 Start 之前就已经到达了。自环不可能
-// 出现：Requires 与 Provides 同名的节点在 Add 就被拒。
+// 建图：N 的某条 Requires 由节点 M 提供 → 边 M → N（M 必须先跑完）。来源**不是节点**
+// 的 Key 不建边（外部 Seed/SkipSeed 在 Start 之前就已经到达了；零值按没有来源处理）。
+// 自环不可能出现：Requires 与 Provides 同名的节点在 Add 就被拒。
+//
+// 判据读的一定是来源的 `kind`，**不能**拿来源名去查节点索引——一个真叫 `seed` 的
+// 节点会让「来自外部 Seed 的 Key」凭空多出一条边和一个不存在的环（旧实现就是这么错的）。
 //
 // 判据用 Kahn 剥叶（O(V+E)，只在 Start 跑一次）：剥得完 = 无环；剥不完 =
 // 剩下的节点要么在环里，要么在环的下游。再从剩下的节点里走出一条**具体**的环
@@ -515,9 +523,13 @@ func (g *Graph) checkAcyclicLocked() error {
 	linked := make(map[[2]int]struct{})
 	for ci, n := range g.nodes {
 		for _, k := range n.requires {
-			pi, ok := index[g.producer[k.name]]
+			src := g.producer[k.name]
+			if !src.present() || src.kind != sourceNode {
+				continue // 外部 Seed（缺来源的那种已被 checkSourcesLocked 拦下）
+			}
+			pi, ok := index[src.nodeID]
 			if !ok {
-				continue // 来自 seed（缺来源的那种已被 checkSourcesLocked 拦下）
+				continue // 不可能：登记进来源表的节点一定在 index 里
 			}
 			pair := [2]int{pi, ci}
 			if _, dup := linked[pair]; dup {
