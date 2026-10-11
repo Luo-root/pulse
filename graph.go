@@ -51,7 +51,6 @@ type Graph struct {
 	claimed bool
 	done    bool // Wait 返回过：此后 cancel 只是收尾，不再算运行结果
 	err     error
-	sem     chan struct{}
 	wg      sync.WaitGroup
 	// finishOnce 让「发一次 OnGraphFinished」与「所有 Wait 都等到它落地」同时
 	// 成立：sync.Once 会阻塞后来的调用者直到第一个调用返回（比自己的 done

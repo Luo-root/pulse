@@ -23,7 +23,7 @@ go test -race -count=1 ./...
 *.go            # package pulse — the graph engine（零依赖）
 observe/        # package observe — graph observation (depends on pulse)
 yaml/           # package yaml — declarative graph assembly (pulse + yaml.v3)
-docs/design/    # pulse.md — the single design doc (编排 + 观测)
+docs/design/    # pulse.md（编排 + 观测的实现级设计）/ philosophy.md（理念与设计公理）/ object-model.md（Graph vs Execution 定案）
 ```
 
 ## Key conventions
@@ -34,7 +34,8 @@ docs/design/    # pulse.md — the single design doc (编排 + 观测)
 - **Dependency direction is one-way and must not reverse**: `pulse` ← `observe` / `yaml`. The engine never imports an observation package. Verify with `go list -deps .` — it must contain no other `github.com/Luo-root/pulse/*` entry.
 - **Slot contract**: `pending` | `ready` | `skipped`. Skip is **arrival, not failure**; a node error cancels the graph and is never rewritten as skip. Unwritten `Provides` after a successful `Run` are auto-skipped.
 - **Fan-in gate**: the gate is judged once every input has arrived (ready *or* skipped), and it asks "did any input bring a value" — a node enters `Run` as soon as one did (collect whatever arrives), and only skips itself when none did. A skipped input read inside `Run` yields `*SkipError`; returning `WaitAll`'s value is the explicit "all-or-skip me" opt-out.
-- **One-shot contract**: a `Graph` runs once. `Start()` a second time returns `ErrGraphStarted`, slots never reopen, and `Seed` after start is rejected. **Do not add a `Reset`** — cross-run state belongs to the caller.
+- **One-shot contract**: a `Graph` runs once. `Start()` a second time returns `ErrGraphStarted`, slots never reopen, and `Seed` after start is rejected. **Do not add a `Reset`** — cross-run state belongs to the caller. *(This describes the implementation as of today; the object model is being migrated — see the next bullet.)*
+- **Object model is being re-frozen (`#311`)**: the target is `Graph` = a **reusable static definition**, `Execution` = one run (own ctx / inputs / slots / node state / first error / cancellation domain), with composing ready-made child graphs as the default path and **transactional `Retry`** (attempt write-set, commit or discard). Until each stage lands, `docs/design/pulse.md` describes **what exists today**, while `docs/design/object-model.md` holds the target contract and the staged plan. **Do not keep extending the one-shot shape** — no `Reset`, no new runtime fields on `Graph`, and no new public surface that assumes `Graph.Child *Graph`. Philosophy (why the trade-offs are what they are): `docs/design/philosophy.md`.
 - **Aspect latch**: a node's `Run` must not be entered concurrently (overlapping `next` → `ErrNextCalledTwice`); sequential re-entry is legal and `Retry` depends on it.
 - **Start validation**: `Start()` rejects the two statically-knowable dead graphs — a `Requires` with no source, and a dependency **cycle** (every input has a producer, yet no node can run first). Both would otherwise surface as a hang, or as the runtime's fatal all-goroutines-asleep deadlock. A cycle is reported as one concrete path: `pulse: dependency cycle: A -> B -> A (A requires "y", B requires "x")`.
 - **Observation**: business dimensions go through `Attrs` only — **never add named fields to `Record`**. Attr keys use the `<component>.<field>` convention and are defined by the package that owns the fact (`pulse.AttrGraph` / `pulse.AttrNode`).

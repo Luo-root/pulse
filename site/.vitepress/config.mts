@@ -31,6 +31,7 @@ const zh = {
         { text: '指南', items: [
           { text: '快速开始', link: '/guide/quickstart' },
           { text: '核心概念', link: '/guide/concepts' },
+          { text: '设计理念', link: '/guide/philosophy' },
           { text: '编排', link: '/guide/orchestration' },
           { text: '声明式装图', link: '/guide/assembly' },
           { text: '图观测', link: '/guide/observability' },
@@ -77,6 +78,7 @@ const en = {
         { text: 'Guide', items: [
           { text: 'Quick start', link: '/en/guide/quickstart' },
           { text: 'Core concepts', link: '/en/guide/concepts' },
+          { text: 'Design philosophy', link: '/en/guide/philosophy' },
           { text: 'Orchestration', link: '/en/guide/orchestration' },
           { text: 'Declarative assembly', link: '/en/guide/assembly' },
           { text: 'Graph observation', link: '/en/guide/observability' },
