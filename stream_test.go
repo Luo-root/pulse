@@ -381,7 +381,7 @@ func TestStreamSlotsCheckedAtStart(t *testing.T) {
 }
 
 // 流节点的每条出口都得有人要：漏挂一个消费者 = 发送端永久堵在那条出口上
-// （`checkSourcesLocked` 只判「Requires 有来源」，判不了「Provides 有消费者」）。
+// （`problemsSourcesLocked` 只判「Requires 有来源」，判不了「Provides 有消费者」）。
 func TestStreamOutputNeedsConsumer(t *testing.T) {
 	src := NewKey[<-chan int]("s.nc.src")
 	a := NewKey[<-chan int]("s.nc.a")

@@ -54,7 +54,7 @@ func TestSourceConflictWhenNodeIsNamedSeed(t *testing.T) {
 // 名字）旧实现是通过的——两条一起测，才说明修的是「来源名偶然等于节点名」，而不是
 // 把合法图拒掉。
 //
-// 图里必须有**两个以上节点**：`checkAcyclicLocked` 在只有一个节点时直接返回（自环
+// 图里必须有**两个以上节点**：`problemsCycleLocked` 在只有一个节点时直接返回（自环
 // 在 `Add` 就被拒了，不可能存在），单节点图根本走不到这段判据——用它测不出这个 bug。
 func TestNodeNamedSeedDoesNotFakeCycle(t *testing.T) {
 	for _, id := range []string{"seed", "loader"} {

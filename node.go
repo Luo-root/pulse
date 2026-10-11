@@ -21,7 +21,7 @@ type Node struct {
 	streamKind string
 	// compete 非空表示这个节点是某次 `FanOut` 的 worker（值 = 那次调用的 id）。
 	// 一条流出口只喂一个下游；**同一组** worker 共读一条出口是显式声明的
-	// 「抢」（FanOut 本来就是这么用的），不算静默瓜分——见 Graph.checkStreamLocked。
+	// 「抢」（FanOut 本来就是这么用的），不算静默瓜分——见 Graph.problemsStreamLocked。
 	compete string
 	// sub 表示这个节点是 `Sub` 装出来的一步（「图即节点」）。它整段都在等子图
 	// 跑完，所以**不吃运行名额**——占着就等于把父侧额度锁在「等」上，名额跨图

@@ -238,7 +238,7 @@ func FanOut[I, O any](g *Graph, id string, in Key[I], outs []Key[O],
 			return Set(rc, out, got)
 		}, aspects...)
 		// 同组 worker 共读一条流出口是显式的「抢」：Start 的流式校验据此把
-		// 「一组 FanOut」与「两个各写各的消费者」分开，见 checkStreamLocked。
+		// 「一组 FanOut」与「两个各写各的消费者」分开，见 problemsStreamLocked。
 		n.compete = id
 		workers[i] = n
 	}
