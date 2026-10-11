@@ -24,9 +24,13 @@ type Graph struct {
 	slots    map[string]*slot
 	slotsMu  sync.Mutex
 
-	nodes    []*Node
-	aspects  []Aspect
-	observer Observer
+	nodes []*Node
+	// aspects 是这张图的**有效**图级切面（继承来的排在前面）。见 WithAspects。
+	aspects []Aspect
+	// aspectsCut 表示这一层声明了 `WithoutAspects`：不继承父图那批（自己声明的照挂）。
+	// 只在运行期被读一次，见 runSub 的切面继承点。
+	aspectsCut bool
+	observer   Observer
 	// lim 是这张图的**有效**名额表（nil = 无限）。默认自己一份；作为子图被 Sub
 	// 跑起来、而自己没声明过 WithMaxRunning 时，继承父图那一份（同一份计数）——
 	// 于是「一棵图树同时有几个节点在干活」由根图决定。见 limiter。
@@ -89,9 +93,40 @@ func WithMaxRunning(n int) Option {
 	}
 }
 
-// WithAspects 安装全局切面（先于节点切面，外层先跑）。
+// WithAspects 安装**图级**切面：这一层的每个节点都被它包住（先于节点自己的切面，
+// 外层先跑），并且会**继承给子图**——`Sub` 跑子图时把这批**前置**到子图的切面链上，
+// 子图自己声明的那批排在其后（**叠加**，不是替换）。不想要就 `WithoutAspects()`。
+//
+// **图级切面慎用，尽量用节点级切面。** 它一次落在这一层**所有**节点上，包括 `Sub`
+// 那一步（那一步背后是一整张子图），而且还会继续往子图里的每个节点上叠——量级不同的
+// 东西被同一个参数管住，很容易跑出不在预期的行为。`Timeout` 是最容易被咬到的那个：
+// 一个图级 `Timeout(d)` 同时是「父图普通节点各自的时限」「`Sub` 那一步（= 整张子图）
+// 的时限」「子图里每个节点的时限」，而**子图天生比普通节点更容易超时**。要限时就写在
+// 该限时的那一个节点上：`NewNode(..., pulse.Timeout(...))`，整张子图限时则用
+// `Sub(..., pulse.Timeout(...))`。图级留给「全树都要一致施加」的那类（追踪 / 指标），
+// 并且心里清楚它会往下叠。
+//
+// 两条容易算错的账，写在这里省得再推一遍：
+//
+//  1. **子图的「总时间」先被 `Sub` 上那个 `d` 掐死**，不会变成「每个节点各 `d`、加起来
+//     `N*d`」——继承下来的那个 `d` 虽然套在子图每个节点上，但它只是更外层那个 `d`
+//     里面的一段；
+//  2. 名额紧时，**超时可能发生在子图拿到名额之前**：`Sub` 那一步不吃名额，可它的 `d`
+//     从进入 `Run` 就开始计时，而此刻子图的节点还在排队等额度。
+//
+// 零参调用 = **没声明**（照旧继承）；`WithAspects(list...)` 传进空切片也是没声明。
 func WithAspects(as ...Aspect) Option {
 	return func(g *Graph) { g.aspects = append(g.aspects, as...) }
+}
+
+// WithoutAspects 声明**这一层不继承**父图的图级切面（自己 `WithAspects` 写的照挂；
+// 只写它 = 这一层什么图级切面都不要）。
+//
+// 它只管「继承到子图节点上」这一段：父图那一步 `Sub` **仍然**被父图的图级切面包着
+// ——那是父图对自己节点做的事，不是继承。所以「这棵子树要长跑」不能只靠它，得让父图
+// 别把那个切面挂在图级（见 `WithAspects` 的说明）。
+func WithoutAspects() Option {
+	return func(g *Graph) { g.aspectsCut = true }
 }
 
 // New 构造空图。graphID 是图身份（必填，空串报错）：观测记录靠它

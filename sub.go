@@ -283,7 +283,9 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 		}
 	}
 	// 5) 父子挂接状态**一次写完**：嵌套 path、观察者（子图没挂才继承父图的）、名额
-	//    （子图自己声明过就用它自己那份，没声明则继承父图那份）。
+	//    （子图自己声明过就用它自己那份，没声明则继承父图那份）、图级切面（默认继承：
+	//    父图那批**前置**——继承的在外、子图自己声明的在内，与「先写的更靠外」同一条
+	//    规则；`WithoutAspects()` 切断）。
 	//
 	//    为什么必须收在同一把 `child.mu` 下：子图在 `build` 返回那一刻就已经交到调用方
 	//    手里（`Sub` 的约定就是「build 每次造一张新图并交出来」），宿主完全可以把它交给
@@ -298,7 +300,7 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 	//
 	//    名额继承之后「整棵树同时几个节点在干活」由根图那一次声明决定；`Sub` 那一步
 	//    自己不吃名额（见 Graph.runNode）。
-	child.adopt(path, rc.g.observer, rc.g.lim)
+	child.adopt(path, rc.g.observer, rc.g.lim, rc.g.aspects)
 
 	// 6) 种父侧输入。种之前先确认这条键还是空的：子图自己在 build 里把它种上了
 	//    的话（或标成了跳过），这次种值会被幂等首写**静默忽略**——「父侧传进去的
@@ -361,7 +363,8 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 	return nil
 }
 
-// adopt 把父图的挂接状态写进子图（嵌套 path、观察者、名额），**一次加锁写完**。
+// adopt 把父图的挂接状态写进子图（嵌套 path、观察者、名额、图级切面），
+// **一次加锁写完**。
 //
 // 为什么不能各写各的：这几个字段是「认领之后不再变」的那批，而读它们的是
 // `Validate()` / `Topology()` 这类只读入口（持 child.mu）。子图在 `build` 返回那一刻
@@ -371,7 +374,7 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 //
 // 临界区里**不做任何会再锁 child.mu 的事**（种值走的是 slotsMu，留在调用点按原顺序做）；
 // 也**不校验**——校验与报文都在调用点，这里只负责把字段写进去。
-func (g *Graph) adopt(path string, observer Observer, lim *limiter) {
+func (g *Graph) adopt(path string, observer Observer, lim *limiter, aspects []Aspect) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.path = path
@@ -380,6 +383,12 @@ func (g *Graph) adopt(path string, observer Observer, lim *limiter) {
 	}
 	if !g.limSet {
 		g.lim = lim
+	}
+	// 图级切面默认**继承**（把父图那批前置）；`WithoutAspects()` 切断。注意切断只解开
+	// 「继承到子图节点上」这一段——父图那一步 `Sub` 仍然被父图的图级切面包着，那是父图
+	// 对自己节点做的事。前置用**新切片**，不写坏父图那批的底层数组。
+	if !g.aspectsCut {
+		g.aspects = append(append([]Aspect{}, aspects...), g.aspects...)
 	}
 }
 
