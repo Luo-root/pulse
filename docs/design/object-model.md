@@ -1,8 +1,8 @@
 # 对象模型与契约（#311 阶段零）
 
-> **本文状态：定案中。** 它是 [#311](https://github.com/Luo-root/pulse/issues/311)「阶段零」的产物：
-> 先把 Graph / Execution 的职责、边界与契约定下来，**再**动代码。文末「待拍板」列着还需要
-> 你点头的地方；定案后这里改成「已冻结」，并在 `pulse.md` 的冻结面那一节同步。
+> **本文状态：阶段零已定案（2026-10-11）。** 它是 [#311](https://github.com/Luo-root/pulse/issues/311)「阶段零」的产物：
+> 先把 Graph / Execution 的职责、边界与契约定下来，**再**动代码。第 8 节列出**已定案**与
+> **暂定（评审时确认或推翻）** 两批；定案部分与 `pulse.md` 的冻结面那一节同步。
 >
 > 读法：本文描述**目标模型**；今天的实现（一次性 `Graph`）在 [`pulse.md`](pulse.md)，
 > 「现状 vs 目标」的逐条差距在下面第 2 节。设计**理念**（为什么这样取舍）在
@@ -114,7 +114,7 @@ func (g *Graph) Run(ctx context.Context, in Inputs, opts ...ExecOption) error
 5. **跳过 ≠ 可重试失败**：`NoValue` / `*SkipError` 不触发重试（今天的判据照旧：`isSkipped`）；取消 / 截止时间到达不继续重试；
 6. **最终失败**：写集丢弃 + 未写输出按既有语义自动跳过 + 错误原样冒泡（槽位终态与节点终态一致，可测）；
 7. **切面顺序决定事务边界**：`Retry` 包住的那一段（`next` 之内、含更内层切面）属于 attempt；`Retry` **外层**切面里的写入**不**属于任何 attempt、不参与回滚——文档必须点名这条，不能把外层的写默默说成事务内的；
-8. **多 Key 的可见性保证**：至少保证「**没有任何失败 attempt 的输出被下游观察到**」。是否承诺「同一节点多个输出严格原子可见」见待拍板 (d)。
+8. **多 Key 的可见性保证**：至少保证「**没有任何失败 attempt 的输出被下游观察到**」。**已定案（2026-10-11）**：第一版**不承诺**同一节点多个输出严格原子可见——提交在 Execution 的锁下逐条写，下游理论上存在「读到一半新一半旧」的窗口，这条写进文档与 godoc；要严格原子得另设 commit/read 同步协议，留作后续票。
 
 ### 5.1 事务边界必须诚实
 
@@ -125,7 +125,7 @@ func (g *Graph) Run(ctx context.Context, in Inputs, opts ...ExecOption) error
 - **发布节奏**：这是 0.x 的破坏性改造，走 **minor**（每阶段一个小版本，配迁移说明）；不在 patch 里做。
 - **冻结面怎么动**：七条哨兵**不新增、不改名**，但 `ErrGraphStarted` / `ErrGraphNotStarted` 的**触发点**要在迁移说明里写准——新模型下「已经启动过」有两个可能含义：定义已封口（`Add` / `DeclareInput` 被拒）与这个 Execution 已经启动过（二次 `Start` 被拒）。倾向：两者共用这两个哨兵，语义在 godoc 与 release notes 里分开写清（待拍板 (e)）。
 - **不保留旧入口**：`Seed` / `SkipSeed` 这类「往定义里写值」的入口不留在 `Graph` 上（留着就会让「装配完即可见完整结构」这个核心性质在旧入口上不成立，两套语义并存=含糊）。`Add` / `Validate` / `Topology` 这类不冲突的入口保持。
-- **PR #310 的处置**（#311 点名要评审）：见待拍板 (f)。倾向**替换**——把它的成果拆成素材（状态词表对齐、`waiting` 双解读法、反射不带值、并发用例、`g.slots` 锁统一），在阶段 2 面向 `Execution` 重做；`Graph.Snapshot()` / `Child *Graph` 这个形状不进 main。
+- **PR #310 的处置**（#311 点名要评审）：**已定案——替换**（见第 8 节）。`Graph.Snapshot()` / `Child *Graph` 这个形状不进 main；它的成果转成阶段 2 的素材，面向 `Execution` 重做。
 - **`g.slots` 锁统一**：今天这张表装配期写点持 `g.mu`、运行期读点持 `slotsMu`（#310 的新读入口把它暴露成 `fatal error: concurrent map read and map write`）。它跟着阶段 2 一起走（单独拆出来无法用公开 API 复现）。
 - **文档怎么跟**：`pulse.md` 顶部标「描述现状（迁移中）」；本文与 [`philosophy.md`](philosophy.md) 描述目标；阶段 5 把示例、README、站点全部迁完，不留只在旧模型下成立的示例。
 
@@ -142,15 +142,21 @@ func (g *Graph) Run(ctx context.Context, in Inputs, opts ...ExecOption) error
 
 每阶段一条铁律：**先开票、评审过再开工**；每条语义要有用例，行为类结论要有变异对照。
 
-## 8. 待拍板
+## 8. 已定案与遗留
 
-- **(a) 输入的形状**：`Inputs` 值 + builder（`in.Set` / `in.Skip`，倾向）／变参 `ExecOption`／直接复用 `SeedPlan` 的条目。
-- **(b) 端口声明**：`g.DeclareInput(ports...)` 方法（倾向）／`New(..., WithInputs(...))` 选项／不显式声明、只把「无来源的 `Requires`」当端口（最省事，但 `Validate` 就分不出「忘了接线」与「本来就是外部输入」）。
-- **(c) 封口时机**：第一次 `NewExecution` / `Validate` 时**隐式**封口 + 可选 `Seal()`（倾向）／必须显式 `Seal()` 才能运行（更严，但装配糖要能自己封）。
-- **(d) 多 Key 提交的可见性**：只保证「失败 attempt 不可见」+ 提交逐条写（倾向，简单且够用）／承诺同一节点多输出**严格原子**可见（要设计 commit/read 的同步协议，代价更大）。
-- **(e) 哨兵语义**：`ErrGraphStarted` / `ErrGraphNotStarted` 复用并写清两种触发点（倾向）／拆成语义更准的新哨兵（动冻结面清单）。
-- **(f) #310 的处置**：**替换**（关 PR，成果转素材，阶段 2 重做；倾向）／先合并再在阶段 4 迁一次（main 上会先留一版归属错的公开面）／把 #310 挂到阶段 2 之后（分支会长期漂移）。同时定 #309 是否标 superseded。
-- **(g) 观测身份**：新增 `pulse.execution`（本次执行 id，`pulse.graph` 继续是定义 id；倾向）／复用 `pulse.graph` + 靠 `pulse.path` 区分（实现最省，但同一张图在**同一位置**跑两次仍然合并）。
+**已定案（2026-10-11）**：
+
+- **(a) 输入的形状**：`Inputs` 值 + builder（`in.Set(k, v)` / `in.Skip(k)`）——一次运行的输入是一份数据，不是一串装饰。
+- **(b) 端口声明**：`g.DeclareInput(ports...)` 方法。声明过的 `Requires` 不再算「无来源」，`Validate` 因此能分清「你忘了接线」与「这本来就是外部输入」。
+- **(d) 多 Key 提交可见性**：只保证「失败 attempt 不可见」，成功提交逐条写（见第 5 节第 8 条）。
+- **(f) PR #310**：**替换**——`Graph.Snapshot()` + `Child *Graph` 的形态**不进 main**；#310 里与模型无关的成果（状态词表对齐、`waiting` 的两种读法、反射断言不带值、并发用例、`g.slots` 锁统一）转成阶段 2 的素材，面向 `Execution` 重做；#309 随之标 superseded。
+- **发布切分**：**每阶段落地就发一个小版本**（阶段 1 = 下一个 minor，附迁移说明），不攒到最后一并砸下来。
+
+**暂定（评审时确认或推翻）**：
+
+- **(c) 封口时机**：第一次 `NewExecution` / `Validate` 时**隐式**封口，另留可选的 `Seal()` 供「装配完立刻冻结并在装配期报错」。
+- **(e) 哨兵语义**：复用 `ErrGraphStarted` / `ErrGraphNotStarted`（不改名、不新增），在 godoc 与迁移说明里把两种触发点写清——定义已封口（`Add` / `DeclareInput` 被拒）与这个 Execution 已经启动过（二次 `Start` 被拒）。
+- **(g) 观测身份**：新增 `pulse.execution`（本次执行 id），`pulse.graph` 继续是定义 id——否则同一张图在**同一位置**跑两次的记录会合并。
 
 ## 9. 不做（本阶段就写清，免得回头重开）
 
