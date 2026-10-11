@@ -22,10 +22,18 @@ type Graph struct {
 
 	keys     keyRegistry
 	producer map[string]source // key → 来源（外部 seed 或某个节点）；每种来源至多一个。见 source.go
-	slots    map[string]*slot
-	slotsMu  sync.Mutex
+	// slots 这张表**只有 slotsMu 一个锁**：装配期的两个写点（addAll / seedLocked）
+	// 与运行期的读点（slotOf、以及快照的只读查表 peekSlot）都走它。写点在持
+	// g.mu 的情况下再取 slotsMu，锁序固定为 g.mu → slotsMu，反向没有路径；
+	// slot 自己那把锁在更里面（见 slot.go），三层互不反向。
+	slots   map[string]*slot
+	slotsMu sync.Mutex
 
 	nodes []*Node
+	// states 与 nodes **同序、同长**：每个节点在**这张图里**的运行状态。
+	// 状态存图上、不挂 `Node` 上——同一个 `Node` 可以跨图复用（两张图的槽位互不可见），
+	// 状态挂节点上会把两张图搅在一起。见 nodeState / Snapshot。
+	states []*nodeState
 	// aspects 是这张图的**有效**图级切面（继承来的排在前面）。见 WithAspects。
 	aspects []Aspect
 	// aspectsCut 表示这一层声明了 `WithoutAspects`：不继承父图那批（自己声明的照挂）。
@@ -215,7 +223,9 @@ func (g *Graph) Add(n *Node) error {
 func (g *Graph) addAll(nodes []*Node) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.started {
+	// 认领过（被一次 `Sub` 拿去当子图）也算「已经交出去了」：再 `Add` 就是在改一张
+	// 父侧正在绑定 / 种值的图。见 claimSub。
+	if g.claimed || g.started {
 		return ErrGraphStarted
 	}
 
@@ -273,6 +283,8 @@ func (g *Graph) addAll(nodes []*Node) error {
 	}
 
 	// —— 提交段：到这一步不会再失败 ——
+	g.slotsMu.Lock() // 槽位表那个锁，见 slots 字段；锁序 g.mu → slotsMu
+	defer g.slotsMu.Unlock()
 	for _, n := range nodes {
 		for _, k := range n.requires {
 			_ = g.keys.register(k)
@@ -284,6 +296,7 @@ func (g *Graph) addAll(nodes []*Node) error {
 			g.slotOfLocked(k)
 		}
 		g.nodes = append(g.nodes, n)
+		g.states = append(g.states, &nodeState{status: NodeStatusPending})
 	}
 	return nil
 }
@@ -300,12 +313,31 @@ func SkipSeed[T any](g *Graph, k Key[T]) error {
 
 // seedRef 是 Seed / SkipSeed / SeedByName 的共用路径。与 Add 同一条纪律：
 // 先只读校验，再提交——失败的 Seed 不该在图里留下登记表或来源占位。
+//
+// 认领过的图不再接受外部种值（子图那一路由认领它的 `Sub` 走 seedOwned）。
 func (g *Graph) seedRef(ref keyRef, v any, skip bool) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.claimed || g.started {
+		return ErrGraphStarted
+	}
+	return g.seedLocked(ref, v, skip)
+}
+
+// seedOwned 是 `Sub` 侧的受控种值路径：把父侧输入种进刚认领的子图。判据与报错
+// 与 seedRef 同源，只少一道「认领过就不收」的闸——把父侧的值种进去正是认领它的
+// 那一次 `Sub` 要做的事。
+func (g *Graph) seedOwned(ref keyRef, v any, skip bool) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.started {
 		return ErrGraphStarted
 	}
+	return g.seedLocked(ref, v, skip)
+}
+
+// seedLocked 是 seedRef / seedOwned 的共用体。调用方持 g.mu。
+func (g *Graph) seedLocked(ref keyRef, v any, skip bool) error {
 	if err := g.keys.check(ref); err != nil {
 		return err
 	}
@@ -314,6 +346,8 @@ func (g *Graph) seedRef(ref keyRef, v any, skip bool) error {
 	}
 	_ = g.keys.register(ref)
 	_ = g.claimSource(ref.name, seedSource)
+	g.slotsMu.Lock() // 槽位表那个锁，见 slots 字段；锁序 g.mu → slotsMu
+	defer g.slotsMu.Unlock()
 	if skip {
 		return g.slotOfLocked(ref).resolveSkip()
 	}
@@ -363,6 +397,15 @@ func (g *Graph) Run() error {
 	return g.Wait()
 }
 
+// runOwned 是 `Sub` 侧的受控启动：认领过的那张子图只能由认领它的那次 `Sub` 跑起来
+// （公开的 Run / Start 会被认领闸挡住，见 start）。
+func (g *Graph) runOwned() error {
+	if err := g.start(true); err != nil {
+		return err
+	}
+	return g.Wait()
+}
+
 // Start 异步提交全部节点。
 //
 // 提交前做一次**只读校验**（与 `Validate` 同一套判据：装配期可以先问一遍，
@@ -386,9 +429,13 @@ func (g *Graph) Run() error {
 // （`+1`）：另一 goroutine 只要看见 `started == true`，就一定看见非零计数——
 // 否则它会在节点还没提交时就从 `wg.Wait()` 返回、提前发出 finished（慢的
 // started 回调把窗口拉到几十毫秒量级，这不是理论竞态）。
-func (g *Graph) Start() error {
+func (g *Graph) Start() error { return g.start(false) }
+
+// start 是 Start / runOwned 的共用体。`owned` 表示调用方就是那次 `Sub`
+// ——认领过的图只许它启动（`build` 之外谁拿到这个指针都启动不了，见 claimSub）。
+func (g *Graph) start(owned bool) error {
 	g.mu.Lock()
-	if g.started {
+	if g.started || (g.claimed && !owned) {
 		g.mu.Unlock()
 		return ErrGraphStarted
 	}
@@ -398,15 +445,15 @@ func (g *Graph) Start() error {
 	}
 	g.started = true
 	nodes := append([]*Node(nil), g.nodes...)
+	states := append([]*nodeState(nil), g.states...)
 	g.wg.Add(len(nodes) + 1) // +1：started 那一发落地前，其他 goroutine 的 Wait 不该溜过去
 	g.mu.Unlock()
 
 	g.notify(func(o Observer) { o.OnGraphStarted(g.id) })
 	g.wg.Done()
 
-	for _, n := range nodes {
-		n := n
-		go g.runNode(n)
+	for i, n := range nodes {
+		go g.runNode(n, states[i])
 	}
 	return nil
 }
@@ -511,21 +558,26 @@ func (g *Graph) acquire(ctx context.Context) error { return g.lim.acquire(ctx) }
 // release 归还名额。没占过、或名额表无限，都安全。
 func (g *Graph) release() { g.lim.release() }
 
-func (g *Graph) runNode(n *Node) {
+func (g *Graph) runNode(n *Node, st *nodeState) {
 	defer g.wg.Done()
 
-	rc := newRunCtx(g, n, g.ctx)
+	rc := newRunCtx(g, n, g.ctx, st)
 	defer rc.Cancel()
 
-	// 每节点生命周期事件至多一次（防 Retry 双打点）。
+	// 每节点生命周期事件至多一次（防 Retry 双打点）。状态与事件**在同一点写**，
+	// 顺序是「先写状态、再发回调」——所以在回调里拍的快照一定包含这次迁移。
+	// 也正因为只有这一套（不按 attempt 重走），`Retry` 重跑期间状态一直是
+	// `running`、不会退回 `waiting`：状态单调、与事件流同源。见 Snapshot。
 	var waited, ran atomic.Bool
 	emitWaiting := func() {
 		if waited.CompareAndSwap(false, true) {
+			st.set(NodeStatusWaiting)
 			g.notify(func(o Observer) { o.OnNodeWaiting(g.id, n.id) })
 		}
 	}
 	emitRunning := func() {
 		if ran.CompareAndSwap(false, true) {
+			st.set(NodeStatusRunning)
 			g.notify(func(o Observer) { o.OnNodeRunning(g.id, n.id) })
 		}
 	}
@@ -574,16 +626,19 @@ func (g *Graph) runNode(n *Node) {
 	err := chain(rc)
 	if isSkipped(err) {
 		g.skipAllOrUnwritten(n, rc, true)
+		st.finish(NodeStatusSkipped, nil)
 		g.notify(func(o Observer) { o.OnNodeFinished(g.id, n.id, NodeSkipped, err) })
 		return
 	}
 	if err != nil {
 		g.fail(err)
 		g.skipAllOrUnwritten(n, rc, true)
+		st.finish(nodeStatusOf(finishReason(err)), err)
 		g.notify(func(o Observer) { o.OnNodeFinished(g.id, n.id, finishReason(err), err) })
 		return
 	}
 	g.skipAllOrUnwritten(n, rc, false)
+	st.finish(NodeStatusCompleted, nil)
 	g.notify(func(o Observer) { o.OnNodeFinished(g.id, n.id, NodeCompleted, nil) })
 }
 

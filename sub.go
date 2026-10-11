@@ -93,10 +93,12 @@ func InRef(parent, child keyRef) SubBind {
 		in:     true,
 		pull:   func(rc *RunCtx) (any, error) { return getRef(rc, parent) },
 		seed: func(g *Graph, v any, skip bool) error {
+			// 走受控种值：子图此刻已被本步认领，公开的 `Seed` / `SkipSeed`
+			// 会被认领闸挡下（见 seedOwned）。
 			if skip {
-				return g.seedRef(child, nil, true)
+				return g.seedOwned(child, nil, true)
 			}
-			return g.seedRef(child, v, false)
+			return g.seedOwned(child, v, false)
 		},
 	}
 }
@@ -268,6 +270,14 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 		return subStartedErr(id, ErrGraphStarted)
 	}
 
+	// 3.5) 认领成功即把子图挂到那一步的 `Child` 上（决策 I）：**在绑定校验与种值之前**，
+	//      所以绑定报错 / 种值冲突时，也照样看得见「装出来了、没跑起来」的那张
+	//      pending 子图。挂上去之后这张图已经被认领——`Add` / `Seed` / `Start` 从此
+	//      一律被拒（见 addAll / seedRef / start），外部拿到这个指针也改不动它。
+	if rc.st != nil {
+		rc.st.setChild(child)
+	}
+
 	// 4) 建完先校验绑定：子图没声明这条键、或类型对不上，都要**现在**说——
 	//    别留到「种进去没人看」（Seed 对未知键会静默建槽，然后什么都不会发生）。
 	//    认领之后没人能再动这张图，所以这些读也是安全的。
@@ -320,8 +330,9 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 		}
 	}
 
-	// 7) 跑子图。首错原样冒泡。
-	if err := child.Run(); err != nil {
+	// 7) 跑子图。首错原样冒泡。走受控入口：这张图是被本步认领的，公开的 `Run`
+	//    会被认领闸挡下（那正是「认领之后外部启动不了它」的另一半）。
+	if err := child.runOwned(); err != nil {
 		return subStartedErr(id, err)
 	}
 

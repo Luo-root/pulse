@@ -1299,7 +1299,7 @@ func inspect(g *Graph) *RunCtx {
 		ref := keyRef{name: name, typ: g.keys.seen[name]}
 		n.requires = append(n.requires, ref)
 	}
-	return newRunCtx(g, n, context.Background())
+	return newRunCtx(g, n, context.Background(), &nodeState{})
 }
 
 func TestGraphIDRequired(t *testing.T) {

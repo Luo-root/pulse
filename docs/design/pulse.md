@@ -614,6 +614,10 @@ g, _ := pulse.New(ctx, "demo", "演示图", pulse.WithObserver(obs))
   `ErrGraphNotStarted` / `ErrDuplicateSource` / `ErrSkipped` / `ErrNextCalledTwice`
   （同一份清单也在 `AGENTS.md` 的 Freeze contract 一节）；
 - `Observer` 的回调次数契约（图级两条 + 节点三条）与「panic 不升格」；
+- 运行时快照的形状：`Snapshot` / `GraphState` / `NodeState` / `KeyState` 的字段与三套
+  词表（`GraphStatus` / `NodeStatus` / `SlotState`），四个终态值与 `NodeFinishReason`
+  **逐字相同**；节点状态是**一次节点生命周期**（`Retry` 重跑期间保持 `running`，
+  不按 attempt 重走、不回退）；`Child` 认领之后只读（`Add` / `Seed` / `Start` 拒）；
 - 六条编码原语与 `LineRenderer` 的字节级同形承诺。
 
 **刻意不提供**：
@@ -626,3 +630,5 @@ g, _ := pulse.New(ctx, "demo", "演示图", pulse.WithObserver(obs))
 | 具名观测字段的扩展 | 见 §8——业务维度走 `Attrs` |
 | `map[string]any` 请求逃生舱 | 类型系统是隐私边界的第一道防线 |
 | 节点自动命名 | 节点 ID 是观测归因键，自动名会在重构后漂移 |
+| 快照带真实 Key 值 | 那等于顺手加一套公开读槽 API（另一张票）；快照回答「在等**谁**」，不回答「值是多少」 |
+| 父快照递归拷贝子树 | `Child` 是「怎么找过去」的活句柄；抄一份子树既贵，又与那张还在跑的子图不同步 |

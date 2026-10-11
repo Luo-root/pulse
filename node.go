@@ -98,9 +98,12 @@ type RunCtx struct {
 	cancel  context.CancelFunc
 	allowed map[string]keyRef // name → 声明过的 key
 	wrote   map[string]struct{}
+	// st 是本节点在**这张图里**的状态单元（见 Graph.states）。只给包内用：
+	// `Sub` 的运行体要把刚建出来的子图挂上去（决策 I 的 Child）。
+	st *nodeState
 }
 
-func newRunCtx(g *Graph, n *Node, parent context.Context) *RunCtx {
+func newRunCtx(g *Graph, n *Node, parent context.Context, st *nodeState) *RunCtx {
 	ctx, cancel := context.WithCancel(parent)
 	allowed := make(map[string]keyRef, len(n.requires)+len(n.provides))
 	for _, k := range n.requires {
@@ -116,6 +119,7 @@ func newRunCtx(g *Graph, n *Node, parent context.Context) *RunCtx {
 		cancel:  cancel,
 		allowed: allowed,
 		wrote:   make(map[string]struct{}),
+		st:      st,
 	}
 }
 
