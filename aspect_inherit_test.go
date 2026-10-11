@@ -241,3 +241,58 @@ func TestAspectInheritNoDuplicatePerDepth(t *testing.T) {
 		t.Fatalf("每个节点只该带一层 A（最内层也是 1 层）：\n got %s\nwant %s", got, want)
 	}
 }
+
+// 中间层切断之后，**孙子看不见祖父**：继承读的是父图那一层的**有效**列表，不是它继承
+// 之前的那份。所以「祖父 A → 中间层切断 + 声明 B → 孙子不声明」时，孙子身上的链是
+// `[B]`，A 不会顺着血缘漏下去。
+func TestAspectCutAtMiddleLayerHidesGrandparent(t *testing.T) {
+	in := NewKey[string]("asp.mid.in")
+	l1 := NewKey[string]("asp.mid.l1")
+	l2 := NewKey[string]("asp.mid.l2")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var r rec
+	g := mustNew(t, ctx, "P", WithAspects(r.aspect("A")))
+	if err := Seed(g, in, "v"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 最内层：不声明任何切面 → 只能拿到中间层那层有效列表 = [B]。
+	leaf := func(sc *SubCtx) (*Graph, error) {
+		child, err := New(sc.Context(), sc.GraphID())
+		if err != nil {
+			return nil, err
+		}
+		return child, child.Add(NewNode("leaf", Requires(l2), nil, func(rc *RunCtx) error {
+			r.append("BODY")
+			return nil
+		}))
+	}
+	// 中间层：切断继承（A 不从这一层往下走），自己声明 B。
+	mid := func(sc *SubCtx) (*Graph, error) {
+		child, err := New(sc.Context(), sc.GraphID(),
+			WithoutAspects(), WithAspects(r.aspect("B")))
+		if err != nil {
+			return nil, err
+		}
+		if err := Sub(child, "step2", []SubBind{In(l1, l2)}, leaf); err != nil {
+			return nil, err
+		}
+		return child, nil
+	}
+	if err := Sub(g, "step1", []SubBind{In(in, l1)}, mid); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 父图那一步：A（父图的图级切面，与继承无关）；中间层那一步：B；
+	// 最内层那个节点：B（从中间层继承来的有效列表），**没有 A**。
+	want := "in A, in B, in B, BODY, out B, out B, out A"
+	if got := strings.Join(r.all(), ", "); got != want {
+		t.Fatalf("中间层切断之后 A 不该出现在孙子身上：\n got %s\nwant %s", got, want)
+	}
+}
