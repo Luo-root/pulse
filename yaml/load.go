@@ -142,6 +142,25 @@ type LoadOptions struct {
 	ObserverFor func(path string) pulse.Observer
 }
 
+// checkGraph 起一张**只装不跑**的校验图，并且带上与真图**同一份额度**。
+//
+// 额度必须一起给：`Start` / `Validate` 的流式判据按**有效容量**判
+// （`checkStreamLocked` 比的是容量与这一层同时活着的流节点数），校验图没有额度时那道
+// 检查形同虚设——于是「额度养不起这条流」会装图全过、跑到那一层 `Start` 才爆。校验图
+// 与真图的选项必须是**同一次推导**出来的（与函数末尾那份 `rootOpts` 一致），两处各写
+// 一遍就会漂。
+//
+// 今天 YAML 还表达不了流式节点（`Produce` / `Consume` / `Tee` 是 Go 糖，跑在工厂里面），
+// 所以这条差异在公开面上暂时不可观测；它是给「YAML 也能声明流」那天留的闸门，也顺手
+// 钉住「校验图 = 真图的选项」这件事（包内用例 `TestCheckGraphCarriesCapacity`）。
+func checkGraph(id string, opts LoadOptions) (*pulse.Graph, error) {
+	o := append([]pulse.Option(nil), opts.Graph...)
+	if opts.MaxRunning > 0 {
+		o = append(o, pulse.WithMaxRunning(opts.MaxRunning))
+	}
+	return pulse.New(context.Background(), id, o...)
+}
+
 // Load 把 YAML 文档装成 Graph + SeedPlan。
 func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *SeedPlan, error) {
 	if reg == nil {
@@ -183,7 +202,7 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	// 走的是同一段 `addNodes`，所以报文与真正装根图那次逐字相同；
 	// 而根图要等到**所有可能失败的校验都过完**才建（见函数末尾）——见下面
 	// 「宿主 ctx」那段注释。
-	root, err := pulse.New(context.Background(), "load-check:root", opts.Graph...)
+	root, err := checkGraph("load-check:root", opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -212,7 +231,7 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	//   - 校验失败时 `Load` 返回 `nil, nil, err`，调用方**连清理的把手都没有**
 	//     ——所以只要还有一步可能失败，就不要先动宿主的 ctx。
 	for _, site := range checkSites(doc) {
-		check, err := pulse.New(context.Background(), "load-check:"+site.graph)
+		check, err := checkGraph("load-check:"+site.graph, opts)
 		if err != nil {
 			return nil, nil, err
 		}
