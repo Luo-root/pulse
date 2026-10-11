@@ -56,6 +56,9 @@ func (g *Graph) problemsSourcesLocked() []error {
 // 每个环分量给**一条**见证——「一个分量一条」，既不枚举同一个分量里的所有简单环
 // （数量可能指数增长），也不对同一个分量报第二条。
 //
+// 整趟是 **O(V+E)**：Tarjan 单趟，每条见证只走自己分量里的边，成员判据按**该分量**的
+// 规模开（不是每个分量各开一份全图数组——那样 k 个互不相连的小环会退化成 O(k·V)）。
+//
 // 顺序：Tarjan 的弹出顺序（分量之间反向的拓扑序），由声明序与出边顺序唯一确定——这与旧
 // 实现的「按声明序起走第一条出边」**不是**同一套排序，所以**多分量**时逐条顺序不保证相同；
 // 该保证只到「两节点环 / 三节点环那几张既有用例图上的首条逐字未变」（那几条用例没改、仍绿）。
@@ -83,10 +86,13 @@ func (g *Graph) problemsCycleLocked() []error {
 // 空的，因为一条边都没轮到），而真正的环 A↔B 被它盖掉了；这条判据现在由「只在分量内
 // 走」保证，防御性出口留着只为不做出格的事。
 func (g *Graph) sccWitness(d depGraph, comp []int) error {
-	inComp := make([]bool, len(g.nodes))
+	// 成员判据按**本分量**的规模开（`len(comp)`）。早先这里是一份 `len(g.nodes)` 的
+	// `[]bool`：k 个互不相连的小环各自清零一遍全图，整趟就从 O(V+E) 掉到 O(k·V)
+	// （实测 V=4000、k=2000 时多分配 7.4 MB——评审在 #308 上点的这条）。
+	inComp := make(map[int]struct{}, len(comp))
 	start := comp[0]
 	for _, i := range comp {
-		inComp[i] = true
+		inComp[i] = struct{}{}
 		if i < start {
 			start = i // 声明序最靠前的那一个
 		}
@@ -105,7 +111,7 @@ func (g *Graph) sccWitness(d depGraph, comp []int) error {
 		path = append(path, cur)
 		next, key := -1, ""
 		for _, e := range d.out[cur] {
-			if inComp[e.to] {
+			if _, ok := inComp[e.to]; ok {
 				next, key = e.to, e.keys[0]
 				break
 			}

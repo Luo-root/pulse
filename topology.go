@@ -27,11 +27,13 @@ type Source struct {
 	NodeID string // 仅 Kind == SourceNode 时有效
 }
 
-// String 是给人看的来源名：节点来源是节点 id、外部来源是 `seed`、没有来源是 `none`。
+// String 是给人看的来源名：外部来源 `seed`、节点来源 `node %q`、没有来源 `none`。
 //
-// 节点 id 恰好是 `seed` 时写成 `node "seed"`——与引擎内部报错里的规则是**同一份**
-// （`sourceName`）：两种来源在日志与格式化输出里也必须分得开，否则阶段零修掉的那个
-// 歧义（节点 id 与外部来源撞名）会从格式化出口绕回来（评审在 #308 上点的这条）。
+// 节点来源**一律**带类型前缀并加引号，不是只给某个哨兵名字开小灶：节点 id 是任意用户
+// 字符串——只特判 `seed` 的话，节点叫 `none` 的会与「没有来源」撞、字面量 id
+// `node "seed"` 也会与节点 `seed` 撞（两条都实测撞上了，评审在 #308 上点的这条）。
+// 与引擎内部报错里的规则是**同一份**（`sourceName`），所以「引擎里分得开」与
+// 「日志里分得开」是同一条规则，不会各自漂。
 func (s Source) String() string {
 	switch s.Kind {
 	case SourceSeed:

@@ -2,7 +2,9 @@ package pulse
 
 import (
 	"context"
+	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -301,6 +303,99 @@ func TestTopologyOneWitnessPerSCC(t *testing.T) {
 	}
 	if err := g.Validate(); err == nil || err.Error() != want {
 		t.Fatalf("Validate = %v", err)
+	}
+}
+
+// TestTopologySourceStringDistinguishesKinds 钉住公开出口上的来源名**两两可分**：节点 id
+// 是任意用户字符串，只给 `seed` 开小灶挡不住另外两条路——节点叫 `none` 的会与「没有来源」
+// 撞，字面量 id `node "seed"` 会与节点 `seed` 的输出撞（两条都实测撞上了，评审在 #308 上
+// 点的这条）。内部报错走同一份规则（`sourceName`），那边由 `source_test.go` 钉住。
+func TestTopologySourceStringDistinguishesKinds(t *testing.T) {
+	cases := []struct {
+		name string
+		src  Source
+		want string
+	}{
+		{"外部来源", Source{Kind: SourceSeed}, "seed"},
+		{"普通节点", Source{Kind: SourceNode, NodeID: "load"}, `node "load"`},
+		{"节点 id 恰好是 seed", Source{Kind: SourceNode, NodeID: "seed"}, `node "seed"`},
+		{"节点 id 恰好是 none", Source{Kind: SourceNode, NodeID: "none"}, `node "none"`},
+		{"节点 id 本身长成 node \"seed\"", Source{Kind: SourceNode, NodeID: `node "seed"`}, `node "node \"seed\""`},
+		{"没有来源（零值）", Source{}, "none"},
+	}
+	seen := map[string]string{}
+	for _, c := range cases {
+		got := c.src.String()
+		if got != c.want {
+			t.Fatalf("%s：String() = %q，want %q", c.name, got, c.want)
+		}
+		if prev, dup := seen[got]; dup {
+			t.Fatalf("%s 与 %s 都写成 %q——公开出口上的来源名必须两两可分", c.name, prev, got)
+		}
+		seen[got] = c.name
+	}
+}
+
+// costGraphs 造两张**节点数相同**（V = 2k）的含环图：一张是 k 个互不相连的 2 节点环
+// （分量数 = k），一张是一个 2k 节点的大环（分量数 = 1）。
+func costGraphs(t *testing.T, k int) (many, one *Graph) {
+	t.Helper()
+	done := func(*RunCtx) error { return nil }
+	many = mustNew(t, context.Background(), "cost-many")
+	for i := 0; i < k; i++ {
+		a := NewKey[string](fmt.Sprintf("cost.many.%d.a", i))
+		b := NewKey[string](fmt.Sprintf("cost.many.%d.b", i))
+		mustAdd(t, many, NewNode(fmt.Sprintf("A%d", i), "", Requires(b), Provides(a), done))
+		mustAdd(t, many, NewNode(fmt.Sprintf("B%d", i), "", Requires(a), Provides(b), done))
+	}
+	one = mustNew(t, context.Background(), "cost-one")
+	ring := make([]Key[string], 2*k)
+	for i := range ring {
+		ring[i] = NewKey[string](fmt.Sprintf("cost.one.%d", i))
+	}
+	for i := 0; i < 2*k; i++ {
+		mustAdd(t, one, NewNode(fmt.Sprintf("N%d", i), "",
+			Requires(ring[(i-1+2*k)%(2*k)]), Provides(ring[i]), done))
+	}
+	return many, one
+}
+
+// TestTopologyWitnessCostScalesWithComponent 钉住「每个环分量的额外开销按**该分量**的大小
+// 增长，不按全图大小」：每个分量都开一份 `len(g.nodes)` 的成员数组时，k 个互不相连的小环
+// 就是 O(k·V)（评审在 #308 上点的这条；实测 V=4000、k=2000 时多分配 7.4 MB，改成按分量
+// 规模开之后同一对图差 −0.6 MB）。
+//
+// 判据用**分配字节数**而不是墙钟时间——时间在本机与 CI 之间不是一个可比的量（既有教训：
+// 同一句 `time.Since(time.Now())` 本机 0ns、CI 90ns），而分配字节数跨平台确定。两张图
+// **V 相同**、只有分量数不同，所以「建图 + 建形状」那部分开销两边一致，差值就是见证那一步
+// 的额外开销（外加：分量多的一方要多造 k 条报错文案，那部分本身是 O(k)、已经算在下面这个
+// 上限里）。
+func TestTopologyWitnessCostScalesWithComponent(t *testing.T) {
+	const (
+		k      = 2000    // 两张图都是 V = 4000
+		budget = 2 << 20 // 2 MiB：修复后实测 −0.6 MB，退回每个分量一份全图数组是 +7.8 MB
+	)
+	many, one := costGraphs(t, k)
+	// 先确认两张图真的是「k 个分量」与「1 个分量」——否则下面的差值不说明任何事。
+	if got := len(many.Topology().Problems); got != k {
+		t.Fatalf("k 个小环应当报 %d 条，got %d", k, got)
+	}
+	if got := len(one.Topology().Problems); got != 1 {
+		t.Fatalf("一个大环应当报 1 条，got %d", got)
+	}
+
+	alloc := func(g *Graph) uint64 {
+		var m0, m1 runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&m0)
+		_ = g.Topology()
+		runtime.ReadMemStats(&m1)
+		return m1.TotalAlloc - m0.TotalAlloc
+	}
+	diff := int64(alloc(many)) - int64(alloc(one))
+	if diff > budget {
+		t.Fatalf("%d 个小环比一个大环（同 V=%d）多分配 %d B，上限 %d——"+
+			"环见证的额外开销按全图大小长了", k, 2*k, diff, budget)
 	}
 }
 
