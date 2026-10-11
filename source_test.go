@@ -29,8 +29,9 @@ func TestSourceConflictWhenNodeIsNamedSeed(t *testing.T) {
 		t.Fatalf("失败的 Seed 写进了槽位：state = %v, want slotPending", st)
 	}
 
-	// 先 Seed 后 Add：这一侧旧实现也报错（prev 是 "seed"、owner 是节点 id "seed"，
-	// 恰好也相等——所以它**同样**静默通过）。两条一起钉住。
+	// 先 Seed 后 Add：这一侧旧实现**同样静默通过**——来源表里存的是 `"seed"`，
+	// 而节点的 id 恰好也是 `"seed"`，`prev != owner` 落到相等那一支。两个方向都钉住，
+	// 才算把「撞名」这件事盖全。
 	g2 := mustNew(t, context.Background(), "P2")
 	if err := Seed(g2, k, "host"); err != nil {
 		t.Fatal(err)
