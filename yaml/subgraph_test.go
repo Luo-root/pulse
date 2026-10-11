@@ -1195,3 +1195,70 @@ nodes:
 		t.Fatalf("报错该点明是 kind 不受支持：%v", err)
 	}
 }
+
+// LoadOptions.MaxRunning 是**整棵声明树**的额度：根图拿它建名额，子图在运行期
+// 继承同一份（`Sub` 那一步自己不吃名额）。这里两个子图实例合计只能同时有一个
+// 节点在跑——若额度被当成「每层各一份」，峰值会变成 2。
+func TestLoadMaxRunningCoversWholeTree(t *testing.T) {
+	summary := pulse.NewKey[string]("ml.summary")
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("ml.topic"))
+	pulse.MustRegisterKey(reg, summary)
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("ml.input"))
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("ml.result"))
+
+	var mu sync.Mutex
+	live, peak := 0, 0
+	reg.MustRegister("ml.work", func(rc *pulse.RunCtx) error {
+		mu.Lock()
+		live++
+		if live > peak {
+			peak = live
+		}
+		mu.Unlock()
+		time.Sleep(60 * time.Millisecond)
+		mu.Lock()
+		live--
+		mu.Unlock()
+		return pulse.Set(rc, summary, "x")
+	})
+
+	doc := []byte(`
+version: 1
+graphs:
+  enrich:
+    nodes:
+      - id: work
+        uses: ml.work
+        requires: [{name: ml.topic, type: string}]
+        provides: [{name: ml.summary, type: string}]
+seeds:
+  - key: {name: ml.input, type: string}
+    from: {kind: literal, value: "v"}
+nodes:
+  - id: a
+    graph: enrich
+    in:  {ml.topic: ml.input}
+    out: {ml.summary: ml.summary}
+  - id: b
+    graph: enrich
+    in:  {ml.topic: ml.input}
+    out: {ml.summary: ml.result}
+`)
+	g, plan, err := pulseyaml.Load(doc, reg, pulseyaml.LoadOptions{GraphID: "P", MaxRunning: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Apply(g, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := peak
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("整棵树同时进 Run 的峰值 = %d，want 1（MaxRunning 是整棵树的额度，不是每层各一份）", got)
+	}
+}

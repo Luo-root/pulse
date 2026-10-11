@@ -20,6 +20,10 @@ type Node struct {
 	// 一条流出口只喂一个下游；**同一组** worker 共读一条出口是显式声明的
 	// 「抢」（FanOut 本来就是这么用的），不算静默瓜分——见 Graph.checkStreamLocked。
 	compete string
+	// sub 表示这个节点是 `Sub` 装出来的一步（「图即节点」）。它整段都在等子图
+	// 跑完，所以**不吃运行名额**——占着就等于把父侧额度锁在「等」上，名额跨图
+	// 共享之后那是死锁（见 WithMaxRunning / Graph.runNode）。
+	sub bool
 }
 
 // Requires 声明本节点依赖的输入槽。
