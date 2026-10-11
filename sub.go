@@ -282,25 +282,23 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 				id, b.child.name, typ, b.child.typ)
 		}
 	}
-	child.path = path // 更深一层嵌套靠它算 path
-
-	// 5) 观察者：子图自己挂了就用它自己的；没挂则继承父图的——漏挂是**静默**的
-	//    （父图照常跑完，子图的记录一条都不出现），所以默认接上。
+	// 5) 父子挂接状态**一次写完**：嵌套 path、观察者（子图没挂才继承父图的）、名额
+	//    （子图自己声明过就用它自己那份，没声明则继承父图那份）。
 	//
-	//    **继承只保证「记录不丢」，不保证层级归因**：出口实例上的 `pulse.path` 是
-	//    建它那一刻定下的，继承来的那份带的还是**父层**的 path。嵌套要在 `build`
-	//    里按 `sc.Path()` 给每一层各建一个出口（见 `ObserveConfig.Path`）。
-	if child.observer == nil {
-		child.observer = rc.g.observer
-	}
-
-	// 5b) 名额：子图自己声明过 `WithMaxRunning` 就用它自己那份；没声明则继承父图的
-	//     ——与观察者同一个模式（漏了会静默变成「各管各的」，运行期看就是这个坑）。
-	//     继承之后「整棵树同时几个节点在干活」由根图那一次声明决定；`Sub` 那一步
-	//     自己不吃名额（见 Graph.runNode）。
-	if !child.limSet {
-		child.lim = rc.g.lim
-	}
+	//    为什么必须收在同一把 `child.mu` 下：子图在 `build` 返回那一刻就已经交到调用方
+	//    手里（`Sub` 的约定就是「build 每次造一张新图并交出来」），宿主完全可以把它交给
+	//    别的 goroutine；而 `Validate()` / `Topology()` 这类只读入口承诺「认领之后随时
+	//    可问」，读的正是这几个字段。没有共同互斥时，那一头就是在读一个正在被写的字段
+	//    ——评审在 #304 上点的那条 race，`-race` 能复现（用例
+	//    `TestSubHookupRaceWithReadOnlyEntry`）。
+	//
+	//    观察者继承只保证「记录不丢」，不保证层级归因：出口实例上的 `pulse.path` 是建
+	//    它那一刻定下的，继承来的那份带的还是**父层**的 path。嵌套要在 `build` 里按
+	//    `sc.Path()` 给每一层各建一个出口（见 `ObserveConfig.Path`）。
+	//
+	//    名额继承之后「整棵树同时几个节点在干活」由根图那一次声明决定；`Sub` 那一步
+	//    自己不吃名额（见 Graph.runNode）。
+	child.adopt(path, rc.g.observer, rc.g.lim)
 
 	// 6) 种父侧输入。种之前先确认这条键还是空的：子图自己在 build 里把它种上了
 	//    的话（或标成了跳过），这次种值会被幂等首写**静默忽略**——「父侧传进去的
@@ -361,6 +359,28 @@ func runSub(rc *RunCtx, id string, binds []SubBind, build func(*SubCtx) (*Graph,
 		}
 	}
 	return nil
+}
+
+// adopt 把父图的挂接状态写进子图（嵌套 path、观察者、名额），**一次加锁写完**。
+//
+// 为什么不能各写各的：这几个字段是「认领之后不再变」的那批，而读它们的是
+// `Validate()` / `Topology()` 这类只读入口（持 child.mu）。子图在 `build` 返回那一刻
+// 就已经交到调用方手里，宿主把它交给别的 goroutine 之后，挂接期间调只读入口就是在读
+// 一个正在被写的字段——评审在 #304 上点的那条 race（用例
+// `TestSubHookupRaceWithReadOnlyEntry` 复现）。
+//
+// 临界区里**不做任何会再锁 child.mu 的事**（种值走的是 slotsMu，留在调用点按原顺序做）；
+// 也**不校验**——校验与报文都在调用点，这里只负责把字段写进去。
+func (g *Graph) adopt(path string, observer Observer, lim *limiter) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.path = path
+	if g.observer == nil {
+		g.observer = observer
+	}
+	if !g.limSet {
+		g.lim = lim
+	}
 }
 
 // subStartedErr 把「复用同一张子图」这条最容易犯的错翻成一句能照着改的话。

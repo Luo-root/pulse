@@ -127,11 +127,19 @@ type LoadOptions struct {
 	// 子图也拿同一批选项 —— 所以挂在这里的观察者会到每一层。
 	//
 	// **别在这里放 pulse.WithMaxRunning**：这批选项会被原样传给每一层，于是额度
-	// 变成「每层各一份」。整棵树的额度用下面的 MaxRunning 字段。
+	// 变成「每层各一份」。整棵树的额度用下面的 MaxRunning 字段——两个都写时按
+	// MaxRunning 那段写的规则合（简单说：它 `>0` 才压过这一份，`<=0` 不动它）。
 	Graph []pulse.Option
 	// MaxRunning 是**整棵声明树**的并发额度（<=0 = 无限，默认）：根图拿它建名额，
 	// 子图在运行期**继承同一份**（引擎的默认继承，`Sub` 那一步自己不吃名额），
 	// 所以这里写的是「整棵树同时最多几个节点在干活」，不是「每层各几个」。
+	//
+	// 与 `Graph` 里可能写的 `WithMaxRunning` 的关系（**只在 `>0` 时**它才拼在那批的
+	// 最后、压过那一份）：`int` 的零值分不出「没写」与「写了 0」，所以
+	// `MaxRunning: 0`（含默认）**不会**把 `Graph` 里那份改回「不限」——想让整棵声明树
+	// 不限，就别在 `Graph` 里放 `WithMaxRunning`。七档组合由包内用例
+	// `TestLoadOptionsQuotaPrecedence` 钉住；推荐把额度只写在 `MaxRunning` 上，
+	// `Graph` 留给观察者与切面。
 	MaxRunning int
 	// ObserverFor 按层建出口：声明式装配里每一层是另一张图，而一个出口实例
 	// 只能带一条 `pulse.path`，所以「按层各建一个」得由宿主决定。path 是这一层
