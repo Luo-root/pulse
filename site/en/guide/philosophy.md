@@ -9,10 +9,10 @@ The full version (each axiom with its costs and boundaries) lives in the reposit
 Pulse is a **data-arrival-driven** execution engine for Go, plus a layer of **graph observation**. It does three things:
 
 1. **Declare** — what each node reads and writes;
-2. **Advance** — one Key arriving (with a value or an explicit skip) is what makes the nodes waiting on it ready; no edge objects, no topological sort, no scheduling loop;
+2. **Advance** — one Key arriving (with a value or an explicit skip) is what makes the nodes waiting on it ready; no edge objects, no "sort first, then run" scheduling phase, no scheduling loop;
 3. **Explain** — where the run is, who is waiting for whom, and where it failed.
 
-It is not a DAG workflow engine (no scheduler, no retry magic, no implicit compensation); not a business framework (it never does IO and knows no business fields); not a DSL (Go stays Go — declarative assembly exists only in the `pulse/yaml` layer).
+It is not a **traditional centrally-scheduled DAG workflow engine**: Pulse derives the dependency graph from `Requires` / `Provides`, rejects dependency cycles and exposes a topology view just like one does — the difference is that progress is driven by Key arrival rather than by a central scheduler. Retry must be declared explicitly (the `Retry` aspect); the engine performs no implicit compensation. It is not a business framework (it never does IO and knows no business fields), and not a DSL (Go stays Go — declarative assembly exists only in the `pulse/yaml` layer).
 
 ## Six ideas you will feel directly
 
@@ -60,7 +60,7 @@ A slot has exactly three states: `pending` (not there yet), `ready` (has a value
 
 | Not provided | Why |
 |---|---|
-| A DAG scheduler and topological ordering | Data arrival is scheduling; execution order is a **result** of declarations, not a premise |
+| A central scheduler and "sort first, then run" | Data arrival is what advances the graph; execution order is a **result** of declarations, not a premise; the topology view is a read-only exit that never drives progress |
 | An implicit "missing means skip" policy | Missing must be declared by the node (the gate collects whatever arrives; `WaitAll` is the all-or-nothing opt-in) |
 | Rolling back external side effects | The engine only manages its own slots; databases, HTTP calls and file writes need a transaction, an idempotency key or compensation — supplied by you |
 | Implicit compensation, opaque transaction magic | Nothing goes in without its own contract and tests — it sounds like a guarantee, but it is luck |

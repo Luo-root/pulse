@@ -20,7 +20,7 @@
 
 <br />
 
-**Pulse** is a one-shot graph engine plus a graph-observation layer. Nodes declare which keys they read and write; the topology is implied by data production and consumption. There are no edge objects, no topological sort, no scheduler loop.
+**Pulse** is a one-shot graph engine plus a graph-observation layer. Nodes declare which keys they read and write; the topology is implied by data production and consumption. There are no edge objects, no "sort first, then run" scheduling phase, no scheduler loop.
 
 Pulse is exactly two things:
 
