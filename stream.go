@@ -49,6 +49,11 @@ func newStreamConfig(opts []StreamOption) streamConfig {
 // 装、下游消费端可能是后加的）。真正的判据在 `Start`（见 Graph.checkStreamLocked）：
 // 整张流图（流节点 + 流出口的读取者）要同时有名额，且每条流出口都得有人消费、
 // **只喂一个下游**。两处一起才完整：这里给的是即时反馈，那里才是权威校验。
+//
+// 子图里还看不到**继承来的**名额：额度继承发生在 `build` 返回之后（见 runSub 的
+// 「5b) 名额」），所以那一层的这次检查读到的是「没声明 = 不设限」——等于没查。接
+// 着子图自己的 `Start` 就会跑 `checkStreamLocked`（那时继承已经写完），拒的是那一
+// 条报文；这里只补时序，不为「早一点报」去动继承次序。
 func checkStreamSlots(g *Graph, id, kind string, need int) error {
 	if c := g.lim.capacity(); c > 0 && c < need {
 		return fmt.Errorf("pulse: %s %q: WithMaxRunning(%d) cannot host this stream: "+
