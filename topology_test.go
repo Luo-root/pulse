@@ -125,8 +125,10 @@ func TestTopologySourceKinds(t *testing.T) {
 	if req[1].From.Kind != SourceNode || req[1].From.NodeID != "seed" {
 		t.Fatalf("节点来源那一条 = %+v", req[1])
 	}
-	if req[0].From.String() != "seed" || req[1].From.String() != "seed" {
-		t.Fatalf("两条都叫 seed，但 Kind 分得开：%q / %q", req[0].From, req[1].From)
+	// 两种来源都叫 seed，但 **Kind 分得开**——而且公开出口上的文本也要分得开，
+	// 否则这个歧义会从日志 / 格式化输出绕回来（评审在 #308 上点的这条）。
+	if req[0].From.String() != "seed" || req[1].From.String() != `node "seed"` {
+		t.Fatalf("两种来源在公开出口上必须分得开：%q / %q", req[0].From, req[1].From)
 	}
 	// Seed 不建边：只有那条节点来源的边，且它来自**那个节点**。
 	want := []EdgeShape{{From: "seed", To: "reader", Keys: []string{"tp.fromseed"}}}
@@ -227,6 +229,78 @@ func TestTopologyEachCycleReported(t *testing.T) {
 	}
 	if err := g.Validate(); err == nil || err.Error() != want0 {
 		t.Fatalf("Validate 报首条：%v", err)
+	}
+}
+
+// TestTopologyCycleWitnessStaysInCycle 钉住评审给的那个反例：真环是 A↔B，另有一个
+// A→C 的旁支（C 没有出边）。
+//
+// 旧实现顺着「第一条出边」走出了环、走到 C 这个死胡同，还把路径首尾相接报成
+// `A -> C -> A ()`——那是个**不存在**的环（括号里是空的）；更糟的是 `Problems` 随后
+// 会把 A、C 当成「已报过」，真正的环 A↔B 一条都不出现。现在只在**强连通分量内部**
+// 走，报的一定是真环。
+func TestTopologyCycleWitnessStaysInCycle(t *testing.T) {
+	x := NewKey[string]("tp.w.x")
+	y := NewKey[string]("tp.w.y")
+	done := func(rc *RunCtx) error { return nil }
+
+	g := mustNew(t, context.Background(), "witness")
+	// 声明序故意是 A、C、B：让 A 的「第一条出边」指向旁支 C（旧走法就是这么出错的）
+	mustAdd(t, g, NewNode("A", "", Requires(y), Provides(x), done))
+	mustAdd(t, g, NewNode("C", "", Requires(x), nil, done))
+	mustAdd(t, g, NewNode("B", "", Requires(x), Provides(y), done))
+
+	want := `pulse: dependency cycle: A -> B -> A (A requires "tp.w.y", B requires "tp.w.x")`
+	top := g.Topology()
+	if len(top.Problems) != 1 {
+		t.Fatalf("Problems = %v\nwant 只有一条（真环那条）", top.Problems)
+	}
+	if got := top.Problems[0].Error(); got != want {
+		t.Fatalf("Problems[0] = %q\nwant %q", got, want)
+	}
+	// 两个入口逐字相同；旁支 C 不被误报成环的一部分。
+	if err := g.Validate(); err == nil || err.Error() != want {
+		t.Fatalf("Validate = %v\nwant %q", err, want)
+	}
+	if err := g.Start(); err == nil || err.Error() != want {
+		t.Fatalf("Start = %v\nwant %q", err, want)
+	}
+	// 结构照样给全：节点与边都在（B→A、A→C、A→B 三条），但**剥得掉的一批是空的**
+	// ——C 等的是环里的输出，它自己也没法先跑（这正是「有来源不等于能满足」）。
+	if len(top.Nodes) != 3 || len(top.Edges) != 3 {
+		t.Fatalf("Nodes/Edges = %d/%d，有环也要给全", len(top.Nodes), len(top.Edges))
+	}
+	if len(top.Order) != 0 {
+		t.Fatalf("Order = %v，这张图没有能先跑的节点", top.Order)
+	}
+}
+
+// TestTopologyOneWitnessPerSCC 钉住「一个强连通分量一条见证」：A↔B 与 C↔D 两个顶点
+// 不相交的环，再加 B→C、D→A 之后四个节点同属**一个**分量——只报一条，不是两条
+// （#303 设计稿的口径；旧实现按「逐轮摘点」会报两条，也把每轮都重跑一遍 Kahn）。
+func TestTopologyOneWitnessPerSCC(t *testing.T) {
+	ka := NewKey[string]("tp.scc.ka")
+	kb := NewKey[string]("tp.scc.kb")
+	kc := NewKey[string]("tp.scc.kc")
+	kd := NewKey[string]("tp.scc.kd")
+	done := func(rc *RunCtx) error { return nil }
+
+	g := mustNew(t, context.Background(), "onescc")
+	mustAdd(t, g, NewNode("A", "", Requires(kb, kc), Provides(ka), done)) // B→A、C→A
+	mustAdd(t, g, NewNode("B", "", Requires(ka), Provides(kb), done))     // A→B
+	mustAdd(t, g, NewNode("C", "", Requires(kd, kb), Provides(kc), done)) // D→C、B→C
+	mustAdd(t, g, NewNode("D", "", Requires(kc), Provides(kd), done))     // C→D
+
+	want := `pulse: dependency cycle: A -> B -> A (A requires "tp.scc.kb", B requires "tp.scc.ka")`
+	top := g.Topology()
+	if len(top.Problems) != 1 {
+		t.Fatalf("一个分量一条：%v", top.Problems)
+	}
+	if got := top.Problems[0].Error(); got != want {
+		t.Fatalf("Problems[0] = %q\nwant %q", got, want)
+	}
+	if err := g.Validate(); err == nil || err.Error() != want {
+		t.Fatalf("Validate = %v", err)
 	}
 }
 

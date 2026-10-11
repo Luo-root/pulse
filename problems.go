@@ -51,93 +51,53 @@ func (g *Graph) problemsSourcesLocked() []error {
 // 与 problemsSourcesLocked 互补：**有来源不等于能满足**。环里的槽谁也等不来谁，
 // 门（等全部输入到达）就永远不开——这不是可执行的反馈环，而是不可完成的拓扑。
 //
-// 判据用 Kahn 剥叶（O(V+E)）：剥得完 = 无环；剥不完 = 剩下的节点要么在环里，
-// 要么在环的下游。再从剩下的节点里走出一条**具体**的环报出去——比只报节点集合
-// 可操作。遍历按声明序取第一条出边，所以报错稳定。
+// 判据与见证合成一步：先按声明序求**强连通分量**（Tarjan，见 depGraph.cyclicSCCs），
+// 只有**环分量**（节点数 ≥ 2）才算环；落在环下游的节点是单独的分量，不会被误报。
+// 每个环分量给**一条**见证——「一个分量一条」，既不枚举同一个分量里的所有简单环
+// （数量可能指数增长），也不对同一个分量报第二条。
 //
-// 一次给多条的办法：走出一条环之后把它涉及的节点摘掉再来一轮，直到剥得干净。
-// 所以每个**互不重叠**的环区各一条；**不枚举**同一个环区里的所有简单环（数量
-// 可能指数增长）。`Validate` 取的是第一条——也就是旧实现那条，文案逐字未变。
+// 顺序：Tarjan 的弹出顺序（分量之间反向的拓扑序），由声明序与出边顺序唯一确定——这与旧
+// 实现的「按声明序起走第一条出边」**不是**同一套排序，所以**多分量**时逐条顺序不保证相同；
+// 该保证只到「两节点环 / 三节点环那几张既有用例图上的首条逐字未变」（那几条用例没改、仍绿）。
 func (g *Graph) problemsCycleLocked() []error {
 	if len(g.nodes) < 2 {
 		return nil // 自环在 Add 就被拒，单节点图不可能有环
 	}
 	d := g.depGraphLocked()
-	active := make([]bool, len(g.nodes))
-	for i := range active {
-		active[i] = true
-	}
 	var out []error
-	for {
-		err, covered := g.cycleWitness(d, active)
-		if err == nil {
-			return out
-		}
-		out = append(out, err)
-		for _, i := range covered {
-			active[i] = false
+	for _, comp := range d.cyclicSCCs() {
+		if err := g.sccWitness(d, comp); err != nil {
+			out = append(out, err)
 		}
 	}
+	return out
 }
 
-// cycleWitness 在**还活着**（active）的节点里剥叶，剥不掉就走出一条具体的环；
-// 没有环返回 (nil, nil)。covered 是这条见证涉及的节点下标——下一轮不再看它们。
+// sccWitness 在**一个环分量内部**走出一条真环，返回那句报错。
 //
-// 走法、取边顺序、防御性出口都与旧实现逐字相同（`depGraph.out` 就是照它建的），
-// 所以第一条见证与 `Validate` 今天报的那条一模一样。
-func (g *Graph) cycleWitness(d depGraph, active []bool) (error, []int) {
-	indeg := make([]int, len(g.nodes))
-	for ci := range g.nodes {
-		if !active[ci] {
-			continue
-		}
-		for _, e := range d.in[ci] {
-			if active[e.from] {
-				indeg[ci]++
-			}
+// 走法：从分量里声明序最靠前的节点出发，只走**留在分量内**的第一条出边，走回走过的
+// 节点即为一个真环。强连通的定义保证分量内每个节点都有分量内的出边，所以一定闭合。
+//
+// 走不回去就**不报**——宁可不报，也不能拼一个不存在的环出去。旧实现顺着「第一条出边」
+// 走出了环、走到一个没有出边的节点，还把路径首尾相接报成 `A -> C -> A ()`（括号里是
+// 空的，因为一条边都没轮到），而真正的环 A↔B 被它盖掉了；这条判据现在由「只在分量内
+// 走」保证，防御性出口留着只为不做出格的事。
+func (g *Graph) sccWitness(d depGraph, comp []int) error {
+	inComp := make([]bool, len(g.nodes))
+	start := comp[0]
+	for _, i := range comp {
+		inComp[i] = true
+		if i < start {
+			start = i // 声明序最靠前的那一个
 		}
 	}
 
-	// Kahn 剥叶。
-	queue := make([]int, 0, len(g.nodes))
-	for i := range g.nodes {
-		if active[i] && indeg[i] == 0 {
-			queue = append(queue, i)
-		}
-	}
-	for len(queue) > 0 {
-		i := queue[0]
-		queue = queue[1:]
-		for _, e := range d.out[i] {
-			if !active[e.to] {
-				continue
-			}
-			indeg[e.to]--
-			if indeg[e.to] == 0 {
-				queue = append(queue, e.to)
-			}
-		}
-	}
-	start := -1
-	for i := range g.nodes {
-		if active[i] && indeg[i] > 0 {
-			start = i
-			break
-		}
-	}
-	if start < 0 {
-		return nil, nil
-	}
-
-	// 走出一条环：indeg 不为 0 的节点必有出边（否则它会被剥掉），节点数有限，
-	// 所以沿 out 一直走必然撞回走过的节点。
 	var path []int
 	var keys []string // keys[i] 是 path[i] → path[i+1] 那条边
-	pos := make(map[int]int, len(g.nodes))
+	pos := make(map[int]int, len(comp))
 	cur := start
 	for {
-		p, seen := pos[cur]
-		if seen {
+		if p, seen := pos[cur]; seen {
 			path, keys = path[p:], keys[p:]
 			break
 		}
@@ -145,14 +105,13 @@ func (g *Graph) cycleWitness(d depGraph, active []bool) (error, []int) {
 		path = append(path, cur)
 		next, key := -1, ""
 		for _, e := range d.out[cur] {
-			if active[e.to] {
+			if inComp[e.to] {
 				next, key = e.to, e.keys[0]
 				break
 			}
 		}
-		if next < 0 { // 防御性出口：理论上到不了
-			keys = keys[:len(path)-1]
-			break
+		if next < 0 {
+			return nil // 防御性：环分量里不该出现（见上）
 		}
 		keys = append(keys, key)
 		cur = next
@@ -164,17 +123,15 @@ func (g *Graph) cycleWitness(d depGraph, active []bool) (error, []int) {
 	}
 	ids = append(ids, g.nodes[path[0]].id) // 合上环
 
-	// 「谁在等谁」：path[i] 等的是走进它的那条边（上一条）上的 Key。
+	// 「谁在等谁」：path[i] 等的是走进它的那条边（上一条）上的 Key。走法保证了
+	// len(keys) == len(path)（每前进一步就记下那条边），所以这里不必再兜底。
 	waits := make([]string, 0, len(path))
 	for i, idx := range path {
 		prev := (i - 1 + len(path)) % len(path)
-		if prev >= len(keys) {
-			break
-		}
 		waits = append(waits, fmt.Sprintf("%s requires %q", g.nodes[idx].id, keys[prev]))
 	}
 	return fmt.Errorf("pulse: dependency cycle: %s (%s)",
-		strings.Join(ids, " -> "), strings.Join(waits, ", ")), path
+		strings.Join(ids, " -> "), strings.Join(waits, ", "))
 }
 
 // problemsStreamLocked 是流式糖（Produce / Consume / Tee）在 Start 的静态校验。

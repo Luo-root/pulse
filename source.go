@@ -51,21 +51,24 @@ func (s source) same(t source) bool {
 	return s.kind == sourceSeed || s.nodeID == t.nodeID
 }
 
-// String 是报错用的来源名：外部来源输出 `seed`，节点来源输出节点 id。
-//
-// 节点 id 恰好是 `seed` 时输出 `node "seed"`——否则报错里两个 `seed` 无从分辨，
-// 而这条路径正是这次修的那个 bug。普通场景的文案逐字不变（那种撞名此前会被**错误
-// 接受**，根本不报错，所以没有「旧文案」要保）。
-func (s source) String() string {
-	switch s.kind {
+// sourceName 是来源名的**唯一**实现（内部 `source` 与公开 `pulse.Source` 共用同一条
+// 规则）：外部来源是 `seed`，节点来源是节点 id，**节点 id 恰好是 `seed` 时写成
+// `node "seed"`**——否则两种来源在日志里长得一模一样，而「分得开」正是这个文件开头
+// 说的那两处静默错误要修的东西。
+func sourceName(kind sourceKind, nodeID string) string {
+	switch kind {
 	case sourceSeed:
 		return "seed"
 	case sourceNode:
-		if s.nodeID == "seed" {
+		if nodeID == "seed" {
 			return `node "seed"`
 		}
-		return s.nodeID
+		return nodeID
 	default:
 		return "none"
 	}
 }
+
+// String 是报错用的来源名。普通场景的文案逐字不变；节点 id 恰好是 `seed` 时输出
+// `node "seed"`——那种撞名此前会被**错误接受**，根本不报错，所以没有「旧文案」要保。
+func (s source) String() string { return sourceName(s.kind, s.nodeID) }

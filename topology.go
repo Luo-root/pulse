@@ -27,15 +27,19 @@ type Source struct {
 	NodeID string // 仅 Kind == SourceNode 时有效
 }
 
-// String 是给人看的来源名：节点 id / `seed` / `none`。
+// String 是给人看的来源名：节点来源是节点 id、外部来源是 `seed`、没有来源是 `none`。
+//
+// 节点 id 恰好是 `seed` 时写成 `node "seed"`——与引擎内部报错里的规则是**同一份**
+// （`sourceName`）：两种来源在日志与格式化输出里也必须分得开，否则阶段零修掉的那个
+// 歧义（节点 id 与外部来源撞名）会从格式化出口绕回来（评审在 #308 上点的这条）。
 func (s Source) String() string {
 	switch s.Kind {
-	case SourceNode:
-		return s.NodeID
 	case SourceSeed:
-		return "seed"
+		return sourceName(sourceSeed, "")
+	case SourceNode:
+		return sourceName(sourceNode, s.NodeID)
 	default:
-		return "none"
+		return sourceName(sourceNone, "")
 	}
 }
 
@@ -115,6 +119,9 @@ type Topology struct {
 	Order []string
 	// Problems 是**静态可判定**的毛病，一次给全（`Validate` 只报第一条）。
 	// 顺序固定：来源 → 依赖环 → 流式。空 = 没毛病。
+	//
+	// 依赖环那一类：**每个环分量（强连通分量）一条**具体见证，不是「每条简单环一条」
+	// （简单环的数量可能指数增长），报的也一定是**真环**——只是环下游的节点不算环。
 	//
 	// 它覆盖的是引擎能从**已装入的图**推导出来的那部分；声明式装配（YAML）的
 	// 结构 / 绑定诊断归 `pulse/yaml`，不在这里重复。
@@ -278,6 +285,71 @@ func (d depGraph) order(nodes []*Node) []string {
 			if indeg[e.to] == 0 {
 				queue = append(queue, e.to)
 			}
+		}
+	}
+	return out
+}
+
+// cyclicSCCs 按**声明序**求强连通分量（Tarjan），只返回**环分量**（节点数 ≥ 2）。
+//
+// 环见证需要它：只有分量能回答「这几个节点是不是真在一个环里」。顺着「第一条出边」
+// 走是不够的——旧实现就走出了环、走到一个没有出边的节点，还把路径首尾相接报成一句
+// 不存在的环（实测 `pulse: dependency cycle: A -> C -> A ()`）。分量内每个节点都必有
+// 分量内的出边（强连通的定义），所以分量内的走法一定闭合。
+//
+// 自环在 `Add` 就被拒（同一节点不能既 `Requires` 又 `Provides` 同一个 Key），所以
+// 「节点数 ≥ 2」就是「有环」的完整判据。
+//
+// 顺序：Tarjan 的弹出顺序（分量之间反向的拓扑序），由声明序与出边顺序唯一确定。
+func (d depGraph) cyclicSCCs() [][]int {
+	n := len(d.in)
+	index := make([]int, n)
+	low := make([]int, n)
+	onStack := make([]bool, n)
+	seq := 0
+	var stack []int
+	var out [][]int
+
+	var strongConnect func(v int)
+	strongConnect = func(v int) {
+		seq++
+		index[v], low[v] = seq, seq
+		stack = append(stack, v)
+		onStack[v] = true
+		for _, e := range d.out[v] {
+			w := e.to
+			switch {
+			case index[w] == 0:
+				strongConnect(w)
+				if low[w] < low[v] {
+					low[v] = low[w]
+				}
+			case onStack[w]:
+				if index[w] < low[v] {
+					low[v] = index[w]
+				}
+			}
+		}
+		if low[v] != index[v] {
+			return
+		}
+		var comp []int
+		for {
+			w := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			onStack[w] = false
+			comp = append(comp, w)
+			if w == v {
+				break
+			}
+		}
+		if len(comp) >= 2 {
+			out = append(out, comp)
+		}
+	}
+	for v := range d.in {
+		if index[v] == 0 {
+			strongConnect(v)
 		}
 	}
 	return out
