@@ -104,8 +104,9 @@ func TestNodeNamedSeedDoesNotFakeCycle(t *testing.T) {
 	}
 }
 
-// 冲突文案：普通场景**逐字不变**；节点恰好叫 `seed` 时写成 `node "seed"`，否则报错里
-// 两个 `seed` 无从分辨——而那正是这次修的路径。
+// 冲突文案：来源名一律**带类型**——外部来源 `seed`、节点来源 `node %q`。节点 id 是任意
+// 用户字符串，所以「不带类型前缀的裸 id」一定存在撞名的写法（见
+// TestSourceNameDistinguishesKinds），报错里必须分得清谁在跟谁抢。
 func TestSourceConflictText(t *testing.T) {
 	provide := func(*RunCtx) error { return nil }
 	cases := []struct {
@@ -114,8 +115,8 @@ func TestSourceConflictText(t *testing.T) {
 		run  func(t *testing.T) error
 	}{
 		{
-			name: "Add 普通节点后 Seed：报节点 id（旧文案）",
-			want: `pulse: key already has a source: "src.txt.a" already sourced by load`,
+			name: "Add 普通节点后 Seed：已有来源是那个节点，写成 node \"load\"",
+			want: `pulse: key already has a source: "src.txt.a" already sourced by node "load"`,
 			run: func(t *testing.T) error {
 				k := NewKey[string]("src.txt.a")
 				g := mustNew(t, context.Background(), "P")
@@ -124,7 +125,7 @@ func TestSourceConflictText(t *testing.T) {
 			},
 		},
 		{
-			name: "Seed 后 Add 普通节点：报外部来源 seed（旧文案）",
+			name: "Seed 后 Add 普通节点：已有来源是外部，写成 seed",
 			want: `pulse: key already has a source: "src.txt.b" already sourced by seed`,
 			run: func(t *testing.T) error {
 				k := NewKey[string]("src.txt.b")
@@ -136,7 +137,7 @@ func TestSourceConflictText(t *testing.T) {
 			},
 		},
 		{
-			name: "Add 节点 seed 后 Seed：已有来源是**节点**，写成 node \"seed\"",
+			name: "Add 节点 seed 后 Seed：节点同样写成 node \"seed\"——统一格式，不是特判",
 			want: `pulse: key already has a source: "src.txt.c" already sourced by node "seed"`,
 			run: func(t *testing.T) error {
 				k := NewKey[string]("src.txt.c")
@@ -169,6 +170,36 @@ func TestSourceConflictText(t *testing.T) {
 		if err.Error() != c.want {
 			t.Fatalf("%s：文案不对\n got %s\nwant %s", c.name, err.Error(), c.want)
 		}
+	}
+}
+
+// 来源名必须**两两可分**：节点 id 是任意用户字符串，只给某个哨兵名字开小灶是不够的
+// （实测：节点 id 叫 `none` 会与「没有来源」的 `none` 撞，字面量 id `node "seed"` 会与
+// 节点 `seed` 的输出撞）。这里把几种名字钉死，并断言两两不同——「报错里分得开」正是
+// 这次修的那两处静默错误在**文案层**的对应物。
+func TestSourceNameDistinguishesKinds(t *testing.T) {
+	cases := []struct {
+		name string
+		src  source
+		want string
+	}{
+		{"外部来源", source{kind: sourceSeed}, "seed"},
+		{"普通节点", source{kind: sourceNode, nodeID: "load"}, `node "load"`},
+		{"节点 id 恰好是 seed", source{kind: sourceNode, nodeID: "seed"}, `node "seed"`},
+		{"节点 id 恰好是 none", source{kind: sourceNode, nodeID: "none"}, `node "none"`},
+		{"节点 id 本身长成 node \"seed\"", source{kind: sourceNode, nodeID: `node "seed"`}, `node "node \"seed\""`},
+		{"没有来源（零值）", source{}, "none"},
+	}
+	seen := map[string]string{}
+	for _, c := range cases {
+		got := c.src.String()
+		if got != c.want {
+			t.Fatalf("%s：String() = %q，want %q", c.name, got, c.want)
+		}
+		if prev, dup := seen[got]; dup {
+			t.Fatalf("%s 与 %s 都写成 %q——来源名必须两两可分", c.name, prev, got)
+		}
+		seen[got] = c.name
 	}
 }
 
