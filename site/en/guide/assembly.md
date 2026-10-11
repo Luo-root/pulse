@@ -197,6 +197,7 @@ Other edges:
 - **YAML only**: there is no JSON entry point (one topology keeps one dialect);
 - An empty `nodes`, a node missing `id` / `uses`, or a `uses` pointing at an unregistered factory all fail at `Load` time (the latter two name the node id);
 - `LoadOptions.GraphID` is required — the graph identity is observation's attribution key;
+- **The budget goes through `LoadOptions.MaxRunning` only**: it is the budget of the **whole declaration tree** (`<=0` = unlimited, the default). Do not also put `pulse.WithMaxRunning` into `LoadOptions.Graph` — when both are given the rule is "`MaxRunning > 0` overrides whatever is in `Graph` (even when smaller), and `<= 0` leaves it alone" (`int`'s zero value cannot tell "not set" from "set to 0", so `MaxRunning: 0` cannot mean "unlimited"); the seven combinations are pinned by `TestLoadOptionsQuotaPrecedence`;
 - This is the only package with a third-party dependency (`gopkg.in/yaml.v3`); neither the root package nor `observe` depends on it.
 
 Package-level API and examples: [yaml package docs](/en/packages/yaml/).

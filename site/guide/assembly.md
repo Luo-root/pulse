@@ -197,6 +197,7 @@ plan.Apply(g, func(from yaml.SeedFrom) (any, error) {
 - **YAML only**：不提供 JSON 入口（同一种拓扑只维护一种方言）；
 - `nodes` 为空、节点缺 `id` / `uses`、`uses` 指向未注册的工厂，都在 `Load` 期报错（后者带上节点 id）；
 - `LoadOptions.GraphID` 必填——图身份是观测的归因键；
+- **额度只走 `LoadOptions.MaxRunning`**：它是**整棵声明树**的额度（`<=0` = 不限，默认）。不要在 `LoadOptions.Graph` 里再放 `pulse.WithMaxRunning`——两个都写时按「`MaxRunning > 0` 压过 `Graph` 里那份（哪怕更小），`<= 0` 不动它」合（`int` 的零值分不出「没写」与「写了 0」，所以 `MaxRunning: 0` 表达不了「整棵树不限」）；七档组合由包内用例 `TestLoadOptionsQuotaPrecedence` 钉住；
 - 本包是唯一带第三方依赖的包（`gopkg.in/yaml.v3`）；根包与 `observe` 都不依赖它。
 
 包级 API 与示例见 [yaml 包文档](/packages/yaml/)。
