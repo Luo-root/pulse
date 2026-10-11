@@ -53,7 +53,7 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 if err != nil {
 	return err
 }
-g, err := pulse.New(ctx, "docs-pipeline", pulse.WithObserver(obs))
+g, err := pulse.New(ctx, "docs-pipeline", "docs summary pipeline", pulse.WithObserver(obs))
 ```
 
 Real output for that same graph (a single node; timestamps, trace ids and durations vary per run):

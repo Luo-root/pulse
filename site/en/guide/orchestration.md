@@ -29,7 +29,7 @@ A graph's inputs have only two origins:
 _ = pulse.Seed(g, Topic, "slot contract")
 
 // 2) Source node: no Requires; it runs as soon as it is submitted
-_ = g.Add(pulse.NewNode("zh", nil, pulse.Provides(Words), func(rc *pulse.RunCtx) error {
+_ = g.Add(pulse.NewNode("zh", "seed the word list", nil, pulse.Provides(Words), func(rc *pulse.RunCtx) error {
 	return pulse.Set(rc, Words, []string{"data", "arrival", "is", "scheduling"})
 }))
 ```
@@ -41,7 +41,7 @@ _ = g.Add(pulse.NewNode("zh", nil, pulse.Provides(Words), func(rc *pulse.RunCtx)
 fan-out is simply "several nodes writing different Keys", fan-in is simply "one node `Requires` several Keys" — **no extra primitive is involved**. For inputs of more than one type, splice one declaration together with `Deps` (`Requires[T]` takes Keys of a single type at a time):
 
 ```go
-_ = g.Add(pulse.NewNode("join",
+_ = g.Add(pulse.NewNode("join", "join the words with the label",
 	pulse.Deps(pulse.Requires(Words), pulse.Requires(Label)),
 	pulse.Provides(Joined),
 	func(rc *pulse.RunCtx) error {
@@ -111,10 +111,10 @@ Both callbacks receive **this node's own `*RunCtx`** as their first parameter: a
 A graph can be embedded into a larger graph as **a single node** — flows compose in layers instead of growing into one ever-wider flat graph.
 
 ```go
-err := pulse.Sub(parent, "step1",
+err := pulse.Sub(parent, "step1", "one step handed to a child graph",
 	[]pulse.SubBind{pulse.In(topic, childIn), pulse.Out(childOut, summary)},
 	func(sc *pulse.SubCtx) (*pulse.Graph, error) {
-		child, err := pulse.New(sc.Context(), sc.GraphID(), pulse.WithMaxRunning(2))
+		child, err := pulse.New(sc.Context(), sc.GraphID(), "child graph", pulse.WithMaxRunning(2))
 		if err != nil {
 			return nil, err
 		}
@@ -200,7 +200,7 @@ It matters to tell the two terminal states apart: **the node that wrote the skip
 ## Timeout
 
 ```go
-pulse.NewNode("wait-forever", requires, provides, run, pulse.Timeout(50*time.Millisecond))
+pulse.NewNode("wait-forever", "waits until the timeout fires", requires, provides, run, pulse.Timeout(50*time.Millisecond))
 ```
 
 The aspect wraps the whole "**wait for input + execute**" span, so a timeout can interrupt a node that is **still waiting for data**, not just the execution. The shape here is "a producer exists, but it is slower than the timeout" — upstream will write eventually, it just has not yet. The "never arrives" graph cannot even be built: a Key nobody writes is rejected by `Start()`.
@@ -216,7 +216,7 @@ A timeout is **cooperative**: on expiry it cancels this layer's ctx and then **w
 ## Retry
 
 ```go
-pulse.NewNode("flaky", nil, pulse.Provides(Topic), run, pulse.Retry(3, 10*time.Millisecond))
+pulse.NewNode("flaky", "fails occasionally: shows Retry", nil, pulse.Provides(Topic), run, pulse.Retry(3, 10*time.Millisecond))
 ```
 
 `Retry` retries **execution errors** only. Skips are **not** retried — a skip is arrival, not failure; cancellation during the waiting phase is not retried either. Measured: the third attempt succeeds:
@@ -249,7 +249,7 @@ The same `canceled` covers the other two ways "this run was torn down from outsi
 ## Rate limiting
 
 ```go
-g, _ := pulse.New(ctx, "demo", pulse.WithMaxRunning(4))
+g, _ := pulse.New(ctx, "demo", "demo graph", pulse.WithMaxRunning(4))
 ```
 
 `WithMaxRunning(n)` caps how many nodes are **doing work inside `Run` at the same time** (the `Sub` step does not count: from start to finish it is waiting for the child), and that budget is **shared by the whole graph tree**: a child that declares nothing inherits the parent's share — so **as long as no layer declares its own**, declaring 4 on the root means at most 4 nodes of the tree are working at once. A parent's node and a child's node compete for the **same** share and never yield to each other: with budget to spare they run concurrently, and only then do they queue; while the `Sub` steps wait, an observer sees **more than n** rows in `running`, which is not concurrency exceeding the budget. Declaring `WithMaxRunning(m)` inside a child makes **that branch leave the parent's table and run on its own** (`m<=0` = unlimited there, which is also leaving) — **not** "one more, tighter cap on top of the parent's": with a parent of 1 and a child of 2, that branch still runs 2 at a time. Declarative assembly takes the tree-wide budget as `LoadOptions.MaxRunning`. **Waiting for data does not take a slot** — otherwise rate limiting would degrade into deadlock (every node holding a slot is waiting for data, and nobody can make progress).

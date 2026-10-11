@@ -46,7 +46,7 @@ var Docs    = pulse.NewKey[[]Doc]("docs")
 节点**不声明下一个节点是谁**，只声明读哪些 Key、写哪些 Key：
 
 ```go
-pulse.NewNode("summarize",
+pulse.NewNode("summarize", "把 docs 折成一句摘要",
     pulse.Requires(Docs),     // AND 前置：全部输入到达（就绪或跳过）才判门
     pulse.Provides(Summary),  // 本节点会写出的槽位
     func(rc *pulse.RunCtx) error {
@@ -311,7 +311,7 @@ func main() {
 	out := pulse.NewKey[string]("probe.out")
 
 	run := func(swapped bool) (byPos, byKey string) {
-		g, err := pulse.New(context.Background(), "probe")
+		g, err := pulse.New(context.Background(), "probe", "Keys 顺序对照探针")
 		if err != nil {
 			panic(err)
 		}
@@ -415,10 +415,10 @@ return pulse.Only(rc, OutB, w)
 一张图可以当**一个节点**嵌进更大的图，于是流程按层组合，而不是铺成一张越来越大的平图。手工搭今天就能跑（父节点里 `pulse.New` + 桥接 + `child.Run()`），缺的是把建图 / 桥接 / 取消域 / 观察者四件事收进一次调用：
 
 ```go
-err := pulse.Sub(parent, "step1",
+err := pulse.Sub(parent, "step1", "交给子图跑的一步",
     []pulse.SubBind{pulse.In(topic, childIn), pulse.Out(childOut, summary)},
     func(sc *pulse.SubCtx) (*pulse.Graph, error) {
-        child, err := pulse.New(sc.Context(), sc.GraphID(), pulse.WithMaxRunning(2))
+        child, err := pulse.New(sc.Context(), sc.GraphID(), "子图", pulse.WithMaxRunning(2))
         // 不声明就继承父图那份名额；这里声明了 = 这一子树换成自己这份
         if err != nil {
             return nil, err
@@ -577,7 +577,7 @@ type Sink interface{ Write(r Record) }
 obs, err := observe.NewRecordObserver(observe.ObserveConfig{
     Sink: sink, HostID: "host-1", TraceID: observe.NewTraceID(),
 })
-g, _ := pulse.New(ctx, "demo", pulse.WithObserver(obs))
+g, _ := pulse.New(ctx, "demo", "演示图", pulse.WithObserver(obs))
 ```
 
 单实例可复用于多图并发：内部按 `(graphID, nodeID)` 记账，同名节点跨图不串扰。

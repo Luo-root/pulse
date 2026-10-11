@@ -33,7 +33,7 @@ var (
 )
 
 func main() {
-	g, err := pulse.New(context.Background(), "docs-pipeline")
+	g, err := pulse.New(context.Background(), "docs-pipeline", "docs summary pipeline")
 	if err != nil {
 		panic(err)
 	}
@@ -42,7 +42,7 @@ func main() {
 	_ = pulse.Seed(g, Docs, []string{"pulse only orchestrates and observes", "slot tri-state: skip is arrival"})
 
 	// summarize enters Run only after docs has arrived.
-	must(g.Add(pulse.NewNode("summarize",
+	must(g.Add(pulse.NewNode("summarize", "fold docs into a summary",
 		pulse.Requires(Docs),
 		pulse.Provides(Summary),
 		func(rc *pulse.RunCtx) error {
@@ -55,7 +55,7 @@ func main() {
 
 	// report takes the result itself: the Graph has no public slot read after Run, so outputs belong to the caller.
 	var report string
-	must(g.Add(pulse.NewNode("report",
+	must(g.Add(pulse.NewNode("report", "wrap the summary into a report",
 		pulse.Requires(Summary),
 		pulse.Provides(Report),
 		func(rc *pulse.RunCtx) error {
@@ -92,7 +92,7 @@ All four basic concepts appear in this code:
 |---|---|
 | `pulse.NewKey[T]("docs")` | **Key**: a typed data slot. The name is for diagnostics and YAML reconciliation; the type gives compile-time safety. The same name must always be registered with the same `T` |
 | `pulse.Seed(g, Docs, …)` | **Seed**: external input written before the run — a seed and a node are both sources for a Key, but each Key allows only one source (both producing it → `ErrDuplicateSource`) |
-| `pulse.NewNode(id, Requires, Provides, run)` | **Node**: declares only which slots it reads and which it writes. It does **not** declare who the next node is |
+| `pulse.NewNode(id, description, Requires, Provides, run)` | **Node**: declares only which slots it reads and which it writes. It does **not** declare who the next node is |
 | `g.Run()` | **Graph**: submits all nodes and blocks until all have terminated; returns the first error, **excluding skips**; a cancellation counts only if a node sees it |
 
 ## Data arrival is scheduling
@@ -122,7 +122,7 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 	HostID:  "quickstart",
 	TraceID: observe.NewTraceID(),
 })
-g, err := pulse.New(ctx, "docs-pipeline", pulse.WithObserver(obs))
+g, err := pulse.New(ctx, "docs-pipeline", "docs summary pipeline", pulse.WithObserver(obs))
 ```
 
 With those three lines added, the real output of the same graph (two run-level records bracketing four node records; timestamps / trace / durations vary per run):

@@ -53,7 +53,7 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 if err != nil {
 	return err
 }
-g, err := pulse.New(ctx, "docs-pipeline", pulse.WithObserver(obs))
+g, err := pulse.New(ctx, "docs-pipeline", "文档摘要流水线", pulse.WithObserver(obs))
 ```
 
 同一个图（单节点）的真实输出（时间戳 / trace / 耗时随运行变化）：

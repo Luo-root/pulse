@@ -17,7 +17,7 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 	HostID:  "host-1",             // host identity: stable across runs; with TraceID it means "who + which run"
 	TraceID: observe.NewTraceID(), // run-time identity, single generation source
 })
-g, err := pulse.New(ctx, "demo", pulse.WithObserver(obs))
+g, err := pulse.New(ctx, "demo", "demo graph", pulse.WithObserver(obs))
 // … add nodes, seed, run
 ```
 

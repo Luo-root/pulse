@@ -54,13 +54,13 @@ var Docs = pulse.NewKey[[]string]("docs")
 var Summary = pulse.NewKey[string]("summary")
 
 func main() {
-	g, err := pulse.New(context.Background(), "demo")
+	g, err := pulse.New(context.Background(), "demo", "演示图")
 	if err != nil {
 		panic(err)
 	}
 	_ = pulse.Seed(g, Docs, []string{"a", "b"})
 
-	_ = g.Add(pulse.NewNode("summarize",
+	_ = g.Add(pulse.NewNode("summarize", "把 docs 折成一句摘要",
 		pulse.Requires(Docs),
 		pulse.Provides(Summary),
 		func(rc *pulse.RunCtx) error {
