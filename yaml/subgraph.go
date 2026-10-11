@@ -227,10 +227,14 @@ func subBinds(n NodeSpec, graphName string, child GraphSpec, reg *pulse.Registry
 func buildSub(sc *pulse.SubCtx, graphName string, spec GraphSpec,
 	graphs map[string]GraphSpec, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, error) {
 
-	childOpts := append([]pulse.Option(nil), opts.Graph...)
+	// 子图**不**再拿 `opts.Graph`：那批选项里能影响子图的三件（观察者 / 名额 / 图级
+	// 切面）都靠**继承**往下走（见各自的 godoc），逐层再声明一遍就成了「每层各一份」
+	// ——切面更糟，会一层叠一遍（两层两份、三层三份）。`Option` 是不透明闭包、没法挑着
+	// 传，所以这里只传「该按层不同」的那一条：出口。
+	childOpts := make([]pulse.Option, 0, 1)
 	if opts.ObserverFor != nil {
 		if o := opts.ObserverFor(sc.Path()); o != nil {
-			childOpts = append(childOpts, pulse.WithObserver(o)) // 后写覆盖 opts.Graph 里的那条
+			childOpts = append(childOpts, pulse.WithObserver(o))
 		}
 	}
 	child, err := pulse.New(sc.Context(), sc.GraphID(), spec.Description, childOpts...)

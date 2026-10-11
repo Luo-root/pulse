@@ -139,7 +139,7 @@ err := pulse.Sub(parent, "step1",
 
 Terminal states map exactly like hand-written nesting: child succeeds → this node succeeds (ready outputs are `Set`, skipped ones `Skip`); **every output skipped** → this node finishes as `skipped` (not a failure); child fails → this node fails and the **first error propagates untouched** (`errors.Is` holds); cancellation → the child sees it.
 
-**Slots are per graph**: the parent's `WithMaxRunning` governs *how many child graphs run at once* (the `Sub` node holds one parent slot for the whole child run), while concurrency inside the child is governed by the child's own `WithMaxRunning` — so nesting **exceeds the parent's cap**. Measured: parent `maxRun=1` + child `maxRun=2` → peak of **3** nodes inside `Run` at the same time (1 parent + 2 child).
+**Slots are shared tree-wide**: `WithMaxRunning(n)` caps how many nodes of the whole tree work inside `Run` at once — a child that declares nothing inherits the parent's share, and the `Sub` step takes no slot of its own (from start to finish it is waiting for the child). Declaring `WithMaxRunning(m)` inside a child makes **that branch leave the parent's table and run on its own** (`m<=0` = unlimited there, which is also leaving) — it is **not** "one more, tighter cap on top of the parent's": with parent `n=1` and child `m=2`, that branch can still run 2 at a time. Declarative assembly takes the tree-wide budget as `LoadOptions.MaxRunning`.
 
 **A child graph is one-shot**: `build` must return a new graph on every run. Build `pulse.New` outside the closure and reuse it, and you get a sentence that tells you how to fix it (`ErrGraphStarted` stays in the error chain):
 
@@ -148,7 +148,7 @@ pulse: Sub "b": the child graph was already started:
 a graph runs once, so build must return a new one on every run (pulse: graph already started)
 ```
 
-`aspects` land on **the parent-side node** — `pulse.Timeout(30*time.Second)` puts a time limit on the whole child graph.
+`aspects` land on **the parent-side node** — `pulse.Timeout(30*time.Second)` puts a time limit on the whole child graph. A parent's **graph-level** aspects (`WithAspects`) are also **inherited into the child** (prepended outside the child node's own aspects; `WithoutAspects()` opts out) — but do not use that to bound a subtree, see [Aspect order](#aspect-order).
 
 ## Streaming: Produce / Consume / Tee
 
@@ -252,7 +252,7 @@ The same `canceled` covers the other two ways "this run was torn down from outsi
 g, _ := pulse.New(ctx, "demo", pulse.WithMaxRunning(4))
 ```
 
-`WithMaxRunning(n)` caps how many nodes are **inside `Run` at the same time**. **Waiting for data does not take a slot** — otherwise rate limiting would degrade into deadlock (every node holding a slot is waiting for data, and nobody can make progress).
+`WithMaxRunning(n)` caps how many nodes are **doing work inside `Run` at the same time** (the `Sub` step does not count: from start to finish it is waiting for the child), and that budget is **shared by the whole graph tree**: a child that declares nothing inherits the parent's share — so **as long as no layer declares its own**, declaring 4 on the root means at most 4 nodes of the tree are working at once. A parent's node and a child's node compete for the **same** share and never yield to each other: with budget to spare they run concurrently, and only then do they queue; while the `Sub` steps wait, an observer sees **more than n** rows in `running`, which is not concurrency exceeding the budget. Declaring `WithMaxRunning(m)` inside a child makes **that branch leave the parent's table and run on its own** (`m<=0` = unlimited there, which is also leaving) — **not** "one more, tighter cap on top of the parent's": with a parent of 1 and a child of 2, that branch still runs 2 at a time. Declarative assembly takes the tree-wide budget as `LoadOptions.MaxRunning`. **Waiting for data does not take a slot** — otherwise rate limiting would degrade into deadlock (every node holding a slot is waiting for data, and nobody can make progress).
 
 **Queuing for a slot is interruptible too**: when the ctx is canceled (or a first error cancels the graph), nodes still queued never enter `Run` and finish as `canceled` — with only their wait record — so a freed slot is never handed to an already-canceled node.
 
@@ -263,6 +263,12 @@ global aspects (pulse.WithAspects) → node aspects (NewNode's aspects…) → t
 ```
 
 Whatever is listed first is further outside. So `pulse.Timeout(d)` placed ahead of `pulse.Retry(...)` gives you "the **total** duration is bounded, each attempt retries on its own" — timeout outside, retry inside. Written the other way round it is "each attempt gets its own limit".
+
+**Across graphs**: a parent's graph-level aspects are **inherited into the child**, prepended **outside** the child node's own aspects (stacked, not replaced). So in a three-level nest the innermost node carries the tree's graph-level aspects (prepended) plus its own — it does **not** stack once per level. A child that wants none of the parent's batches writes `pulse.WithoutAspects()` (aspects the child declares itself still apply; writing only that means no graph-level aspects at this layer at all).
+
+**Use graph-level aspects sparingly; prefer node-level ones.** `WithAspects` lands on **every** node of the layer at once — including the `Sub` step (which is really a whole child graph behind it) — and it keeps stacking onto every node inside the child. `Timeout` is the aspect most easily bitten by that mismatch of scale: one graph-level `Timeout(d)` is at the same time "each ordinary node of the parent's limit", "the `Sub` step's limit (i.e. the whole child graph)" and "each node inside the child's limit" — three things that are not the same order of magnitude, sharing one `d`, while **a child graph times out far more easily than a plain node**. Put a limit on the one node that needs it: `NewNode(..., pulse.Timeout(...))` for an ordinary node, `Sub(..., pulse.Timeout(...))` for a whole child graph. Keep graph-level aspects for the ones you genuinely want applied uniformly across the tree (tracing / metrics). Note also that **cutting only detaches "inheritance onto the child's nodes"**: the parent's own `Sub` step is still wrapped by the parent's graph-level aspects — "this subtree has to run long" cannot be fixed by cutting alone.
+
+Two accounts that are easy to get wrong: (1) the child's **total** time is cut short by the `d` on the `Sub` step first — it does **not** become "`d` per node, `N*d` in total": the inherited `d` does wrap every child node, but it is only a segment inside that outer `d`; (2) when slots are tight, **a timeout can fire before the child ever gets a slot** — the `Sub` step takes no slot, yet its `d` starts ticking the moment it enters `Run`, while the child's nodes are still queued for quota.
 
 **The latch**: a single node's `Run` must not be entered concurrently (violating it → `ErrNextCalledTwice`), yet sequential re-entry is legal — that is exactly what `Retry` relies on.
 

@@ -130,16 +130,46 @@ func (p *SeedPlan) Apply(g *pulse.Graph, resolve func(SeedFrom) (any, error)) er
 type LoadOptions struct {
 	Context context.Context
 	GraphID string
-	// Graph 是根图的选项（WithObserver / WithMaxRunning / WithAspects…）。
-	// 子图也拿同一批选项 —— 所以挂在这里的观察者会到每一层。
+	// Graph 是**根图**的选项（WithObserver / WithAspects / WithMaxRunning…）。
+	// 子图**不再拿这批**——三个图级选项都靠**继承**往下走（观察者、名额、图级切面），
+	// 所以「挂在这里的观察者会到每一层」这件事仍然成立，只是走的是继承而不是逐层声明。
+	//
+	// 之所以不再逐层传：`Option` 是不透明闭包，没法挑着传；而逐层再声明一遍会把
+	// **图级切面**叠成每层一份（两层两份、三层三份，见 pulse.WithAspects）。曾经在这里
+	// 放 `WithMaxRunning` 会变成「每层各一份」，现在它与下面的 MaxRunning 等价——两个
+	// 都写时 **MaxRunning 生效**（它拼在这批的最后）。
 	Graph []pulse.Option
+	// MaxRunning 是**整棵声明树**的并发额度（<=0 = 无限，默认）：根图拿它建名额，
+	// 子图在运行期**继承同一份**（引擎的默认继承，`Sub` 那一步自己不吃名额），
+	// 所以这里写的是「整棵树同时最多几个节点在干活」，不是「每层各几个」。
+	MaxRunning int
 	// ObserverFor 按层建出口：声明式装配里每一层是另一张图，而一个出口实例
 	// 只能带一条 `pulse.path`，所以「按层各建一个」得由宿主决定。path 是这一层
 	// 的路径（引擎给：一层子图是它的节点 id，再深一层是 `outer/inner`），
 	// 宿主拿它填 observe.ObserveConfig.Path 就能把层级写进记录。
 	//
-	// 返回 nil = 这一层按 Graph 里挂的那条走（子图会继承父图的观察者）。
+	// 返回 nil = 这一层按继承走（子图会继承父图的观察者）。
 	ObserverFor func(path string) pulse.Observer
+}
+
+// checkGraph 起一张**只装不跑**的校验图，并且带上与真图**同一份额度**。
+//
+// 额度必须一起给：`Start` / `Validate` 的流式判据按**有效容量**判
+// （`checkStreamLocked` 比的是容量与这一层同时活着的流节点数），校验图没有额度时那道
+// 检查形同虚设——于是「额度养不起这条流」会装图全过、跑到那一层 `Start` 才爆。校验图
+// 与真图的选项必须是**同一次推导**出来的（与函数末尾那份 `rootOpts` 一致），两处各写
+// 一遍就会漂。
+//
+// 今天 YAML 还表达不了流式节点（`Produce` / `Consume` / `Tee` 是 Go 糖，跑在工厂里面），
+// 所以这条差异在公开面上暂时不可观测；它是给「YAML 也能声明流」那天留的闸门，也顺手
+// 钉住「校验图 = 真图的选项」这件事（包内用例 `TestCheckGraphCarriesCapacity`）。
+func checkGraph(id string, opts LoadOptions) (*pulse.Graph, error) {
+	o := append([]pulse.Option(nil), opts.Graph...)
+	if opts.MaxRunning > 0 {
+		o = append(o, pulse.WithMaxRunning(opts.MaxRunning))
+	}
+	// 描述给空串：校验图只装不跑，装完就丢，任何出口都不会拿它去见人。
+	return pulse.New(context.Background(), id, "", o...)
 }
 
 // Load 把 YAML 文档装成 Graph + SeedPlan。
@@ -183,7 +213,7 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	// 走的是同一段 `addNodes`，所以报文与真正装根图那次逐字相同；
 	// 而根图要等到**所有可能失败的校验都过完**才建（见函数末尾）——见下面
 	// 「宿主 ctx」那段注释。
-	root, err := pulse.New(context.Background(), "load-check:root", "", opts.Graph...)
+	root, err := checkGraph("load-check:root", opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -212,7 +242,7 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	//   - 校验失败时 `Load` 返回 `nil, nil, err`，调用方**连清理的把手都没有**
 	//     ——所以只要还有一步可能失败，就不要先动宿主的 ctx。
 	for _, site := range checkSites(doc) {
-		check, err := pulse.New(context.Background(), "load-check:"+site.graph, "")
+		check, err := checkGraph("load-check:"+site.graph, opts)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -258,7 +288,11 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	// 所有**可能失败**的校验都过了，才动宿主的 ctx：从这里往下一路成功，
 	// `Load` 要么把图交出去（调用方接管它的生死），要么在 `New` 这一步就
 	// 因为 graphID 空拒掉（那个检查在函数开头做过）。
-	g, err := pulse.New(ctx, opts.GraphID, doc.Description, opts.Graph...)
+	rootOpts := append([]pulse.Option(nil), opts.Graph...)
+	if opts.MaxRunning > 0 {
+		rootOpts = append(rootOpts, pulse.WithMaxRunning(opts.MaxRunning)) // 放最后：整棵树的额度压过 Graph 里的每层一份
+	}
+	g, err := pulse.New(ctx, opts.GraphID, doc.Description, rootOpts...)
 	if err != nil {
 		return nil, nil, err
 	}
