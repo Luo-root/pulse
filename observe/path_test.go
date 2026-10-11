@@ -21,7 +21,7 @@ func TestPathWrittenOnEveryRecord(t *testing.T) {
 	if err := pulse.Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(pulse.NewNode("n", pulse.Requires(in), nil, func(rc *pulse.RunCtx) error {
+	if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), nil, func(rc *pulse.RunCtx) error {
 		_, err := pulse.Get(rc, in)
 		return err
 	})); err != nil {
@@ -56,7 +56,7 @@ func TestPathEmptyIsNotWritten(t *testing.T) {
 	if err := pulse.Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(pulse.NewNode("n", pulse.Requires(in), nil, func(rc *pulse.RunCtx) error {
+	if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), nil, func(rc *pulse.RunCtx) error {
 		_, err := pulse.Get(rc, in)
 		return err
 	})); err != nil {
@@ -99,11 +99,11 @@ func TestPathSeparatesTwoInstances(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		child, err := pulse.New(sc.Context(), sc.GraphID(), pulse.WithObserver(childObs))
+		child, err := pulse.New(sc.Context(), sc.GraphID(), "", pulse.WithObserver(childObs))
 		if err != nil {
 			return nil, err
 		}
-		return child, child.Add(pulse.NewNode("inner", pulse.Requires(cin), pulse.Provides(cout),
+		return child, child.Add(pulse.NewNode("inner", "", pulse.Requires(cin), pulse.Provides(cout),
 			func(rc *pulse.RunCtx) error {
 				v, err := pulse.Get(rc, cin)
 				if err != nil {
@@ -112,10 +112,10 @@ func TestPathSeparatesTwoInstances(t *testing.T) {
 				return pulse.Set(rc, cout, v)
 			}))
 	}
-	if err := pulse.Sub(g, "a", []pulse.SubBind{pulse.In(in, cin), pulse.Out(cout, outA)}, build); err != nil {
+	if err := pulse.Sub(g, "a", "", []pulse.SubBind{pulse.In(in, cin), pulse.Out(cout, outA)}, build); err != nil {
 		t.Fatal(err)
 	}
-	if err := pulse.Sub(g, "b", []pulse.SubBind{pulse.In(in, cin), pulse.Out(cout, outB)}, build); err != nil {
+	if err := pulse.Sub(g, "b", "", []pulse.SubBind{pulse.In(in, cin), pulse.Out(cout, outB)}, build); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {

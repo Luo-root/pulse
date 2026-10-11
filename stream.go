@@ -46,13 +46,13 @@ func newStreamConfig(opts []StreamOption) streamConfig {
 // 早点报给调用方。
 //
 // 但它**证明不了组合图安全**——糖在装配那一刻看不全整张图（上游生产端可能还没
-// 装、下游消费端可能是后加的）。真正的判据在 `Start`（见 Graph.checkStreamLocked）：
+// 装、下游消费端可能是后加的）。真正的判据在 `Start`（见 Graph.problemsStreamLocked）：
 // 整张流图（流节点 + 流出口的读取者）要同时有名额，且每条流出口都得有人消费、
 // **只喂一个下游**。两处一起才完整：这里给的是即时反馈，那里才是权威校验。
 //
 // 子图里还看不到**继承来的**名额：额度继承发生在 `build` 返回之后（见 runSub 的
 // 「5b) 名额」），所以那一层的这次检查读到的是「没声明 = 不设限」——等于没查。接
-// 着子图自己的 `Start` 就会跑 `checkStreamLocked`（那时继承已经写完），拒的是那一
+// 着子图自己的 `Start` 就会跑 `problemsStreamLocked`（那时继承已经写完），拒的是那一
 // 条报文；这里只补时序，不为「早一点报」去动继承次序。
 func checkStreamSlots(g *Graph, id, kind string, need int) error {
 	if c := g.lim.capacity(); c > 0 && c < need {
@@ -101,7 +101,7 @@ func Produce[T any](g *Graph, id string, out Key[<-chan T],
 		return err
 	}
 	cfg := newStreamConfig(opts)
-	n := NewNode(id, nil, Provides(out), func(rc *RunCtx) error {
+	n := NewNode(id, "", nil, Provides(out), func(rc *RunCtx) error {
 		ch := make(chan T, cfg.buf)
 		defer close(ch)
 		if err := Set(rc, out, ch); err != nil {
@@ -149,7 +149,7 @@ func Consume[T any](g *Graph, id string, in Key[<-chan T],
 	if fn == nil {
 		return fmt.Errorf("pulse: Consume %q: nil fn", id)
 	}
-	n := NewNode(id, Requires(in), nil, func(rc *RunCtx) error {
+	n := NewNode(id, "", Requires(in), nil, func(rc *RunCtx) error {
 		ch, err := Get(rc, in)
 		if err != nil {
 			return err // 跳过到达 → 本节点跳过（级联），不是失败
@@ -223,7 +223,7 @@ func Tee[T any](g *Graph, id string, in Key[<-chan T], outs []Key[<-chan T],
 		return err
 	}
 	cfg := newStreamConfig(opts)
-	n := NewNode(id, Requires(in), Provides(outs...), func(rc *RunCtx) error {
+	n := NewNode(id, "", Requires(in), Provides(outs...), func(rc *RunCtx) error {
 		src, err := Get(rc, in)
 		if err != nil {
 			return err // 上游跳过 → 整批一起跳过（级联）

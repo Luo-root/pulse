@@ -307,7 +307,7 @@ func TestFanOutAssemblyIsAtomic(t *testing.T) {
 		t.Fatalf("FanOut = %v, want ErrDuplicateSource", err)
 	}
 	// 判据一：r1 没被 worker-1 占住（真留下残留的话，这次 Add 会吃 ErrDuplicateSource）
-	if err := g.Add(NewNode("solo", Requires(in), Provides(outs[0]), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("solo", "", Requires(in), Provides(outs[0]), func(rc *RunCtx) error {
 		return Set(rc, outs[0], "solo")
 	})); err != nil {
 		t.Fatalf("失败的 FanOut 在图上留下了 r1 的占位：%v", err)
@@ -384,7 +384,7 @@ func TestNoValueSkipsNode(t *testing.T) {
 	out := NewKey[string]("novalue.out")
 	obs := &recordingObserver{}
 	g := mustNew(t, context.Background(), "novalue", WithObserver(obs))
-	if err := g.Add(NewNode("n", nil, Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("n", "", nil, Provides(out), func(rc *RunCtx) error {
 		return NoValue(out.Name())
 	})); err != nil {
 		t.Fatal(err)
@@ -405,10 +405,10 @@ func TestNoValueVersusPerKeySkip(t *testing.T) {
 	b := NewKey[string]("nvskip.b")
 	obs := &recordingObserver{}
 	g := mustNew(t, context.Background(), "nvskip", WithObserver(obs))
-	mustAdd(t, g, NewNode("novalue", nil, Provides(a), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("novalue", "", nil, Provides(a), func(rc *RunCtx) error {
 		return NoValue(a.Name())
 	}))
-	mustAdd(t, g, NewNode("perkey", nil, Provides(b), func(rc *RunCtx) error {
+	mustAdd(t, g, NewNode("perkey", "", nil, Provides(b), func(rc *RunCtx) error {
 		return Skip(rc, b) // 只把这条输出标成跳过，节点自己正常收尾
 	}))
 	if err := g.Run(); err != nil {
@@ -458,7 +458,7 @@ func TestSugarRejectsBadArgs(t *testing.T) {
 		t.Fatal("nil fn 应当报错")
 	}
 	// 上面每一次都必须什么都没留下：`-1` 这种名字只有空 id 被放行才会出现。
-	if err := g.Add(NewNode("-1", nil, nil, func(rc *RunCtx) error { return nil })); err != nil {
+	if err := g.Add(NewNode("-1", "", nil, nil, func(rc *RunCtx) error { return nil })); err != nil {
 		t.Fatalf("入参校验失败的装配在图里留下了残留：%v", err)
 	}
 }

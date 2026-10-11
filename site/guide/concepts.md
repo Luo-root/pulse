@@ -13,7 +13,7 @@ Pulse 只有三样东西：**Key**（数据槽）、**Node**（计算单元）�
 节点长这样：
 
 ```go
-pulse.NewNode("summarize",
+pulse.NewNode("summarize", "把 docs 折成一句摘要",
 	pulse.Requires(Docs),     // AND 前置：全部输入到达（就绪或跳过）才判门
 	pulse.Provides(Summary),  // 本节点会写出的槽位
 	func(rc *pulse.RunCtx) error {
@@ -65,7 +65,7 @@ PULSE | 2026/10/09 - 10:42:50.550 | completed  |   524.5µs | pulse.graph_finish
 门看的是「**有没有值**」，不是「有没有跳过」。等全部输入到达之后：只要有一条真的到了值，节点就带着到了的那些进入 `Run`；一条值都没到，才是它自己跳过。
 
 ```go
-pulse.NewNode("join",
+pulse.NewNode("join", "把到了值的那几路拼起来",
 	pulse.Requires(A, B, C), // 这一轮只有 A、B 有值
 	pulse.Provides(Joined),
 	func(rc *pulse.RunCtx) error {

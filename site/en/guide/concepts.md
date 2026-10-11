@@ -13,7 +13,7 @@ Pulse has only three things: **Key** (a data slot), **Node** (a unit of computat
 A node looks like this:
 
 ```go
-pulse.NewNode("summarize",
+pulse.NewNode("summarize", "fold docs into one summary",
 	pulse.Requires(Docs),     // AND precondition: the gate is judged once all inputs have arrived (ready or skipped)
 	pulse.Provides(Summary),  // the slots this node will write
 	func(rc *pulse.RunCtx) error {
@@ -65,7 +65,7 @@ PULSE | 2026/10/09 - 10:42:50.550 | completed  |   524.5µs | pulse.graph_finish
 The gate asks "**did any input bring a value**", not "was any input skipped". Once all inputs have arrived: one input with a value is enough for the node to enter `Run` with those that did; only when no input brought a value does the node skip itself.
 
 ```go
-pulse.NewNode("join",
+pulse.NewNode("join", "join whichever inputs carried a value",
 	pulse.Requires(A, B, C), // only A and B carried a value this run
 	pulse.Provides(Joined),
 	func(rc *pulse.RunCtx) error {

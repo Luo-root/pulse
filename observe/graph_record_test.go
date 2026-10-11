@@ -17,7 +17,7 @@ func testObsCfg(sink *MemorySink) ObserveConfig {
 // mustGraph 建图；本文件只关心观测折叠，建图失败即 Fatal。
 func mustGraph(t *testing.T, id string, opts ...pulse.Option) *pulse.Graph {
 	t.Helper()
-	g, err := pulse.New(context.Background(), id, opts...)
+	g, err := pulse.New(context.Background(), id, "", opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestRecordObserverSegments(t *testing.T) {
 	if err := pulse.Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(pulse.NewNode("n", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
+	if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
 		time.Sleep(2 * time.Millisecond)
 		v, err := pulse.Get(rc, in)
 		if err != nil {
@@ -123,7 +123,7 @@ func TestRecordObserverSkip(t *testing.T) {
 	if err := pulse.SkipSeed(g, a); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(pulse.NewNode("down", pulse.Requires(a), nil, func(rc *pulse.RunCtx) error {
+	if err := g.Add(pulse.NewNode("down", "", pulse.Requires(a), nil, func(rc *pulse.RunCtx) error {
 		t.Fatal("must not run")
 		return nil
 	})); err != nil {
@@ -173,10 +173,10 @@ func TestRecordObserverTwoNodeIdentities(t *testing.T) {
 			return pulse.Set(rc, ack, v)
 		}
 	}
-	if err := g.Add(pulse.NewNode("extract", pulse.Requires(k1), pulse.Provides(k2), pass(k1, k2))); err != nil {
+	if err := g.Add(pulse.NewNode("extract", "", pulse.Requires(k1), pulse.Provides(k2), pass(k1, k2))); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(pulse.NewNode("answer", pulse.Requires(k2), pulse.Provides(k3), pass(k2, k3))); err != nil {
+	if err := g.Add(pulse.NewNode("answer", "", pulse.Requires(k2), pulse.Provides(k3), pass(k2, k3))); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
@@ -216,7 +216,7 @@ func TestRecordObserverCombinedWithHostObserver(t *testing.T) {
 	if err := pulse.Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(pulse.NewNode("n", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
+	if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
 		v, err := pulse.Get(rc, in)
 		if err != nil {
 			return err
@@ -268,7 +268,7 @@ func TestRecordObserverConcurrentGraphAttribution(t *testing.T) {
 		if err := pulse.Seed(g, in, "x"); err != nil {
 			t.Fatal(err)
 		}
-		if err := g.Add(pulse.NewNode("n", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
+		if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
 			time.Sleep(time.Millisecond)
 			v, err := pulse.Get(rc, in)
 			if err != nil {
@@ -326,7 +326,7 @@ func TestRecordObserverGraphSegments(t *testing.T) {
 	if err := pulse.Seed(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(pulse.NewNode("n", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
+	if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
 		time.Sleep(5 * time.Millisecond)
 		v, err := pulse.Get(rc, in)
 		if err != nil {
@@ -389,7 +389,7 @@ func TestRecordObserverGraphFinishedFailed(t *testing.T) {
 	boom := errors.New("node boom")
 	out := pulse.NewKey[string]("obs.gfail.out")
 	g := mustGraph(t, "failgraph", pulse.WithObserver(obs))
-	if err := g.Add(pulse.NewNode("bad", nil, pulse.Provides(out), func(rc *pulse.RunCtx) error {
+	if err := g.Add(pulse.NewNode("bad", "", nil, pulse.Provides(out), func(rc *pulse.RunCtx) error {
 		time.Sleep(2 * time.Millisecond) // 让整轮耗时量得出来（毫秒以内会被计时精度取整成 0）
 		return boom
 	})); err != nil {
@@ -437,7 +437,7 @@ func TestRecordObserverGraphFinishedOnAllSkipped(t *testing.T) {
 	if err := pulse.SkipSeed(g, a); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Add(pulse.NewNode("down", pulse.Requires(a), nil, func(rc *pulse.RunCtx) error {
+	if err := g.Add(pulse.NewNode("down", "", pulse.Requires(a), nil, func(rc *pulse.RunCtx) error {
 		t.Fatal("must not run")
 		return nil
 	})); err != nil {

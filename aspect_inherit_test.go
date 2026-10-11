@@ -55,12 +55,12 @@ func childWith(t *testing.T, id string, n int, cin Key[string], body func(*RunCt
 	opts ...Option) func(*SubCtx) (*Graph, error) {
 	t.Helper()
 	return func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(), opts...)
+		child, err := New(sc.Context(), sc.GraphID(), "", opts...)
 		if err != nil {
 			return nil, err
 		}
 		for i := 0; i < n; i++ {
-			if err := child.Add(NewNode(fmt.Sprintf("%s-node%d", id, i), Requires(cin), nil, body)); err != nil {
+			if err := child.Add(NewNode(fmt.Sprintf("%s-node%d", id, i), "", Requires(cin), nil, body)); err != nil {
 				return nil, err
 			}
 		}
@@ -83,7 +83,7 @@ func TestAspectInheritedBySubGraph(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step", []SubBind{In(in, cin)},
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)},
 		childWith(t, "c", 2, cin, func(*RunCtx) error { ran.Add(1); return nil })); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestAspectInheritOrderOuterFirst(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step", []SubBind{In(in, cin)},
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)},
 		childWith(t, "c", 1, cin, func(*RunCtx) error { return nil },
 			WithAspects(r.aspect("inner")))); err != nil {
 		t.Fatal(err)
@@ -145,7 +145,7 @@ func TestAspectCutInheritanceKeepsOwnAndParentStep(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step", []SubBind{In(in, cin)},
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)},
 		childWith(t, "c", 2, cin, func(*RunCtx) error { ran.Add(1); return nil },
 			WithoutAspects(), WithAspects(r.aspect("own")))); err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func TestAspectEmptyDeclIsNotCut(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step", []SubBind{In(in, cin)},
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)},
 		childWith(t, "c", 2, cin, func(*RunCtx) error { return nil },
 			WithAspects(empty...))); err != nil {
 		t.Fatal(err)
@@ -211,26 +211,26 @@ func TestAspectInheritNoDuplicatePerDepth(t *testing.T) {
 	}
 
 	leaf := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
-		return child, child.Add(NewNode("leaf", Requires(l2), nil, func(rc *RunCtx) error {
+		return child, child.Add(NewNode("leaf", "", Requires(l2), nil, func(rc *RunCtx) error {
 			r.append("BODY")
 			return nil
 		}))
 	}
 	mid := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
-		if err := Sub(child, "step2", []SubBind{In(l1, l2)}, leaf); err != nil {
+		if err := Sub(child, "step2", "", []SubBind{In(l1, l2)}, leaf); err != nil {
 			return nil, err
 		}
 		return child, nil
 	}
-	if err := Sub(g, "step1", []SubBind{In(in, l1)}, mid); err != nil {
+	if err := Sub(g, "step1", "", []SubBind{In(in, l1)}, mid); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
@@ -261,28 +261,28 @@ func TestAspectCutAtMiddleLayerHidesGrandparent(t *testing.T) {
 
 	// 最内层：不声明任何切面 → 只能拿到中间层那层有效列表 = [B]。
 	leaf := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
-		return child, child.Add(NewNode("leaf", Requires(l2), nil, func(rc *RunCtx) error {
+		return child, child.Add(NewNode("leaf", "", Requires(l2), nil, func(rc *RunCtx) error {
 			r.append("BODY")
 			return nil
 		}))
 	}
 	// 中间层：切断继承（A 不从这一层往下走），自己声明 B。
 	mid := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(),
+		child, err := New(sc.Context(), sc.GraphID(), "",
 			WithoutAspects(), WithAspects(r.aspect("B")))
 		if err != nil {
 			return nil, err
 		}
-		if err := Sub(child, "step2", []SubBind{In(l1, l2)}, leaf); err != nil {
+		if err := Sub(child, "step2", "", []SubBind{In(l1, l2)}, leaf); err != nil {
 			return nil, err
 		}
 		return child, nil
 	}
-	if err := Sub(g, "step1", []SubBind{In(in, l1)}, mid); err != nil {
+	if err := Sub(g, "step1", "", []SubBind{In(in, l1)}, mid); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {

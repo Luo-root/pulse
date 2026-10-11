@@ -14,6 +14,7 @@ go test -race -count=1 ./...
 
 - Requires **Go 1.25.0+** (toolchain auto-downloads if missing).
 - No Makefile or linter config. GitHub Actions CI (`.github/workflows/ci.yml`) runs `go build ./...`, `go vet ./...`, a gofmt check (empty output = pass), plus the `-race` suite on every PR and on pushes to `main`.
+- **Markdown code blocks are not compiled** — when a signature changes, migrating only the Go call sites is not enough. `TestDocsExamplesUseCurrentSignatures` (root package) scans every tracked `*.md` for `New(` / `NewNode(` / `Sub(` and fails when an example has too few arguments or something other than a description in the description slot (`nil`, an option, a bind slice, a parameter-name placeholder). Migrate README (中/英), `site/`, `docs/design/` and the package READMEs together, then re-run it.
 - No live-API tests and no network dependencies: `go.mod` requires only `gopkg.in/yaml.v3`.
 
 ## Repo layout

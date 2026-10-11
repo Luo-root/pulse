@@ -7,7 +7,10 @@ import (
 
 // Node 是图中的一个计算单元：声明读哪些 Key、写哪些 Key，以及到达后做什么。
 type Node struct {
-	id       string
+	id string
+	// desc 是构造时给的说明（`""` = 没写）。只由 NewNode 写入，没有 setter——
+	// 「入图后元数据稳定」是结构上成立的，不靠校验。
+	desc     string
 	requires []keyRef
 	provides []keyRef
 	run      func(*RunCtx) error
@@ -18,7 +21,7 @@ type Node struct {
 	streamKind string
 	// compete 非空表示这个节点是某次 `FanOut` 的 worker（值 = 那次调用的 id）。
 	// 一条流出口只喂一个下游；**同一组** worker 共读一条出口是显式声明的
-	// 「抢」（FanOut 本来就是这么用的），不算静默瓜分——见 Graph.checkStreamLocked。
+	// 「抢」（FanOut 本来就是这么用的），不算静默瓜分——见 Graph.problemsStreamLocked。
 	compete string
 	// sub 表示这个节点是 `Sub` 装出来的一步（「图即节点」）。它整段都在等子图
 	// 跑完，所以**不吃运行名额**——占着就等于把父侧额度锁在「等」上，名额跨图
@@ -67,12 +70,24 @@ func Deps(groups ...[]keyRef) []keyRef {
 // 被取消（`Timeout` 切面能打断它）。想知道「现在到了没有」用 `TryGet`。
 // 静止的图（所有 `Requires` 都没有来源）与含依赖环的图都会在 `Graph.Start`
 // 就被拒掉——两者都不可能跑完，且都是启动那一刻能静态判定的。
-func NewNode(id string, requires, provides []keyRef, run func(*RunCtx) error, aspects ...Aspect) *Node {
-	return &Node{id: id, requires: requires, provides: provides, run: run, aspects: aspects}
+//
+// `description` 是人可读的说明（`""` = 没写，合法）：不参与节点唯一性、Key 匹配、
+// 拓扑排序与运行语义，只出现在 `Topology()` / `Snapshot()` 这类**给人看**的出口上。
+// 入图后不再变——只由构造函数写入，没有 setter，所以「元数据稳定」是结构上成立的。
+//
+// **它与 `id` 都是 string，写反了照样编译**（`NewNode("入库", "load", …)`）——
+// 那是调用点的错，单元测试兜不住。放在 `id` 后面是因为读调用点时描述就在眼前；
+// 写反的后果只是元数据不对，而 `Topology()` / Mermaid / 快照正是让元数据一眼可见
+// 的那一层。
+func NewNode(id, description string, requires, provides []keyRef, run func(*RunCtx) error, aspects ...Aspect) *Node {
+	return &Node{id: id, desc: description, requires: requires, provides: provides, run: run, aspects: aspects}
 }
 
 // ID 返回节点标识。
 func (n *Node) ID() string { return n.id }
+
+// Description 是构造时给的说明（`""` = 没写）。
+func (n *Node) Description() string { return n.desc }
 
 // RunCtx 是节点（及切面）在一次运行里能看到的世界：声明过的槽位 +
 // 本层可取消的 context。拿不到整个黑板。

@@ -51,13 +51,13 @@ func TestSubLimitInheritedByParent(t *testing.T) {
 
 	var c conc
 	var done atomic.Int32
-	if err := Sub(g, "step", []SubBind{In(in, cin)}, func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID()) // 不声明名额 → 继承父图那份
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, func(sc *SubCtx) (*Graph, error) {
+		child, err := New(sc.Context(), sc.GraphID(), "") // 不声明名额 → 继承父图那份
 		if err != nil {
 			return nil, err
 		}
 		for _, id := range []string{"w1", "w2"} {
-			if err := child.Add(NewNode(id, Requires(cin), nil, func(rc *RunCtx) error {
+			if err := child.Add(NewNode(id, "", Requires(cin), nil, func(rc *RunCtx) error {
 				leave := c.enter()
 				defer leave()
 				done.Add(1)
@@ -100,11 +100,11 @@ func TestSubLimitThreeDeepUnderOneSlot(t *testing.T) {
 	var leafRan atomic.Int32
 
 	leaf := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
-		if err := child.Add(NewNode("leaf", Requires(l2), nil, func(rc *RunCtx) error {
+		if err := child.Add(NewNode("leaf", "", Requires(l2), nil, func(rc *RunCtx) error {
 			leave := c.enter()
 			defer leave()
 			leafRan.Add(1)
@@ -116,16 +116,16 @@ func TestSubLimitThreeDeepUnderOneSlot(t *testing.T) {
 		return child, nil
 	}
 	mid := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID())
+		child, err := New(sc.Context(), sc.GraphID(), "")
 		if err != nil {
 			return nil, err
 		}
-		if err := Sub(child, "step2", []SubBind{In(l1, l2)}, leaf); err != nil {
+		if err := Sub(child, "step2", "", []SubBind{In(l1, l2)}, leaf); err != nil {
 			return nil, err
 		}
 		return child, nil
 	}
-	if err := Sub(g, "step1", []SubBind{In(in, l1)}, mid); err != nil {
+	if err := Sub(g, "step1", "", []SubBind{In(in, l1)}, mid); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
@@ -160,12 +160,12 @@ func TestSubLimitSiblingsShareQuota(t *testing.T) {
 	var done atomic.Int32
 	build := func(key Key[string]) func(*SubCtx) (*Graph, error) {
 		return func(sc *SubCtx) (*Graph, error) {
-			child, err := New(sc.Context(), sc.GraphID())
+			child, err := New(sc.Context(), sc.GraphID(), "")
 			if err != nil {
 				return nil, err
 			}
 			for _, id := range []string{"w1", "w2"} {
-				if err := child.Add(NewNode(id, Requires(key), nil, func(rc *RunCtx) error {
+				if err := child.Add(NewNode(id, "", Requires(key), nil, func(rc *RunCtx) error {
 					leave := c.enter()
 					defer leave()
 					done.Add(1)
@@ -178,10 +178,10 @@ func TestSubLimitSiblingsShareQuota(t *testing.T) {
 			return child, nil
 		}
 	}
-	if err := Sub(g, "a", []SubBind{In(in1, c1)}, build(c1)); err != nil {
+	if err := Sub(g, "a", "", []SubBind{In(in1, c1)}, build(c1)); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "b", []SubBind{In(in2, c2)}, build(c2)); err != nil {
+	if err := Sub(g, "b", "", []SubBind{In(in2, c2)}, build(c2)); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
@@ -209,13 +209,13 @@ func TestSubLimitZeroOptsOutForSubtree(t *testing.T) {
 	}
 
 	var c conc
-	if err := Sub(g, "step", []SubBind{In(in, cin)}, func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(), WithMaxRunning(0)) // 声明：这一子树不限
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, func(sc *SubCtx) (*Graph, error) {
+		child, err := New(sc.Context(), sc.GraphID(), "", WithMaxRunning(0)) // 声明：这一子树不限
 		if err != nil {
 			return nil, err
 		}
 		for _, id := range []string{"w1", "w2"} {
-			if err := child.Add(NewNode(id, Requires(cin), nil, func(rc *RunCtx) error {
+			if err := child.Add(NewNode(id, "", Requires(cin), nil, func(rc *RunCtx) error {
 				leave := c.enter()
 				defer leave()
 				time.Sleep(60 * time.Millisecond)

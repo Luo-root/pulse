@@ -46,7 +46,7 @@ var Docs    = pulse.NewKey[[]Doc]("docs")
 节点**不声明下一个节点是谁**，只声明读哪些 Key、写哪些 Key：
 
 ```go
-pulse.NewNode("summarize",
+pulse.NewNode("summarize", "把 docs 折成一句摘要",
     pulse.Requires(Docs),     // AND 前置：全部输入到达（就绪或跳过）才判门
     pulse.Provides(Summary),  // 本节点会写出的槽位
     func(rc *pulse.RunCtx) error {
@@ -311,7 +311,7 @@ func main() {
 	out := pulse.NewKey[string]("probe.out")
 
 	run := func(swapped bool) (byPos, byKey string) {
-		g, err := pulse.New(context.Background(), "probe")
+		g, err := pulse.New(context.Background(), "probe", "Keys 顺序对照探针")
 		if err != nil {
 			panic(err)
 		}
@@ -389,7 +389,7 @@ err = pulse.Consume(g, "sinkC", sC, func(rc *pulse.RunCtx, v int) error { return
 | `Produce` | 一个节点：`Provides(out)`，`Set` 出 channel 后**活着发完** | 关闭只在返回时的 `defer`（成功 / 出错 / 取消 / panic 都走它，没有双次 close）；`send` 在发送与 `rc.Context().Done()` 上 `select` |
 | `Consume` | 一个节点：`Requires(in)`，`select` 循环读 | **不能用 `for range`**：实测它会「取消之后把缓冲区算完」并且整轮报成功（没人看见取消 → `Run()` 返回 `nil`，见 #286） |
 | `Tee` | 一个节点：`Requires(in)` + `Provides(outs...)`，逐条转发 | 广播：每个下游拿到完整同序数据；**背压按最慢的下游算** |
-| 装配校验 | `checkStreamSlots`（装配期快速失败）+ `Graph.checkStreamLocked`（`Start` 的权威校验） | 「流的两端必须同时活着」是**组合**性质的约束：糖在装配那一刻看不全整张图，所以局部检查只做即时反馈，`Start` 按**整张流图**要名额——流节点 + **每条流出口的读取者**（消费者可以手写，它同样得占一个名额才读得到；实测：`maxRun=2` 下 `Produce → Tee → Consume` 与 `Produce → Tee → 手写 sink` 都会装配全过、运行期死锁），并要求每条流出口都有人 `Requires`、且**只喂一个下游**（没人读的出口会让发送端永久堵住；两个各写各的读取者会在静默里瓜分值——同一个 `FanOut` 组的 worker 共读是显式声明，不算多消费者） |
+| 装配校验 | `checkStreamSlots`（装配期快速失败）+ `Graph.problemsStreamLocked`（`Start` 的权威校验） | 「流的两端必须同时活着」是**组合**性质的约束：糖在装配那一刻看不全整张图，所以局部检查只做即时反馈，`Start` 按**整张流图**要名额——流节点 + **每条流出口的读取者**（消费者可以手写，它同样得占一个名额才读得到；实测：`maxRun=2` 下 `Produce → Tee → Consume` 与 `Produce → Tee → 手写 sink` 都会装配全过、运行期死锁），并要求每条流出口都有人 `Requires`、且**只喂一个下游**（没人读的出口会让发送端永久堵住；两个各写各的读取者会在静默里瓜分值——同一个 `FanOut` 组的 worker 共读是显式声明，不算多消费者） |
 
 **为什么「要复制」的只有流这一类**（实测四种分发形态）：普通值——一个 `Provides`、N 个下游各自 `Requires` 同一个 Key——3 个下游都拿到完整值；一组值（slice 当一个值）同理；**只有 channel 会抢**：同一条 channel 给 3 个下游，6 个值被瓜分（合计 6，不是 18）；复制成 3 条 channel 才是 18。所以「抢」用 `FanOut`、「每个都拿到」用 `Tee`，两者不互相替代。
 
@@ -415,10 +415,10 @@ return pulse.Only(rc, OutB, w)
 一张图可以当**一个节点**嵌进更大的图，于是流程按层组合，而不是铺成一张越来越大的平图。手工搭今天就能跑（父节点里 `pulse.New` + 桥接 + `child.Run()`），缺的是把建图 / 桥接 / 取消域 / 观察者四件事收进一次调用：
 
 ```go
-err := pulse.Sub(parent, "step1",
+err := pulse.Sub(parent, "step1", "交给子图跑的一步",
     []pulse.SubBind{pulse.In(topic, childIn), pulse.Out(childOut, summary)},
     func(sc *pulse.SubCtx) (*pulse.Graph, error) {
-        child, err := pulse.New(sc.Context(), sc.GraphID(), pulse.WithMaxRunning(2))
+        child, err := pulse.New(sc.Context(), sc.GraphID(), "子图", pulse.WithMaxRunning(2))
         // 不声明就继承父图那份名额；这里声明了 = 这一子树换成自己这份
         if err != nil {
             return nil, err
@@ -577,7 +577,7 @@ type Sink interface{ Write(r Record) }
 obs, err := observe.NewRecordObserver(observe.ObserveConfig{
     Sink: sink, HostID: "host-1", TraceID: observe.NewTraceID(),
 })
-g, _ := pulse.New(ctx, "demo", pulse.WithObserver(obs))
+g, _ := pulse.New(ctx, "demo", "演示图", pulse.WithObserver(obs))
 ```
 
 单实例可复用于多图并发：内部按 `(graphID, nodeID)` 记账，同名节点跨图不串扰。

@@ -20,7 +20,7 @@ func TestSourceConflictWhenNodeIsNamedSeed(t *testing.T) {
 
 	// 先 Add 后 Seed：旧实现这里静默通过。
 	g := mustNew(t, context.Background(), "P")
-	mustAdd(t, g, NewNode("seed", nil, Provides(k), provide))
+	mustAdd(t, g, NewNode("seed", "", nil, Provides(k), provide))
 	if err := Seed(g, k, "host"); !errors.Is(err, ErrDuplicateSource) {
 		t.Fatalf("先 Add 后 Seed：want ErrDuplicateSource，got %v", err)
 	}
@@ -36,7 +36,7 @@ func TestSourceConflictWhenNodeIsNamedSeed(t *testing.T) {
 	if err := Seed(g2, k, "host"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g2.Add(NewNode("seed", nil, Provides(k), provide)); !errors.Is(err, ErrDuplicateSource) {
+	if err := g2.Add(NewNode("seed", "", nil, Provides(k), provide)); !errors.Is(err, ErrDuplicateSource) {
 		t.Fatalf("先 Seed 后 Add：want ErrDuplicateSource，got %v", err)
 	}
 
@@ -55,7 +55,7 @@ func TestSourceConflictWhenNodeIsNamedSeed(t *testing.T) {
 // 名字）旧实现是通过的——两条一起测，才说明修的是「来源名偶然等于节点名」，而不是
 // 把合法图拒掉。
 //
-// 图里必须有**两个以上节点**：`checkAcyclicLocked` 在只有一个节点时直接返回（自环
+// 图里必须有**两个以上节点**：`problemsCycleLocked` 在只有一个节点时直接返回（自环
 // 在 `Add` 就被拒了，不可能存在），单节点图根本走不到这段判据——用它测不出这个 bug。
 func TestNodeNamedSeedDoesNotFakeCycle(t *testing.T) {
 	for _, id := range []string{"seed", "loader"} {
@@ -66,7 +66,7 @@ func TestNodeNamedSeedDoesNotFakeCycle(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		g := mustNew(t, ctx, "P-"+id)
 		// 第一个节点不依赖自己：它读的 external 由外部 Seed 提供。
-		err := g.Add(NewNode(id, Requires(external), Provides(out), func(rc *RunCtx) error {
+		err := g.Add(NewNode(id, "", Requires(external), Provides(out), func(rc *RunCtx) error {
 			v, err := Get(rc, external)
 			if err != nil {
 				return err
@@ -78,7 +78,7 @@ func TestNodeNamedSeedDoesNotFakeCycle(t *testing.T) {
 			t.Fatal(err)
 		}
 		// 第二个节点让图「不止一个节点」，环检查才会真的跑。
-		err = g.Add(NewNode("sink", Requires(out), Provides(final), func(rc *RunCtx) error {
+		err = g.Add(NewNode("sink", "", Requires(out), Provides(final), func(rc *RunCtx) error {
 			v, err := Get(rc, out)
 			if err != nil {
 				return err
@@ -120,7 +120,7 @@ func TestSourceConflictText(t *testing.T) {
 			run: func(t *testing.T) error {
 				k := NewKey[string]("src.txt.a")
 				g := mustNew(t, context.Background(), "P")
-				mustAdd(t, g, NewNode("load", nil, Provides(k), provide))
+				mustAdd(t, g, NewNode("load", "", nil, Provides(k), provide))
 				return Seed(g, k, "v")
 			},
 		},
@@ -133,7 +133,7 @@ func TestSourceConflictText(t *testing.T) {
 				if err := Seed(g, k, "v"); err != nil {
 					t.Fatal(err)
 				}
-				return g.Add(NewNode("load", nil, Provides(k), provide))
+				return g.Add(NewNode("load", "", nil, Provides(k), provide))
 			},
 		},
 		{
@@ -142,7 +142,7 @@ func TestSourceConflictText(t *testing.T) {
 			run: func(t *testing.T) error {
 				k := NewKey[string]("src.txt.c")
 				g := mustNew(t, context.Background(), "P")
-				mustAdd(t, g, NewNode("seed", nil, Provides(k), provide))
+				mustAdd(t, g, NewNode("seed", "", nil, Provides(k), provide))
 				return Seed(g, k, "v")
 			},
 		},
@@ -155,7 +155,7 @@ func TestSourceConflictText(t *testing.T) {
 				if err := Seed(g, k, "v"); err != nil {
 					t.Fatal(err)
 				}
-				return g.Add(NewNode("seed", nil, Provides(k), provide))
+				return g.Add(NewNode("seed", "", nil, Provides(k), provide))
 			},
 		},
 	}
@@ -211,7 +211,7 @@ func TestZeroSourceInTableCountsAsMissing(t *testing.T) {
 	k := NewKey[string]("src.zero")
 
 	g := mustNew(t, context.Background(), "P")
-	mustAdd(t, g, NewNode("waiter", Requires(k), nil, func(*RunCtx) error { return nil }))
+	mustAdd(t, g, NewNode("waiter", "", Requires(k), nil, func(*RunCtx) error { return nil }))
 
 	// 正常路径：没声明过的 Key 根本不在表里。
 	if _, ok := g.producer[k.name]; ok {

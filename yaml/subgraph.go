@@ -26,8 +26,11 @@ import (
 // 但**没有**自己的 `graphs`——子图引用的是文档顶层那一张**扁平**的表（名字在
 // 文档内唯一），递归靠「图引用图」表达，环在 `Load` 期拦掉。
 type GraphSpec struct {
-	Seeds []SeedSpec `yaml:"seeds"`
-	Nodes []NodeSpec `yaml:"nodes"`
+	// Description 落到**这张 spec 装出来的每张子图**的 `Description()`（一次运行
+	// 一张，但描述的是同一个）；`""` = 没写。根图的那条在文档顶层。
+	Description string     `yaml:"description"`
+	Seeds       []SeedSpec `yaml:"seeds"`
+	Nodes       []NodeSpec `yaml:"nodes"`
 }
 
 // checkGraphRefs 在 Load 期拦掉两类装不出图的问题（C4 / C5）：
@@ -234,7 +237,7 @@ func buildSub(sc *pulse.SubCtx, graphName string, spec GraphSpec,
 			childOpts = append(childOpts, pulse.WithObserver(o))
 		}
 	}
-	child, err := pulse.New(sc.Context(), sc.GraphID(), childOpts...)
+	child, err := pulse.New(sc.Context(), sc.GraphID(), spec.Description, childOpts...)
 	if err != nil {
 		return nil, err
 	}

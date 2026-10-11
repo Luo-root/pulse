@@ -53,22 +53,27 @@ func (s source) same(t source) bool {
 	return s.kind == sourceSeed || s.nodeID == t.nodeID
 }
 
-// String 是报错用的来源名：外部来源 `seed`、节点来源 `node %q`、没有来源 `none`。
+// sourceName 是来源名的**唯一**实现（内部 `source` 与公开 `pulse.Source` 共用同一条规则）：
+// 外部来源 `seed`、节点来源 `node %q`、没有来源 `none`。
 //
 // 节点来源**一律**带类型前缀并加引号，不是只给 `seed` 这个哨兵名字开小灶：节点 id 是
 // **任意**用户字符串，只特判一个名字挡不住另外几条路——节点 id 叫 `none` 的会与「没有
 // 来源」撞，字面量 id `node "seed"` 会与节点 `seed` 的输出撞（两条都实测撞上了）。
-// 报错里得能分清「谁在跟谁抢」，来源名就必须**两两可分**。
+// 报错里得能分清「谁在跟谁抢」，来源名就必须**两两可分**；引擎内部的报错与公开
+// `String()` 共用这一份，所以「引擎里分得开」与「日志里分得开」是同一条规则。
 //
 // 节点与外部来源撞名此前会被**错误接受**、根本不报错，所以这里没有「旧文案」要保：
 // 变的是**节点来源**这一支（从裸 id 变成 `node "id"`）。
-func (s source) String() string {
-	switch s.kind {
+func sourceName(kind sourceKind, nodeID string) string {
+	switch kind {
 	case sourceSeed:
 		return "seed"
 	case sourceNode:
-		return fmt.Sprintf("node %q", s.nodeID)
+		return fmt.Sprintf("node %q", nodeID)
 	default:
 		return "none"
 	}
 }
+
+// String 是报错用的来源名（与公开 `pulse.Source.String()` 同一份实现，见 `sourceName`）。
+func (s source) String() string { return sourceName(s.kind, s.nodeID) }

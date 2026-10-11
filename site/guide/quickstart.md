@@ -33,7 +33,7 @@ var (
 )
 
 func main() {
-	g, err := pulse.New(context.Background(), "docs-pipeline")
+	g, err := pulse.New(context.Background(), "docs-pipeline", "文档摘要流水线")
 	if err != nil {
 		panic(err)
 	}
@@ -42,7 +42,7 @@ func main() {
 	_ = pulse.Seed(g, Docs, []string{"pulse 只做编排与观测", "槽位三态：跳过也是到达"})
 
 	// summarize 等 docs 到达后才进入 Run。
-	must(g.Add(pulse.NewNode("summarize",
+	must(g.Add(pulse.NewNode("summarize", "把 docs 折成一段摘要",
 		pulse.Requires(Docs),
 		pulse.Provides(Summary),
 		func(rc *pulse.RunCtx) error {
@@ -55,7 +55,7 @@ func main() {
 
 	// report 自己拿结果：Graph 没有 Run 之后的公开读槽，产物归调用方。
 	var report string
-	must(g.Add(pulse.NewNode("report",
+	must(g.Add(pulse.NewNode("report", "把摘要包成一句报告",
 		pulse.Requires(Summary),
 		pulse.Provides(Report),
 		func(rc *pulse.RunCtx) error {
@@ -92,7 +92,7 @@ func must(err error) {
 |---|---|
 | `pulse.NewKey[T]("docs")` | **Key**：类型化数据槽。名字用于诊断与 YAML 对账，类型给编译期安全；同名必须以同一个 `T` 注册 |
 | `pulse.Seed(g, Docs, …)` | **Seed**：运行前写入外部输入——seed 与节点都是 Key 的来源，但每个 Key 只允许一个来源（两处都产 → `ErrDuplicateSource`） |
-| `pulse.NewNode(id, Requires, Provides, run)` | **Node**：只声明读哪些槽、写哪些槽。它**不声明**下一个节点是谁 |
+| `pulse.NewNode(id, description, Requires, Provides, run)` | **Node**：只声明读哪些槽、写哪些槽。它**不声明**下一个节点是谁 |
 | `g.Run()` | **Graph**：提交全部节点并阻塞到全部终止；返回首错，**不含跳过**；取消需由节点自己看见才算结果 |
 
 ## 数据到达即调度
@@ -122,7 +122,7 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 	HostID:  "quickstart",
 	TraceID: observe.NewTraceID(),
 })
-g, err := pulse.New(ctx, "docs-pipeline", pulse.WithObserver(obs))
+g, err := pulse.New(ctx, "docs-pipeline", "文档摘要流水线", pulse.WithObserver(obs))
 ```
 
 加上这三行后，同一张图的真实输出（运行级两条夹住节点四条；时间戳 / trace / 耗时随运行变化）：

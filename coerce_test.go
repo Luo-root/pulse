@@ -96,7 +96,7 @@ func TestSeedByNameCoercesGenericContainers(t *testing.T) {
 	}
 
 	var seen string
-	if err := g.Add(NewNode("join", Requires(docs), Provides(out), func(rc *RunCtx) error {
+	if err := g.Add(NewNode("join", "", Requires(docs), Provides(out), func(rc *RunCtx) error {
 		v, err := Get(rc, docs) // 类型断言失败即说明写入的不是 []string
 		if err != nil {
 			return err

@@ -29,7 +29,7 @@ topic ──┤        ├── join
 _ = pulse.Seed(g, Topic, "slot contract")
 
 // 2) 源节点：没有 Requires，提交后立刻执行
-_ = g.Add(pulse.NewNode("zh", nil, pulse.Provides(Words), func(rc *pulse.RunCtx) error {
+_ = g.Add(pulse.NewNode("zh", "注入词表", nil, pulse.Provides(Words), func(rc *pulse.RunCtx) error {
 	return pulse.Set(rc, Words, []string{"数据", "到达", "即", "调度"})
 }))
 ```
@@ -41,7 +41,7 @@ _ = g.Add(pulse.NewNode("zh", nil, pulse.Provides(Words), func(rc *pulse.RunCtx)
 fan-out 就是「多个节点写不同的 Key」，fan-in 就是「一个节点 `Requires` 多个 Key」——**不需要额外原语**。多类型输入用 `Deps` 拼一条声明（`Requires[T]` 一次只收同一类型的 Key）：
 
 ```go
-_ = g.Add(pulse.NewNode("join",
+_ = g.Add(pulse.NewNode("join", "把词与标签拼起来",
 	pulse.Deps(pulse.Requires(Words), pulse.Requires(Label)),
 	pulse.Provides(Joined),
 	func(rc *pulse.RunCtx) error {
@@ -110,10 +110,10 @@ err = pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2, r3),
 一张图可以当**一个节点**嵌进更大的图——流程按层组合，而不是铺成一张越来越大的平图。
 
 ```go
-err := pulse.Sub(parent, "step1",
+err := pulse.Sub(parent, "step1", "交给子图跑的一步",
 	[]pulse.SubBind{pulse.In(topic, childIn), pulse.Out(childOut, summary)},
 	func(sc *pulse.SubCtx) (*pulse.Graph, error) {
-		child, err := pulse.New(sc.Context(), sc.GraphID(), pulse.WithMaxRunning(2))
+		child, err := pulse.New(sc.Context(), sc.GraphID(), "子图", pulse.WithMaxRunning(2))
 		if err != nil {
 			return nil, err
 		}
@@ -199,7 +199,7 @@ return pulse.Set(rc, Translated, translate(summary))
 ## 超时
 
 ```go
-pulse.NewNode("wait-forever", requires, provides, run, pulse.Timeout(50*time.Millisecond))
+pulse.NewNode("wait-forever", "等到超时的那一个", requires, provides, run, pulse.Timeout(50*time.Millisecond))
 ```
 
 切面包住「**等输入 + 执行**」整段，所以超时能打断一个**还在等数据**的节点，而不只是打断执行。这里的形状是「有生产方、但比超时慢」——上游迟早会写，只是还没写。反过来，「永远等不到」的图是造不出来的：没人会写的 Key 在 `Start()` 就被拒了。
@@ -215,7 +215,7 @@ timeout err = pulse: node wait-forever timeout after 50ms
 ## 重试
 
 ```go
-pulse.NewNode("flaky", nil, pulse.Provides(Topic), run, pulse.Retry(3, 10*time.Millisecond))
+pulse.NewNode("flaky", "偶尔失败：演示重试", nil, pulse.Provides(Topic), run, pulse.Retry(3, 10*time.Millisecond))
 ```
 
 `Retry` 只对**执行错误**重试。跳过**不**重试——跳过是到达，不是失败；等待阶段的取消也不重试。实测第三次成功：
@@ -248,7 +248,7 @@ pulse.graph_finished           node=-        status=failed    err=boom
 ## 限流
 
 ```go
-g, _ := pulse.New(ctx, "demo", pulse.WithMaxRunning(4))
+g, _ := pulse.New(ctx, "demo", "演示图", pulse.WithMaxRunning(4))
 ```
 
 `WithMaxRunning(n)` 限制**同时在 `Run` 里干活**的节点数（`Sub` 那一步不算：它整段都在等子图），而且这份额度是**整棵图树共享的**：子图没自己声明就继承父图那份——**在没有人自己声明过**时，根图声明 4 = 整棵树同时最多 4 个节点在干活。父图的节点与子图的节点争的是**同一份**额度、互不让路：额度够就并发，不够才排队；`Sub` 那几步在等的时候，观察者眼里 `running` 的行数会比 n 多，那不是并发度超了。子图自己声明 `WithMaxRunning(m)` 是**这一支退出父表、自己另算**（`m<=0` = 这一子树不限，同样是退出）——**不是「在父表之上再卡一道更紧的上限」**：父 1 + 子 2 的树里，这一支内部仍能同时跑 2 个。声明式装配用 `LoadOptions.MaxRunning`。**等数据不占名额**——否则限流会退化成死锁（占满名额的节点都在等数据，没人能推进）。
