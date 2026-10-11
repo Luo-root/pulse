@@ -1,8 +1,11 @@
 # pulse 设计：图编排 + 图观测
 
-> 状态：Accepted
+> 状态：Accepted（**对象模型正在按 [#311](https://github.com/Luo-root/pulse/issues/311) 迁移**）
 > 包位置：根包 `pulse`（图引擎）+ `pulse/observe`（图观测）+ `pulse/yaml`（声明式装图）
-> 本篇是 pulse **唯一**的设计文档，只写两件事：**编排**与**观测**。
+> 本篇写**当前实现**的编排与观测：类型、时序、冻结面。理念（为什么这样取舍）见
+> [`philosophy.md`](philosophy.md)；**目标对象模型**（`Graph` 定义 / `Execution` 运行，含现状差距与
+> 迁移策略）见 [`object-model.md`](object-model.md)——两者冲突时，**迁移期间以 object-model 为准**，
+> 本文那段形状会在对应阶段跟着改。
 
 ## 0. 定位
 
