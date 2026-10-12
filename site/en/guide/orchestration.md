@@ -233,7 +233,9 @@ pulse.NewNode("flaky", "fails occasionally: shows Retry", nil, pulse.Provides(To
 retry   attempts = 3 err = <nil>
 ```
 
-**A failed attempt's writes are not published** (the engine has owned this since stage 3): `Retry` opens a **fresh write staging area per attempt** (the attempt write set), so that attempt's `Set` / `Skip` land there and **never touch the execution slots** — if the attempt fails with retries left, the whole thing is **discarded** and downstream never saw anything it wrote (the slots were never touched, so nobody waiting on them was even woken). Only a successful attempt — or one ending in a skip, since a skip is arrival — hands the staging area over, and **multiple keys are published one by one**, with no promise of strict atomic visibility.
+**A failed attempt's writes are not published** (the engine has owned this since stage 3): `Retry` opens a **fresh write staging area per attempt** (the attempt write set), so that attempt's `Set` / `Skip` land there and **never touch the execution slots** — if the attempt fails with retries left, the whole thing is **discarded** and downstream never saw anything it wrote (the slots were never touched, so nobody waiting on them was even woken). Only a successful attempt — or one ending in a skip, since a skip is arrival — hands the staging area over; and before handing it over the **whole batch is checked first**, so a key that cannot land (the target already arrived in the opposite state) means **nothing is published** — no "half a batch". Past that check the keys go out **one by one**, with no promise of strict atomic visibility.
+
+The nested-`Retry` boundary: **an inner result belongs to the outer attempt** (an inner commit merely hands it to the outer staging area), so when the outer attempt fails the inner writes are discarded with it.
 
 Three boundaries worth remembering:
 
