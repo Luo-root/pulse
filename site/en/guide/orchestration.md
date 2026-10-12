@@ -18,7 +18,7 @@ topic ──┤        ├── join
 - Conversely, **every `Requires` must have a source**: a slot nobody writes can never arrive, so that graph can never finish — `Start()` rejects it on the spot and names the node and the Key (left to runtime it is just a hang, and a hang is not something you can debug).
 - **The dependency graph must also be acyclic**: having a source is not the same as being satisfiable. In a cycle every `Requires` has a producer, yet no node can enter `Run` first (the gate waits for all inputs), so every slot stays `pending` forever — `Start()` rejects that as well, reporting one concrete cycle: `pulse: dependency cycle: A -> B -> A (A requires "y", B requires "x")`. Keys from `Seed`/`SkipSeed` have already arrived before start, so they form no edge.
 
-Those two judgments also have a **read-only entry point**, `(*Graph).Validate()`: it runs the same checks but **does not change the graph's state** (no start, no goroutines), so you can keep adding nodes, seeding and starting afterwards. It exists for **assembly time** — with an assembly form like [YAML](/en/guide/assembly), where a child graph is only built once the run reaches it, you can ask every subgraph up front while loading, and the answer you get is word for word the one `Start()` would have given.
+Those two judgments also have a **read-only entry point**, `(*Graph).Validate()`: it runs the same checks but **does not change the graph's state** (no start, no goroutines), so seeding and starting still work afterwards. **Passing seals the definition** — after that `Add` / `DeclareInput` / `DeclareOutput` / mounting a child graph are all rejected (`ErrGraphStarted`; sealing says "this **definition** will not change any more"); a **failed validation leaves it mutable**, and adding the missing piece and validating again is exactly the workflow it is there to support. It exists for **assembly time**: declarative assembly like [YAML](/en/guide/assembly) mounts its child graphs at `Load` time, and `Validate` follows the static mounting edges **recursively**, checking per reference site and naming the **mounting path** — and the answer you get is word for word the one `Start` would have given.
 
 ## Source nodes and Seed
 
@@ -108,47 +108,51 @@ Both callbacks receive **this node's own `*RunCtx`** as their first parameter: a
 
 ## A graph as a node: one graph, one step
 
-A graph can be embedded into a larger graph as **a single node** — flows compose in layers instead of growing into one ever-wider flat graph.
+A graph can be embedded into a larger graph as **a single node** — flows compose in layers instead of growing into one ever-wider flat graph. Composition has **one public entry, `pulse.Sub`**: it mounts a **ready-made** child graph, so the child's shape is fixed at assembly time and the parent can see the whole subtree **before it runs**.
 
 ```go
+child, _ := pulse.New(ctx, "enrich", "the enrichment step")
+// …add the child's nodes: it reads topicKey, writes summaryKey…
+if err := child.DeclareInput(pulse.NewPort(topicKey)); err != nil { // inlet: the parent may feed it in
+	return err
+}
+if err := child.DeclareOutput(pulse.NewPort(summaryKey)); err != nil { // outlet: the parent may take it out
+	return err
+}
 err := pulse.Sub(parent, "step1", "one step handed to a child graph",
-	[]pulse.SubBind{pulse.In(topic, childIn), pulse.Out(childOut, summary)},
-	func(sc *pulse.SubCtx) (*pulse.Graph, error) {
-		child, err := pulse.New(sc.Context(), sc.GraphID(), "child graph", pulse.WithMaxRunning(2))
-		if err != nil {
-			return nil, err
-		}
-		if err := child.Add( /* …nodes that read childIn and write childOut… */ ); err != nil {
-			return nil, err
-		}
-		return child, nil
-	})
+	[]pulse.SubBind{pulse.In(topic, topicKey), pulse.Out(summaryKey, summary)}, child)
 ```
 
-`In` / `Out` read as **arrows**: source first, destination second (`In(parent, child)`, `Out(child, parent)`). What the parent-side node declares follows entirely from them — **the boundary is written where the wiring is**, so reading the parent graph tells you what this step eats and what it produces. Both ends must share one `T`, which the compiler locks.
+**Ports are the only wiring surface**: the child-side end of `In(parent, child)` must be an **inlet** declared with `DeclareInput`, and the child-side end of `Out(child, parent)` an **outlet** declared with `DeclareOutput`; wiring to a **key internal to the child** (one some node `Provides` but nobody declared as an outlet) is a **static error** — to let the parent use that key, declare it an outlet (the intent becomes explicit); leaving it undeclared means "this is my implementation detail, not a promise". A declared inlet **no longer counts as "no source"** in the static checks: that is how `Validate` tells "you forgot to wire it" apart from "this was an external input all along", and in the static topology its source is `pulse.SourceInput` (not `SourceSeed` — `Seed` is a run-time action and does not belong in the definition's structure). Ports are **static**: they take part in topology and validation only, and carry no value of any single run.
+
+**Visible once assembled, no run needed**: `Topology()` recurses along the static mounting edges (`Nodes[i].Sub` is a whole subtree, `Binds` is the wiring at this point), paths are derived from the **mounting position** (`outer` / `outer/inner`), and **reading it changes no definition**; `Validate()` recurses the same way — a child's static problems are reported on the **parent**, **one report per reference site**, naming the mounting position:
+
+```text
+pulse: subgraph "inner" (mounted at "step1/toInner"): pulse: node "leaf" requires "c.nope" but nothing provides or seeds it
+```
+
+**A composition cycle is rejected at assembly time**: the moment `Sub` mounts, it walks the child's subtree asking "is the parent already inside it" (mounting a graph into itself counts), and reports `pulse: subgraph cycle: A -> B -> A`. The criterion looks only at the **set of ancestors on the current recursive path** — mounting one child graph in **several places** is legal reuse, and a global visited set would wrongly reject it (that is reuse, not a cycle).
+
+**Sealing rules**: `Validate()` **seals only on success** — after that `Add` / `DeclareInput` / `DeclareOutput` / mounting a child graph are all rejected (`ErrGraphStarted`); **a failed validation does not seal** — adding the missing piece and validating again is exactly the workflow to support. There is no `Seal()`: it would overlap with "success seals". Sealing only blocks **definition changes** — `Seed` is unaffected (it is this run's value, not part of the definition).
 
 **Three things you no longer have to remember** (wire it by hand and missing any of them is silent):
 
-| Wiring by hand means remembering | What you get if you forget | What `Sub` does |
+| Wiring by hand means remembering | What you get if you forget | What one `Sub` call gives you |
 |---|---|---|
 | attach the observer to the child graph | the parent graph runs fine and `Run()` returns `nil`, while **not one child record appears** | a child with no observer of its own **inherits the parent's** (one of its own wins) |
-| derive the child ctx from `rc.Context()` | build the child from `context.Background()` and a parent cancel is invisible — it runs to completion anyway | `sc.Context()` derives from this node |
+| derive the child ctx from the parent node | build the child from `context.Background()` and a parent cancel is invisible — it runs to completion anyway | `Sub` **forwards** the parent node's cancellation into the child, which is why building the child on `context.Background()` is fine |
 | hand-write both bridges | child → parent can only go through a **closure variable** (`Graph` has no public slot read API), and who is bound to whom lives in your head | declare `In` / `Out` once; the bridge happens when the child finishes |
 
-**Two boundaries to remember**: ① the inherited observer keeps records flowing but adds **no layer attribution** — `pulse.path` lives on the egress instance and is fixed when that egress is built, so the inherited one still carries the **parent's** path (measured: in a two-level nest, all four records of the innermost layer came out labelled with the middle layer's). Build one egress per layer inside `build`, from `sc.Path()`, if you want `pulse.path` (see "Nesting depth" in [Observability](/en/guide/observability)). ② a node id must not contain `/` — that is the layer separator in a path, so `Sub(g, "a/b", …)` and "a nested in b" would produce the **same** path (and the same graph id); assembly rejects it outright.
+**Run semantics are the same as hand-written nesting**: `In` / `Out` read as **arrows** (source first, destination second), and the parent-side node's `Requires` / `Provides` follow from them — the boundary is written where the wiring is, and both ends of one `T` are locked at compile time. Child succeeds → this node succeeds (ready outputs are `Set`, skipped ones `Skip`); **every output skipped** → this node finishes as `skipped` (not a failure); child fails → this node fails and the **first error propagates untouched** (`errors.Is` holds); cancellation → the child sees it. Two boundaries remain:
 
-Terminal states map exactly like hand-written nesting: child succeeds → this node succeeds (ready outputs are `Set`, skipped ones `Skip`); **every output skipped** → this node finishes as `skipped` (not a failure); child fails → this node fails and the **first error propagates untouched** (`errors.Is` holds); cancellation → the child sees it.
+1. **The one-shot boundary**: a mounted child graph **can only run in one place** — mount one graph at two sites and only one side gets it, while the other side gets a sentence that tells you how to fix it (`pulse: Sub "step1": the child graph is already in use: a graph runs once, so a statically mounted subgraph can run at one mount point only (running one copy per mount point needs the execution tree, which is not in place yet) (pulse: graph already started)`); one run per mounting site waits for `Execution`.
+2. **The cancellation domain**: a child's ctx is whatever it was **built with** (assembly has no "parent node at build time" to derive from), so at run time `Sub` **forwards** this parent node's layer cancellation into the child. Without that forwarding the child would run the whole span and swallow the cancellation — measured: the parent takes 300ms and reports **success** (the child built on `context.Background()`, the parent ctx cancelled at 50ms); with forwarding it is 51ms + `context canceled`.
 
-**Slots are shared tree-wide**: `WithMaxRunning(n)` caps how many nodes of the whole tree work inside `Run` at once — a child that declares nothing inherits the parent's share, and the `Sub` step takes no slot of its own (from start to finish it is waiting for the child). Declaring `WithMaxRunning(m)` inside a child makes **that branch leave the parent's table and run on its own** (`m<=0` = unlimited there, which is also leaving) — it is **not** "one more, tighter cap on top of the parent's": with parent `n=1` and child `m=2`, that branch can still run 2 at a time. Declarative assembly takes the tree-wide budget as `LoadOptions.MaxRunning`.
+`aspects` land on **the parent-side node** — `pulse.Timeout(30*time.Second)` puts a time limit on the whole child graph. A parent's **graph-level** aspects (`WithAspects`) are also **inherited into the child** (prepended outside the child node's own aspects, stacked; `WithoutAspects()` opts out) — but do not use that to bound a subtree, see [Aspect order](#aspect-order).
 
-**A child graph is one-shot**: `build` must return a new graph on every run. Build `pulse.New` outside the closure and reuse it, and you get a sentence that tells you how to fix it (`ErrGraphStarted` stays in the error chain):
+**One quota is shared by the whole tree**: `WithMaxRunning(n)` = at most n nodes of this tree working inside `Run` at once — a child that declares nothing inherits the parent's share (the same count), and the step mounting a child graph (`Sub`) takes no slot of its own (from start to finish it is waiting for the child). Declaring `WithMaxRunning(m)` inside a child makes **that branch leave the parent's table and be counted on its own** (that layer and its descendants switch to its share; `m<=0` = that subtree unlimited) — **not** "one more, tighter cap on top of the parent's": with a parent of `n=1` and a child of `m=2`, that branch can still run 2 at a time. Declarative assembly gives the whole tree its budget via `LoadOptions.MaxRunning`.
 
-```
-pulse: Sub "b": the child graph was already started:
-a graph runs once, so build must return a new one on every run (pulse: graph already started)
-```
-
-`aspects` land on **the parent-side node** — `pulse.Timeout(30*time.Second)` puts a time limit on the whole child graph. A parent's **graph-level** aspects (`WithAspects`) are also **inherited into the child** (prepended outside the child node's own aspects; `WithoutAspects()` opts out) — but do not use that to bound a subtree, see [Aspect order](#aspect-order).
+**Two boundaries to remember**: ① the inherited observer keeps records flowing but adds **no layer attribution** — `pulse.path` lives on the egress instance and is fixed when that egress is built, so the inherited one still carries the **parent's** path (measured: in a two-level nest, all four records of the innermost layer came out labelled with the middle layer's). To get `pulse.path`, build **one egress per layer**, each set to that layer's **mounting path** — known at assembly time (see "Nesting depth" in [Observability](/en/guide/observability); in declarative assembly `ObserverFor` does that wiring for you — [Declarative assembly](/en/guide/assembly)). ② a node id must not contain `/` — that is the layer separator in a path, so writing `a/b` for the step mounting a child and "a nesting b" produce the **same** path (the graph id included); the mounting step rejects it outright at assembly (a plain node id may contain `/` — it never enters a path).
 
 ## Streaming: Produce / Consume / Tee
 
@@ -252,7 +256,7 @@ The same `canceled` covers the other two ways "this run was torn down from outsi
 g, _ := pulse.New(ctx, "demo", "demo graph", pulse.WithMaxRunning(4))
 ```
 
-`WithMaxRunning(n)` caps how many nodes are **doing work inside `Run` at the same time** (the `Sub` step does not count: from start to finish it is waiting for the child), and that budget is **shared by the whole graph tree**: a child that declares nothing inherits the parent's share — so **as long as no layer declares its own**, declaring 4 on the root means at most 4 nodes of the tree are working at once. A parent's node and a child's node compete for the **same** share and never yield to each other: with budget to spare they run concurrently, and only then do they queue; while the `Sub` steps wait, an observer sees **more than n** rows in `running`, which is not concurrency exceeding the budget. Declaring `WithMaxRunning(m)` inside a child makes **that branch leave the parent's table and run on its own** (`m<=0` = unlimited there, which is also leaving) — **not** "one more, tighter cap on top of the parent's": with a parent of 1 and a child of 2, that branch still runs 2 at a time. Declarative assembly takes the tree-wide budget as `LoadOptions.MaxRunning`. **Waiting for data does not take a slot** — otherwise rate limiting would degrade into deadlock (every node holding a slot is waiting for data, and nobody can make progress).
+`WithMaxRunning(n)` caps how many nodes are **doing work inside `Run` at the same time** (the step mounting a child graph does not count: `Sub` waits for the child from start to finish), and that budget is **shared by the whole graph tree**: a child that declares nothing inherits the parent's share — so **as long as no layer declares its own**, declaring 4 on the root means at most 4 nodes of the tree are working at once. A parent's node and a child's node compete for the **same** share and never yield to each other: with budget to spare they run concurrently, and only then do they queue; while the steps mounting a child graph wait, an observer sees **more than n** rows in `running`, which is not concurrency exceeding the budget. Declaring `WithMaxRunning(m)` inside a child makes **that branch leave the parent's table and run on its own** (`m<=0` = unlimited there, which is also leaving) — **not** "one more, tighter cap on top of the parent's": with a parent of 1 and a child of 2, that branch still runs 2 at a time. Declarative assembly takes the tree-wide budget as `LoadOptions.MaxRunning`. **Waiting for data does not take a slot** — otherwise rate limiting would degrade into deadlock (every node holding a slot is waiting for data, and nobody can make progress).
 
 **Queuing for a slot is interruptible too**: when the ctx is canceled (or a first error cancels the graph), nodes still queued never enter `Run` and finish as `canceled` — with only their wait record — so a freed slot is never handed to an already-canceled node.
 
@@ -266,9 +270,9 @@ Whatever is listed first is further outside. So `pulse.Timeout(d)` placed ahead 
 
 **Across graphs**: a parent's graph-level aspects are **inherited into the child**, prepended **outside** the child node's own aspects (stacked, not replaced). So in a three-level nest the innermost node carries the tree's graph-level aspects (prepended) plus its own — it does **not** stack once per level. A child that wants none of the parent's batches writes `pulse.WithoutAspects()` (aspects the child declares itself still apply; writing only that means no graph-level aspects at this layer at all).
 
-**Use graph-level aspects sparingly; prefer node-level ones.** `WithAspects` lands on **every** node of the layer at once — including the `Sub` step (which is really a whole child graph behind it) — and it keeps stacking onto every node inside the child. `Timeout` is the aspect most easily bitten by that mismatch of scale: one graph-level `Timeout(d)` is at the same time "each ordinary node of the parent's limit", "the `Sub` step's limit (i.e. the whole child graph)" and "each node inside the child's limit" — three things that are not the same order of magnitude, sharing one `d`, while **a child graph times out far more easily than a plain node**. Put a limit on the one node that needs it: `NewNode(..., pulse.Timeout(...))` for an ordinary node, `Sub(..., pulse.Timeout(...))` for a whole child graph. Keep graph-level aspects for the ones you genuinely want applied uniformly across the tree (tracing / metrics). Note also that **cutting only detaches "inheritance onto the child's nodes"**: the parent's own `Sub` step is still wrapped by the parent's graph-level aspects — "this subtree has to run long" cannot be fixed by cutting alone.
+**Use graph-level aspects sparingly; prefer node-level ones.** `WithAspects` lands on **every** node of the layer at once — including the step mounting a child graph (a `Sub` step — a whole child graph sits behind it) — and it keeps stacking onto every node inside the child. `Timeout` is the aspect most easily bitten by that mismatch of scale: one graph-level `Timeout(d)` is at the same time "each ordinary node of the parent's limit", "the mounting step's limit (i.e. the whole child graph)" and "each node inside the child's limit" — three things that are not the same order of magnitude, sharing one `d`, while **a child graph times out far more easily than a plain node**. Put a limit on the one node that needs it: `NewNode(..., pulse.Timeout(...))` for an ordinary node, the `aspects` of a `Sub` step for a whole child graph. Keep graph-level aspects for the ones you genuinely want applied uniformly across the tree (tracing / metrics). Note also that **cutting only detaches "inheritance onto the child's nodes"**: the parent's own mounting step is still wrapped by the parent's graph-level aspects — "this subtree has to run long" cannot be fixed by cutting alone.
 
-Two accounts that are easy to get wrong: (1) the child's **total** time is cut short by the `d` on the `Sub` step first — it does **not** become "`d` per node, `N*d` in total": the inherited `d` does wrap every child node, but it is only a segment inside that outer `d`; (2) when slots are tight, **a timeout can fire before the child ever gets a slot** — the `Sub` step takes no slot, yet its `d` starts ticking the moment it enters `Run`, while the child's nodes are still queued for quota.
+Two accounts that are easy to get wrong: (1) the child's **total** time is cut short by the `d` on the step mounting it first — it does **not** become "`d` per node, `N*d` in total": the inherited `d` does wrap every child node, but it is only a segment inside that outer `d`; (2) when slots are tight, **a timeout can fire before the child ever gets a slot** — the mounting step takes no slot, yet its `d` starts ticking the moment it enters `Run`, while the child's nodes are still queued for quota.
 
 **The latch**: a single node's `Run` must not be entered concurrently (violating it → `ErrNextCalledTwice`), yet sequential re-entry is legal — that is exactly what `Retry` relies on.
 
