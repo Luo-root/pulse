@@ -277,9 +277,12 @@ func TestTopologyReportsForgedSubgraphCycle(t *testing.T) {
 		t.Fatalf("Sub = %v", err)
 	}
 
-	// 把 c 焊回 a：包内直接造那个挂载节点，绕开 Sub 的装配期检查
+	// 把 c 焊回 a：包内直接造那个挂载节点，绕开 Sub 的装配期检查（环在装配期就拒，只有
+	// 伪造才造得出来）。伪造的这一步也要**接线成完整形状**——`c` 需要 `cin`，不喂它的话
+	// `checkBinds` 会先报「漏绑必需进口」，那一支就不再往下展开，环反而报不出来。
 	back := NewNode("back", "", nil, nil, func(rc *RunCtx) error { return nil })
 	back.child = c
+	back.binds = []SubBind{In(cin, cin)}
 	mustAdd(t, a, back)
 
 	// 递归展开要**报环**，不是爆栈

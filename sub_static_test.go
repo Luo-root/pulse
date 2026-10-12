@@ -643,6 +643,170 @@ func TestSealedChildCanBeReusedElsewhere(t *testing.T) {
 	}
 }
 
+// TestSubRejectsUnboundRequiredInlet 子图**需要**的进口（有节点 `Requires` 它），这一处挂载
+// 就得给值——`In` 与 `Fix` / `FixSkip` 都算。
+//
+// 漏绑必须在**装配期**拒：只留到运行期的话，父图别的节点可能已经跑完并留下副作用，而
+// `Validate()` 还已经把这个定义封了口（`newChildExecution` 报的「has no value for this run」
+// 会晚到那时候）。
+//
+// 反向也守住：**没人 `Requires`、又没被这一处绑出去**的进口是**可选**的（留给别的挂载点的
+// 接口，或这一处用不到的透传端），不逼调用方编个值出来——与「没人 `Requires` 的进口不逼喂值」
+// 是同一条纪律。
+func TestSubRejectsUnboundRequiredInlet(t *testing.T) {
+	ctx := context.Background()
+	cin := NewKey[string]("ub.cin")
+	cout := NewKey[string]("ub.cout")
+	in := NewKey[string]("ub.in")
+	out := NewKey[string]("ub.out")
+
+	child := mustNew(t, ctx, "ub.child")
+	declareIn(t, child, NewPort(cin))
+	declareOut(t, child, NewPort(cout))
+	mustAdd(t, child, NewNode("inner", "", Requires(cin), Provides(cout), func(rc *RunCtx) error {
+		v, err := Get(rc, cin)
+		if err != nil {
+			return err
+		}
+		return Set(rc, cout, "child("+v+")")
+	}))
+
+	// 只绑出口、漏掉那条被 `Requires` 的进口：装配期就报，点名哪个节点要它、怎么补。
+	parent := mustNew(t, ctx, "ub.parent")
+	err := Sub(parent, "step", "", []SubBind{Out(cout, out)}, child)
+	if err == nil {
+		t.Fatal("漏绑必需进口：装配期就该拒")
+	}
+	for _, want := range []string{cin.Name(), `"ub.child"`, `"inner"`, "has no value for this mount", "FixSkip"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("报文该含 %q，got %v", want, err)
+		}
+	}
+
+	// 补上 `In`：装得进、跑得通，值真的桥回来。
+	parent2 := mustNew(t, ctx, "ub.parent2")
+	declareIn(t, parent2, NewPort(in))
+	if err := Sub(parent2, "step", "", []SubBind{In(in, cin), Out(cout, out)}, child); err != nil {
+		t.Fatalf("补上 In 就该装得进：%v", err)
+	}
+	if err := seedOn(parent2, in, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runOn(parent2); err != nil {
+		t.Fatalf("跑：%v", err)
+	}
+	if st, got := slotOn(parent2, out.asRef()); st != slotReady || got != "child(v)" {
+		t.Fatalf("out = (%v, %v), want (ready, child(v))", st, got)
+	}
+
+	// `Fix` 也算「给了值」——固定值属于**这一处挂载**。
+	out3 := NewKey[string]("ub.out3")
+	parent3 := mustNew(t, ctx, "ub.parent3")
+	if err := Sub(parent3, "step", "", []SubBind{Fix(cin, "fixed"), Out(cout, out3)}, child); err != nil {
+		t.Fatalf("Fix 也算给了值：%v", err)
+	}
+	if err := runOn(parent3); err != nil {
+		t.Fatalf("跑：%v", err)
+	}
+	if st, got := slotOn(parent3, out3.asRef()); st != slotReady || got != "child(fixed)" {
+		t.Fatalf("out3 = (%v, %v), want (ready, child(fixed))", st, got)
+	}
+
+	// 可选进口（声明了、没人 `Requires`、也没绑出去）：不喂也合法。
+	optional := NewKey[string]("ub.optional")
+	cout2 := NewKey[string]("ub.cout2")
+	out2 := NewKey[string]("ub.out2")
+	child2 := mustNew(t, ctx, "ub.child2")
+	declareIn(t, child2, NewPort(optional))
+	declareOut(t, child2, NewPort(cout2))
+	mustAdd(t, child2, NewNode("inner2", "", nil, Provides(cout2), func(rc *RunCtx) error {
+		return Set(rc, cout2, "v")
+	}))
+	parent4 := mustNew(t, ctx, "ub.parent4")
+	if err := Sub(parent4, "step", "", []SubBind{Out(cout2, out2)}, child2); err != nil {
+		t.Fatalf("没人需要的进口不绑也合法：%v", err)
+	}
+	if err := runOn(parent4); err != nil {
+		t.Fatalf("跑：%v", err)
+	}
+}
+
+// TestSubRejectsUnfedPassThroughOutlet 透传端（同一条键既是进口又是出口）在这一处被 `Out`
+// 绑出去时，就必须有人喂它：它不可能由节点产出（声明过的进口与节点产出互斥），所以唯一来源
+// 就是挂载点。不喂的话只能等子图跑完、`bridgeOutputs` 报一句「never arrived」。
+//
+// 反面同样守住：既不绑 `In` 也不绑 `Out` 的透传端**谁也没承诺**，不必强制（一个多口透传
+// 组件被挂在只用其中一部分口的地方，是正常用法）。
+func TestSubRejectsUnfedPassThroughOutlet(t *testing.T) {
+	ctx := context.Background()
+	k := NewKey[string]("pf.k")
+	in := NewKey[string]("pf.in")
+	out := NewKey[string]("pf.out")
+
+	child := mustNew(t, ctx, "pf.child")
+	declareIn(t, child, NewPort(k))
+	declareOut(t, child, NewPort(k))
+
+	parent := mustNew(t, ctx, "pf.parent")
+	err := Sub(parent, "step", "", []SubBind{Out(k, out)}, child)
+	if err == nil {
+		t.Fatal("透了出口却没人喂那条进口：装配期就该拒")
+	}
+	for _, want := range []string{k.Name(), "declared input", `"pf.child"`, "FixSkip"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("报文该含 %q，got %v", want, err)
+		}
+	}
+
+	// 喂上了就装得进，而且值真的透过去。
+	parent2 := mustNew(t, ctx, "pf.parent2")
+	declareIn(t, parent2, NewPort(in))
+	if err := Sub(parent2, "step", "", []SubBind{In(in, k), Out(k, out)}, child); err != nil {
+		t.Fatalf("喂上了就该装得进：%v", err)
+	}
+	if err := seedOn(parent2, in, "through"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runOn(parent2); err != nil {
+		t.Fatalf("跑：%v", err)
+	}
+	if st, got := slotOn(parent2, out.asRef()); st != slotReady || got != "through" {
+		t.Fatalf("out = (%v, %v), want (ready, through)", st, got)
+	}
+
+	// `FixSkip` 也算给了：跳过是**到达**，父侧那条出口跟着以跳过收尾，整轮成功。
+	out3 := NewKey[string]("pf.out3")
+	parent3 := mustNew(t, ctx, "pf.parent3")
+	if err := Sub(parent3, "step", "", []SubBind{FixSkip(k), Out(k, out3)}, child); err != nil {
+		t.Fatalf("FixSkip 也算给了：%v", err)
+	}
+	if err := runOn(parent3); err != nil {
+		t.Fatalf("跳过不该是失败：%v", err)
+	}
+	if st, _ := slotOn(parent3, out3.asRef()); st != slotSkipped {
+		t.Fatalf("out3 = %v, want skipped", st)
+	}
+
+	// 这一处根本不用那个透传端（既不绑进也不绑出）：谁也没承诺 → 合法。
+	k2 := NewKey[string]("pf.k2")
+	cout := NewKey[string]("pf.cout")
+	out2 := NewKey[string]("pf.out2")
+	child2 := mustNew(t, ctx, "pf.child2")
+	declareIn(t, child2, NewPort(k2))
+	declareOut(t, child2, NewPort(k2))
+	declareOut(t, child2, NewPort(cout))
+	mustAdd(t, child2, NewNode("prod", "", nil, Provides(cout), func(rc *RunCtx) error {
+		return Set(rc, cout, "v")
+	}))
+	parent4 := mustNew(t, ctx, "pf.parent4")
+	if err := Sub(parent4, "step", "", []SubBind{Out(cout, out2)}, child2); err != nil {
+		t.Fatalf("没绑出去的透传端不该被强制：%v", err)
+	}
+	if err := runOn(parent4); err != nil {
+		t.Fatalf("跑：%v", err)
+	}
+}
+
 // quotaStreamChild 造一张「体内有一条流」的子图：`Produce → Tee → sink` 三个节点必须
 // **同时活着**（生产端 / 复制端堵在发送上、消费端堵在读上），所以它需要 3 个名额。
 // 出口 `total` 是消费端算出来的和——用它把「这条流真的跑完了」变成可断言的证据。

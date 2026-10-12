@@ -285,11 +285,15 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 				t.Fatalf("%s：校验失败不该封口，got %v", g.ID(), err)
 			}
 		}
-		// 补上病根，再校验一次：这次整棵一起封
-		declareIn(t, child, NewPort(ghost))
-		if err := seedOn(child, ghost, "v"); err != nil {
-			t.Fatalf("Seed = %v", err)
-		}
+		// 补上病根，再校验一次：这次整棵一起封。
+		//
+		// 补法是一条**子图内部的产出**，而不是「把 ghost 声明成子图的进口」：声明成进口
+		// 之后它就成了这张子图必需的进口（节点 `hungry` 要它），而这一处挂载并没有绑它
+		// ——那是另一条装配期判据（见 TestSubRejectsUnboundRequiredInlet），会先报出来。
+		// 两种补法都对，只是选哪一条决定了谁会报。
+		mustAdd(t, child, NewNode("feeder", "", nil, Provides(ghost), func(rc *RunCtx) error {
+			return Set(rc, ghost, "v")
+		}))
 		if err := root.Validate(); err != nil {
 			t.Fatalf("补上来源之后该通过：%v", err)
 		}
