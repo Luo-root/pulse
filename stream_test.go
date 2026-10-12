@@ -683,3 +683,123 @@ func TestStreamAssemblyErrors(t *testing.T) {
 		t.Fatalf("装配失败不该往图上留节点，got %d", n)
 	}
 }
+
+// 流生产端撞上**尝试写暂存**（图级 `Retry` 就是最典型的那个）：`Produce` / `Tee` 的形状都是
+// **先 `Set` 一条 channel、再往里发值**，而那条 channel 只有等这次尝试**提交之后**才发布，
+// 消费端在拿到它之前只能等着——发送方与接收方互等，整轮挂到 ctx 到期。
+//
+// 这条钉的是**当场报错、不是挂死**：从阶段 3 起写暂存把 channel 的发布推到了提交之后，
+// 同一份图在阶段 2 是「能跑」的，放它过去就是一处静默回归（实测：图级 `Retry` + `Produce`，
+// 3s 到期时 `produced=1, consumed_sum=0`）。报文点名节点、那条 channel 与改法。
+//
+// 判据看的是「有没有写暂存」，不认切面的身份——`Aspect` 是裸函数类型，装配期认不出来
+// （`reflect` 的代码指针每次实例化都不同），所以这条只能在运行期判；也正因为如此，
+// 同一条判据对 `Tee` 一样成立。
+func TestStreamProducerRejectsAttemptWriteSet(t *testing.T) {
+	t.Run("Produce", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		out := NewKey[<-chan int]("s.txn.src")
+		g := mustNew(t, ctx, "txn-produce", WithAspects(Retry(2, 0)))
+		var produced atomic.Int32
+		if err := Produce(g, "src", out, func(rc *RunCtx, send func(int) error) error {
+			produced.Add(1)
+			return send(1)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var got []int
+		if err := Consume(g, "sink", out, func(rc *RunCtx, v int) error {
+			got = append(got, v)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		err := runOn(g)
+		if err == nil || !strings.Contains(err.Error(), "per-attempt write set") {
+			t.Fatalf("Run = %v, want 写入暂存拒装报错（挂死到 ctx 到期说明没拒）", err)
+		}
+		for _, want := range []string{`"src"`, `"s.txn.src"`, "Take the write-staging aspect off this layer"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("报文缺 %s：%v", want, err)
+			}
+		}
+		if n := produced.Load(); n != 0 {
+			t.Fatalf("节点体不该真的开跑：跑了 %d 次", n)
+		}
+		if len(got) != 0 {
+			t.Fatalf("下游不该收到任何值：%v", got)
+		}
+	})
+
+	t.Run("Tee", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		in := NewKey[<-chan int]("s.txn.in")
+		o1 := NewKey[<-chan int]("s.txn.o1")
+		o2 := NewKey[<-chan int]("s.txn.o2")
+		g := mustNew(t, ctx, "txn-tee", WithAspects(Retry(2, 0)))
+		declareIn(t, g, NewPort(in))
+		src := make(chan int, 1)
+		src <- 7
+		close(src)
+		if err := seedOn(g, in, (<-chan int)(src)); err != nil {
+			t.Fatal(err)
+		}
+		if err := Tee(g, "fan", in, Keys(o1, o2)); err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range []Key[<-chan int]{o1, o2} {
+			if err := Consume(g, "r-"+k.Name(), k, func(rc *RunCtx, v int) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		err := runOn(g)
+		if err == nil || !strings.Contains(err.Error(), "per-attempt write set") {
+			t.Fatalf("Run = %v, want 写入暂存拒装报错（挂死到 ctx 到期说明没拒）", err)
+		}
+		for _, want := range []string{`Tee "fan"`, `"s.txn.o1"`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("报文缺 %s：%v", want, err)
+			}
+		}
+	})
+}
+
+// 反面：**没有**写暂存的切面照装照跑——`Timeout` 不给节点开尝试边界，流生产端那条
+// 「channel 要到提交后才发布」的互等就不成立。
+//
+// 这条守住拒装的**边界**：判据是「有没有写暂存」，不是「有没有装切面」。少了它，
+// 一个「凡是有切面就拒」的实现照样能让上面那条用例变绿。
+func TestStreamProducerAcceptsNonStagingAspect(t *testing.T) {
+	out := NewKey[<-chan int]("s.txn.ok.src")
+	g := mustNew(t, context.Background(), "txn-stream-timeout", WithAspects(Timeout(time.Second)))
+
+	if err := Produce(g, "src", out, func(rc *RunCtx, send func(int) error) error {
+		for i := 1; i <= 3; i++ {
+			if err := send(i); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var got []int
+	if err := Consume(g, "sink", out, func(rc *RunCtx, v int) error {
+		got = append(got, v)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runOn(g); err != nil {
+		t.Fatalf("Timeout 不开尝试边界，流生产端应当照跑：%v", err)
+	}
+	if want := []int{1, 2, 3}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

@@ -663,26 +663,43 @@ func TestStartAcceptsDiamondWithSeed(t *testing.T) {
 	}
 }
 
-// 顺序多次 next 合法（Retry 依赖）；第二次成功返回即可。
-func TestAspectSequentialNextAllowed(t *testing.T) {
-	g := mustNew(t, context.Background(), "test")
+// TestAspectSequentialNextWithoutBoundaryRejected 钉住**推进闸**：同一个节点执行上下文里，
+// `next()` 只允许成功推进一次——切面在没有开新尝试边界的情况下再推一次，整轮报错。
+//
+// 阶段 3 之前这条契约是**反的**（当时那条用例叫 `TestAspectSequentialNextAllowed`，断言
+// 「再推一次合法、节点跑两次、第二次的 Set 被幂等首写静默忽略」）。翻面它的是 #311 阶段 3
+// 的判据：没有隔离的第二次推进会让两次执行的输出混装，而引擎当时是**安静地放过**。
+//
+// `Retry` 不受影响——它每次尝试都换一条新的写暂存，那是「有边界的重入」（见
+// `TestRetryHidesFailedAttemptWrites` 与 Retry 自己的 godoc）；另一次 `Run` 是全新的执行
+// 上下文，账从零开始。
+func TestAspectSequentialNextWithoutBoundaryRejected(t *testing.T) {
+	g := mustNew(t, context.Background(), "advance-gate")
 	var runs atomic.Int32
 	aspect := Aspect(func(rc *RunCtx, next func(*RunCtx) error) error {
 		if err := next(rc); err != nil {
 			return err
 		}
-		// 顺序再调一次：应成功（第二次 core 因槽位已写而 Set 静默）。
+		// 顺序再调一次：**没有开新的尝试边界**，该被推进闸拒。
 		return next(rc)
 	})
 	mustAdd(t, g, NewNode("n", "", nil, Provides(kA), func(rc *RunCtx) error {
 		runs.Add(1)
 		return Set(rc, kA, "value")
 	}, aspect))
-	if err := runOn(g); err != nil {
-		t.Fatalf("sequential next must be allowed, got %v", err)
+
+	err := runOn(g)
+	if err == nil || !errors.Is(err, ErrNextCalledTwice) {
+		t.Fatalf("Run = %v，want ErrNextCalledTwice", err)
 	}
-	if got := runs.Load(); got != 2 {
-		t.Fatalf("node ran %d times, want 2", got)
+	if !strings.Contains(err.Error(), "without a new attempt boundary") {
+		t.Fatalf("报文要点明「没有新边界的重入」，got %v", err)
+	}
+	if !strings.Contains(err.Error(), "pulse.Retry") {
+		t.Fatalf("报文要给出能照着改的写法，got %v", err)
+	}
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("节点跑了 %d 次，want 1（第二次推进该被拒在体之前）", got)
 	}
 }
 
@@ -1256,52 +1273,55 @@ func TestWaitReasonStableAfterFailure(t *testing.T) {
 	}
 }
 
-// TestRetryDoesNotRollbackPublishedSlots 钉住契约：失败 attempt 已发布的槽
-// 不回滚、下游据此已被唤醒，后续 attempt 的 Set 被静默忽略（幂等首写）。
-// 所以「重试安全」的前提是失败前没有写过 Provide，也没有不可重入副作用。
+// TestRetryHidesFailedAttemptWrites 钉住阶段 3 的硬保证：**失败的尝试写出去的东西，
+// 下游从来没有见过**。
 //
-// 同步点：第一次 attempt Set 之后等下游真的跑起来再失败——否则「下游是否
-// 已被唤醒」取决于它有没有抢在取消之前进入等待，断言会变成掷硬币。
-func TestRetryDoesNotRollbackPublishedSlots(t *testing.T) {
-	out := NewKey[string]("retry.pub.out")
+// 阶段 2 及以前这条契约是**反的**（当时那条用例叫 `TestRetryDoesNotRollbackPublishedSlots`）：
+// 槽位「到达即发布、幂等首写」，第一次尝试的 Set 当场唤醒下游并留在槽里，后续尝试的写被
+// 静默忽略——下游拿到的是「注定失败的那一次」的值，而整轮还可能报成功。
+//
+// 判据落在**下游读到的值**上，不落在「下游有没有被唤醒」上：后者在时间窗里等「没被唤醒」
+// 只能靠超时兜底，而值本身是确定性的证据——只有成功的那一次被提交过，下游就不可能读到别的。
+func TestRetryHidesFailedAttemptWrites(t *testing.T) {
+	out := NewKey[string]("retry.hide.out")
 	var attempts, downstreamRuns atomic.Int32
-	downstreamDone := make(chan struct{})
+	var seen atomic.Value
 
-	g := mustNew(t, context.Background(), "test")
-	mustAdd(t, g, NewNode("flaky", "", nil, Provides(out),
-		func(rc *RunCtx) error {
-			n := attempts.Add(1)
-			if err := Set(rc, out, fmt.Sprintf("attempt-%d", n)); err != nil {
-				t.Errorf("attempt-%d Set err = %v（首个 Set 必须成功，其余幂等忽略）", n, err)
-			}
-			if n == 1 {
-				select {
-				case <-downstreamDone:
-				case <-time.After(2 * time.Second):
-					t.Error("下游没有被第一次 attempt 的 Set 唤醒")
-				}
-			}
-			return errors.New("总是失败")
-		},
-		Retry(3, 0),
-	))
+	g := mustNew(t, context.Background(), "retry-hide")
+	mustAdd(t, g, NewNode("flaky", "", nil, Provides(out), func(rc *RunCtx) error {
+		n := attempts.Add(1)
+		if err := Set(rc, out, fmt.Sprintf("attempt-%d", n)); err != nil {
+			return err
+		}
+		if n == 1 {
+			return errors.New("第一次注定失败")
+		}
+		return nil
+	}, Retry(2, 0)))
 	mustAdd(t, g, NewNode("downstream", "", Requires(out), nil, func(rc *RunCtx) error {
+		v, err := Get(rc, out)
+		if err != nil {
+			return err
+		}
+		seen.Store(v)
 		downstreamRuns.Add(1)
-		close(downstreamDone)
 		return nil
 	}))
 
-	if err := runOn(g); err == nil {
-		t.Fatal("want flaky error")
+	if err := runOn(g); err != nil {
+		t.Fatalf("第二次尝试成功，整轮该成功，got %v", err)
 	}
-	if attempts.Load() != 3 {
-		t.Fatalf("attempts = %d, want 3", attempts.Load())
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
 	}
-	if downstreamRuns.Load() != 1 {
-		t.Fatalf("downstream 进入 Run %d 次，want 1（第一次 attempt 的 Set 就该唤醒它）", downstreamRuns.Load())
+	if got := downstreamRuns.Load(); got != 1 {
+		t.Fatalf("downstream 进入 Run %d 次，want 1", got)
 	}
-	if st, v := slotOn(g, out.asRef()); st != slotReady || v != "attempt-1" {
-		t.Fatalf("槽位终态 = (%v, %v)，want (slotReady, attempt-1)——已发布的槽不回滚", st, v)
+	if v := seen.Load(); v != "attempt-2" {
+		t.Fatalf("下游读到 %v，want attempt-2——失败那一次的写不该被任何人看见", v)
+	}
+	if st, v := slotOn(g, out.asRef()); st != slotReady || v != "attempt-2" {
+		t.Fatalf("槽位终态 = (%v, %v)，want (slotReady, attempt-2)", st, v)
 	}
 }
 
