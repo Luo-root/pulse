@@ -72,10 +72,18 @@ func (ws *writeSet) peek(ref keyRef) *slot {
 // commit 把这份暂存交给**父写入目标**：外层还有一层暂存就交给外层（嵌套 `Retry` 时
 // 内层的结果属于外层那一次尝试），否则逐条写进执行槽位。
 //
-// 逐条写、按 **key 名排序**（map 的迭代顺序不许进任何可观察的行为）：多 Key 的成功提交
-// **不承诺**严格原子可见（阶段零定案 (d)），窗口是「一部分输出已 `ready`、其余仍 `pending`」，
-// 这些输出的下游可能被先到的那一条先唤醒。硬保证在别处，而且是清楚的：**失败的尝试根本
-// 走不到这一步**——它的整份暂存被丢掉，下游从未见过。
+// **先整批判过，再逐条写**：判据是「对面有没有已经以另一个状态到达」——值写进已跳过的槽、
+// 跳过写进已就绪的槽都是 `ErrConflict`（同状态是幂等首写，放行）。判不过就**一条都不发布**，
+// 整批以失败告终；这样调用方看不到「一半发布了、一半没发」这种没有可解释语义的中间态
+// （逐条写中途才发现冲突时，前面那几条已经落地、下游可能已经被唤醒——那是评审点名的一种
+// 失败形状，而不是契约允许的窗口）。
+//
+// 判过之后的逐条写**不承诺严格原子可见**（阶段零定案 (d)）：窗口是「一部分输出已 `ready`、
+// 其余仍 `pending`」，这些输出的下游可能被先到的那一条先唤醒。硬保证在别处，而且是清楚的：
+// **失败的尝试根本走不到这一步**——它的整份暂存被丢掉，下游从未见过。
+//
+// 逐条写的那一支仍然带错误返回：当前设计里它**没有可达形状**（这些键的写入者只有这个节点
+// 自己的尝试链，而尝试链是顺序的，判过与写之间没有第三方能插进来），留着是防御性的。
 func (ws *writeSet) commit(e *Execution) error {
 	ws.mu.Lock()
 	names := make([]string, 0, len(ws.staged))
@@ -89,10 +97,22 @@ func (ws *writeSet) commit(e *Execution) error {
 	}
 	ws.mu.Unlock()
 
+	// —— 第一趟：全判。任何一条落不下去就整批不发布 ——
+	for _, en := range entries {
+		st, _ := en.slot.snapshot()
+		if st == slotPending {
+			// 条目只在写路径上建，理论上到不了这里；真到了也不该把 nil 当值提交出去。
+			continue
+		}
+		if err := checkCommitTarget(e, ws, en.ref, st); err != nil {
+			return err
+		}
+	}
+
+	// —— 第二趟：逐条写（顺序见上面那段 godoc） ——
 	for _, en := range entries {
 		st, v := en.slot.snapshot()
 		if st == slotPending {
-			// 条目只在写路径上建，理论上到不了这里；真到了也不该把 nil 当值提交出去。
 			continue
 		}
 		var err error
@@ -111,4 +131,28 @@ func (ws *writeSet) commit(e *Execution) error {
 		}
 	}
 	return nil
+}
+
+// checkCommitTarget 判这一条交出去会不会撞上「已经以另一个状态到达」。
+//
+// 它**只读**、不建条目（读路径那条纪律同样适用于此）：给外层暂存 `slotOf` 会在那里留下一个
+// 永远 `pending` 的空位，而那个空位随后会把这条键真正的来源整个遮住——一次没能提交的尝试
+// 不该在外层留下任何痕迹。
+func checkCommitTarget(e *Execution, ws *writeSet, ref keyRef, st slotState) error {
+	var cur slotState
+	if ws.outer != nil {
+		s := ws.outer.peek(ref)
+		if s == nil {
+			return nil // 外层没写过这条：这一次就是首写
+		}
+		cur, _ = s.snapshot()
+	} else {
+		cur, _ = e.slotOf(ref).snapshot()
+	}
+	switch {
+	case cur == slotPending, cur == st:
+		return nil // 没到过 → 首写；同状态 → 幂等首写
+	default:
+		return fmt.Errorf("pulse: committing attempt output %s failed: %w", ref, ErrConflict)
+	}
 }
