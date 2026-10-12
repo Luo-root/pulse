@@ -1,6 +1,6 @@
 # Quick start
 
-Pulse is a **one-shot graph engine** plus a **graph-observation layer**. This page walks the shortest path end to end: **declare Keys → add nodes → `Run` → attach observation**.
+Pulse is a **data-arrival-driven graph engine** plus a **graph-observation layer**. This page walks the shortest path end to end: **declare Keys → add nodes → `Run` → attach observation**.
 
 ## Requirements
 
@@ -33,13 +33,17 @@ var (
 )
 
 func main() {
-	g, err := pulse.New(context.Background(), "docs-pipeline", "docs summary pipeline")
+	g, err := pulse.New("docs-pipeline", "docs summary pipeline")
 	if err != nil {
 		panic(err)
 	}
 
-	// Seed writes external input before the run: it declares the host as the source of docs.
-	_ = pulse.Seed(g, Docs, []string{"pulse only orchestrates and observes", "slot tri-state: skip is arrival"})
+	// DeclareInput: declare docs as an inlet of this graph — declare it before feeding it.
+	must(g.DeclareInput(pulse.NewPort(Docs)))
+
+	// Seed: write this run's value into Inputs — a key must be declared an inlet before it is fed.
+	var in pulse.Inputs
+	_ = pulse.Seed(&in, Docs, []string{"pulse only orchestrates and observes", "slot tri-state: skip is arrival"})
 
 	// summarize enters Run only after docs has arrived.
 	must(g.Add(pulse.NewNode("summarize", "fold docs into a summary",
@@ -67,7 +71,7 @@ func main() {
 			return pulse.Set(rc, Report, report)
 		})))
 
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), in); err != nil {
 		panic(err)
 	}
 	fmt.Println(report)
@@ -91,9 +95,9 @@ All four basic concepts appear in this code:
 | What you write | What it is |
 |---|---|
 | `pulse.NewKey[T]("docs")` | **Key**: a typed data slot. The name is for diagnostics and YAML reconciliation; the type gives compile-time safety. The same name must always be registered with the same `T` |
-| `pulse.Seed(g, Docs, …)` | **Seed**: external input written before the run — a seed and a node are both sources for a Key, but each Key allows only one source (both producing it → `ErrDuplicateSource`) |
+| `pulse.DeclareInput(...)` + `pulse.Seed(&in, Docs, …)` | **Inlet + Seed**: `DeclareInput` says "this key comes from outside", `Seed` writes **this run's** value into `Inputs` — each Key allows only one source (a declared inlet, or exactly one node's `Provides`; both producing it → `ErrDuplicateSource`) |
 | `pulse.NewNode(id, description, Requires, Provides, run)` | **Node**: declares only which slots it reads and which it writes. It does **not** declare who the next node is |
-| `g.Run()` | **Graph**: submits all nodes and blocks until all have terminated; returns the first error, **excluding skips**; a cancellation counts only if a node sees it |
+| `g.Run(ctx, in)` | **Graph**: builds one fresh `Execution` for this run, submits all nodes and blocks until all have terminated; returns the first error, **excluding skips**; a cancellation counts only if a node sees it |
 
 ## Data arrival is scheduling
 
@@ -101,15 +105,13 @@ All four basic concepts appear in this code:
 - The topology is **implicit**: whoever writes `summary` and whoever reads `summary` already form the dependency. There are no edge objects and no scheduler loop;
 - `Requires` is an **AND** precondition: the gate is judged once all inputs have arrived (ready or skipped) — **collect whatever arrives**, so one input with a value is enough to execute (only when no input brought a value does it not execute — see [Core concepts](/en/guide/concepts)).
 
-## One run, one world
+## A reusable definition, one run, one world
 
-A `Graph` is **one instantiation of a template**, not a re-runnable container. This is an external contract, not an implementation detail:
+A `Graph` is a **reusable static definition** (nodes, dependencies, ports, mounted child graphs), not a run itself. This is an external contract, not an implementation detail:
 
-- A second call to `Start()` returns `ErrGraphStarted`;
-- `Seed` after the graph has started is rejected the same way; once a slot has arrived it is closed and never reopens;
-- To run the same graph a second time, the correct move is to call `New` again — just as a CI/CD workflow definition is run countless times, each one an independent run.
-
-Cross-run state (history, caches, sessions) **belongs to the caller**; the engine holds none of it. The reasoning is in [Core concepts](/en/guide/concepts).
+- one definition can run many times sequentially, many times concurrently, and be mounted as a child graph in several places; one run's cancellation / failure / completion pollutes neither the definition nor any other run;
+- every call to `g.Run(ctx, in)` is **an independent run** (inside: `NewExecution` + `Start` + `Wait`); for step-by-step control build an `Execution` yourself — its `Start()` succeeds only once, and once a slot has arrived it is closed and never reopens;
+- cross-run state (history, caches, sessions) **belongs to the caller**; the engine holds none of it. The reasoning is in [Core concepts](/en/guide/concepts).
 
 ## Add observation: three lines
 
@@ -122,7 +124,7 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 	HostID:  "quickstart",
 	TraceID: observe.NewTraceID(),
 })
-g, err := pulse.New(ctx, "docs-pipeline", "docs summary pipeline", pulse.WithObserver(obs))
+g, err := pulse.New("docs-pipeline", "docs summary pipeline", pulse.WithObserver(obs))
 ```
 
 With those three lines added, the real output of the same graph (two run-level records bracketing four node records; timestamps / trace / durations vary per run):

@@ -76,18 +76,18 @@ func main() {
 
 	// 2) 装图：拓扑来自 YAML。
 	g, plan, err := yaml.Load([]byte(doc), reg, yaml.LoadOptions{
-		Context: context.Background(),
 		GraphID: "yaml-demo", // 必填：观测靠它区分「跑的是哪张图」
 	})
 	if err != nil {
 		panic(err)
 	}
 
-	// 3) 宿主执行 Seed 计划，然后运行。
-	if err := plan.Apply(g, nil); err != nil { // literal 之外需要 resolve
+	// 3) 宿主把 Seed 计划解成这一次运行的输入，然后运行。
+	in, err := plan.Inputs(nil) // literal 之外需要 resolve
+	if err != nil {
 		panic(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), in); err != nil {
 		panic(err)
 	}
 	fmt.Println("run ok:", g.ID())
@@ -120,7 +120,7 @@ run ok: yaml-demo
 - **Key 用 `{name, type}` 对账**。`type` 就是 `reflect.Type.String()`（`string`、`[]string`、`[]Doc`……），与 `RegisterKey` 登记的一致；名字对不上或缺 `type` 都在 `Load` 期报错。
 - **时间字段**用 Go 的 `ParseDuration` 形式（`30s` / `100ms`），不写裸数字。
 - **切面顺序**：先列的更靠外 → `timeout` 在外、`retry` 在内，即「总时长受限、每次尝试各自重试」。
-- **引擎不做 IO**。`from.kind` 不是 `literal` 时，`Load` 只把它原样交给 `plan.Apply(g, resolve)`；读文件、读环境变量、从请求取 context 都是宿主的事。
+- **引擎不做 IO**。`from.kind` 不是 `literal` 时，`Load` 只把它原样交给 `plan.Inputs(resolve)`；读文件、读环境变量、从请求取 context 都是宿主的事。
 - `observer` 字段是文档提示位，`Load` 忽略它——观察者走 `LoadOptions.Graph`（`pulse.WithObserver(...)`）与 `LoadOptions.ObserverFor`（按层，见下）。
 
 ## 子图：一步 = 一张图
@@ -149,7 +149,7 @@ nodes:
 它展开成[图即节点](/guide/orchestration)的**静态组合 `pulse.Sub`**：子图在 **`Load` 期按挂载位置装好**（一处挂载一张实例），父侧那个节点的 `Requires` / `Provides` 由 `in` / `out` 推出来，引擎的静态校验（来源 / 环 / 名额）照常生效。由此：
 
 - **装完不运行就能看完整棵树**：`g.Topology()` 沿静态挂载边递归，`Nodes[i].Sub` 就是这一处的子图（再深一层继续 `.Sub`），路径按**挂载位置**推导（`step1`、`step1/toInner`），图身份是 `<根 id>/<挂载路径>`；
-- **子图的静态毛病在 `Load` 期报**，报文点明**挂载路径**：`pulse/yaml: graph "inner" (mounted at "step1/toInner"): pulse: node "leaf" requires "c.nope" but nothing provides or seeds it`；
+- **子图的静态毛病在 `Load` 期报**，报文点明**挂载路径**：`pulse/yaml: graph "inner" (mounted at "step1/toInner"): pulse: node "leaf" requires "c.nope" but nothing provides it (declare it with DeclareInput if the value comes from outside)`；
 - **同一张 spec 挂几处 = 几张独立实例**：每处都有自己的槽位与挂载路径，两处都跑得了，观测里靠 graph id 与 `pulse.path` 分得开；
 - **取消从挂载点传进子图**：父图 ctx 一取消，子图节点当场看见——不是跑满整段再把取消吞掉。
 
@@ -161,14 +161,14 @@ nodes:
 - **边界只有一处说法**：子图节点不能再写 `requires` / `provides`，**工厂节点也不能写 `in` / `out`**——写错那一侧就是静默不生效，所以都在装图期报。
 - **`in:` 喂的键不能被子图自己再提供**：一条键恰好一个来源，否则跑到那一步就是 `ErrDuplicateSource`。
 - **子图的 `seeds`**：**要种值**的那条只允许 `literal`（`env` / `file` / `context` 要靠宿主 IO，而 `SeedPlan` 是父图的产物；`skip: true` 的那条 `from` 没有语义，与顶层 `seeds` 一个口径）；键名 / 类型按登记表对账；**同一条键在同一张图里声明两次**也报——第二次会被幂等首写静默忽略，谁赢取决于声明顺序。
-- **被引用的每一张 `graphs:` 声明都查，而且按引用点各查一遍**：装配期先装一棵**只装不跑**的校验树——**同一段装配代码**，子图一律按静态形态挂上去，每个引用点各是一张实例。每张实例按**那一处**的 `in:` / `out:` 把自己的接口面声明成端口（`DeclareInput` / `DeclareOutput`），于是「这本来就是外部输入」与「你忘了接线」分得开，也不必再往校验树上种「假来源」；最后让引擎自己递归 `Validate` 判一遍——所以子图里「某条 `Requires` 没人提供、也没人 seed」「声明过的出口没人产出」与「依赖成环」也在 `Load` 报，**报文与 `Start` 那次逐字相同**，还点明**挂载路径**（例：`graph "inner" (mounted at "step1/toInner")`）。按引用点而不是按并集：同一张 spec 挂两处时两边的 `in:` 可以不一样，按并集校验等于说「另一处喂了 = 这一处也喂了」。
+- **被引用的每一张 `graphs:` 声明都查，而且按引用点各查一遍**：装配期先装一棵**只装不跑**的校验树——**同一段装配代码**，子图一律按静态形态挂上去，每个引用点各是一张实例。每张实例按**那一处**的 `in:` / `out:` 把自己的接口面声明成端口（`DeclareInput` / `DeclareOutput`），于是「这本来就是外部输入」与「你忘了接线」分得开，也不必再往校验树上种「假来源」；最后让引擎自己递归 `Validate` 判一遍——所以子图里「某条 `Requires` 没人提供（也没声明成入口）」「声明过的出口没人产出」与「依赖成环」也在 `Load` 报，**报文与 `Start` 那次逐字相同**，还点明**挂载路径**（例：`graph "inner" (mounted at "step1/toInner")`）。按引用点而不是按并集：同一张 spec 挂两处时两边的 `in:` 可以不一样，按并集校验等于说「另一处喂了 = 这一处也喂了」。
 - **谁也引用不到的 spec 只查真判得了的那几条**：它没有挂载点、也就没有接口面——「这条键没人喂」在那里判不了（按闭合图去查会把它一律报成「名字写错了」，模板库里只要有一张暂时还没接上，整份文档就 `Load` 不过）。所以工厂名 / 空 `nodes` / 重复 id / 来源冲突 / 依赖成环 / 流式照旧报，来源那条等它**真的被引用**时按**那一处**的 `in:` / `out:` 判。
-- **校验树不碰宿主的 ctx，子图定义也不碰**：校验树整棵建在 `context.Background()` 上；真图里子图的定义同样不挂宿主 ctx（取消是运行期从挂载点转发进去的）——挂在宿主 ctx 上只会让每一次 `Load` 都往宿主 ctx 上多挂几层。`Load` 失败时返回 `nil, nil, err`，调用方连清理的把手都没有，所以「所有可能失败的校验」都排在「建根图」前面；根图照旧继承宿主 ctx（取消传得进去），宿主跑到 `Wait` 就把它释放。
-- **切面落在父侧那个节点上**：`timeout: 30s` 就是给整张子图限时；子图**里面**的节点各写各的。**`retry:` 落在子图节点上则 `Load` 期直接拒**：静态挂载的子图只跑一次，第二次尝试起不来，而 `Retry` 返回的是**最后一次** attempt 的错误——会把第一次失败的病根盖掉。把 `retry:` 放到子图里那个真会失败的节点上（「每次尝试各装一张新图」是阶段 3 的事）。
+- **`Load` 不碰任何 ctx**：图是定义、定义没有生命周期，一次运行在谁的取消域里跑是 `Run` / `NewExecution` 那一刻的事（`LoadOptions.Context` 因此删掉了——留着只会是个静默失效的旋钮）；子图的取消照样从挂载点传进去（运行期由挂载点把父节点这一层的 ctx 派生给子执行）。`Load` 失败时返回 `nil, nil, err`，调用方连清理的把手都没有，所以「所有可能失败的校验」都排在「把图交出去」前面。
+- **切面落在父侧那个节点上**：`timeout: 30s` 就是给整张子图限时；子图**里面**的节点各写各的。**`retry:` 落在子图节点上则 `Load` 期直接拒**：桥回父侧是在第一次 attempt 里做完的，而父侧槽位是幂等首写——第二次 attempt 的写会被静默丢掉（父图手里成了「一半第一次、一半第二次」的混装），而 `Retry` 返回的是**最后一次** attempt 的错误，第一次失败的病根也跟着被盖掉。把 `retry:` 放到子图里那个真会失败的节点上；缺的是 attempt 级写集（阶段 3）。
 - **每处挂载装一张、各有自己的槽位与挂载路径，两处都跑得了**：同一张 spec 被引用两次就是两个独立实例，观测里靠 graph id 与 `pulse.path` 分得开。
-- **根层自己那几条判据仍在 `Start` 那一刻报**：根层的外部输入是宿主在 `Load` 之后经 `SeedPlan.Apply` 种的——装图期看它当然是「没人提供、没人 seed」，在这一步校验会把任何一份 `seeds:` 正常的文档都误报掉。
+- **根层自己那几条判据仍在启动那一刻报**（`Run` / `NewExecution`；装图期不判根层）：顶层 `seeds:` 只把键声明成根图的入口，值由宿主在运行前经 `SeedPlan.Inputs` 给出——根层的外部输入面在 `Load` 之后还可能被宿主自己补声明，装图期看不全，所以来源那条留给启动一并判。
 
-**观测按层给**：`LoadOptions.ObserverFor(path)` 按层建出口（`path` 根为空串、一层子图是它的节点 id、两层是 `outer/inner`），交给 `observe.ObserveConfig.Path` 就让那一层的每条记录都带 `pulse.path`——嵌套的日志 / 追踪才拼得回树。调用时机：子图在 **`Load` 装到那一层时各调一次**（每处挂载一次，返回的出口只属于那一层）；只装不跑的校验树**不调**它——宿主收到的回调次数不会因为多校验一遍而变。
+**观测按层给（可选）**：`LoadOptions.ObserverFor(path)` 可以按层建出口（`path` 根为空串、一层子图是它的节点 id、两层是 `outer/inner`）——要分层落不同的盘时就给它。调用时机：子图在 **`Load` 装到那一层时各调一次**（每处挂载一次，返回的出口只属于那一层）；返回 nil 的这一层按 `LoadOptions.Graph` 里挂的那条走——子图会继承父图的观察者，而**挂载位置照样随每条回调由引擎发出来**（`Site.Path`），所以继承的出口也带 `pulse.path`，嵌套的日志 / 追踪照样拼得回树。只装不跑的校验树**不调**它——宿主收到的回调次数不会因为多校验一遍而变。
 
 ## 边界与坑
 
@@ -182,10 +182,10 @@ nodes:
 | 字符串 ↔ 数字互转 | `pulse: seed "demo.in": … (element 0: cannot convert string to int)` |
 | 浮点截断成整数 / 越界收窄 | `… (element 0: cannot convert float64 to int)` · `… (element 0: cannot convert int to int8)` |
 
-需要这些取值时，用 `resolve` 自己给出类型正确的值：
+需要这些取值时，把 `resolve` 交给 `plan.Inputs` 自己给出类型正确的值：
 
 ```go
-plan.Apply(g, func(from yaml.SeedFrom) (any, error) {
+in, err := plan.Inputs(func(from yaml.SeedFrom) (any, error) {
 	if from.Kind == "file" {
 		raw, err := os.ReadFile(from.Path) // 宿主做 IO
 		if err != nil {

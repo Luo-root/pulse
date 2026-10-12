@@ -6,11 +6,11 @@ Observation is an **independent layer**: the engine knows no observation package
 
 ```go
 type Observer interface {
-	OnGraphStarted(graphID string)
-	OnGraphFinished(graphID string, reason NodeFinishReason, err error)
-	OnNodeWaiting(graphID, nodeID string)
-	OnNodeRunning(graphID, nodeID string)
-	OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error)
+	OnGraphStarted(site Site)
+	OnGraphFinished(site Site, reason NodeFinishReason, err error)
+	OnNodeWaiting(site Site, nodeID string)
+	OnNodeRunning(site Site, nodeID string)
+	OnNodeFinished(site Site, nodeID string, reason NodeFinishReason, err error)
 }
 ```
 
@@ -20,9 +20,9 @@ The contract has five clauses, all of them frozen surface:
 2. **Read-only**: an observer's panic or error **must not** be promoted into a node failure (the engine side already swallows it);
 3. **Concurrency-safe**: the three node callbacks run synchronously **on the node's own goroutine**, the two run-level ones on the **`Start` / `Wait` caller's goroutine** — so an implementation must be concurrency-safe, and must not block for long. **Do not call this graph's `Start` / `Wait` from inside a callback**: the callback runs on their calling path, so it is a goroutine waiting on itself and it deadlocks;
 4. **The timing is a bracket**: `GraphStarted` precedes **every** node callback of the run (a graph that fails start validation never started, so nothing is emitted), and `GraphFinished` follows **all** of them; a host that calls `Start` without `Wait` never sees `finished`, while concurrent or repeated `Wait` calls all return only after that emission returned (by the time any `Wait` returns, the run's finish record has landed in the egress);
-5. **The attribution key comes from the engine**: `graphID` is emitted with every callback, so an implementation never has to carry it in from constructor arguments of its own.
+5. **The position comes from the engine**: every callback carries a `Site` — the definition identity (`Site.Graph`) + this run's identity (`Site.Execution`) + the mounting position (`Site.Path`) — so an implementation never has to carry them in from constructor arguments of its own; two runs of one graph are told apart by `Site.Execution`.
 
-A graph defaults to no-op (attach nothing, pay nothing); `pulse.WithObserver(...)` attaches one; for several observers, combine them with `pulse.MultiObserver` (a later write overwrites an earlier one, so do the combining before passing it in).
+A graph defaults to no-op (attach nothing, pay nothing); `pulse.WithObserver(...)` attaches one (a run can override it with `WithExecObserver(...)`: this run > the definition's declaration > the parent execution environment); for several observers, combine them with `pulse.MultiObserver` (a later write overwrites an earlier one, so do the combining before passing it in).
 
 ## observe folds it into two run-level + two per-node records
 
@@ -35,9 +35,9 @@ A graph defaults to no-op (attach nothing, pay nothing); `pulse.WithObserver(...
 
 The two run-level records **bracket** the run's node records: a host no longer has to stitch node records back into a run by way of the `pulse.graph` attribute — a run is an entity with a head and a tail in the observation. The run-level terminal state is only ever `completed` / `failed` / `canceled`: **a run in which every node skipped is still `completed`** (skipping is a node-level fact and is not promoted to failure). A skipped node gets **only one `skipped` waiting record** — it did arrive, it just never executed.
 
-The attribution dimensions ride `Attrs`: `pulse.AttrGraph` + `pulse.AttrNode` (the key contract is defined by the **engine**; `observe` only consumes it, never defines it). Node records carry both; the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run".
+The attribution dimensions ride `Attrs`: `pulse.AttrGraph` + `pulse.AttrNode` + `pulse.AttrExecution` (the key contract is defined by the **engine**; `observe` only consumes it, never defines it). Node records carry the graph + node pair; the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run"; `pulse.AttrExecution` is on every record, and it is what keeps two runs of one graph apart.
 
-**Nesting depth** is the third dimension, `pulse.AttrPath` (an opaque string, layers joined by `/`): **build one egress per layer** and set `ObserveConfig.Path` to that layer's **mounting path** — composition (`Sub`) knows it at assembly time, and in declarative assembly `yaml.LoadOptions.ObserverFor(path)` does that wiring for you (once per mounting site; the build-only check tree does not call it) — and then **every** record of that layer carries it; when it is empty the key is **not written** — an empty string would make "root" and "forgot to pass it" look alike. The split of duties is clear: `pulse.graph` is the **graph id you chose** — a child's id is whatever its mounting step passed to `pulse.New` (`<parent id>/<node id>` reads best, and is what declarative assembly uses) — and `pulse.path` is the **layering the engine recorded**; the two together are what makes the layers of a nested run separable (see "A graph as a node" in [Orchestration](/en/guide/orchestration)). How to split the layers is the egress's business (`/` works); the engine offers no structured tree.
+**Nesting depth** is the third dimension, `pulse.AttrPath` (an opaque string, layers joined by `/`): the **mounting position arrives with every callback** (`Site.Path`), so **every** record of that layer carries it; when it is empty the key is **not written** — an empty string would make "root" and "forgot to pass it" look alike. The split of duties is clear: `pulse.graph` is the **graph id you chose** — a child's id is whatever its mounting step passed to `pulse.New` (`<parent id>/<node id>` reads best, and is what declarative assembly uses) — and `pulse.path` is the **layering the engine recorded**; the two together are what makes the layers of a nested run separable (see "A graph as a node" in [Orchestration](/en/guide/orchestration)). **One egress attached at the root is enough**: a child's records carry their layer by themselves, inherited egresses included; `ObserveConfig.Path` is only a fallback for when the `Site` brings no position (records written by hand, say, outside the engine). How to split the layers is the egress's business (`/` works); the engine offers no structured tree.
 
 ## Shortest wiring
 
@@ -53,7 +53,7 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 if err != nil {
 	return err
 }
-g, err := pulse.New(ctx, "docs-pipeline", "docs summary pipeline", pulse.WithObserver(obs))
+g, err := pulse.New("docs-pipeline", "docs summary pipeline", pulse.WithObserver(obs))
 ```
 
 Real output for that same graph (a single node; timestamps, trace ids and durations vary per run):

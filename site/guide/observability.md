@@ -6,11 +6,11 @@
 
 ```go
 type Observer interface {
-	OnGraphStarted(graphID string)
-	OnGraphFinished(graphID string, reason NodeFinishReason, err error)
-	OnNodeWaiting(graphID, nodeID string)
-	OnNodeRunning(graphID, nodeID string)
-	OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error)
+	OnGraphStarted(site Site)
+	OnGraphFinished(site Site, reason NodeFinishReason, err error)
+	OnNodeWaiting(site Site, nodeID string)
+	OnNodeRunning(site Site, nodeID string)
+	OnNodeFinished(site Site, nodeID string, reason NodeFinishReason, err error)
 }
 ```
 
@@ -20,9 +20,9 @@ type Observer interface {
 2. **只读**：观察者的 panic 与 error **不得**升格为节点失败（引擎侧已吞掉）；
 3. **并发安全**：节点三条在**节点自己的 goroutine** 上同步执行，图级两条在 **`Start` / `Wait` 的调用方 goroutine** 上——实现必须并发安全，且不得长时间阻塞。**别在回调里调本图的 `Start` / `Wait`**：回调就在它们的调用路径上，那是同一个 goroutine 等自己，会死等；
 4. **时序是夹住**：`GraphStarted` 先于本轮的**任何**节点回调（启动校验失败的图没有启动，不发），`GraphFinished` 晚于**全部**节点回调；只 `Start` 不 `Wait` 的宿主拿不到 `finished`，而并发 / 重复 `Wait` 都在这一发返回之后才返回（任何一个 `Wait` 返回时，本轮的收尾都已在出口落地）；
-5. **归因键由引擎给出**：`graphID` 随每次回调发出，实现侧不必从构造参数自行携带。
+5. **位置由引擎给出**：每条回调都带一个 `Site`——定义身份（`Site.Graph`）+ 本次运行的身份（`Site.Execution`）+ 挂载位置（`Site.Path`），实现侧不必从构造参数自行携带；同一张图跑两次的记录靠 `Site.Execution` 分得开。
 
-图默认 no-op（不挂就没有任何开销），`pulse.WithObserver(...)` 挂载；要多个观察者用 `pulse.MultiObserver` 组合（后写覆盖前写，所以组合要在传参前做完）。
+图默认 no-op（不挂就没有任何开销），`pulse.WithObserver(...)` 挂载（它有 `WithExecObserver(...)` 的**本次运行覆盖**：本次运行 > 定义声明 > 父执行环境）；要多个观察者用 `pulse.MultiObserver` 组合（后写覆盖前写，所以组合要在传参前做完）。
 
 ## observe 折成运行级两条 + 节点级两条
 
@@ -35,9 +35,9 @@ type Observer interface {
 
 运行级两条把本轮的节点记录**夹在中间**：宿主不必再靠 `pulse.graph` 这个 Attr 把节点记录自行拼回一轮——一轮在观测里是一个有头有尾的实体。运行级终态只会是 `completed` / `failed` / `canceled`：**一轮里全部节点都跳过，整轮仍是 `completed`**（跳过是节点级的事实，不升格为失败）。跳过节点**只有一条 `skipped` 等待记录**——它确实到达了，只是没执行。
 
-归因维度走 `Attrs`：`pulse.AttrGraph` + `pulse.AttrNode`（key 契约由**引擎**定义，`observe` 只消费不定义）。节点记录两个都带，运行级两条只带 `pulse.AttrGraph`——节点维度对「一次运行」没有意义。
+归因维度走 `Attrs`：`pulse.AttrGraph` + `pulse.AttrNode` + `pulse.AttrExecution`（key 契约由**引擎**定义，`observe` 只消费不定义）。节点记录带图 + 节点两个，运行级两条只带 `pulse.AttrGraph`——节点维度对「一次运行」没有意义；`pulse.AttrExecution` 每条都带，同一张图跑两次的记录靠它分得开。
 
-**嵌套层级**是第三个维度 `pulse.AttrPath`（不透明字符串、`/` 连接各层）：**按层各建一个出口**，把 `ObserveConfig.Path` 填成那一层的路径——静态挂载时它就是**挂载路径**，由宿主在装配期给（声明式装配由 `yaml.LoadOptions.ObserverFor` 按层代劳）——那一层的**每一条**记录就都带它；为空**不写**这个 key——空串会让「根」与「忘了传」长得一样。分工是清楚的：`pulse.graph` 是**你起的图 id**，`pulse.path` 是**引擎记的层级**——同一棵子树装在两处，两处各有各的 `path`，靠它分得开（见[编排](/guide/orchestration)的「图即节点」）。层级怎么拆是出口的事（按 `/` 分即可），引擎不提供结构化树。
+**嵌套层级**是第三个维度 `pulse.AttrPath`（不透明字符串、`/` 连接各层）：**挂载位置随每条回调由引擎发出来**（`Site.Path`），那一层的**每一条**记录就都带它；为空**不写**这个 key——空串会让「根」与「忘了传」长得一样。分工是清楚的：`pulse.graph` 是**你起的图 id**，`pulse.path` 是**引擎记的层级**——同一棵子树装在两处，两处各有各的 `path`，靠它分得开（见[编排](/guide/orchestration)的「图即节点」）。**一个出口从根挂下去就够**：子图的记录自带层级，继承的出口也带 `pulse.path`；`ObserveConfig.Path` 只在 `Site` 没给位置时兜底（自己直写记录之类不经过引擎的场景）。层级怎么拆是出口的事（按 `/` 分即可），引擎不提供结构化树。
 
 ## 最短接入
 
@@ -53,7 +53,7 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 if err != nil {
 	return err
 }
-g, err := pulse.New(ctx, "docs-pipeline", "文档摘要流水线", pulse.WithObserver(obs))
+g, err := pulse.New("docs-pipeline", "文档摘要流水线", pulse.WithObserver(obs))
 ```
 
 同一个图（单节点）的真实输出（时间戳 / trace / 耗时随运行变化）：

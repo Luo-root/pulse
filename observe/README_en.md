@@ -17,7 +17,7 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 	HostID:  "host-1",             // host identity: stable across runs; with TraceID it means "who + which run"
 	TraceID: observe.NewTraceID(), // run-time identity, single generation source
 })
-g, err := pulse.New(ctx, "demo", "demo graph", pulse.WithObserver(obs))
+g, err := pulse.New("demo", "demo graph", pulse.WithObserver(obs))
 // … add nodes, seed, run
 ```
 
@@ -34,9 +34,9 @@ g, err := pulse.New(ctx, "demo", "demo graph", pulse.WithObserver(obs))
 
 The two run-level records **bracket** the run's node records (`started` precedes every node record, `finished` follows all of them); a host that only calls `Start` without `Wait` never sees `finished`. A skipped node gets **only** a `skipped` waiting record — it did arrive, it just never executed. A run in which every node skipped is still `completed` at run level: skipping is a node-level fact.
 
-Attribution rides `Attrs` (`pulse.AttrGraph` / `pulse.AttrNode`; the key contract is defined by the engine, this package only consumes it): node records carry both, the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run".
+Attribution rides `Attrs` (`pulse.AttrGraph` / `pulse.AttrNode` / `pulse.AttrExecution`; the key contract is defined by the engine, this package only consumes it): node records carry both, the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run"; `pulse.AttrExecution` is on every record (it is what keeps two runs of one graph apart).
 
-**Nesting depth** is the third dimension, `pulse.AttrPath`: build **one egress per layer**, set its `ObserveConfig.Path` to that layer's **mounting path** — known at assembly time (`yaml.LoadOptions.ObserverFor(path)` does the wiring for declarative assembly, once per mounting site) — and **every** record of that layer carries it. When it is empty the key is **not written** — an empty string would make "root" and "forgot to pass it" look alike, leaving an egress unable to use it for layering. It is a value on the **egress instance** (not something each record brings along) — that is exactly why nesting means one egress per level. How to split the layers is the egress's business (`/` works); neither the engine nor this package offers a structured tree.
+**Nesting depth** is the third dimension, `pulse.AttrPath`: the engine emits the **mounting position** with every callback (`Site.Path`), and this package writes it onto **every** record of that layer — the root graph gets none, since an empty string would make "root" and "forgot to pass it" look alike, leaving an egress unable to use it for layering. One egress attached at the root is enough: a child's records carry their layer by themselves, so there is no need for one egress per level; `ObserveConfig.Path` is only a fallback for when the `Site` brings no position (records written by hand, say, outside the engine). How to split the layers is the egress's business (`/` works); neither the engine nor this package offers a structured tree.
 
 **Duration accounting**: everything is **wall clock**, and callbacks run synchronously on the caller's goroutine — however slow the egress is, that is how long the segment is (the `pulse.graph_finished` window covers the whole run, egress writes included). `AsyncSink` only defers **landing**, it does not take the `Write` call out of the window. A segment rounded to `0` (rendered `-` by the built-in layout) means "too small to measure", not "there was no such segment".
 

@@ -1,6 +1,6 @@
 # Core concepts
 
-Pulse has only three things: **Key** (a data slot), **Node** (a unit of computation), **Graph** (the world of one run). Understand these and the slot tri-state, and everything else is a corollary.
+Pulse has only three things: **Key** (a data slot), **Node** (a unit of computation), **Graph** (a reusable static definition) — plus **`Execution`** (one run). Understand these and the slot tri-state, and everything else is a corollary.
 
 ## The three things
 
@@ -8,7 +8,7 @@ Pulse has only three things: **Key** (a data slot), **Node** (a unit of computat
 |---|---|---|
 | **Key** | a typed data slot | `Key[T]` binds a name to a type: `Get` hands you a `T` directly, with no assertion; a Key name must always be registered with the same `T` — no silent "same name, different type" override |
 | **Node** | declares what it reads and writes | declares only `Requires` / `Provides`, and **not who the next node is** — dependencies form implicitly from who produces and who consumes each Key |
-| **Graph** | the world of one run | the node set + data slots + first error + cancellation. Data is born with `Run` and dies when it ends |
+| **Graph** | a reusable static definition | the node set + dependencies + ports + mounted child graphs; one run's state lives in an `Execution` (its own ctx / input values / slots / first error / cancellation domain) and dies when it ends |
 
 A node looks like this:
 
@@ -113,19 +113,19 @@ return pulse.Skip(rc, OutA)
 
 **Both sides must speak.** Skipping only the branch you did not choose is not enough: after a successful `Run`, any `Provide` you never wrote is auto-skipped, so "A was not chosen" turns into "neither A nor B arrived" — both downstreams stay unexecuted. `Set` the chosen one and `Skip` the other; you need both.
 
-Write semantics: `Set` / `Skip` are both an **idempotent first write** — writing again once the slot is ready is ignored (values are not compared), writing `Skip` again once skipped is ignored too; a `Set` and a `Skip` on the same slot report `ErrConflict`. The same holds for `Seed`.
+Write semantics: `Set` / `Skip` are both an **idempotent first write** — writing again once the slot is ready is ignored (values are not compared), writing `Skip` again once skipped is ignored too; a `Set` and a `Skip` on the same slot report `ErrConflict`. `Seed` writes into **this run's** `Inputs`: a second write for the same key is rejected right there — it would collide with exactly that idempotent first write, so it is reported early.
 
-## One run, one world
+## A reusable definition, one run, one world
 
-> A `Graph` is one instantiation of a template, not a re-runnable container.
+> A `Graph` is a **reusable static definition**; an `Execution` is **one run**.
 
-A second call to `Start()` returns `ErrGraphStarted`; once a slot has arrived it is closed and does not reopen; `Seed` is rejected after the graph has started. **There is no `Reset`, and there will not be one.**
+One definition can run many times sequentially, many times concurrently, and be mounted as a child graph in several places — one run's cancellation / failure / completion pollutes neither the definition nor any other run. A second call to `Execution.Start()` returns `ErrGraphStarted`; once a slot has arrived it is closed and does not reopen. **There is no `Reset`, and there will not be one**: cross-run state (history, caches, sessions) belongs to the caller, not to the engine.
 
 The criterion, in one sentence: **pulse holds "the data flowing in this run"; it does not hold history.** As soon as it had to keep last run's values around to run a second round, the engine would have to answer "what should stay and what should be cleared" — that is storage semantics, the caller's business. None of the three needs below require the engine to store anything:
 
 | Need | Correct expression |
 |---|---|
-| Run N independent requests on the same graph | one `New` per request |
+| Run N independent requests on the same graph | one `Run` / `NewExecution` per request |
 | Run 3 candidates inside one request | fan-out within one graph (multiple `Provides`) |
 | A long session with many turns | one graph per turn, topology from YAML |
 
@@ -138,7 +138,7 @@ The criterion, in one sentence: **pulse holds "the data flowing in this run"; it
 - `panic` does not leak through: a node panic is converted into a node error and takes the same failure path;
 - `Err()` does not include a plain skip — **a graph that is skipped end to end is a legal outcome**.
 
-There are two sources of cancellation: the outer `ctx` (the ctx of `pulse.New`), or an aspect timeout (`Timeout`). Either one makes a node still waiting for data return immediately.
+There are two sources of cancellation: this run's `ctx` being cancelled (the one passed to `g.Run(ctx, in)` / `NewExecution(ctx, in)`), or an aspect timeout (`Timeout`). Either one makes a node still waiting for data return immediately.
 
 ## RunCtx: only declared slots
 
