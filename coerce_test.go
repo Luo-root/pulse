@@ -91,7 +91,9 @@ func TestSeedByNameCoercesGenericContainers(t *testing.T) {
 	MustRegisterKey(r, out)
 
 	g := mustNew(t, context.Background(), "test")
-	if err := SeedByName(g, r, "demo.docs", "[]string", []any{"a", "b"}); err != nil {
+	declareIn(t, g, NewPort(docs))
+	in := &pendingOf(g).in
+	if err := SeedByName(in, r, "demo.docs", "[]string", []any{"a", "b"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,7 +108,7 @@ func TestSeedByNameCoercesGenericContainers(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if seen != "a,b" {
@@ -119,7 +121,7 @@ func TestSeedByNameRejectsStructuralElement(t *testing.T) {
 	r := NewRegistry()
 	MustRegisterKey(r, NewKey[[]coerceDoc]("demo.docs"))
 	g := mustNew(t, context.Background(), "test")
-	err := SeedByName(g, r, "demo.docs", "[]pulse.coerceDoc", []any{map[string]any{"name": "x"}})
+	err := SeedByName(&pendingOf(g).in, r, "demo.docs", "[]pulse.coerceDoc", []any{map[string]any{"name": "x"}})
 	if err == nil {
 		t.Fatal("want error for map element into struct")
 	}

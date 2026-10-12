@@ -9,14 +9,24 @@ import (
 )
 
 // hookupRace 是这条 race 用例的**共用形状**：子图在装配期建好之后，宿主直接把指针交给
-// 另一个 goroutine（完全可以这么干），那头在父图跑的同时不停调只读入口；而 runStaticSub
-// 此刻正在写挂接字段（observer / 名额 / 图级切面）——挂接发生在**运行期**
-// （`child.adopt`），所以两边确实会撞上。没有共同互斥时 `-race` 会抓到
-// 一起 DATA RACE——那些字段现在收进 `child.adopt` 一把锁里写完。
+// 另一个 goroutine（完全可以这么干），那头在父图跑的同时不停调只读入口。
+//
+// **这条用例守的命题在阶段 2 变了**，写清楚免得后来人把它当看门人用错地方：
+//
+//   - 阶段 1 撞的是运行期挂接字段（`child.adopt` 那批：observer / 名额 / 图级切面）——
+//     那时候子图的定义字段会在**运行期**被写，与只读入口是真竞态，且去掉 `adopt` 的锁
+//     就能让它变红（M1）。
+//   - 阶段 2 把那批字段搬进了子执行，**运行期只剩封口一处会写定义**（`sealTreeLocked`
+//     沿挂载边递归写每一层的 `sealed`）。而封口与改定义入口共用全局装配锁，两者本就互斥；
+//     只读入口又不读 `sealed`——所以今天**没有**一条变异能把这它变成红的（实测：把封口那
+//     一层改成直接写 `n.child.sealed`，这条用例照样绿，因为读路读的是节点 / 端口 / 名额
+//     那批字段，与 `sealed` 不是同一个地址）。
+//   - 那它还有什么用：**回归底网**。谁再往运行期加一处「写自己的定义」（这正是阶段 2 拆掉
+//     的那类形状），只要读路读得到那个字段，这里就会在 `-race` 下响。
 //
 // 子图是**自足的**（没有 `in:` 绑定、每条 `Requires` 都有来源），否则 `Validate()`
-// 报的就不是 nil，读路也在「缺来源」那一步就返回，根本走不到读**名额**的流式校验
-// ——那正是被写的字段，用例就白跑了（第一版就是这么白跑的：变异对照 M1 存活）。
+// 报的就不是 nil，读路在「缺来源」那一步就返回，走不到递归进子图的那几段，用例就白跑了
+// （第一版就是这么白跑的：变异对照 M1 存活）。
 //
 // 指针交接之后那次 `time.Sleep` 也是必要的：要让读者的读与写**时间上重叠**而又**不建立
 // 同步**（写成「等读者读完再开始跑」会把这两者同步起来，竞态反而消失）。
@@ -75,35 +85,32 @@ func hookupRace(t *testing.T, read func(*Graph) error) {
 	// 让读者先跑起来；读与写要时间上重叠，这两步之间又不建立同步。
 	time.Sleep(20 * time.Millisecond)
 
-	err := g.Run()
+	err := runOn(g)
 	close(done)
 	wg.Wait()
 
 	mu.Lock()
 	n, verr := reads, lastErr
 	mu.Unlock()
-	// 读必须真的发生过，而且真的走到了读挂接字段那一步——否则这条用例是空转的。
+	// 读必须真的发生过——否则这条用例是空转的。
 	if n < 10 {
-		t.Fatalf("只读入口只被调了 %d 次，没盖住挂接窗口", n)
+		t.Fatalf("只读入口只被调了 %d 次，没盖住封口那个窗口", n)
 	}
 	if verr != nil {
-		t.Fatalf("只读入口在挂接期间报错（说明它没走到挂接字段那一步）：%v", verr)
+		t.Fatalf("只读入口在运行期间报错（说明它没走到递归读子图那一步）：%v", verr)
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
-// TestSubHookupRaceWithReadOnlyEntry 走 `Validate()` 这条读路（它读名额）。
-//
-// 变异对照：把 `adopt` 里的 `g.mu.Lock()/Unlock()` 去掉 → 本用例在 `-race` 下必红
-// （`.workbase/mutation_review2.py` 的 M1）。
+// TestSubHookupRaceWithReadOnlyEntry 走 `Validate()` 这条读路（它递归读子图、并算声明名额）。
 func TestSubHookupRaceWithReadOnlyEntry(t *testing.T) {
 	hookupRace(t, func(child *Graph) error { return child.Validate() })
 }
 
 // TestSubHookupRaceWithTopology 走 `Topology()` 这条读路——#308 新加的「任何时候可调」
-// 那个承诺同样读挂接字段（observer / 名额），评审在 #308 的行内意见点名的就是它。
+// 那个承诺同样递归读整棵子树，评审在 #308 的行内意见点名的就是它。
 func TestSubHookupRaceWithTopology(t *testing.T) {
 	hookupRace(t, func(child *Graph) error {
 		_ = child.Topology()

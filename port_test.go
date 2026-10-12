@@ -11,7 +11,7 @@ import (
 //
 // 这一组管三件事：
 //  1. 入口声明让「这本来就是外部输入」与「你忘了接线」分得开（前者不该被报成毛病）；
-//  2. 静态拓扑里入口的来源是 `SourceInput`，与运行期的 `SourceSeed` 分得开、也不建边；
+//  2. 静态拓扑里入口的来源是 `SourceInput`（定义层「外部来源」只有这一种写法）、也不建边；
 //  3. 声明是两段式的（失败不留痕），封口之后不再接受声明。
 func TestDeclareInputPorts(t *testing.T) {
 	ctx := context.Background()
@@ -25,7 +25,7 @@ func TestDeclareInputPorts(t *testing.T) {
 			return Set(rc, out, "v")
 		}))
 		err := g.Validate()
-		if err == nil || !strings.Contains(err.Error(), "nothing provides or seeds it") {
+		if err == nil || !strings.Contains(err.Error(), "nothing provides it") {
 			t.Fatalf("缺来源该被报，got %v", err)
 		}
 	})
@@ -53,16 +53,16 @@ func TestDeclareInputPorts(t *testing.T) {
 		if got := from.String(); got != "input" {
 			t.Fatalf("SourceInput.String() = %q, want %q", got, "input")
 		}
-		// 入口是**外部**来源，与 Seed 一样不建边
+		// 入口是外部来源，不参与建边（它不是「上游节点」）
 		if len(top.Edges) != 0 {
 			t.Fatalf("入口不该参与建边，got %+v", top.Edges)
 		}
 
-		// 运行期照旧：Seed 就是「这一次给入口喂值」
-		if err := Seed(g, in, "from-host"); err != nil {
+		// 运行期：Seed 就是「这一次给入口喂值」（声明得排在 Validate 之前——通过即封口）
+		if err := seedOn(g, in, "from-host"); err != nil {
 			t.Fatalf("Seed 到声明的入口 = %v", err)
 		}
-		if err := g.Run(); err != nil {
+		if err := runOn(g); err != nil {
 			t.Fatalf("Run = %v", err)
 		}
 	})
@@ -126,25 +126,29 @@ func TestDeclareInputPorts(t *testing.T) {
 		}
 	})
 
-	// 另一个冻结点：图**跑起来**之后（`Start` 成功）同样不再接受改定义。判据与 `Add` 同源，
-	// 但报文不同——两个触发点共用一个哨兵，靠报文分得开（见 ErrGraphStarted 的 godoc）。
-	t.Run("跑起来的图也不能再声明端口，且报文说的是「已经启动」不是「封口」", func(t *testing.T) {
+	// 另一个冻结点：图**跑起来**之后（`Start` 成功）同样不再接受改定义——`Start` 成功会
+	// 顺带封整棵树，所以判据与「通过即封口」是同一条；两个触发点共用 ErrGraphStarted，
+	// 报文把两个都点出来（见 errSealed）。
+	t.Run("跑起来的图也不能再声明端口，报文把两个触发点都点出来", func(t *testing.T) {
 		g := mustNew(t, ctx, "started-declare")
-		if err := Seed(g, other, "v"); err != nil { // 空图也要有条来源才过静态校验
+		declareIn(t, g, NewPort(other))
+		if err := seedOn(g, other, "v"); err != nil { // 空图也要有条来源才过静态校验
 			t.Fatalf("Seed = %v", err)
 		}
-		if err := g.Start(); err != nil {
+		if err := startOn(g); err != nil {
 			t.Fatalf("Start = %v", err)
 		}
 		for _, err := range []error{g.DeclareInput(NewPort(in)), g.DeclareOutput(NewPort(out))} {
 			if !errors.Is(err, ErrGraphStarted) {
 				t.Fatalf("启动之后再声明该被拒，got %v", err)
 			}
-			if err == nil || !strings.Contains(err.Error(), "already started") || strings.Contains(err.Error(), "sealed") {
-				t.Fatalf("报文该说清是「已经启动」，got %v", err)
+			// 封口与「跑过了」是同一个判据的两个触发点（`Start` 成功也封整棵树），
+			// 报文把两个都点出来：单看报文的人得知道自己是踩了哪一个。
+			if err == nil || !strings.Contains(err.Error(), "sealed") || !strings.Contains(err.Error(), "started") {
+				t.Fatalf("报文该把「通过即封口」与「已经启动」都点出来，got %v", err)
 			}
 		}
-		if err := g.Wait(); err != nil {
+		if err := waitOn(g); err != nil {
 			t.Fatalf("Wait = %v", err)
 		}
 	})
@@ -223,7 +227,7 @@ func TestDeclareOutputNeedsProducer(t *testing.T) {
 			t.Fatalf("声明的出口没人产出该在装配期报，got %v", err)
 		}
 		// 一份判据、两个入口：Validate 与 Start 报的是同一句话
-		if serr := g.Start(); serr == nil || serr.Error() != err.Error() {
+		if serr := startOn(g); serr == nil || serr.Error() != err.Error() {
 			t.Fatalf("Validate 与 Start 的判据不一致：\nValidate %v\nStart    %v", err, serr)
 		}
 		var found bool

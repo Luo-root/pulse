@@ -48,13 +48,14 @@ func TestStaticSub(t *testing.T) {
 		if err := Sub(d, "mount", "挂现成子图", []SubBind{In(in, ks[0]), Out(ks[1], out)}, child); err != nil {
 			t.Fatalf("Sub = %v", err)
 		}
-		if err := Seed(d, in, "host"); err != nil {
+		declareIn(t, d, NewPort(in))
+		if err := seedOn(d, in, "host"); err != nil {
 			t.Fatalf("Seed = %v", err)
 		}
-		if err := d.Run(); err != nil {
+		if err := runOn(d); err != nil {
 			t.Fatalf("Run = %v", err)
 		}
-		st, got := d.slotOf(out.asRef()).snapshot()
+		st, got := slotOn(d, out.asRef())
 		if st != slotReady {
 			t.Fatalf("父侧输出该就绪，got state=%v", st)
 		}
@@ -129,28 +130,41 @@ func TestStaticSub(t *testing.T) {
 		}
 	})
 
-	t.Run("同一张子图挂两处：装配期放过、跑的时候说清只能跑一处", func(t *testing.T) {
-		in := NewKey[string]("tw.in")
+	t.Run("同一张子图挂两处：两处都跑，各读自己的输入、各桥回自己的父侧输出", func(t *testing.T) {
+		in1 := NewKey[string]("tw.in1")
+		in2 := NewKey[string]("tw.in2")
 		out1 := NewKey[string]("tw.out1")
 		out2 := NewKey[string]("tw.out2")
 		child, ks := childWithPorts(t, "tw.child")
 
 		d := mustNew(t, ctx, "tw.parent")
-		for i, o := range [2]Key[string]{out1, out2} {
+		declareIn(t, d, NewPort(in1))
+		if err := seedOn(d, in1, "one"); err != nil {
+			t.Fatalf("Seed = %v", err)
+		}
+		declareIn(t, d, NewPort(in2))
+		if err := seedOn(d, in2, "two"); err != nil {
+			t.Fatalf("Seed = %v", err)
+		}
+		for i, pair := range [][2]Key[string]{{in1, out1}, {in2, out2}} {
 			step := []string{"m1", "m2"}[i]
-			if err := Sub(d, step, "", []SubBind{In(in, ks[0]), Out(ks[1], o)}, child); err != nil {
+			if err := Sub(d, step, "", []SubBind{In(pair[0], ks[0]), Out(ks[1], pair[1])}, child); err != nil {
 				t.Fatalf("装配第 %d 处 = %v", i+1, err)
 			}
 		}
-		if err := Seed(d, in, "host"); err != nil {
-			t.Fatalf("Seed = %v", err)
+		if err := runOn(d); err != nil {
+			t.Fatalf("同一张子图挂两处该**都跑起来**（每个挂载位置一份子执行）：%v", err)
 		}
-		err := d.Run()
-		if !errors.Is(err, ErrGraphStarted) {
-			t.Fatalf("跑到第二处该报 ErrGraphStarted，got %v", err)
+		// 判据是「两处各拿到自己那一份」——只判「都跑完了」兜不住「其实共用了一份状态」。
+		if _, v1 := slotOn(d, out1.asRef()); v1 != "child(one)" {
+			t.Fatalf("第一处桥回父侧的是 %q，want child(one)", v1)
 		}
-		if err == nil || !strings.Contains(err.Error(), "can run at one mount point only") {
-			t.Fatalf("报文要说清静态挂载只能跑一处、每个挂载点各跑一份要等执行树，got %v", err)
+		if _, v2 := slotOn(d, out2.asRef()); v2 != "child(two)" {
+			t.Fatalf("第二处桥回父侧的是 %q，want child(two)", v2)
+		}
+		// 定义也不该被这两次运行写脏。
+		if err := child.Validate(); err != nil {
+			t.Fatalf("跑完之后子图自己的定义该原样：%v", err)
 		}
 	})
 
@@ -181,12 +195,13 @@ func TestStaticSub(t *testing.T) {
 		if err := Sub(d, "mount", "", []SubBind{In(in, in), Out(out, out)}, child); err != nil {
 			t.Fatalf("Sub = %v", err)
 		}
-		if err := Seed(d, in, "host"); err != nil {
+		declareIn(t, d, NewPort(in))
+		if err := seedOn(d, in, "host"); err != nil {
 			t.Fatalf("Seed = %v", err)
 		}
 		time.AfterFunc(20*time.Millisecond, cancel)
 
-		err := d.Run()
+		err := runOn(d)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("父图被取消时该报取消，got %v（旧行为是子图跑满、父图报成功）", err)
 		}
@@ -311,13 +326,14 @@ func TestSubPassThroughPort(t *testing.T) {
 		if err := Sub(root, "step", "", []SubBind{In(in, k), Out(k, out)}, child); err != nil {
 			t.Fatalf("透传（一条 In + 一条 Out 打在同一条端口上）该被接受，got %v", err)
 		}
-		if err := Seed(root, in, "hello"); err != nil {
+		declareIn(t, root, NewPort(in))
+		if err := seedOn(root, in, "hello"); err != nil {
 			t.Fatal(err)
 		}
 		if err := root.Validate(); err != nil {
 			t.Fatalf("Validate = %v", err)
 		}
-		if err := root.Run(); err != nil {
+		if err := runOn(root); err != nil {
 			t.Fatalf("Run = %v", err)
 		}
 		select {
@@ -341,10 +357,11 @@ func TestSubPassThroughPort(t *testing.T) {
 		if err := Sub(root, "step", "", []SubBind{In(in, k), Out(k, o1), Out(k, o2)}, child); err != nil {
 			t.Fatalf("同一条出口推给两个父侧键该被接受，got %v", err)
 		}
-		if err := Seed(root, in, "v"); err != nil {
+		declareIn(t, root, NewPort(in))
+		if err := seedOn(root, in, "v"); err != nil {
 			t.Fatal(err)
 		}
-		if err := root.Run(); err != nil {
+		if err := runOn(root); err != nil {
 			t.Fatalf("Run = %v", err)
 		}
 		for i, ch := range []chan string{got1, got2} {
@@ -389,7 +406,8 @@ func TestSubRejectsInletProvidedInside(t *testing.T) {
 	}))
 	in := NewKey[string]("pin.in")
 	root := mustNew(t, ctx, "pin")
-	if err := Seed(root, in, "v"); err != nil {
+	declareIn(t, root, NewPort(in))
+	if err := seedOn(root, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 	err := Sub(root, "step", "", []SubBind{In(in, k)}, child)
@@ -407,8 +425,10 @@ func TestSubRejectsInletProvidedInside(t *testing.T) {
 // 而闭包没有可查的标识——实测同一份 `Retry` 字面量造出来的两个闭包，`reflect` 给出的
 // 指针都不同（`Retry(1,0)` 与 `Retry(2,0)` 差 0x220）。所以判据放在 `Retry` 自己身上。
 //
-// 不拒的话会静默接受，然后第二次 attempt 报一句「子图已经在用」——那句话把第一次失败的
-// 真正原因盖掉（`Retry` 返回的是**最后一次** attempt 的错误），病根再也看不到。
+// 不拒的话会静默接受，而第二次 attempt 会把整棵子树再跑一遍（阶段 2 之后每次尝试确实
+// 建得起一份新的子执行），可它的输出桥回父侧时会被幂等首写静默丢掉——父图手里是「一半
+// 第一次、一半第二次」的混装；同时那一句还盖掉第一次失败的真正原因（`Retry` 返回的是
+// **最后一次** attempt 的错误），病根再也看不到。缺的是 attempt 级的写集（阶段 3）。
 func TestRetryOnSubgraphStepIsRefusedAtRun(t *testing.T) {
 	ctx := context.Background()
 	k := NewKey[string]("rtry.child.k")
@@ -435,19 +455,23 @@ func TestRetryOnSubgraphStepIsRefusedAtRun(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := mustNew(t, ctx, "rtry")
-			if err := Seed(root, in, "v"); err != nil {
+			declareIn(t, root, NewPort(in))
+			if err := seedOn(root, in, "v"); err != nil {
 				t.Fatal(err)
 			}
 			// 装配期放行（认不出来）——契约是「进 Run 第一件事就拒」，不是「装不上」。
 			if err := Sub(root, "step", "", []SubBind{In(in, k)}, child, tc.aspects...); err != nil {
 				t.Fatalf("当前口径是运行期拒，装配期不该报错，got %v", err)
 			}
-			err := root.Run()
+			err := runOn(root)
 			if err == nil || !strings.Contains(err.Error(), "Retry is not supported on a graph step") {
 				t.Fatalf("Run = %v，want 点名 Retry 的那句", err)
 			}
-			if !strings.Contains(err.Error(), "Move retry onto the node inside the child") {
+			if !strings.Contains(err.Error(), "Put retry on the node inside the child") {
 				t.Fatalf("报文该给出能照着改的写法，got %v", err)
+			}
+			if !strings.Contains(err.Error(), "silently ignored") {
+				t.Fatalf("报文该说清理由（第二次 attempt 的写会被静默忽略），got %v", err)
 			}
 			if strings.Contains(err.Error(), "REAL-CAUSE") {
 				t.Fatalf("子图根本不该被启动（判据在认领与种值之前），却跑到了子图的失败：%v", err)
@@ -468,21 +492,23 @@ func TestRetryOnSubgraphStepIsRefusedAtRun(t *testing.T) {
 		}
 		mustAdd(t, okChild, NewNode("pass", "", Requires(ok), nil, func(rc *RunCtx) error { return nil }))
 		root := mustNew(t, ctx, "rtry.ok")
-		if err := Seed(root, in, "v"); err != nil {
+		declareIn(t, root, NewPort(in))
+		if err := seedOn(root, in, "v"); err != nil {
 			t.Fatal(err)
 		}
 		if err := Sub(root, "step", "", []SubBind{In(in, ok)}, okChild, Timeout(time.Second)); err != nil {
 			t.Fatalf("Timeout 该被接受，got %v", err)
 		}
-		if err := root.Run(); err != nil {
+		if err := runOn(root); err != nil {
 			t.Fatalf("Run = %v", err)
 		}
 	})
 }
 
-// 用户**自己写的**重试切面认不出来（`Aspect` 是裸函数类型，闭包只有代码地址可认，见
-// retryAspectPC），所以运行期还有一道重入判据：这一步第二次进来时点明「子图只跑一次」，
-// 并把第一次 attempt 的失败原因一起报出来——别让认领失败那句盖掉病根。
+// 用户**自己写的**重试切面认不出来（`Aspect` 是裸函数类型，闭包只有代码地址可认，而且
+// 实测同一份字面量造出来的两个闭包地址就不同），所以运行期还有一道重入判据：这一步第二次
+// 进来时点明「entry-once」与「第二次的写会被静默丢掉」，并把第一次 attempt 的失败原因一起
+// 报出来——别让别的错盖掉病根。
 func TestSubReentryGuarded(t *testing.T) {
 	ctx := context.Background()
 	k := NewKey[string]("reentry.child.k")
@@ -501,7 +527,8 @@ func TestSubReentryGuarded(t *testing.T) {
 	in := NewKey[string]("reentry.in")
 	out := NewKey[string]("reentry.out")
 	root := mustNew(t, ctx, "reentry")
-	if err := Seed(root, in, "v"); err != nil {
+	declareIn(t, root, NewPort(in))
+	if err := seedOn(root, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 	// 自己写的重试：与 Retry 同形（失败再来一次）——装配期认不出它，所以放行到运行期。
@@ -514,7 +541,7 @@ func TestSubReentryGuarded(t *testing.T) {
 	if err := Sub(root, "step", "", []SubBind{In(in, k), Out(k, out)}, child, retrying); err != nil {
 		t.Fatalf("自己写的切面不该在装配期被拒，got %v", err)
 	}
-	err := root.Run()
+	err := runOn(root)
 	if err == nil || !strings.Contains(err.Error(), "entered a second time") {
 		t.Fatalf("Run = %v，want 重入那句", err)
 	}
@@ -529,9 +556,9 @@ func TestSubReentryGuarded(t *testing.T) {
 // 封口 ≠ 用过：一张**已经被别处校验封口**的子图，照样能挂到另一张图里、并在那一处跑起来。
 //
 // 这条边界在阶段 1 特别容易被记反：`sealed` 管的是「这张**定义**不再变化」（`Add` /
-// `DeclareInput` / `DeclareOutput` / `Sub` 被拒），`claimed` / `started` 管的是「它已经被**这次
-// 运行**用掉了」——两个问题、两套判据。所以「挂得上」与「跑得了」要分开问：封口只挡前者里的
-// 「改」，不挡「挂」与「跑」。
+// `DeclareInput` / `DeclareOutput` / `Sub` 被拒），而「它已经被**这次运行**用掉了」那一问
+// 在阶段 2 之后根本不存在了——运行态长在各自的 `Execution` 上，定义可以跑很多次。
+// 所以「挂得上」与「跑得了」要分开问：封口只挡前者里的「改」，不挡「挂」与「跑」。
 //
 // （「同一张子图挂两处、两处都要跑」是另一条边界：那要等阶段 2 的 `Execution`，由
 // `TestStaticSub` 的「只能跑一处」钉着。这条用例只钉「封口之后仍然可用」。）
@@ -559,7 +586,8 @@ func TestSealedChildCanBeReusedElsewhere(t *testing.T) {
 	first := mustNew(t, ctx, "sealreuse.first")
 	firstIn := NewKey[string]("sealreuse.first_in")
 	firstOut := NewKey[string]("sealreuse.first_out")
-	if err := Seed(first, firstIn, "v"); err != nil {
+	declareIn(t, first, NewPort(firstIn))
+	if err := seedOn(first, firstIn, "v"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Sub(first, "step", "", []SubBind{In(firstIn, cin), Out(cout, firstOut)}, child); err != nil {
@@ -576,7 +604,8 @@ func TestSealedChildCanBeReusedElsewhere(t *testing.T) {
 	second := mustNew(t, ctx, "sealreuse.second")
 	secondIn := NewKey[string]("sealreuse.second_in")
 	secondOut := NewKey[string]("sealreuse.second_out")
-	if err := Seed(second, secondIn, "v"); err != nil {
+	declareIn(t, second, NewPort(secondIn))
+	if err := seedOn(second, secondIn, "v"); err != nil {
 		t.Fatal(err)
 	}
 	got := make(chan string, 1)
@@ -594,7 +623,7 @@ func TestSealedChildCanBeReusedElsewhere(t *testing.T) {
 	if err := Sub(second, "step", "", []SubBind{In(secondIn, cin), Out(cout, secondOut)}, child); err != nil {
 		t.Fatalf("已封口的子图照样该能被别处挂：%v", err)
 	}
-	if err := second.Run(); err != nil {
+	if err := runOn(second); err != nil {
 		t.Fatalf("已封口的子图该照常在别处跑：%v", err)
 	}
 	select {

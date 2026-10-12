@@ -19,13 +19,16 @@ func TestJoinCollectsWhatArrives(t *testing.T) {
 	c := NewKey[string]("join.c")
 	out := NewKey[string]("join.out")
 	g := mustNew(t, context.Background(), "join")
-	if err := Seed(g, a, "A"); err != nil {
+	declareIn(t, g, NewPort(a))
+	if err := seedOn(g, a, "A"); err != nil {
 		t.Fatal(err)
 	}
-	if err := SkipSeed(g, b); err != nil {
+	declareIn(t, g, NewPort(b))
+	if err := skipSeedOn(g, b); err != nil {
 		t.Fatal(err)
 	}
-	if err := Seed(g, c, "C"); err != nil {
+	declareIn(t, g, NewPort(c))
+	if err := seedOn(g, c, "C"); err != nil {
 		t.Fatal(err)
 	}
 	var got Batch[string]
@@ -35,7 +38,7 @@ func TestJoinCollectsWhatArrives(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	vals := got.Values()
@@ -61,13 +64,16 @@ func TestBatchCarriesSourceNames(t *testing.T) {
 	c := NewKey[string]("batchsrc.c")
 	out := NewKey[string]("batchsrc.out")
 	g := mustNew(t, context.Background(), "batchsrc")
-	if err := Seed(g, a, "same"); err != nil {
+	declareIn(t, g, NewPort(a))
+	if err := seedOn(g, a, "same"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Seed(g, b, "same"); err != nil {
+	declareIn(t, g, NewPort(b))
+	if err := seedOn(g, b, "same"); err != nil {
 		t.Fatal(err)
 	}
-	if err := SkipSeed(g, c); err != nil {
+	declareIn(t, g, NewPort(c))
+	if err := skipSeedOn(g, c); err != nil {
 		t.Fatal(err)
 	}
 	var got Batch[string]
@@ -77,7 +83,7 @@ func TestBatchCarriesSourceNames(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if len(got.Items) != 3 {
@@ -121,10 +127,12 @@ func TestJoinAllSkippedNeverRuns(t *testing.T) {
 	b := NewKey[string]("joinsk.b")
 	out := NewKey[string]("joinsk.out")
 	g := mustNew(t, context.Background(), "joinsk")
-	if err := SkipSeed(g, a); err != nil {
+	declareIn(t, g, NewPort(a))
+	if err := skipSeedOn(g, a); err != nil {
 		t.Fatal(err)
 	}
-	if err := SkipSeed(g, b); err != nil {
+	declareIn(t, g, NewPort(b))
+	if err := skipSeedOn(g, b); err != nil {
 		t.Fatal(err)
 	}
 	if err := Join(g, "collect", Keys(a, b), out, func(rc *RunCtx, batch Batch[string]) (string, error) {
@@ -133,7 +141,7 @@ func TestJoinAllSkippedNeverRuns(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatalf("全跳过是正常结果: %v", err)
 	}
 }
@@ -146,10 +154,12 @@ func TestJoinWaitAllStrictOptOut(t *testing.T) {
 	b := NewKey[string]("joinstrict.b")
 	out := NewKey[string]("joinstrict.out")
 	g := mustNew(t, context.Background(), "joinstrict", WithObserver(obs))
-	if err := Seed(g, a, "A"); err != nil {
+	declareIn(t, g, NewPort(a))
+	if err := seedOn(g, a, "A"); err != nil {
 		t.Fatal(err)
 	}
-	if err := SkipSeed(g, b); err != nil {
+	declareIn(t, g, NewPort(b))
+	if err := skipSeedOn(g, b); err != nil {
 		t.Fatal(err)
 	}
 	ran := false
@@ -162,7 +172,7 @@ func TestJoinWaitAllStrictOptOut(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatalf("严格模式下的跳过不是失败: %v", err)
 	}
 	if !ran {
@@ -185,7 +195,8 @@ func TestFanOutPartialValueIsMissingNotFailure(t *testing.T) {
 	joined := NewKey[string]("fanout.joined")
 	obs := &recordingObserver{}
 	g := mustNew(t, context.Background(), "fanout", WithObserver(obs))
-	if err := Seed(g, in, "doc"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
 	if err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
@@ -203,7 +214,7 @@ func TestFanOutPartialValueIsMissingNotFailure(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatalf("部分产出不该让这一轮失败: %v", err)
 	}
 	vals := got.Values()
@@ -234,7 +245,8 @@ func TestFanOutNamesWorkersByShard(t *testing.T) {
 	joined := NewKey[string]("fanoutname.joined")
 	obs := &recordingObserver{}
 	g := mustNew(t, context.Background(), "fanoutname", WithObserver(obs))
-	if err := Seed(g, in, "doc"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
 	if err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
@@ -249,7 +261,7 @@ func TestFanOutNamesWorkersByShard(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	sort.Strings(got)
@@ -270,7 +282,8 @@ func TestFanOutFailureCancelsGraph(t *testing.T) {
 	outs := Keys(NewKey[string]("fanoutfail.r1"), NewKey[string]("fanoutfail.r2"))
 	boom := errors.New("worker boom")
 	g := mustNew(t, context.Background(), "fanoutfail")
-	if err := Seed(g, in, "doc"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
 	if err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
@@ -281,7 +294,7 @@ func TestFanOutFailureCancelsGraph(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); !errors.Is(err, boom) {
+	if err := runOn(g); !errors.Is(err, boom) {
 		t.Fatalf("Run = %v, want worker error", err)
 	}
 }
@@ -294,12 +307,14 @@ func TestFanOutAssemblyIsAtomic(t *testing.T) {
 	outs := Keys(NewKey[string]("fanoutatomic.r1"), NewKey[string]("fanoutatomic.r2"), NewKey[string]("fanoutatomic.r3"))
 	obs := &recordingObserver{}
 	g := mustNew(t, context.Background(), "fanoutatomic", WithObserver(obs))
-	if err := Seed(g, in, "doc"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Seed(g, outs[2], "taken"); err != nil { // r3 先被占住 → worker-3 装不进去
-		t.Fatal(err)
-	}
+	// r3 先被一个节点占住 → worker-3 装不进去（阶段 2 起「来源」只可能是节点）
+	mustAdd(t, g, NewNode("taken", "", nil, Provides(outs[2]), func(rc *RunCtx) error {
+		return Set(rc, outs[2], "taken")
+	}))
 	err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
 		return v, nil
 	})
@@ -312,7 +327,7 @@ func TestFanOutAssemblyIsAtomic(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("失败的 FanOut 在图上留下了 r1 的占位：%v", err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	// 判据二：没有任何 worker 真的跑起来（残留在图上就会在观测里出现）
@@ -338,7 +353,8 @@ func TestFanOutCallbackSeesCancellation(t *testing.T) {
 	outs := Keys(NewKey[string]("fanoutctx.r1"), NewKey[string]("fanoutctx.r2"))
 	boom := errors.New("instance 2 boom")
 	g := mustNew(t, context.Background(), "fanoutctx")
-	if err := Seed(g, in, "doc"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
 	entered := make(chan struct{}) // 实例 1 已进入 fn
@@ -362,7 +378,7 @@ func TestFanOutCallbackSeesCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- g.Run() }()
+	go func() { done <- runOn(g) }()
 	select {
 	case err := <-done:
 		if !errors.Is(err, boom) {
@@ -389,7 +405,7 @@ func TestNoValueSkipsNode(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatalf("跳过不是失败: %v", err)
 	}
 	log := obs.snapshot()
@@ -411,7 +427,7 @@ func TestNoValueVersusPerKeySkip(t *testing.T) {
 	mustAdd(t, g, NewNode("perkey", "", nil, Provides(b), func(rc *RunCtx) error {
 		return Skip(rc, b) // 只把这条输出标成跳过，节点自己正常收尾
 	}))
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatalf("两种跳过都不是失败: %v", err)
 	}
 	log := obs.snapshot()

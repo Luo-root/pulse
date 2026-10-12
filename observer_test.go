@@ -18,19 +18,23 @@ type recordingObserver struct {
 	gStartID  string
 	gFinishID string
 	gErr      error
+	// site 类事件的原始身份（图 + 本次运行 + 挂载位置），给「观测分得开」那类用例用。
+	sites []Site
 }
 
-func (r *recordingObserver) OnGraphStarted(graphID string) {
+func (r *recordingObserver) OnGraphStarted(site Site) {
 	r.mu.Lock()
 	r.log = append(r.log, "GS")
-	r.gStartID = graphID
+	r.gStartID = site.Graph
+	r.sites = append(r.sites, site)
 	r.mu.Unlock()
 }
 
-func (r *recordingObserver) OnGraphFinished(graphID string, reason NodeFinishReason, err error) {
+func (r *recordingObserver) OnGraphFinished(site Site, reason NodeFinishReason, err error) {
 	r.mu.Lock()
 	r.log = append(r.log, "GF:"+string(reason))
-	r.gFinishID, r.gErr = graphID, err
+	r.gFinishID, r.gErr = site.Graph, err
+	r.sites = append(r.sites, site)
 	r.mu.Unlock()
 }
 
@@ -41,17 +45,42 @@ func (r *recordingObserver) graphTail() (startID, finishID string, err error) {
 	return r.gStartID, r.gFinishID, r.gErr
 }
 
-func (r *recordingObserver) OnNodeWaiting(graphID, id string) {
+// siteSeen 报这条身份出现过没有（按三个字段整体比）。
+func (r *recordingObserver) siteSeen(want Site) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.sites {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// pathSeen 报这个**挂载位置**上出现过图级事件没有（执行身份是引擎生成的，用例只看位置）。
+// 子执行有没有真的跑起来，用它判：跑了就一定有一对 start / finish 带那条路径。
+func (r *recordingObserver) pathSeen(path string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.sites {
+		if s.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *recordingObserver) OnNodeWaiting(site Site, id string) {
 	r.mu.Lock()
 	r.log = append(r.log, "W:"+id)
 	r.mu.Unlock()
 }
-func (r *recordingObserver) OnNodeRunning(graphID, id string) {
+func (r *recordingObserver) OnNodeRunning(site Site, id string) {
 	r.mu.Lock()
 	r.log = append(r.log, "R:"+id)
 	r.mu.Unlock()
 }
-func (r *recordingObserver) OnNodeFinished(graphID, id string, reason NodeFinishReason, err error) {
+func (r *recordingObserver) OnNodeFinished(site Site, id string, reason NodeFinishReason, err error) {
 	r.mu.Lock()
 	r.log = append(r.log, "F:"+id+":"+string(reason))
 	r.errs = append(r.errs, err)
@@ -80,7 +109,8 @@ func TestObserverLinearWaitRunFinished(t *testing.T) {
 	in := NewKey[string]("obs.in")
 	out := NewKey[string]("obs.out")
 	g := mustNew(t, context.Background(), "test", WithObserver(obs))
-	if err := Seed(g, in, "x"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Add(NewNode("n", "", Requires(in), Provides(out), func(rc *RunCtx) error {
@@ -92,7 +122,7 @@ func TestObserverLinearWaitRunFinished(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	log := obs.snapshot()
@@ -121,7 +151,8 @@ func TestObserverSkipHasFinishedNoRunning(t *testing.T) {
 	a := NewKey[string]("obs.a")
 	b := NewKey[string]("obs.b")
 	g := mustNew(t, context.Background(), "test", WithObserver(obs))
-	if err := SkipSeed(g, a); err != nil {
+	declareIn(t, g, NewPort(a))
+	if err := skipSeedOn(g, a); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Add(NewNode("down", "", Requires(a), Provides(b), func(rc *RunCtx) error {
@@ -130,7 +161,7 @@ func TestObserverSkipHasFinishedNoRunning(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	log := obs.snapshot()
@@ -158,7 +189,7 @@ func TestObserverRetryEmitsOnce(t *testing.T) {
 	}, Retry(5, time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if attempts.Load() != 3 {
@@ -172,9 +203,9 @@ func TestObserverRetryEmitsOnce(t *testing.T) {
 
 func TestObserverPanicIsolated(t *testing.T) {
 	boom := ObserverFunc{
-		Waiting: func(_, _ string) { panic("observer boom") },
-		Running: func(_, _ string) {},
-		Finished: func(_, _ string, _ NodeFinishReason, _ error) {
+		Waiting: func(_ Site, _ string) { panic("observer boom") },
+		Running: func(_ Site, _ string) {},
+		Finished: func(_ Site, _ string, _ NodeFinishReason, _ error) {
 			panic("finished boom")
 		},
 	}
@@ -185,7 +216,7 @@ func TestObserverPanicIsolated(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatalf("observer panic must not fail graph: %v", err)
 	}
 }
@@ -211,7 +242,7 @@ func TestObserverTimeoutFinishedFailedNoRunning(t *testing.T) {
 	}, Timeout(30*time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
-	err := g.Run()
+	err := runOn(g)
 	if err == nil {
 		t.Fatal("want timeout error")
 	}
@@ -233,18 +264,19 @@ func TestObserverTimeoutFinishedFailedNoRunning(t *testing.T) {
 // 坏掉一个就让后面的观察者收不到事件，是这类组合最坏的失效方式。
 func TestMultiObserverIsolatesPanickingMember(t *testing.T) {
 	panicker := ObserverFunc{
-		GraphStarted:  func(string) { panic("observer boom") },
-		GraphFinished: func(string, NodeFinishReason, error) { panic("observer boom") },
-		Waiting:       func(_, _ string) { panic("observer boom") },
-		Running:       func(_, _ string) { panic("observer boom") },
-		Finished:      func(_, _ string, _ NodeFinishReason, _ error) { panic("observer boom") },
+		GraphStarted:  func(_ Site) { panic("observer boom") },
+		GraphFinished: func(_ Site, _ NodeFinishReason, _ error) { panic("observer boom") },
+		Waiting:       func(_ Site, _ string) { panic("observer boom") },
+		Running:       func(_ Site, _ string) { panic("observer boom") },
+		Finished:      func(_ Site, _ string, _ NodeFinishReason, _ error) { panic("observer boom") },
 	}
 	recorder := &recordingObserver{}
 	in := NewKey[string]("multi.in")
 	out := NewKey[string]("multi.out")
 
 	g := mustNew(t, context.Background(), "multi", WithObserver(MultiObserver{panicker, recorder}))
-	if err := Seed(g, in, "x"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Add(NewNode("n", "", Requires(in), Provides(out), func(rc *RunCtx) error {
@@ -256,7 +288,7 @@ func TestMultiObserverIsolatesPanickingMember(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatalf("member panic must not fail graph: %v", err)
 	}
 	log := recorder.snapshot()
@@ -280,7 +312,8 @@ func TestObserverGraphBrackets(t *testing.T) {
 	in := NewKey[string]("obs.bk.in")
 	out := NewKey[string]("obs.bk.out")
 	g := mustNew(t, context.Background(), "bracket", WithObserver(obs))
-	if err := Seed(g, in, "x"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "x"); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Add(NewNode("n", "", Requires(in), Provides(out), func(rc *RunCtx) error {
@@ -292,7 +325,7 @@ func TestObserverGraphBrackets(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	// 单节点图的整条观测是确定的：五条，且顺序固定。
@@ -327,7 +360,7 @@ func TestObserverGraphFinishedFailed(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	err := g.Run()
+	err := runOn(g)
 	if !errors.Is(err, boom) {
 		t.Fatalf("Run err = %v, want node error", err)
 	}
@@ -358,7 +391,7 @@ func TestObserverGraphFinishedCanceled(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Start(); err != nil {
+	if err := startOn(g); err != nil {
 		t.Fatal(err)
 	}
 	log := obs.snapshot()
@@ -369,7 +402,7 @@ func TestObserverGraphFinishedCanceled(t *testing.T) {
 		t.Fatalf("Wait 还没调用就收到了 finished: %v", log)
 	}
 	cancel()
-	if err := g.Wait(); !errors.Is(err, context.Canceled) {
+	if err := waitOn(g); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Wait err = %v, want context.Canceled", err)
 	}
 	log = obs.snapshot()
@@ -381,9 +414,12 @@ func TestObserverGraphFinishedCanceled(t *testing.T) {
 	}
 }
 
-// TestObserverGraphEventsOnce 重复 Start / 重复 Wait 都只发一次：started 属于
-// 「这一轮开始」（重复 Start 是调用错误，不是新一轮），finished 属于「这一轮结果」
+// TestObserverGraphEventsOnce 同一份执行里，重复 Start / 重复 Wait 都只发一轮图级事件：
+// started 属于「这一轮开始」（重复 Start 是调用错误），finished 属于「这一轮结果」
 // （重复 Wait 读的是同一份结果）。
+//
+// 阶段 2 起「一轮」的载体是 `Execution`：**同一张定义再开一份执行是另一回事**——
+// 那是新的一轮，会再发一对（下面钉住）。
 func TestObserverGraphEventsOnce(t *testing.T) {
 	obs := &recordingObserver{}
 	out := NewKey[string]("obs.once.out")
@@ -393,21 +429,35 @@ func TestObserverGraphEventsOnce(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Start(); err != nil {
+	e := mustExec(t, g, context.Background(), Inputs{})
+	if err := e.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Start(); !errors.Is(err, ErrGraphStarted) {
+	if err := e.Start(); !errors.Is(err, ErrGraphStarted) {
 		t.Fatalf("第二次 Start = %v, want ErrGraphStarted", err)
 	}
-	if err := g.Wait(); err != nil {
+	if err := e.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Wait(); err != nil {
+	if err := e.Wait(); err != nil {
 		t.Fatalf("第二次 Wait = %v, want nil（同一轮结果）", err)
 	}
 	log := obs.snapshot()
 	if countPref(log, "GS") != 1 || countPref(log, "GF:") != 1 {
 		t.Fatalf("图级回调次数 = %v", log)
+	}
+
+	// 同一张定义再跑一轮：新的一份执行又是一对图级事件（定义可复用），
+	// 且两次的执行身份不同——只看图 id 的话两轮会折叠成一份记录。
+	if err := g.Run(context.Background(), Inputs{}); err != nil {
+		t.Fatal(err)
+	}
+	log = obs.snapshot()
+	if countPref(log, "GS") != 2 || countPref(log, "GF:") != 2 {
+		t.Fatalf("第二轮该再发一对图级事件，got %v", log)
+	}
+	if obs.siteSeen(Site{Graph: "once", Execution: e.ID(), Path: ""}) != true {
+		t.Fatalf("第一轮的图级事件该带第一份执行的身份，got %+v", obs.sites)
 	}
 }
 
@@ -423,13 +473,13 @@ func TestObserverNoGraphEventsOnRejectedStart(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Start(); err == nil {
+	if err := startOn(g); err == nil {
 		t.Fatal("want start validation error")
 	}
 	if log := obs.snapshot(); len(log) != 0 {
 		t.Fatalf("校验失败也发了图级回调: %v", log)
 	}
-	if err := g.Wait(); !errors.Is(err, ErrGraphNotStarted) {
+	if err := waitOn(g); !errors.Is(err, ErrGraphNotStarted) {
 		t.Fatalf("Wait = %v, want ErrGraphNotStarted", err)
 	}
 	if log := obs.snapshot(); len(log) != 0 {
@@ -442,7 +492,7 @@ func TestObserverNoGraphEventsOnRejectedStart(t *testing.T) {
 func TestObserverEmptyGraphBrackets(t *testing.T) {
 	obs := &recordingObserver{}
 	g := mustNew(t, context.Background(), "empty", WithObserver(obs))
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	log := obs.snapshot()
@@ -483,15 +533,15 @@ func TestObserverWaitWaitsForStartSubmission(t *testing.T) {
 			entered := make(chan struct{})
 			release := make(chan struct{})
 			obs := ObserverFunc{
-				GraphStarted: func(string) {
+				GraphStarted: func(_ Site) {
 					add("GS")
 					close(entered)
 					<-release
 				},
-				GraphFinished: func(string, NodeFinishReason, error) { add("GF") },
-				Waiting:       func(_, id string) { add("W:" + id) },
-				Running:       func(_, id string) { add("R:" + id) },
-				Finished:      func(_, id string, _ NodeFinishReason, _ error) { add("F:" + id) },
+				GraphFinished: func(_ Site, _ NodeFinishReason, _ error) { add("GF") },
+				Waiting:       func(_ Site, id string) { add("W:" + id) },
+				Running:       func(_ Site, id string) { add("R:" + id) },
+				Finished:      func(_ Site, id string, _ NodeFinishReason, _ error) { add("F:" + id) },
 			}
 			g := mustNew(t, context.Background(), "startwait", WithObserver(obs))
 			want := []string{"GS", "GF"}
@@ -506,10 +556,10 @@ func TestObserverWaitWaitsForStartSubmission(t *testing.T) {
 			}
 
 			startErr := make(chan error, 1)
-			go func() { startErr <- g.Start() }()
+			go func() { startErr <- startOn(g) }()
 			<-entered // started 回调已进入并卡住
 			waitErr := make(chan error, 1)
-			go func() { waitErr <- g.Wait() }()
+			go func() { waitErr <- waitOn(g) }()
 			select {
 			case err := <-waitErr:
 				t.Fatalf("Wait 在 started 回调返回 / 节点提交之前就返回了（err=%v），log=%v", err, seen())
@@ -542,7 +592,7 @@ func TestObserverConcurrentWaitBothSeeFinished(t *testing.T) {
 	release := make(chan struct{})
 	var calls atomic.Int32
 	obs := ObserverFunc{
-		GraphFinished: func(string, NodeFinishReason, error) {
+		GraphFinished: func(_ Site, _ NodeFinishReason, _ error) {
 			if calls.Add(1) == 1 {
 				close(entered)
 			}
@@ -556,15 +606,15 @@ func TestObserverConcurrentWaitBothSeeFinished(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Start(); err != nil {
+	if err := startOn(g); err != nil {
 		t.Fatal(err)
 	}
 
 	first := make(chan error, 1)
-	go func() { first <- g.Wait() }()
+	go func() { first <- waitOn(g) }()
 	<-entered // 第一个 Wait 正卡在 finished 回调里
 	second := make(chan error, 1)
-	go func() { second <- g.Wait() }()
+	go func() { second <- waitOn(g) }()
 	select {
 	case err := <-second:
 		t.Fatalf("第二个 Wait 在 finished 回调返回之前就返回了（err=%v）", err)
@@ -601,14 +651,14 @@ func TestObserverFuncGraphFieldsFire(t *testing.T) {
 	var reason NodeFinishReason
 	var gerr error
 	obs := ObserverFunc{
-		GraphStarted: func(graphID string) {
+		GraphStarted: func(site Site) {
 			mu.Lock()
-			started = append(started, graphID)
+			started = append(started, site.Graph)
 			mu.Unlock()
 		},
-		GraphFinished: func(graphID string, r NodeFinishReason, err error) {
+		GraphFinished: func(site Site, r NodeFinishReason, err error) {
 			mu.Lock()
-			finished = append(finished, graphID)
+			finished = append(finished, site.Graph)
 			reason, gerr = r, err
 			mu.Unlock()
 		},
@@ -620,7 +670,7 @@ func TestObserverFuncGraphFieldsFire(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()

@@ -34,7 +34,7 @@ func TestProduceConsumeRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if want := []int{1, 2, 3, 4, 5}; fmt.Sprint(got) != fmt.Sprint(want) {
@@ -65,7 +65,7 @@ func TestWithBufferKeepsOrder(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if fmt.Sprint(got) != fmt.Sprint([]string{"a", "b", "c"}) {
@@ -92,7 +92,7 @@ func TestConsumeEmptyStreamEntersRun(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 0 {
@@ -179,7 +179,7 @@ func TestConsumeSeesCancellation(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 		cancel()
 	}()
-	err := g.Run()
+	err := runOn(g)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run = %v, want context.Canceled", err)
 	}
@@ -225,7 +225,7 @@ func TestTeeBroadcastsEveryValue(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	want := "[1 2 3 4]"
@@ -254,7 +254,7 @@ func TestConsumeSkipsWhenUpstreamSkips(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatalf("跳过是到达、不是失败：%v", err)
 	}
 	if called {
@@ -301,7 +301,7 @@ func TestOnlyWritesChosenAndSkipsRest(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if !useA {
@@ -330,13 +330,13 @@ func TestOnlyConflictsWithEarlierSet(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	err := g.Run()
+	err := runOn(g)
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("Run = %v, want ErrConflict", err)
 	}
 	// 冲突是在**发布之前**预检出来的：不能为了报这个错先把选中的出口发出去
 	// （下游可能已被唤醒，而引擎不回滚已发布的值）。
-	if st := g.slotOf(a.asRef()).state; st == slotReady {
+	if st := execOn(g).slotOf(a.asRef()).state; st == slotReady {
 		t.Fatal("Only 在已知冲突时仍然发布了选中的出口")
 	}
 }
@@ -367,7 +367,7 @@ func TestStreamSlotsCheckedAtStart(t *testing.T) {
 
 	g := mustNew(t, context.Background(), "compose", WithMaxRunning(2))
 	build(g)
-	err := g.Start()
+	err := startOn(g)
 	if err == nil || !strings.Contains(err.Error(), "slots at the same time") {
 		t.Fatalf("Start = %v, want 名额不足的装配错误", err)
 	}
@@ -375,7 +375,7 @@ func TestStreamSlotsCheckedAtStart(t *testing.T) {
 	// 同一张图（名额不设限）跑得通——错的只是名额，不是图本身。
 	g2 := mustNew(t, context.Background(), "compose-ok")
 	build(g2)
-	if err := g2.Run(); err != nil {
+	if err := runOn(g2); err != nil {
 		t.Fatalf("名额放开后应当跑得通：%v", err)
 	}
 }
@@ -398,7 +398,7 @@ func TestStreamOutputNeedsConsumer(t *testing.T) {
 	if err := Consume(g, "sink", a, func(rc *RunCtx, v int) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	err := g.Start()
+	err := startOn(g)
 	if err == nil || !strings.Contains(err.Error(), "nothing consumes it") {
 		t.Fatalf("Start = %v, want 「出口没人消费」的装配错误", err)
 	}
@@ -408,7 +408,7 @@ func TestStreamOutputNeedsConsumer(t *testing.T) {
 	if err := Produce(g2, "src", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	err = g2.Start()
+	err = startOn(g2)
 	if err == nil || !strings.Contains(err.Error(), "nothing consumes it") {
 		t.Fatalf("Start = %v, want 「出口没人消费」的装配错误", err)
 	}
@@ -461,7 +461,7 @@ func TestStreamSlotsCountHandWrittenReader(t *testing.T) {
 
 	g := mustNew(t, context.Background(), "hw-2", WithMaxRunning(2))
 	build(g)
-	err := g.Start()
+	err := startOn(g)
 	if err == nil || !strings.Contains(err.Error(), "slots at the same time") {
 		t.Fatalf("手写消费者没算进名额：Start = %v, want 名额不足的装配错误", err)
 	}
@@ -472,7 +472,7 @@ func TestStreamSlotsCountHandWrittenReader(t *testing.T) {
 	// 同一张图给够名额（三个节点同时活着）就跑得通——错的只是名额，不是图本身。
 	g2 := mustNew(t, context.Background(), "hw-3", WithMaxRunning(3))
 	build(g2)
-	if err := g2.Run(); err != nil {
+	if err := runOn(g2); err != nil {
 		t.Fatalf("名额给够（3）应当跑得通：%v", err)
 	}
 	if n := got.Load(); n != 5 {
@@ -508,7 +508,7 @@ func TestStreamOutputRejectsSplitReaders(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		err := g.Start()
+		err := startOn(g)
 		if err == nil || !strings.Contains(err.Error(), "split between them") {
 			t.Fatalf("Tee 出口两个读取者：Start = %v, want 瓜分错误", err)
 		}
@@ -537,7 +537,7 @@ func TestStreamOutputRejectsSplitReaders(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		err := g.Start()
+		err := startOn(g)
 		if err == nil || !strings.Contains(err.Error(), "split between them") {
 			t.Fatalf("Produce 出口两个读取者：Start = %v, want 瓜分错误", err)
 		}
@@ -565,7 +565,7 @@ func TestStreamOutputRejectsSplitReaders(t *testing.T) {
 		if err := FanOut(g, "v", src, Keys(o3, o4), drain); err != nil {
 			t.Fatal(err)
 		}
-		err := g.Start()
+		err := startOn(g)
 		if err == nil || !strings.Contains(err.Error(), "split between them") {
 			t.Fatalf("两组 FanOut 读同一条出口：Start = %v, want 瓜分错误", err)
 		}
@@ -602,7 +602,7 @@ func TestFanOutCompetesOnStreamOutput(t *testing.T) {
 		}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatalf("FanOut 抢一根流应当跑得通：%v", err)
 	}
 	if total := counts[0].Load() + counts[1].Load(); total != 10 {
@@ -627,7 +627,8 @@ func TestConsumeStopsCallingAfterCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	g := mustNew(t, ctx, "stop")
-	if err := Seed(g, in, (<-chan int)(ch)); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, (<-chan int)(ch)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -649,7 +650,7 @@ func TestConsumeStopsCallingAfterCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := g.Run()
+	err := runOn(g)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run = %v, want context.Canceled", err)
 	}
