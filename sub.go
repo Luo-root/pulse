@@ -24,6 +24,10 @@ import (
 // 同一批 binds 的形状判据（都在装配期报，报文点着子侧键名）：
 //
 //   - **同一条子侧进口只能绑一次**：两次种同一条槽，第二次会被幂等首写静默忽略；
+//   - **子图需要的进口都得给值**（`In` / `Fix` / `FixSkip` 都算）：有节点 `Requires` 它，或它是
+//     这一处绑出去的透传出口的唯一来源 → 漏绑在这一步就报，别留到运行期才从「建子执行」或
+//     `bridgeOutputs` 那里冒出来（见 checkInletsFedLocked）。没被任何节点 `Requires`、也没被
+//     这一处绑出去的进口是**可选**的，不逼调用方编个值出来；
 //   - **一条 `In` 绑的进口，在子图里不可能已经有来源**：这个状态已经建不出来了——
 //     「一条键既是声明过的进口、又有节点产出它」在**声明那一刻**就被拒（`DeclareInput` 与
 //     `Add` 两个方向同一句判据，都撞 `ErrDuplicateSource`，见 port.go / graph.go）；
@@ -171,8 +175,10 @@ func parentBinds(binds []SubBind) (requires, provides []keyRef) {
 	return requires, provides
 }
 
-// checkBinds 检查一批绑定：零值绑定、同一条子侧进口绑两次、子侧两端是不是声明过的对应方向
-// 端口、类型对不对。装配期一次判清，`Sub` 装配时与 `Validate` / `Topology` 递归时共用同一份。
+// checkBinds 检查一批绑定，**两个方向都判**：① 传进来的每条绑定自己成不成立（零值绑定、
+// 同一条子侧进口绑两次、子侧两端是不是声明过的对应方向端口、类型对不对）；② **子图需要的
+// 进口有没有漏**（见 checkInletsFedLocked）。装配期一次判清，`Sub` 装配时与 `Validate` /
+// `Topology` 递归时共用同一份。
 //
 // 整批在**子图那把锁**里判完：端口表是子图的字段，而子图在装配那一刻就在宿主手里，
 // 解锁之后再查它那张表就是读一张别人能改的 map（`DeclareInput` 往同一张表里写）——
@@ -187,10 +193,11 @@ func parentBinds(binds []SubBind) (requires, provides []keyRef) {
 // 用另一个值」就用 `Fix` / `FixSkip`。
 //
 // 这里剩下的都是「挂载那一刻核过、但那是当时的事实」那类：子图的端口可能在挂载之后、它自己
-// 封口之前改过（例如挂完之后又 `DeclareInput` 了一条），所以每次重新判一遍，报文与 `Sub`
-// 装配时逐字相同。
+// 封口之前改过（例如挂完之后又 `DeclareInput` 了一条，或又 `Add` 了一个要新进口的节点），
+// 所以每次重新判一遍，报文与 `Sub` 装配时逐字相同。
 func checkBinds(child *Graph, id string, binds []SubBind) error {
 	seenIn := make(map[string]struct{}, len(binds))
+	var outs []keyRef
 	child.mu.Lock()
 	defer child.mu.Unlock()
 	for i, b := range binds {
@@ -218,6 +225,62 @@ func checkBinds(child *Graph, id string, binds []SubBind) error {
 		if err := child.checkPortRefLocked(id, b.child, false); err != nil {
 			return err
 		}
+		outs = append(outs, b.child)
+	}
+	// 反向那一遍：上面判的是「传进来的每条绑定对不对」，这一遍判「子图需要的进口有没有漏」。
+	return child.checkInletsFedLocked(id, seenIn, outs)
+}
+
+// checkInletsFedLocked 是**反向**那一遍：子图**自己需要**的那些进口，这一处挂载都得给值
+// （`In` / `Fix` / `FixSkip` 都算，`fed` 就是上面收下来的那批）。调用方持 g.mu（`checkBinds`
+// 里持的就是子图那把锁）。
+//
+// 两种「需要」，都是读一遍声明就能定的：
+//
+//  1. **子图里有节点 `Requires` 它**（而它是声明过的进口）：挂载点不给值，子图这次跑不起来
+//     ——`newChildExecution` 会在**运行期**报「has no value for this run」，那时父图别的节点
+//     可能已经跑完并留下副作用，而 `Validate()` 还已经把这个定义封了口；
+//  2. **它是这一处绑出去的出口的唯一来源**：同一条键既是进口又是出口 = 透传，而声明过的进口
+//     不可能再被节点产出（见 declarePorts / addAllLocked），所以它的唯一来源就是这个挂载点。
+//     不喂的话，`bridgeOutputs` 只能等子图跑完才报一句「its output key … never arrived」。
+//
+// 两个边界都不是随手划的：
+//
+//   - **没被任何节点 `Requires`、也没被这一处绑出去**的进口是**可选**的：它可能是留给别的
+//     挂载点的接口，也可能是这一处用不到的透传端——不逼调用方编个值出来（与「没人 `Requires`
+//     的进口不逼调用方编值」同一条纪律，见 requiredInputsLocked）；
+//   - 义务由**承诺**定：`Out` 是「这一步会给你这条值」的承诺，所以第 2 种只看**绑出去的**出口。
+//     没绑出去的出口谁也没承诺，硬要它喂一个没人读的值只是噪音（一个多口透传组件挂在只用
+//     其中一部分口的地方，是正常用法）。
+//
+// 判据只读子图的定义（端口表 + 节点声明）与这一处的绑定，不看任何一次运行留下的痕迹；
+// 两个循环都按声明序 / 绑定序走，报文不会因 map 迭代顺序而变。
+func (g *Graph) checkInletsFedLocked(stepID string, fed map[string]struct{}, outs []keyRef) error {
+	for _, n := range g.nodes {
+		for _, k := range n.requires {
+			if _, isIn := g.inPorts[k.name]; !isIn {
+				continue // 不是声明过的进口：那是子图自己的来源问题，它的静态校验会报
+			}
+			if _, ok := fed[k.name]; ok {
+				continue
+			}
+			return fmt.Errorf("pulse: Sub %q: child inlet %s has no value for this mount: "+
+				"node %q inside the child requires it, and it is a declared input of graph %q - "+
+				"bind it with In, or give this mount site a value with Fix / FixSkip",
+				stepID, k, n.id, g.id)
+		}
+	}
+	for _, k := range outs {
+		if _, isIn := g.inPorts[k.name]; !isIn {
+			continue // 出口由子图内部产出（或它自己报「没人产出」），不干挂载点的事
+		}
+		if _, ok := fed[k.name]; ok {
+			continue
+		}
+		return fmt.Errorf("pulse: Sub %q: child outlet %s is bound here, but it is also a "+
+			"declared input of graph %q and nothing inside the child produces it, so this mount "+
+			"site has to feed it - bind it with In, or give this mount site a value with "+
+			"Fix / FixSkip", stepID, k, g.id)
 	}
 	return nil
 }
