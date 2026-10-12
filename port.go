@@ -46,8 +46,9 @@ func (p Port) declared() bool { return p.ref.typ != nil }
 // 与「这本来就是外部输入」——前者是装配错，后者是这张图的接口。静态拓扑里它们的来源是
 // `pulse.SourceInput`（不是 `SourceSeed`：`Seed` 是运行期的动作，不该出现在定义的结构里）。
 //
-// 再声明一次同一条键是幂等的（同名同类型）；同名不同类型报错。**定义封口之后**
-// （`Validate` 通过过一次）再声明会被拒——封口是「这张定义不再变化」的那一刻。
+// 再声明一次同一条键是幂等的（同名同类型）；同名不同类型报错。**改不了定义的时机有两个**：
+// 定义封口之后（`Validate` 通过过一次）与图跑起来之后（`Start` 成功）——两者都被拒，
+// 共用 `ErrGraphStarted`，报文里分得出是哪一种（封口那句写着 sealed）。
 func (g *Graph) DeclareInput(ports ...Port) error { return g.declarePorts(ports, true) }
 
 // DeclareOutput 声明「这张图对外产出这几条 Key」（出口）。
@@ -72,6 +73,12 @@ func (g *Graph) declarePorts(ports []Port, input bool) error {
 	defer g.mu.Unlock()
 	if g.sealed {
 		return errSealed(what)
+	}
+	// 第二个冻结点：图**跑起来**之后同样不再接受改定义——判据与 `Add` 同源（那里也是先看
+	// sealed、再看 started）。少了这一条，端口声明就成了唯一能在运行期改定义的口子：端口是
+	// 「这张图接受 / 产出什么」的声明，运行中途改它，拓扑与观测看到的那张定义会跟着变。
+	if g.started {
+		return ErrGraphStarted
 	}
 
 	table := &g.outPorts

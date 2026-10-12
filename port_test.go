@@ -125,6 +125,29 @@ func TestDeclareInputPorts(t *testing.T) {
 			t.Fatalf("报错该点明是定义封口，got %v", err)
 		}
 	})
+
+	// 另一个冻结点：图**跑起来**之后（`Start` 成功）同样不再接受改定义。判据与 `Add` 同源，
+	// 但报文不同——两个触发点共用一个哨兵，靠报文分得开（见 ErrGraphStarted 的 godoc）。
+	t.Run("跑起来的图也不能再声明端口，且报文说的是「已经启动」不是「封口」", func(t *testing.T) {
+		g := mustNew(t, ctx, "started-declare")
+		if err := Seed(g, other, "v"); err != nil { // 空图也要有条来源才过静态校验
+			t.Fatalf("Seed = %v", err)
+		}
+		if err := g.Start(); err != nil {
+			t.Fatalf("Start = %v", err)
+		}
+		for _, err := range []error{g.DeclareInput(NewPort(in)), g.DeclareOutput(NewPort(out))} {
+			if !errors.Is(err, ErrGraphStarted) {
+				t.Fatalf("启动之后再声明该被拒，got %v", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "already started") || strings.Contains(err.Error(), "sealed") {
+				t.Fatalf("报文该说清是「已经启动」，got %v", err)
+			}
+		}
+		if err := g.Wait(); err != nil {
+			t.Fatalf("Wait = %v", err)
+		}
+	})
 }
 
 // 出口和入口一样，是**装配期**就能判的事。`DeclareOutput` 了一条没人产出的键，父图照样
