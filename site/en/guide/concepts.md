@@ -158,10 +158,10 @@ type Aspect func(rc *RunCtx, next func(*RunCtx) error) error
 An aspect wraps the node's entire "**wait for input + execute**" span — which is why `Timeout` can interrupt a node that is still waiting for data, not only the execution. Not calling `next` short-circuits.
 
 - `Timeout(d)`: cancels this layer's ctx on timeout;
-- `Retry(attempts, delay)`: retries execution errors only; **a cancellation during the wait phase is not retried, and a skipped input is not retried either** (skip is arrival, not failure);
+- `Retry(attempts, delay)`: retries execution errors only; **a cancellation during the wait phase is not retried, and a skipped input is not retried either** (skip is arrival, not failure). It opens a **fresh write staging area per attempt**: that attempt's `Set` / `Skip` land there first, and if the attempt fails with retries left the whole thing is discarded (downstream never saw anything that attempt wrote); a successful attempt hands it over — see [Orchestration · Retry](/en/guide/orchestration);
 - Order: global aspects (`pulse.WithAspects`) come before node aspects, and **the first one written is the outermost** — so `Timeout` outside, `Retry` inside.
 
-**Latch constraint**: a single node's `Run` must not be entered **concurrently** (two goroutines running the same node at once would necessarily contend for the same slots); violating this returns `ErrNextCalledTwice`. **Sequential re-entry is legal** — `Retry` depends on exactly that (1→0→1). So the criterion is "overlap", not "more than once".
+**The advance gate**: a single node's `Run` must not be entered **concurrently** (two goroutines running the same node at once would necessarily contend for the same slots); violating this returns `ErrNextCalledTwice`. **Sequential re-entry is judged by "is there a fresh attempt boundary"**: `Retry` swaps in a new write staging area per attempt, so its re-entry is legal (1→0→1); a retry aspect you write yourself opens no boundary, so its second advance is rejected on the spot (`ErrNextCalledTwice`, and the message carries the first advance's failure reason too).
 
 ## The three packages
 

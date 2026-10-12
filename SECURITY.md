@@ -127,7 +127,8 @@ Pulse 目前仍在 1.0 之前（`v0.x`）。本文件说明漏洞上报方式与
   子树**封口，此后子树上每一张图的 `Add` / `DeclareInput` / `DeclareOutput` / `Sub` 都被拒；
   同一份执行第二次 `Start` 返回 `ErrGraphStarted`）、一次运行的输入（`Inputs` / `Seed` /
   `SkipSeed` 与启动条件）、`WithMaxRunning` 名额准入、以及切面链（`Timeout` / `Retry`）与它的
-  重入门闩；
+  推进闸（并发进入被拒；顺序重入只在新尝试边界上放行）与尝试写暂存（失败尝试的写不发布给下游、
+  只在提交后落地）；
 - 观测信封：`Record` / `Attrs`、内置出口（`LineSink` / `SlogSink` / `MemorySink` /
   `MultiSink` / `AsyncSink`）与六条编码原语——包括任何「让载荷从非 `Attrs` 字段混进记录」
   的可能；
