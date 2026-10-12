@@ -8,11 +8,28 @@ import (
 	"sync/atomic"
 )
 
-// Graph 是一次运行的世界：节点集合 + 数据槽 + 首错 + 取消。
+// Graph 今天同时戴着两顶帽子：**定义**（节点集合 / 来源表 / Key 登记 / 端口）与**这一次运行**
+// （ctx / 取消 / 槽位 / started / claimed / 首错 / waitgroup）。
 //
-// id 是图身份（New 的 graphID，必填）：不同业务用不同图组装（node
-// 可跨图复用），Observer 回调随事实携带它，供观测折叠区分「运行的
-// 是哪张图」（观测 key 见 pulse.AttrGraph）。
+// **目标模型（#311）把它们拆开**：`Graph` = 可复用的**静态定义**，一次运行是 `Execution`
+// （自己的 ctx / 输入 / 槽位 / 节点状态 / 首错 / 取消域）。阶段 1（静态组合）已落地，
+// `Execution` 还没拆，所以今天有一条必须记住的推论：
+//
+//	**一个 `Graph` 实例在一次运行里只能产生一个运行实例。**
+//
+// 同一张子图挂两处时，跑的那一步会原子认领它（`claimSub`），另一处拿到的是「这张图已经在用」
+// 那句；`Start()` 成功过一次的图也不能重跑（`ErrGraphStarted`）。要「每个挂载点各跑一份」得等
+// 阶段 2 的 `Execution`——**在那之前别往 `Graph` 上继续堆运行状态**：新加的运行期字段都属于
+// 未来的 `Execution`（见 docs/design/object-model.md 第 3.2 节与 AGENTS.md 的 one-shot 那条）。
+//
+// 另一条与「定义」有关、最容易被记反的边界：`Validate()` 通过 / `Start()` 成功会把**整棵子树**
+// 的定义封口（此后 `Add` / `DeclareInput` / `DeclareOutput` / `Sub` 都被拒），但**封口不等于
+// 用过它**——一张已封口的子图照样能被别处挂载，并在那一处（如果还没跑过）正常跑起来。
+// 前者看 `sealed`，后者看 `claimed` / `started`，两个问题、两套判据（用例
+// `TestSealedChildCanBeReusedElsewhere`）。
+//
+// id 是图身份（New 的 graphID，必填）：不同业务用不同图组装（node 可跨图复用），Observer 回调
+// 随事实携带它，供观测折叠区分「运行的是哪张图」（观测 key 见 pulse.AttrGraph）。
 type Graph struct {
 	id string
 	// desc 是 New 时给的说明（`""` = 没写）。只由构造函数写入，没有 setter。

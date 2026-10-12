@@ -525,3 +525,84 @@ func TestSubReentryGuarded(t *testing.T) {
 		t.Fatalf("第一次 attempt 的失败原因该一起报出来：%v", err)
 	}
 }
+
+// 封口 ≠ 用过：一张**已经被别处校验封口**的子图，照样能挂到另一张图里、并在那一处跑起来。
+//
+// 这条边界在阶段 1 特别容易被记反：`sealed` 管的是「这张**定义**不再变化」（`Add` /
+// `DeclareInput` / `DeclareOutput` / `Sub` 被拒），`claimed` / `started` 管的是「它已经被**这次
+// 运行**用掉了」——两个问题、两套判据。所以「挂得上」与「跑得了」要分开问：封口只挡前者里的
+// 「改」，不挡「挂」与「跑」。
+//
+// （「同一张子图挂两处、两处都要跑」是另一条边界：那要等阶段 2 的 `Execution`，由
+// `TestStaticSub` 的「只能跑一处」钉着。这条用例只钉「封口之后仍然可用」。）
+func TestSealedChildCanBeReusedElsewhere(t *testing.T) {
+	ctx := context.Background()
+	cin := NewKey[string]("sealreuse.cin")
+	cout := NewKey[string]("sealreuse.cout")
+
+	child := mustNew(t, ctx, "sealreuse.child")
+	if err := child.DeclareInput(NewPort(cin)); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.DeclareOutput(NewPort(cout)); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, child, NewNode("step", "", Requires(cin), Provides(cout), func(rc *RunCtx) error {
+		v, err := Get(rc, cin)
+		if err != nil {
+			return err
+		}
+		return Set(rc, cout, "child("+v+")")
+	}))
+
+	// 第一处：只校验，不跑——它把 child 整棵封上。
+	first := mustNew(t, ctx, "sealreuse.first")
+	firstIn := NewKey[string]("sealreuse.first_in")
+	firstOut := NewKey[string]("sealreuse.first_out")
+	if err := Seed(first, firstIn, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sub(first, "step", "", []SubBind{In(firstIn, cin), Out(cout, firstOut)}, child); err != nil {
+		t.Fatalf("Sub = %v", err)
+	}
+	if err := first.Validate(); err != nil {
+		t.Fatalf("Validate = %v", err)
+	}
+	if err := child.Add(NewNode("late", "", nil, nil, func(rc *RunCtx) error { return nil })); !errors.Is(err, ErrGraphStarted) {
+		t.Fatalf("封口之后该拒改定义，got %v", err) // 前提：child 真的被封住了
+	}
+
+	// 第二处：挂同一张（已封口的）子图，并且**真跑一遍**。
+	second := mustNew(t, ctx, "sealreuse.second")
+	secondIn := NewKey[string]("sealreuse.second_in")
+	secondOut := NewKey[string]("sealreuse.second_out")
+	if err := Seed(second, secondIn, "v"); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan string, 1)
+	mustAdd(t, second, NewNode("sink", "", Requires(secondOut), nil, func(rc *RunCtx) error {
+		v, err := Get(rc, secondOut)
+		if err != nil {
+			return err
+		}
+		select {
+		case got <- v:
+		default:
+		}
+		return nil
+	}))
+	if err := Sub(second, "step", "", []SubBind{In(secondIn, cin), Out(cout, secondOut)}, child); err != nil {
+		t.Fatalf("已封口的子图照样该能被别处挂：%v", err)
+	}
+	if err := second.Run(); err != nil {
+		t.Fatalf("已封口的子图该照常在别处跑：%v", err)
+	}
+	select {
+	case v := <-got:
+		if v != "child(v)" {
+			t.Fatalf("父侧拿到 %q，want %q", v, "child(v)")
+		}
+	default:
+		t.Fatal("父侧那条出口没到达：封口过的子图在别处没跑起来")
+	}
+}
