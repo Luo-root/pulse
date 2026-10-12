@@ -30,11 +30,10 @@ import (
 //     同一条规则（见 `problemsOutputsLocked`），那条键的值来自父侧，所以不要求子图内部有人
 //     读它 / 有人产出它；但**内部有人产出它**仍要拒：那与父侧那次喂值是同一个槽的两个来源。
 //
-// 子图节点上的 `retry:` 是**装图期就拒**的（见 addSubNode）：这一步的输出桥回父侧是在
-// 第一次尝试里做完的，而父侧槽位是幂等首写——重试拿不到「干净的一次」(缺 attempt 级写集)。
-// Go 侧同一个形状也拒，理由与报文都一样，只是时机不同——`Aspect` 是裸函数类型、闭包没有
-// 可查的身份，装配期认不出它是不是 `Retry`，所以那一边由 `Retry` 在**进 `Run` 的第一件事**
-// 当场拒（见 aspect.go）。两个入口都不静默接受。
+// `retry:` / `timeout:` 落在子图节点上照装（见 `nodeAspects` 与 addSubNode）：先列的
+// 更靠外，所以 `timeout: 30s` 是「整张子图限时」，而 `retry:` 让这一步**整段**（含子图
+// 那一次运行）按尝试重来——每次尝试各建一份新的子执行，失败那一次的桥回随它那条写暂存
+// 一起作废（引擎的 attempt 写集，见 `pulse.Retry`）。Go 侧同一个形状同一条语义。
 
 // GraphSpec 是一张可复用子图的声明：形状与顶层文档一样（`seeds` + `nodes`），
 // 但**没有**自己的 `graphs`——子图引用的是文档顶层那一张**扁平**的表（名字在
@@ -383,31 +382,13 @@ func (a *assembler) addSubNode(g *pulse.Graph, n NodeSpec, m mount, aspects []pu
 	if !ok {
 		return fmt.Errorf("pulse/yaml: %snode %q references unknown graph %q", at(m.where), n.ID, n.Graph)
 	}
-	// `retry` 落在子图节点上：这一阶段**当场拒**。
+	// `retry:` / `timeout:` 落在子图节点上：由调用方按 `nodeAspects` 一起传进来
+	// （先列的更靠外 → Timeout 在外、Retry 在内），这里不再单独判。
 	//
-	// 为什么不是「照旧能重试」：桥回父侧是**在第一次尝试里做完的**——子图的输出那时就
-	// `Set` 进了父侧槽位，而槽位是幂等首写。第二次尝试照样会把输出再写一遍，那些写入
-	// 会被**静默丢掉**：父图手里留着第一次的半成品，重试却看起来成功了。而那句还会
-	// **盖掉第一次失败的真正原因**（`Retry` 返回的是**最后一次** attempt 的错误）。
-	// 「每次尝试各持一份写暂存、成功才提交」要等阶段 3 的事务性 `Retry`（见 object-model
-	// 第 5 节）；那时每一次尝试各建一份子执行已经是现成的（阶段 2 的 `Execution`）。
-	//
-	// 为什么不留一条旧路：留着就是两套判据长期并存，而这条能力的目标形态在阶段 3 才
-	// 落地——现在拒掉，报错里直接给出今天就能用的写法。
-	//
-	// Go 侧同一个形状同样用不了，理由与报文都一样，只是拒的时机不同（`Aspect` 认不出
-	// 身份，判据在 `Retry` 进 `Run` 的第一件事）——两个入口一致在「都拒」，
-	// 而不是一致在「都在装图期拒」。
-	if n.Retry != nil {
-		return fmt.Errorf("pulse/yaml: %snode %q: retry is not supported on a graph node yet: "+
-			"this step bridges the child's outputs into the parent slots inside the attempt, and "+
-			"those slots are idempotent first-write — a key the first attempt bridged before "+
-			"failing keeps that value, so a retried attempt's writes for it are silently ignored "+
-			"and the parent could keep a mix of both attempts. "+
-			"Move retry onto the node inside graph %q that may actually fail; per-attempt write "+
-			"sets are the next stage",
-			at(m.where), n.ID, n.Graph)
-	}
+	// 阶段 1 / 2 这里曾经**当场拒** `retry:`——那时缺一次尝试一份写暂存的机制，重试会让
+	// 第一次已经桥回父侧的输出被幂等首写静默吞掉。阶段 3 把 attempt 写集补上之后，那条
+	// 限制的理由整个消失，于是**照装**：Go 侧与 YAML 侧同一个语义、同一处判据（在引擎
+	// 最内层的推进闸与 `Retry` 的写暂存上），不再有两套口径。
 	binds, err := subBinds(n, n.Graph, spec, a.reg)
 	if err != nil {
 		// subBinds 的报错自己就带 `node %q:` 那句，这里只补「哪张 spec」——

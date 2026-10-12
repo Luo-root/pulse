@@ -506,6 +506,14 @@ func (e *Execution) runNode(n *Node) {
 	// MaxRunning 只在即将执行用户 Run 时占用。
 	// 生命周期埋点在 innermost core：Retry 重入时靠门闩只发一次。
 	chain := buildChain(append(append([]Aspect{}, e.aspects...), n.aspects...), func(rc *RunCtx) (err error) {
+		// 推进闸：同一个节点执行上下文里 `next()` 只允许成功推进一次——`Retry` 每试都开
+		// 新的尝试边界，所以它的重入放行；用户自己写的重试切面开不了边界，第二次推进
+		// 当场拒（见 beginAdvance）。判据在最内层，所以**所有**节点（含挂子图那一步）
+		// 共用同一处，不各写一套。
+		if err := rc.beginAdvance(); err != nil {
+			return err
+		}
+		defer func() { rc.endAdvance(err) }()
 		emitWaiting()
 		skipped, err := awaitAll(rc, n.requires)
 		if err != nil {
@@ -545,40 +553,37 @@ func (e *Execution) runNode(n *Node) {
 
 	err := chain(rc)
 	if isSkipped(err) {
-		e.skipAllOrUnwritten(n, rc, true)
+		e.settleUnwritten(n, rc)
 		e.notify(func(o Observer) { o.OnNodeFinished(e.site, n.id, NodeSkipped, err) })
 		return
 	}
 	if err != nil {
 		e.fail(err)
-		e.skipAllOrUnwritten(n, rc, true)
+		e.settleUnwritten(n, rc)
 		e.notify(func(o Observer) { o.OnNodeFinished(e.site, n.id, finishReason(err), err) })
 		return
 	}
-	e.skipAllOrUnwritten(n, rc, false)
+	e.settleUnwritten(n, rc)
 	e.notify(func(o Observer) { o.OnNodeFinished(e.site, n.id, NodeCompleted, nil) })
 }
 
-func (e *Execution) skipAllOrUnwritten(n *Node, rc *RunCtx, allIfNoneWritten bool) {
-	if allIfNoneWritten && len(rc.wrote) == 0 {
-		e.skipAll(n.provides)
-		return
-	}
-	e.skipUnwritten(n, rc)
-}
-
-func (e *Execution) skipAll(keys []keyRef) {
-	for _, k := range keys {
-		_ = e.slotOf(k).resolveSkip()
-	}
-}
-
-func (e *Execution) skipUnwritten(n *Node, rc *RunCtx) {
+// settleUnwritten 把这次运行里**还没有落地**的 Provide 收成跳过（隐式跳过）。
+//
+// 判据是**落地状态**，不是「这个节点写过谁」。这个差别是实的：一次失败的尝试写过 K、
+// 而整份暂存被丢掉了，K 就仍然没有落地——它该以跳过收尾，而不是把下游永远吊在那条槽上
+// （一句看不出病因的超时）。没有尝试边界时两种判据一一对应（写过 ⟺ 已就绪 / 已跳过），
+// 所以不装 `Retry` 的节点行为逐条不变。
+//
+// 写入走**当前写入目标**（见 `RunCtx.writeTarget`）：有暂存就落暂存，没有就直写执行槽位。
+// 于是 #307 的 Durable 模式下，「完整 Aspect 链结束、收敛全部 Provides 状态」这一步同样
+// 落在节点暂存里，由检查点提交之后才发布——两层暂存是**按顺序组合**，不是互相替代
+// （见 #317「与 Durable 输出提交的边界」）。
+func (e *Execution) settleUnwritten(n *Node, rc *RunCtx) {
 	for _, k := range n.provides {
-		if _, ok := rc.wrote[k.name]; ok {
+		if rc.landed(k) {
 			continue
 		}
-		_ = e.slotOf(k).resolveSkip()
+		_ = rc.writeTarget(k).resolveSkip()
 	}
 }
 

@@ -116,21 +116,32 @@ type RunCtx struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	allowed map[string]keyRef // name → 声明过的 key
-	wrote   map[string]struct{}
-	// attempt 是**这一次运行里这个节点**的尝试账（见 attemptLedger）。它长在这里而不是
+	// writes 是**当前尝试的写暂存**：nil = 没有尝试边界，`Set` / `Skip` 直写执行槽位。
+	//
+	// 它只由 `Retry` 开与关——**切面套在哪一层，事务边界就在哪一层**：`Retry` 包住的那一段
+	// （`next` 之内，含更内层的切面）属于 attempt；`Retry` 外面的切面写的值不属于任何
+	// attempt、也不参与回滚。`Fork` 浅拷贝，所以 `Timeout` 里面那层看到的是同一份暂存。
+	writes *writeSet
+	// advance 是**这一次运行里这个节点**的推进账（见 advanceLedger）。它长在这里而不是
 	// 节点上：节点属于**定义**、要跨运行复用，而 `newRunCtx` 是每个 (执行, 节点) 一份
-	// ——「这一步进过一次没有」是那一次运行的事实。`Fork` 浅拷贝，所以 `Timeout` 里面
+	// ——「这一步推进过没有」是那一次运行的事实。`Fork` 浅拷贝，所以 `Timeout` 里面
 	// 那层看到的是同一份账。
-	attempt *attemptLedger
+	advance *advanceLedger
 }
 
-// attemptLedger 是**一次运行里一个节点**的尝试账：体进过没有、第一次失败是什么。
+// advanceLedger 是**一次运行里一个节点**的推进账：体推进过没有、上一次推进挂在哪条
+// 尝试边界上、第一次推进失败在哪（见 `RunCtx.beginAdvance`）。
 //
-// 目前只有 `Sub` 那一步用它（桥回父侧的输出是幂等首写，第二次进入会静默丢值，见 sub.go）。
-// 放在执行级而不是定义级正是本账的全部意义：同一张定义顺序跑两遍、并发跑两份，各是各的账。
-type attemptLedger struct {
-	mu       sync.Mutex
-	entered  bool
+// 账记在执行侧而不是定义侧，正是本账的全部意义：同一张定义顺序跑两遍、并发跑两份，
+// 各是各的账（实测过：账记在体闭包里，会把第二遍与并发的第二份都误报成重入）。
+type advanceLedger struct {
+	mu      sync.Mutex
+	entered bool
+	// frame 是上一次推进时挂着的尝试边界（nil = 当时没有边界）。第二次推进时它**没变**
+	// 才叫「无边界重入」；`Retry` 每次尝试都换一条新的暂存，所以它的重入是合法的。
+	frame *writeSet
+	// firstErr 是**第一次**推进的失败原因：无边界重入的报文要点名病根，不许让后来的错
+	// 盖掉它（`Retry` 返回的正是**最后一次**尝试的错误）。
 	firstErr error
 }
 
@@ -149,9 +160,108 @@ func newRunCtx(e *Execution, n *Node, parent context.Context) *RunCtx {
 		ctx:     ctx,
 		cancel:  cancel,
 		allowed: allowed,
-		wrote:   make(map[string]struct{}),
-		attempt: &attemptLedger{},
+		advance: &advanceLedger{},
 	}
+}
+
+// beginAdvance 是**推进闸**：同一个节点执行上下文里，`next()` 只允许成功推进一次。
+//
+// 判据是「这一次推进有没有新的尝试边界」：
+//
+//   - 没推进过 → 放行；
+//   - 推进过、但边界换了（`Retry` 每次尝试都开一条新的写暂存）→ 放行；
+//   - 推进过、边界没换 → 拒。这就是「用户自己写的重试切面」那个形状：它的第二次推进
+//     没有隔离，第一次已经写出去的东西会被幂等首写静默吞掉，节点手里就成了两次推进的混装。
+//
+// 限制的是**这一次执行里这个节点**的推进次数，不是按节点 id 全局禁止再次执行：另一次
+// `Execution`（另一次 `Run`）是全新的执行上下文，账从零开始。
+func (rc *RunCtx) beginAdvance() error {
+	le := rc.advance
+	if le == nil {
+		return nil
+	}
+	le.mu.Lock()
+	defer le.mu.Unlock()
+	if !le.entered {
+		le.entered = true
+		le.frame = rc.writes
+		return nil
+	}
+	if le.frame != rc.writes {
+		le.frame = rc.writes // 新的尝试边界：合法的重入，账换到新边界上
+		return nil
+	}
+	cause := ""
+	if le.firstErr != nil {
+		cause = fmt.Sprintf(". The first advance failed with: %v", le.firstErr)
+	}
+	return fmt.Errorf("pulse: node %s: this node was advanced a second time without a new attempt "+
+		"boundary: a node is advanced once per execution, and a second advance would run its body "+
+		"again (for a graph step that is the whole child subtree) while every output the first "+
+		"advance had already written would be silently ignored — slots are idempotent first write, "+
+		"so the node could end up with outputs from both advances. Use pulse.Retry, which opens a "+
+		"fresh per-attempt write set on every try; a second Run is a fresh execution and is "+
+		"unaffected%s (%w)", rc.NodeID(), cause, ErrNextCalledTwice)
+}
+
+// endAdvance 记下这一次推进的结果：**第一次**推进的失败原因供推进闸报病根用。
+//
+// 推进闸没有报错时才会走到这里（被拒的那次不记账），所以 `firstErr` 永远是「真的跑过
+// 并且失败了」的那一次。
+func (rc *RunCtx) endAdvance(err error) {
+	le := rc.advance
+	if le == nil || err == nil {
+		return
+	}
+	le.mu.Lock()
+	if le.firstErr == nil {
+		le.firstErr = err
+	}
+	le.mu.Unlock()
+}
+
+// writeTarget 是这一次**写**该落的槽：有尝试边界就落那条暂存（并因此建条目），
+// 没有就直写执行槽位。
+func (rc *RunCtx) writeTarget(ref keyRef) *slot {
+	if rc.writes == nil {
+		return rc.exec.slotOf(ref)
+	}
+	return rc.writes.slotOf(ref)
+}
+
+// readTarget 是这一次**读**该等的槽：本 attempt 已经写过的优先（读回自己刚写的，自洽），
+// 没有就沿写入目标链往外找——外层尝试的暂存，最后是执行槽位。
+//
+// 与 writeTarget 的差别是**不建条目**（见 writeSet.peek）：读一条本 attempt 没写过的键，
+// 该读的是它真正的来源，而不是在暂存里凭空多出一个永远 `pending` 的空位。
+//
+// 由此有一条要写进文档的边界：**跨 attempt 读不回上一次被丢弃的写**。那条键在这一次尝试
+// 里从来没有过值，所以读它就是等一个没人会写的槽（与今天「一条键没人产出」同一个形状，
+// 一直等到本层 ctx 取消）。作废的写重新变得可读，正是本阶段要消灭的东西。
+func (rc *RunCtx) readTarget(ref keyRef) *slot {
+	for ws := rc.writes; ws != nil; ws = ws.outer {
+		if s := ws.peek(ref); s != nil {
+			return s
+		}
+	}
+	return rc.exec.slotOf(ref)
+}
+
+// landed 报一条键到这一刻**已经落地**：写入目标里写过它，或它在执行槽位里已经到达
+// （就绪或跳过都算到达）。
+//
+// 收尾判据用它（见 `Execution.settleUnwritten`）：一条 `Provide` **没有落地**才该被
+// 隐式跳过。判「这个节点写过谁」是不够的——一次失败的尝试写过它、而整份暂存被丢掉了，
+// 那条输出就仍然没有落地，该以跳过收尾，而不是把下游永远吊在那条槽上。
+func (rc *RunCtx) landed(ref keyRef) bool {
+	for ws := rc.writes; ws != nil; ws = ws.outer {
+		if s := ws.peek(ref); s != nil {
+			st, _ := s.snapshot()
+			return st != slotPending
+		}
+	}
+	st, _ := rc.exec.slotOf(ref).snapshot()
+	return st != slotPending
 }
 
 // Context 返回本层可取消的 context。切面超时应取消它，以打断 Get/WaitAll。
@@ -165,8 +275,9 @@ func (rc *RunCtx) NodeID() string {
 	return rc.node.id
 }
 
-// Fork 只派生取消上下文，不复制写入记录或声明权限：
-// allowed / wrote 与父层共享。切面用它打断 Wait，不是独立写入事务。
+// Fork 只派生取消上下文，不复制写入目标、推进账或声明权限：
+// allowed / writes / advance 与父层共享。切面用它打断 Wait，不是独立写入事务——
+// 想开一条独立的事务边界是 `Retry` 的事（它换的是 `writes` 这条链）。
 func (rc *RunCtx) Fork() *RunCtx {
 	cp := *rc
 	cp.ctx, cp.cancel = context.WithCancel(rc.ctx)
@@ -228,7 +339,7 @@ func getRef(rc *RunCtx, ref keyRef) (any, error) {
 	if err := rc.must(ref, false); err != nil {
 		return nil, err
 	}
-	v, err := rc.exec.slotOf(ref).wait(rc.ctx)
+	v, err := rc.readTarget(ref).wait(rc.ctx)
 	if err != nil {
 		if err == ErrSkipped {
 			return nil, skipErr(ref.name)
@@ -244,7 +355,7 @@ func TryGet[T any](rc *RunCtx, k Key[T]) (v T, ok bool, skipped bool, err error)
 	if err = rc.must(ref, false); err != nil {
 		return
 	}
-	st, raw := rc.exec.slotOf(ref).snapshot()
+	st, raw := rc.readTarget(ref).snapshot()
 	switch st {
 	case slotReady:
 		out, cast := raw.(T)
@@ -261,6 +372,9 @@ func TryGet[T any](rc *RunCtx, k Key[T]) (v T, ok bool, skipped bool, err error)
 }
 
 // Set 幂等首写为就绪。二次调用忽略。与已跳过冲突则报错。
+//
+// **有尝试边界时落暂存**：`Retry` 里面的 `Set` 写的是这一次尝试的写暂存，不是执行槽位
+// ——下游要等这次尝试成功（或以跳过收尾）提交之后才会被唤醒。没装 `Retry` 时照旧直写槽位。
 func Set[T any](rc *RunCtx, k Key[T], v T) error { return setRef(rc, k.asRef(), v) }
 
 // setRef 是 Set 的非泛型内核：只有 keyRef 可用的地方（糖、子图桥接）走这里。
@@ -270,27 +384,19 @@ func setRef(rc *RunCtx, ref keyRef, v any) error {
 	if err := rc.must(ref, true); err != nil {
 		return err
 	}
-	if err := rc.exec.slotOf(ref).resolveValue(v); err != nil {
-		return err
-	}
-	rc.wrote[ref.name] = struct{}{}
-	return nil
+	return rc.writeTarget(ref).resolveValue(v)
 }
 
 // Skip 将一条 Provide 标记为跳过。已就绪则冲突。
 func Skip[T any](rc *RunCtx, k Key[T]) error { return skipRef(rc, k.asRef()) }
 
 // skipRef 是 Skip 的非泛型内核：糖（Only）要按本节点的声明表逐条作废时，只有
-// keyRef 可用，调不了泛型的 Skip。
+// keyRef 可用，调不了泛型的 Skip。「跳过也是到达」，所以它跟 `Set` 一样按尝试边界分流。
 func skipRef(rc *RunCtx, ref keyRef) error {
 	if err := rc.must(ref, true); err != nil {
 		return err
 	}
-	if err := rc.exec.slotOf(ref).resolveSkip(); err != nil {
-		return err
-	}
-	rc.wrote[ref.name] = struct{}{}
-	return nil
+	return rc.writeTarget(ref).resolveSkip()
 }
 
 // awaitAll 阻塞到 keys 全部到达（就绪或跳过），返回其中以跳过到达的名字。
@@ -303,7 +409,7 @@ func awaitAll(rc *RunCtx, keys []keyRef) ([]string, error) {
 		if err := rc.must(k, false); err != nil {
 			return nil, err
 		}
-		_, err := rc.exec.slotOf(k).wait(rc.ctx)
+		_, err := rc.readTarget(k).wait(rc.ctx)
 		if err == ErrSkipped {
 			skipped = append(skipped, k.name)
 			continue
