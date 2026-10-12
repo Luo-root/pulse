@@ -110,7 +110,7 @@ func (g *Graph) Run(ctx context.Context, in Inputs, opts ...ExecOption) error
 
 形状上的取舍（写下来免得回头重开）：
 
-- **封口时机（评审 #157 定案）**：**`Validate()` 通过才封口**——校验失败时图保持**可变**，调用方补上 `Add` / `DeclareInput` 之后再校验（这条与 `Start` 现有行为同一条线性化规则：校验没过就说明「图还没装配完」，不是「装配完了但坏了」）。**不设独立的 `Seal()`**：它和「成功即封口」的 `Validate()` 职责重叠，多一个入口只会多一种「到底封没封」的问法；要显式冻结就调一次 `Validate()`。
+- **封口时机（评审 #157 定案）**：**`Validate()` 通过才封口**——校验失败时图保持**可变**，调用方补上 `Add` / `DeclareInput` 之后再校验（这条与 `Start` 现有行为同一条线性化规则：校验没过就说明「图还没装配完」，不是「装配完了但坏了」）。**不设独立的 `Seal()`**：它和「成功即封口」的 `Validate()` 职责重叠，多一个入口只会多一种「到底封没封」的问法；要显式冻结就调一次 `Validate()`。**封的是整棵子树**（阶段 1 落地）：挂上去的子图是这张定义的一部分，只封自己那句话就是半句空——子图还能接着 `Add`，刚校验过的那棵树会变；失败则一层都不封。
 - `Run` 留在 `Graph` 上，但**不**在 `Graph` 上留 `Start` / `Wait` / `Snapshot`——避免「隐式 Execution」这种半吊子状态。
 - `Inputs` 是**值**（builder 风格：`in.Set(k, v)` / `in.Skip(k)`），不是变参 Options：一次运行的输入是一份数据，不是一串装饰。
 - 端口构造器收 `Key[T]`（`Port[T](k Key[T]) InputPort`），名字与类型只写一遍——写字符串名字最容易歪。
@@ -157,7 +157,7 @@ func (g *Graph) Run(ctx context.Context, in Inputs, opts ...ExecOption) error
 | 阶段 | 产出 | 验收要点（摘 #311，票面写全） |
 |---|---|---|
 | **0（本文）** | 对象模型与契约冻结 + 理念文档 | 本文定案；#303 / #309 / #310 关系写清 |
-| **1 静态定义与组合** | `Sub` 组合现成子图是**唯一**入口，旧的动态形态（`SubFunc` / `SubCtx`）**整体删除**；`DeclareInput` / `DeclareOutput` 端口；组合环在装配期拒；递归 `Topology` / `Validate`；运行 ctx 由父节点给 | A/B/C 各自构建、D 组合后**无运行**即可递归看全树并报全部静态错；同一子图多处挂载不改定义；预建子图上的取消传得下去 —— **已落地**（`feat/static-sub`：`Sub` / 端口 + 封口 / 递归拓扑与校验 / yaml 在 `Load` 期装一次 / `retry:` 落在 `graph:` 节点上 `Load` 期拒） |
+| **1 静态定义与组合** | `Sub` 组合现成子图是**唯一**入口，旧的动态形态（`SubFunc` / `SubCtx`）**整体删除**；`DeclareInput` / `DeclareOutput` 端口（**出口同样有静态判据**：声明了却没人产出 → 装配期报）；组合环在装配期拒（「查一遍子树 + 挂上」在同一个全局装配临界区里，递归另带挂载链兜底判环）；递归 `Topology` / `Validate`（**每层自己取锁**，`Validate` 通过时**整棵子树一起封**）；运行 ctx 由父节点给 | A/B/C 各自构建、D 组合后**无运行**即可递归看全树并报全部静态错；同一子图多处挂载不改定义；预建子图上的取消传得下去 —— **已落地**（PR #314，`refactor/sub-to-subfunc`：`Sub` / 端口 + 整棵子树封口 / 递归拓扑与校验 / yaml 在 `Load` 期装一次 / `retry:` 落在 `graph:` 节点上 `Load` 期拒 / 未引用的 spec 不查来源） |
 | **2 执行运行时** | `Execution`；槽位 / 状态 / 错误 / 取消域隔离；子 Graph → 每个挂载位置一个子 Execution | 同 Graph 顺序两次结果隔离；并发两次 `-race` 干净；取消只影响本次 |
 | **3 事务性 Retry** | attempt 写集、提交 / 丢弃；aspect 边界 | 「第一次写 K=a 后失败、第二次写 K=b 成功 → 下游只见到 b」；多 Key 一个都不可见；变异对照：去掉暂存必红 |
 | **4 快照 / 观测 / YAML 对齐** | `Execution.Snapshot()`；Observer 身份；YAML 与 Go 同语义；Mermaid 静态全貌（可叠加一次执行） | 快照与结构同序同 id；子 Child 指向子 Execution；YAML `Analyze` 与 Go `Topology` 语义一致 |
@@ -174,14 +174,14 @@ func (g *Graph) Run(ctx context.Context, in Inputs, opts ...ExecOption) error
 - **(c) 封口时机（评审 #157 补充定案）**：`Validate()` **通过才封口**，校验失败保持可变（补 `Add` / `DeclareInput` 再校验）；**不设 `Seal()`**。
 - **(d) 多 Key 提交可见性**：只保证「失败 attempt 不可见」；成功提交逐条写，窗口的准确形状是「一部分输出已 `ready`、其余仍 `pending`」（见第 5 节第 9 条）。
 - **(f) PR #310**：**替换**——`Graph.Snapshot()` + `Child *Graph` 的形态**不进 main**；#310 里与模型无关的成果（状态词表对齐、`waiting` 的两种读法、反射断言不带值、并发用例、`g.slots` 锁统一）转成阶段 2 的素材，面向 `Execution` 重做；#309 随之标 superseded。
-- **组合环**：与依赖环分开；`Sub` 装配期拒，判据用**当前递归路径上的祖先集合**（多处挂载合法）；YAML 那条 spec 名检查与它报文形状统一（第 3.4 节）。
+- **组合环**：与依赖环分开；`Sub` 装配期拒，判据用**当前递归路径上的祖先集合**（多处挂载合法）；**「查一遍子树」与「真的挂上」在同一个全局装配临界区里**（阶段 1 落地：组合环是两张图各自动作的合成结果，单看任何一张图的锁都拦不住对向挂载），递归另带一条挂载链做兜底判环（环的代价是爆栈或互等锁，不是一句错话）；YAML 那条 spec 名检查与它报文形状统一（第 3.4 节）。
 - **执行 id**：对每个执行实例唯一，**不**做「父 id + path」的纯确定性派生——同一挂载点的第 n 次 attempt 重建的子执行也是不同实例（第 3.3 节）。
 - **Retry 与取消 / 超时**：判据是「进入 `Retry` 那层拿到的 ctx 是否已到期」；内层 `Timeout` 可重试、外层 `Timeout` 与父取消不重试（第 5 节第 6 条）。
 - **发布切分**：**每阶段落地就发一个小版本**（阶段 1 = 下一个 minor，附迁移说明），不攒到最后一并砸下来。
 
 **暂定（评审时确认或推翻）**：
 
-- **(e) 哨兵语义**：复用 `ErrGraphStarted` / `ErrGraphNotStarted`（不改名、不新增），在 godoc 与迁移说明里把两种触发点写清——定义已封口（`Add` / `DeclareInput` 被拒，这正是 (c) 里「校验通过才封口」后 `Add` 会被拒的那个时刻）与这个 Execution 已经启动过（二次 `Start` 被拒）。
+- **(e) 哨兵语义**：复用 `ErrGraphStarted` / `ErrGraphNotStarted`（不改名、不新增），在 godoc 与迁移说明里把两种触发点写清——定义已封口（`Add` / `DeclareInput` 被拒，这正是 (c) 里「校验通过才封口」后 `Add` 会被拒的那个时刻）与这个 Execution 已经启动过（二次 `Start` 被拒）。**阶段 1 已按这条落地了「写清」那一半**：`ErrGraphStarted` 的 godoc 现在写明两个触发点、并点出 `Seed` 不受封口影响（`ErrGraphNotStarted` 的语义随阶段 2 落地）。待确认的只剩「复用不改名」这条决定本身。
 - **(g) 观测身份**：新增 `pulse.execution`（本次执行 id，承载上面的唯一性规则），`pulse.graph` 继续是定义 id——否则同一张图在**同一位置**跑两次的记录会合并。
 
 ## 9. 不做（本阶段就写清，免得回头重开）
