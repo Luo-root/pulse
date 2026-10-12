@@ -18,7 +18,7 @@ import (
 //
 //   - 装配完**不运行**就能从根图一路 `.Sub.Sub…` 拿完整棵树，路径按挂载位置推导；
 //   - 取消从挂载点传进子图（票面实测 3 那句「父图报成功」在这里翻过来）；
-//   - 声明了 `retry:` 的子图节点在 `Load` 期就拒（静态子图只跑一次，第二次尝试起不来）；
+//   - 声明了 `retry:` 的子图节点在 `Load` 期就拒（这一步的桥回是在第一次尝试里做完的，缺 attempt 级写集）；
 //   - 只装不跑的校验树不建出口：宿主的 `ObserverFor` 不会因为多校验一遍而多收到回调；
 //   - 根层自己的静态判据仍在 `Start` 那一刻报（它的外部输入是宿主在 Load 之后种的）。
 
@@ -147,10 +147,11 @@ func TestLoadSubtreeIsVisibleWithoutRunning(t *testing.T) {
 	}
 
 	// 两处挂载各跑各的：同一张 spec 的两张实例都能跑，值都桥得回来。
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	sort.Strings(got)
@@ -201,11 +202,12 @@ nodes:
 `
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	g, plan, err := pulseyaml.Load([]byte(doc), reg, pulseyaml.LoadOptions{Context: ctx, GraphID: "CX"})
+	g, plan, err := pulseyaml.Load([]byte(doc), reg, pulseyaml.LoadOptions{GraphID: "CX"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -214,7 +216,7 @@ nodes:
 		cancel()
 	}()
 	start := time.Now()
-	err = g.Run()
+	err = g.Run(ctx, inputs)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, context.Canceled) {
@@ -375,7 +377,7 @@ func TestLoadBuildsOneObserverPerMountSite(t *testing.T) {
 }
 
 // 根层自己的静态判据仍在 `Start` 那一刻报：根层的外部输入是宿主在 `Load` 之后种进去的
-// （`SeedPlan.Apply`），装图期看它当然是「没人提供、没人 seed」——在这一步校验会把
+// （`SeedPlan.Inputs`），装图期看它当然是「没人提供、没人 seed」——在这一步校验会把
 // 任何一份 `seeds:` 正常的文档都误报掉。
 //
 // 这条钉住的是**阶段 1 的边界**：子图那一层没有这个问题（它们的输入面就是引用点的
@@ -397,11 +399,12 @@ nodes:
 	if err != nil {
 		t.Fatalf("根层的来源判据不在装图期报：%v", err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	err = g.Run()
-	if err == nil || !strings.Contains(err.Error(), `requires "rl.missing" but nothing provides or seeds it`) {
+	err = g.Run(context.Background(), inputs)
+	if err == nil || !strings.Contains(err.Error(), `requires "rl.missing" but nothing provides it`) {
 		t.Fatalf("启动那一刻该报出来，got %v", err)
 	}
 }
@@ -456,7 +459,7 @@ nodes:
     out: {ur.cout: ur.root}
 `
 	_, _, err := pulseyaml.Load([]byte(referenced), reg, pulseyaml.LoadOptions{GraphID: "UR"})
-	if err == nil || !strings.Contains(err.Error(), `requires "ur.cin" but nothing provides or seeds it`) {
+	if err == nil || !strings.Contains(err.Error(), `requires "ur.cin" but nothing provides it`) {
 		t.Fatalf("被引用时来源判据照旧按引用点生效，got %v", err)
 	}
 	if err != nil && !strings.Contains(err.Error(), `(mounted at "step")`) {
@@ -544,10 +547,11 @@ nodes:
 	if err != nil {
 		t.Fatalf("透传该在 Load 期通过：%v", err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
-		t.Fatalf("Apply = %v", err)
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatalf("Run = %v", err)
 	}
 	if len(got) != 1 || got[0] != "hello" {

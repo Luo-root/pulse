@@ -3,12 +3,10 @@ package yaml_test
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/Luo-root/pulse"
 	"github.com/Luo-root/pulse/observe"
@@ -96,10 +94,11 @@ func TestLoadSubgraphEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	if got != "about slot contract" {
@@ -425,7 +424,7 @@ nodes:
 			want: `graph "inner" (mounted at "step1/toInner"): pulse: dependency cycle: a -> b -> a`,
 		},
 		{
-			name: "第 2 层有个节点读一条没人提供、也没人 seed 的键",
+			name: "第 2 层有个节点读一条没人提供、也不是声明过的进口的键",
 			node: "toInner",
 			body: `  mid:
     nodes:
@@ -440,7 +439,7 @@ nodes:
         requires: [{name: c.cin, type: string}, {name: c.nope, type: string}]
         provides: [{name: c.cout, type: string}]
 `,
-			want: `graph "inner" (mounted at "step1/toInner"): pulse: node "leaf" requires "c.nope" but nothing provides or seeds it`,
+			want: `graph "inner" (mounted at "step1/toInner"): pulse: node "leaf" requires "c.nope" but nothing provides it`,
 		},
 		{
 			name: "in: 喂的那条子侧键，子图自己也提供（两个来源）",
@@ -754,10 +753,11 @@ nodes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	gotMu.Lock()
@@ -838,10 +838,11 @@ nodes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	if got != "叶子!" {
@@ -897,10 +898,11 @@ nodes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	err = g.Run()
+	err = g.Run(context.Background(), inputs)
 	if err == nil || !strings.Contains(err.Error(), "timeout") {
 		t.Fatalf("Run = %v，want 父侧节点的 timeout", err)
 	}
@@ -967,7 +969,7 @@ nodes:
 	if !strings.Contains(err.Error(), `graph "inner" (mounted at "top2/hungry")`) {
 		t.Fatalf("报错没点明引用点：%v", err)
 	}
-	if !strings.Contains(err.Error(), `requires "rs.cin" but nothing provides or seeds it`) {
+	if !strings.Contains(err.Error(), `requires "rs.cin" but nothing provides it`) {
 		t.Fatalf("报错没点明是哪条键：%v", err)
 	}
 
@@ -978,169 +980,9 @@ nodes:
 	}
 }
 
-// 校验图不继承宿主的 ctx：那些图既不会跑、也没人会 cancel 它们，从宿主 ctx 派生
-// 出来的子节点只会一直挂在宿主 ctx 上（热重载反复 Load = 越攒越多）。
-//
-// 直接可观测面就是宿主 ctx 的 children 表——标准库把派生出来的子节点挂在这张表
-// 上，只有 cancel 或父 ctx 取消才摘掉。拿不到这张表（context 内部形状变了）就跳过：
-// 这条断言盯的是「别往上面挂」，不是某种实现细节。
-func TestLoadDoesNotRegisterCheckGraphsOnHostContext(t *testing.T) {
-	const loads = 20
-	host, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	reg := pulse.NewRegistry()
-	for _, k := range []string{"hc.in", "hc.a2", "hc.b2", "hc.cin", "hc.cout"} {
-		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
-	}
-	reg.MustRegister("f", func(*pulse.RunCtx) error { return nil })
-
-	doc := []byte(`
-version: 1
-seeds:
-  - key: {name: hc.in, type: string}
-    from: {kind: literal, value: "v"}
-graphs:
-  inner:
-    nodes:
-      - id: leaf
-        uses: f
-        requires: [{name: hc.cin, type: string}]
-        provides: [{name: hc.cout, type: string}]
-  mid:
-    nodes:
-      - id: toInner
-        graph: inner
-        in:  {hc.cin: hc.a2}
-        out: {hc.cout: hc.b2}
-nodes:
-  - id: step1
-    graph: mid
-    in:  {hc.a2: hc.in}
-    out: {hc.b2: hc.b2}
-`)
-	before := ctxChildren(t, host)
-	for i := 0; i < loads; i++ {
-		if _, _, err := pulseyaml.Load(doc, reg, pulseyaml.LoadOptions{Context: host, GraphID: "HC"}); err != nil {
-			t.Fatalf("第 %d 次 Load: %v", i, err)
-		}
-	}
-	// 根图是宿主自己要的那张图，挂在宿主 ctx 上是对的（宿主跑完 Wait 就会释放），
-	// 所以上限是「一次 Load 一个」；校验图（这份文档两张 spec）再挂上去就翻三倍。
-	if got := ctxChildren(t, host) - before; got > loads {
-		t.Fatalf("Load 往宿主 ctx 上挂了 %d 个子节点，最多只该有 %d（每张根图一个）", got, loads)
-	}
-}
-
-// ctxChildren 读一个可取消 ctx 挂着的子节点数（context 包的内部表）。
-func ctxChildren(t *testing.T, ctx context.Context) int {
-	t.Helper()
-	v := reflect.ValueOf(ctx)
-	if v.Kind() != reflect.Ptr || v.Elem().Kind() != reflect.Struct {
-		t.Skip("context 的内部形状变了：拿不到 children 表")
-	}
-	f := v.Elem().FieldByName("children")
-	if !f.IsValid() || f.Kind() != reflect.Map || !f.CanAddr() {
-		t.Skip("context 的内部形状变了：拿不到 children 表")
-	}
-	m := reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
-	if m.IsNil() {
-		return 0
-	}
-	return m.Len()
-}
-
-// 装图**失败**的那次 `Load` 不该在宿主 ctx 上留下任何东西：返回值只有
-// `(g, plan, err)`，失败时图不交出去，调用方连清理的把手都没有——所以
-// 「所有可能失败的校验」必须排在「动宿主 ctx 建根图」之前。同一份坏文档
-// 反复加载（热重载）时，留下的就是一堆没人认领的根图 ctx。
-//
-// 对照那一半同样重要：**成功**的 `Load` 照旧把根图挂在宿主 ctx 上（每张一个）
-// ——根图是宿主自己要的图，取消必须从宿主传得进去。修「失败不留东西」不能
-// 顺手把这条也掐掉（把根图也改成 `context.Background()` 就会：宿主取消再也
-// 传不到正在跑的图上）。
-func TestLoadFailureLeavesNothingOnHostContext(t *testing.T) {
-	const loads = 20
-	host, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	reg := pulse.NewRegistry()
-	for _, k := range []string{"fc.in", "fc.a2", "fc.b2", "fc.cin", "fc.cout", "fc.a", "fc.b"} {
-		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
-	}
-	reg.MustRegister("f", func(*pulse.RunCtx) error { return nil })
-
-	const head = `
-version: 1
-seeds:
-  - key: {name: fc.in, type: string}
-    from: {kind: literal, value: "v"}
-graphs:
-  inner:
-    nodes:
-`
-	// 坏：inner 里 a 与 b 互相依赖（成环）——装图期就该拒。
-	const cycle = `      - id: a
-        uses: f
-        requires: [{name: fc.a, type: string}]
-        provides: [{name: fc.b, type: string}]
-      - id: b
-        uses: f
-        requires: [{name: fc.b, type: string}]
-        provides: [{name: fc.a, type: string}]
-      - id: leaf
-        uses: f
-        requires: [{name: fc.cin, type: string}]
-        provides: [{name: fc.cout, type: string}]
-`
-	// 好：同一形状，去掉那个环。
-	const noCycle = `      - id: leaf
-        uses: f
-        requires: [{name: fc.cin, type: string}]
-        provides: [{name: fc.cout, type: string}]
-`
-	const mid = `  mid:
-    nodes:
-      - id: toInner
-        graph: inner
-        in:  {fc.cin: fc.a2}
-        out: {fc.cout: fc.b2}
-nodes:
-  - id: step1
-    graph: mid
-    in:  {fc.a2: fc.in}
-    out: {fc.b2: fc.b2}
-`
-	bad := []byte(head + cycle + mid)
-	good := []byte(head + noCycle + mid)
-
-	if _, _, err := pulseyaml.Load(bad, reg, pulseyaml.LoadOptions{Context: host, GraphID: "FC"}); err == nil {
-		t.Fatal("这份文档本来就该装图失败（inner 里成环）")
-	}
-	before := ctxChildren(t, host)
-	for i := 0; i < loads; i++ {
-		if _, _, err := pulseyaml.Load(bad, reg, pulseyaml.LoadOptions{Context: host, GraphID: "FC"}); err == nil {
-			t.Fatalf("第 %d 次 Load 竟然成功了", i)
-		}
-	}
-	if got := ctxChildren(t, host) - before; got != 0 {
-		t.Fatalf("失败的 Load 在宿主 ctx 上留下了 %d 个子节点，应该是 0", got)
-	}
-
-	beforeGood := ctxChildren(t, host)
-	for i := 0; i < loads; i++ {
-		if _, _, err := pulseyaml.Load(good, reg, pulseyaml.LoadOptions{Context: host, GraphID: "FC"}); err != nil {
-			t.Fatalf("第 %d 次 Load: %v", i, err)
-		}
-	}
-	if got := ctxChildren(t, host) - beforeGood; got != loads {
-		t.Fatalf("成功的 Load 挂了 %d 个子节点，want %d（每张根图一个：根图必须继承宿主 ctx）", got, loads)
-	}
-}
-
 // `skip: true` 的 seed 只把槽标成跳过，`from` 没有语义——装配期的 `seedOne`
 // 与运行期的装配都是直接 `SkipSeed` 并忽略 `from`，顶层的
-// `SeedPlan.Apply` 也一样。所以子图里 `skip: true` 带着 `env` / `file` /
+// `SeedPlan.Inputs` 也一样。所以子图里 `skip: true` 带着 `env` / `file` /
 // `context` 不该被拒；只有**要种值**的那条才必须给得出 `literal`。
 func TestLoadSubgraphSkipSeedIgnoresFrom(t *testing.T) {
 	reg := pulse.NewRegistry()
@@ -1179,10 +1021,11 @@ nodes:
 	if err != nil {
 		t.Fatalf("skip: true 的 seed 不该因为 from.kind 被拒：%v", err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatalf("Run = %v（跳过是到达，整轮该算成功）", err)
 	}
 
@@ -1250,10 +1093,11 @@ nodes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
@@ -1288,10 +1132,11 @@ func TestLoadAspectsReachEveryLayerOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	if got != "about slot contract" {
@@ -1306,3 +1151,15 @@ func TestLoadAspectsReachEveryLayerOnce(t *testing.T) {
 		t.Fatalf("图级切面被套了 %d 次，want 3（三个节点各一次；翻倍说明子图既继承又自己声明了一遍）", n)
 	}
 }
+
+// 阶段 2 删掉的两条用例（`TestLoadDoesNotRegisterCheckGraphsOnHostContext` /
+// `TestLoadFailureLeavesNothingOnHostContext`）与它们共用的 `ctxChildren` 帮手：那两条
+// 盯的可观测面是**宿主 ctx 的 children 表**——`LoadOptions.Context` 曾经被用来给根图
+// 派生 ctx（`pulse.New(ctx, …)`），于是「校验用的临时图不能挂宿主 ctx」与「失败的 Load
+// 不留东西」都得靠数那张表来证。
+//
+// 阶段 2 起 `Graph` 是**定义**、`ctx` 属于一次次运行的 `Execution`，`Load` 根本不接受
+// ctx（`LoadOptions.Context` 这个字段整个没了，编译器就挡住了）。那句纪律因此变成
+// 结构性的：`Load` 的返回值里没有任何挂了生命周期的对象，失败时 `(nil, nil, err)`，
+// 没有东西可漏。用例留着只会是空断言（永远 0），所以删掉，而不是把它改写成一句
+// 读不出信息的检查。
