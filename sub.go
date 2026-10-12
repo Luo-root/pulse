@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
-	"sync/atomic"
 )
 
 // 本文件是**静态组合**那一套：`Sub`（挂一张现成的子图）+ 接线检查 + 挂子图那一步的运行体。
@@ -26,9 +24,9 @@ import (
 // 同一批 binds 的形状判据（都在装配期报，报文点着子侧键名）：
 //
 //   - **同一条子侧进口只能绑一次**：两次种同一条槽，第二次会被幂等首写静默忽略；
-//   - **一条 `In` 绑的进口在子图里不能已经有来源**：子图自己 `Seed` / `SkipSeed` 过 →
-//     父侧这次种值被静默忽略；子图内部有节点 `Provides` 它 → 那次种值撞 `ErrDuplicateSource`。
-//     两条都是「读一遍声明就能定」的事，别等到这一步真跑起来才报（见 checkBinds）；
+//   - **一条 `In` 绑的进口，在子图里不可能已经有来源**：这个状态已经建不出来了——
+//     「一条键既是声明过的进口、又有节点产出它」在**声明那一刻**就被拒（`DeclareInput` 与
+//     `Add` 两个方向同一句判据，都撞 `ErrDuplicateSource`，见 port.go / graph.go）；
 //   - **透传**（同一条键既是入口又是出口）是合法的：`In(父, k)` + `Out(k, 父)` 两条都写，
 //     父侧喂进去的值就是子图产出的那条值。出口**不去重**——同一条出口推给两个父侧键没有
 //     静默丢值的问题（推给同一个父侧键早在 `Add` 那层就被「declares ... twice in Provides」拒了）。
@@ -59,7 +57,7 @@ import (
 //     那要等 attempt 写集（阶段 3）才有解。装配期认不出一个 `Aspect` 是不是 Retry
 //     （它是裸函数类型，闭包没有可查的标识——实测 `reflect` 的代码指针每次实例化都不同），
 //     所以由 `Retry` 自己在**进 Run 的第一件事**拒（见 aspect.go）；用户自己写的重试切面
-//     则由 `runStaticSub` 的重入判据兜住（见下面那句 `entered`）。`pulse/yaml` 对
+//     则由 `runStaticSub` 的重入判据兜住（见下面那句 `rc.attempt`）。`pulse/yaml` 对
 //     `graph:` 节点上的 `retry:` 是 `Load` 期就拒同一个形状。
 //
 // `aspects` 作用于**父侧这个节点**（例如 `pulse.Timeout(30*time.Second)` = 整张子图限时）。
@@ -89,25 +87,33 @@ func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspect
 	if err := g.checkMountCycle(child); err != nil {
 		return err
 	}
+	// 这份接线从此属于这张定义：**复制一份收下**。不复制的话，调用方之后改自己那份切片
+	// （`binds[0] = …`）就能改运行期接线——而父侧的 `Requires` / `Provides` 早按挂载那一刻
+	// 推导完了，于是跑起来的那张图与 `Topology()` / 校验看到的那张成了两张，装配锁与封口
+	// 也一起被绕开。
+	binds = append([]SubBind(nil), binds...)
+
 	// 接线只能接端口：子侧两端都要是声明过的对应方向端口。
 	requires, provides, err := subBinds(child, id, binds)
 	if err != nil {
 		return err
 	}
 
-	// 这一步的身体**只能进一次**。装配期已经拒掉 `Retry(...)`，这条是给「用户自己写的
-	// 重试切面」兜底：第二次进来会把**整棵子树再跑一遍**，而它的输出桥回父侧时，凡是第一次
-	// 已经桥过去（还没失败之前就写了）的键都会被幂等首写**静默丢掉**——父图手里就成了
-	// 「一半第一次、一半第二次」的混装，却看不出任何错；同时第一次的真正病根也被盖掉。
+	// 这一步的身体**在一次运行里只能进一次**。装配期已经拒掉 `Retry(...)`，这条是给
+	// 「用户自己写的重试切面」兜底：第二次进来会把**整棵子树再跑一遍**，而它的输出桥回父侧时，
+	// 凡是第一次已经桥过去（还没失败之前就写了）的键都会被幂等首写**静默丢掉**——父图手里
+	// 就成了「一半第一次、一半第二次」的混装，却看不出任何错；同时第一次的真正病根也被盖掉。
 	// 所以在这里点明它，并把第一次 attempt 的失败原因一起报出来。
-	var entered atomic.Bool
-	var firstMu sync.Mutex
-	var firstErr error
+	//
+	// 账记在 `rc.attempt` 上（**这一次运行**里这个节点的），不是记在这个体闭包里：闭包随
+	// **定义**只建一次、每次运行都跑它，账记在闭包里就等于把「这张定义跑过一遍」记成
+	// 「这一步跑过了」——第二遍与并发的第二份都会被误报成重入（实测过）。
 	body := func(rc *RunCtx) error {
-		if !entered.CompareAndSwap(false, true) {
-			firstMu.Lock()
-			prev := firstErr
-			firstMu.Unlock()
+		le := rc.attempt
+		le.mu.Lock()
+		if le.entered {
+			prev := le.firstErr
+			le.mu.Unlock()
 			return fmt.Errorf("pulse: Sub %q: this step was entered a second time (entry-once): "+
 				"a second attempt would run the whole child subtree again, and every output the "+
 				"first attempt had already bridged would be silently ignored (the parent slots "+
@@ -116,13 +122,15 @@ func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspect
 				"inside the child that may fail; per-attempt write sets are the next stage. "+
 				"The first attempt failed with: %v", id, prev)
 		}
+		le.entered = true
+		le.mu.Unlock()
 		err := runStaticSub(rc, id, binds, child)
 		if err != nil {
-			firstMu.Lock()
-			if firstErr == nil {
-				firstErr = err
+			le.mu.Lock()
+			if le.firstErr == nil {
+				le.firstErr = err
 			}
-			firstMu.Unlock()
+			le.mu.Unlock()
 		}
 		return err
 	}
@@ -164,20 +172,23 @@ func parentBinds(binds []SubBind) (requires, provides []keyRef) {
 }
 
 // checkBinds 检查一批绑定：零值绑定、同一条子侧进口绑两次、子侧两端是不是声明过的对应方向
-// 端口、类型对不对、这条进口在子图里是不是**已经有来源**。装配期一次判清。
+// 端口、类型对不对。装配期一次判清，`Sub` 装配时与 `Validate` / `Topology` 递归时共用同一份。
 //
 // 整批在**子图那把锁**里判完：端口表是子图的字段，而子图在装配那一刻就在宿主手里，
 // 解锁之后再查它那张表就是读一张别人能改的 map（`DeclareInput` 往同一张表里写）——
 // `-race` 实测报过一处 DATA RACE（declarePorts ↔ 这里）。所以这里持着锁调 `checkPortLocked`；
 // **持着子图锁时不许再调会自己加锁的变体**（`checkPort` 已经不在了，理由就是它）。
 //
-// 「这条进口在子图里已经有来源」现在只剩一种形状：**子图内部有节点 `Provides` 它**。
-// （旧版本还有第二种——「子图自己 `Seed` 过这条键」——那条随 `Seed` 搬家消失了：
-// 输入属于**一次运行**，不再能往定义里垫默认值。要给子图一条默认值，就在子图里放一个
-// 产出它的节点，那才是「默认值」的诚实表达：它是个产出，不是外部来源。）
+// 「这条进口在子图里已经有来源」**不在这里**，而且今天已经没有那个状态可判：「一条键既是
+// 声明过的进口、又有节点产出它」在声明那一刻就被拒（见 declarePorts / addAllLocked，两个方向
+// 同一句 `ErrDuplicateSource`）。它历史上还有另一种形状——「子图自己 `Seed` 过这条键」——
+// 那条随 `Seed` 搬进**一次运行**而消失：输入属于一次运行，不再能往定义里垫默认值。要「子图
+// 自己有一个默认值」就在子图里放一个产出它的节点（那是产出，不是外部来源）；要「这一处挂载
+// 用另一个值」就用 `Fix` / `FixSkip`。
 //
-// 留到运行期报的代价是这个父侧 `In` 的值会撞 `ErrDuplicateSource`，要等这一步真跑到
-// 才炸。所以判据放在这里（`Sub` 装配时 + `Validate` / `Topology` 递归时共用同一份）。
+// 这里剩下的都是「挂载那一刻核过、但那是当时的事实」那类：子图的端口可能在挂载之后、它自己
+// 封口之前改过（例如挂完之后又 `DeclareInput` 了一条），所以每次重新判一遍，报文与 `Sub`
+// 装配时逐字相同。
 func checkBinds(child *Graph, id string, binds []SubBind) error {
 	seenIn := make(map[string]struct{}, len(binds))
 	child.mu.Lock()
@@ -211,9 +222,12 @@ func checkBinds(child *Graph, id string, binds []SubBind) error {
 	return nil
 }
 
-// checkInletLocked 是「往子图某条进口送一个值」的三条判据（`In` 与 `Fix` / `FixSkip` 共用）：
-// 方向对（是声明过的**入口**）、这一次只喂一条、子图内部没有别的来源。调用方持 child.mu；
-// `seenIn` 由调用方跨 bind 累积（同一个挂载点上两条绑定喂同一条进口 = 第二条被静默吞掉）。
+// checkInletLocked 是「往子图某条进口送一个值」的两条判据（`In` 与 `Fix` / `FixSkip` 共用）：
+// 方向对（是声明过的**入口**）、这一次只喂一条。调用方持 child.mu；`seenIn` 由调用方跨 bind
+// 累积（同一个挂载点上两条绑定喂同一条进口 = 第二条被静默吞掉）。
+//
+// 早先这里还有第三条——「子图内部已经有节点产出它」。它已经不在这里了：那个状态在声明那一刻
+// 就被拒（见 declarePorts / addAllLocked），所以走到这里的子图一定没有那个毛病。
 func checkInletLocked(child *Graph, id string, ref keyRef, seenIn map[string]struct{}) error {
 	if err := child.checkPortRefLocked(id, ref, true); err != nil {
 		return err
@@ -223,12 +237,6 @@ func checkInletLocked(child *Graph, id string, ref keyRef, seenIn map[string]str
 			"the second value would be silently ignored (idempotent first write)", id, ref.name)
 	}
 	seenIn[ref.name] = struct{}{}
-	if src, ok := child.producer[ref.name]; ok && src.kind == sourceNode {
-		return fmt.Errorf("pulse: Sub %q: child inlet %q is provided inside the child by %s, "+
-			"so this binding cannot also feed it: the value would hit %w the first "+
-			"time this step runs. Drop the binding, or stop providing that key inside the child",
-			id, ref.name, src, ErrDuplicateSource)
-	}
 	return nil
 }
 

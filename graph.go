@@ -200,6 +200,9 @@ var assemblyMu sync.Mutex
 // 两段式：先全量校验（只读），全部通过才提交。半途失败必须什么都不留——
 // 否则失败那次 Add 的 Provides 会占住 producer，真正提供该 Key 的节点此后
 // 一直吃 ErrDuplicateSource，等它的节点则永远停在 pending。
+//
+// **一个键恰好一个来源**，而「声明过的进口」也是来源（见 DeclareInput）：`Provides` 一条
+// 已经声明成进口的键会被拒（`ErrDuplicateSource`），两个方向同一句判据。
 func (g *Graph) Add(n *Node) error {
 	if n == nil {
 		return fmt.Errorf("pulse: nil node")
@@ -270,6 +273,16 @@ func (g *Graph) addAllLocked(nodes []*Node) error {
 			seenProv[k.name] = struct{}{}
 			if err := g.keys.check(k); err != nil {
 				return err
+			}
+			// 声明过的进口也是来源——它只是不落在 producer 表里（那张表回答「谁会写这条
+			// 槽」，端口回答「这张图接受什么」，见 port.go）。所以这条键已经在端口表里时，
+			// 再让一个节点产出它就成了两个来源：外面喂进来的值会被这个节点幂等首写静默丢掉，
+			// 而 `Validate()` 照样通过——那是个**用不了的入口**。判据的另一面（先产出、后声明）
+			// 在 `declarePorts`，两条同一句话、都撞 `ErrDuplicateSource`。
+			if _, isInput := g.inPorts[k.name]; isInput {
+				return fmt.Errorf("%w: %q is a declared input of graph %q, so node %q cannot "+
+					"provide it: a value fed from outside would be silently ignored (a key has "+
+					"exactly one source)", ErrDuplicateSource, k.name, g.id, n.id)
 			}
 			claim := nodeSource(n.id)
 			if prev, ok := batchClaims[k.name]; ok && !prev.same(claim) {
@@ -411,6 +424,24 @@ func (g *Graph) declaredCapacity() int {
 		return 0
 	}
 	return g.maxRunning
+}
+
+// effectiveCapacity 按「本次运行 > 定义声明 > 父执行环境」这条**同一优先级**解析这一层的
+// 有效名额上限：自己声明过就按自己那份（`WithMaxRunning(m)` 不是「在父表之上再卡一道」，
+// 而是这一支退出父表、自己另算；`m<=0` 声明的就是「不限」），没声明才继承 `inherited`。
+//
+// 它同时服务两个时刻，两边必须是同一个数：
+//
+//   - **静态递归**（`Validate` / `Topology` / `Start` 的整树校验）：根这一层给定义声明，
+//     往下每层调用它解析——于是「整树校验看出来的上限」就是子图真跑起来会拿到的那个上限；
+//   - **建子执行**（prepareExecution）：`cfg.quotaSet` > `g.limSet` > 父执行环境，逐条相同。
+//
+// `limSet` / `maxRunning` 只由 `New` 的选项写一次、此后不变，所以这里不取图锁也安全。
+func (g *Graph) effectiveCapacity(inherited int) int {
+	if g.limSet {
+		return g.declaredCapacity()
+	}
+	return inherited
 }
 
 func isSkipped(err error) bool {

@@ -50,6 +50,12 @@ func (p Port) declared() bool { return p.ref.typ != nil }
 // 再声明一次同一条键是幂等的（同名同类型）；同名不同类型报错。**改不了定义的时机有两个**：
 // 定义封口之后（`Validate` 通过过一次）与图跑起来之后（`Start` 成功）——两者都被拒，
 // 共用 `ErrGraphStarted`，报文里分得出是哪一种（封口那句写着 sealed）。
+//
+// **一个键恰好一个来源**：这条键在图内已经有节点 `Provides` 时，声明成进口会被拒
+// （`ErrDuplicateSource`）——那样的声明只会得到一个**用不了的入口**：喂值会撞「图内已有
+// 来源」，不喂又等于白声明。反过来也拒：先声明进口，再 `Add` 一个产出它的节点，同样报
+// （见 `Add`）。想要「子图自己有一个默认值」就在子图里放一个产出它的节点（那是产出，不是
+// 外部来源）；想要「这一处挂载换个值」用挂载点的 `Fix` / `FixSkip`。
 func (g *Graph) DeclareInput(ports ...Port) error { return g.declarePorts(ports, true) }
 
 // DeclareOutput 声明「这张图对外产出这几条 Key」（出口）。
@@ -112,6 +118,18 @@ func (g *Graph) declarePorts(ports []Port, input bool) error {
 		}
 		if old, ok := (*other)[p.ref.name]; ok && old.typ != p.ref.typ {
 			return errPortType(what, p.ref, old)
+		}
+		// 一个键恰好一个来源，而**节点产出**也是来源：这条键在图内已经有人产出时，声明成
+		// 进口只会得到一个用不了的入口（喂值撞「图内已有来源」，不喂又等于白声明），所以
+		// 装配期就拒。判据的另一面（先声明、后产出）在 `addAllLocked`，两条同一句话、
+		// 都撞 `ErrDuplicateSource`。**出口**不受这条限制：同一个节点产出这条键正是出口
+		// 想要的形状。
+		if input {
+			if prev, ok := g.producer[p.ref.name]; ok && prev.present() {
+				return fmt.Errorf("pulse: %s: key %q is provided inside this graph by %s, so it "+
+					"cannot also be declared as an input: a value fed from outside would be "+
+					"silently ignored (%w)", what, p.ref.name, prev, ErrDuplicateSource)
+			}
 		}
 		batch[p.ref.name] = p.ref
 	}

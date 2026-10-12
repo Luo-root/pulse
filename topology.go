@@ -241,24 +241,25 @@ func (g *Graph) sourceOfLocked(k keyRef) source {
 func (g *Graph) Topology() *Topology {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.topologyAtLocked("", mountChain{g})
+	return g.topologyAtLocked("", mountChain{g}, g.declaredCapacity())
 }
 
 // topologyAt 是递归的**入口**：自己加锁，再交给递归体（与 problemsAt 同一形状、同一理由：
-// 父图持着自己的锁，子图那把锁由子图自己取）。
-func (g *Graph) topologyAt(at string, chain mountChain) *Topology {
+// 父图持着自己的锁，子图那把锁由子图自己取）。`capacity` 是这一层继承下来的有效名额上限。
+func (g *Graph) topologyAt(at string, chain mountChain, capacity int) *Topology {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.topologyAtLocked(at, chain)
+	return g.topologyAtLocked(at, chain, capacity)
 }
 
 // topologyAtLocked 是递归主体：`at` 是这张图**在本视图里**的位置，`chain` 是从根挂到这张图
-// 的图链。调用方持 g.mu。
+// 的图链，`capacity` 是**这一层继承下来的**有效名额上限（静态视图只有定义，所以根那一层给
+// `declaredCapacity()`，往下每层按同一条优先级解析）。调用方持 g.mu。
 //
 // 锁次序：沿**静态挂载边**往下递归，每往下一层取那一层的锁；挂载边不可能成环
 // （`Sub` 在装配期就拒，且装配那一步是全局串行的），所以不会出现「A 等 B 的锁、B 等 A 的锁」。
 // 兜底判环在 `chain` 上——真成了环就地收住，不再往下展开（见 problemsSubAtLocked）。
-func (g *Graph) topologyAtLocked(at string, chain mountChain) *Topology {
+func (g *Graph) topologyAtLocked(at string, chain mountChain, capacity int) *Topology {
 	d := g.depGraphLocked()
 	inDeg := make([]int, len(g.nodes))
 	outDeg := make([]int, len(g.nodes))
@@ -290,7 +291,7 @@ func (g *Graph) topologyAtLocked(at string, chain mountChain) *Topology {
 			// 定义自己的字段一个字都不改——路径是这次视图里现推的，从不上定义。
 			// 环那一处**就地收住**（`Sub` 之后没有了）：展开不完，报由 Problems 出。
 			if !chain.has(n.child) {
-				ns.Sub = n.child.topologyAt(joinPath(at, n.id), chain.push(n.child))
+				ns.Sub = n.child.topologyAt(joinPath(at, n.id), chain.push(n.child), n.child.effectiveCapacity(capacity))
 			}
 		}
 		t.Nodes = append(t.Nodes, ns)
@@ -304,7 +305,7 @@ func (g *Graph) topologyAtLocked(at string, chain mountChain) *Topology {
 			})
 		}
 	}
-	t.Problems = g.problemsAtLocked(at, chain, g.declaredCapacity())
+	t.Problems = g.problemsAtLocked(at, chain, capacity)
 	return t
 }
 

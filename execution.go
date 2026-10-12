@@ -41,6 +41,10 @@ type Execution struct {
 
 	slots   map[string]*slot
 	slotsMu sync.Mutex
+	// seeded 是**创建这份执行时收下的输入键名**（含 `SkipSeed` 标成跳过的那几条）。
+	// 它在创建那一刻一次写完、此后只读，`Start` 拿它按「就要封口的那张定义」再判一次
+	// 启动条件（见 checkStartInputsLocked）。
+	seeded map[string]struct{}
 
 	mu      sync.Mutex
 	started bool
@@ -60,10 +64,16 @@ type Execution struct {
 //  1. **算有效配置**：观察者 / 名额 / 图级切面按「本次运行的 `ExecOption` > 这张定义的
 //     声明 > 父执行环境」定下来。所以同一张定义被两处挂载时，两处各有各的有效值
 //     （旧版本是运行期把这些值回写进子图字段，两处会互相踩）。
+//
 //  2. **判启动条件**：这次运行的输入齐不齐——每一条**被节点 `Requires` 的进口**都要有
 //     交代（`Seed` 给了值、`SkipSeed` 标了跳过、或由子图的 `In` 绑定喂），喂了没声明过
 //     的键也报。这是**启动条件**，与 `Validate()` 那条静态判据是两份：`Validate` 问
 //     「这张定义结构上成不成立」，这里问「这一次跑得起来吗」。
+//
+//     这一判在 `Start` 那一刻**再判一次**（同一份判据、同一句报文）：从创建到启动之间
+//     定义还能长（`Add` 一条要新进口的节点就行），而 `Start` 紧接着就把那张定义封上并跑它
+//     ——「判过的定义」得是「封上并跑的那张」。缺输入的那次启动**不算启动过**（与静态校验
+//     被拒同一条线性化规则），补上输入换一份执行即可。
 //
 // 静态结构（无来源 / 有环 / 出口没人产出）仍在 `Start()` 报——那是定义的问题，
 // 不该等某一次运行才说。
@@ -121,7 +131,9 @@ func (g *Graph) newExecution(ctx context.Context, parentID, path string, parent 
 		cancel()
 		return nil, err
 	}
+	e.seeded = make(map[string]struct{}, len(entries))
 	for _, en := range entries {
+		e.seeded[en.ref.name] = struct{}{}
 		s := e.slotOf(en.ref)
 		if en.skip {
 			_ = s.resolveSkip()
@@ -183,18 +195,8 @@ func (g *Graph) prepareExecution(e *Execution, cfg execConfig, in Inputs) ([]inp
 	}
 
 	// —— 判这一次的输入 ——
-	required := make(map[string]keyRef, len(g.nodes))
-	for _, n := range g.nodes {
-		for _, k := range n.requires {
-			if src, ok := g.producer[k.name]; ok && src.kind == sourceNode {
-				continue // 内部有人产出，不需要外部喂
-			}
-			if _, ok := g.inPorts[k.name]; !ok {
-				continue // 既没人产出、也不是声明的进口：那是静态错，Start 会报
-			}
-			required[k.name] = k
-		}
-	}
+	required := g.requiredInputsLocked()
+	seeded := make(map[string]struct{}, len(in.entries))
 
 	names := make([]string, 0, len(in.entries))
 	for name := range in.entries {
@@ -225,22 +227,71 @@ func (g *Graph) prepareExecution(e *Execution, cfg execConfig, in Inputs) ([]inp
 				"declare it with DeclareInput before feeding it (an undeclared key would otherwise "+
 				"look like \"no source\" to Validate)", en.ref, g.id)
 		}
-		delete(required, name)
+		seeded[name] = struct{}{}
 		entries = append(entries, en)
 	}
 
-	if len(required) > 0 {
-		missing := make([]string, 0, len(required))
-		for name := range required {
-			missing = append(missing, name)
-		}
-		sort.Strings(missing)
-		k := required[missing[0]]
-		return nil, fmt.Errorf("pulse: input %s has no value for this run: node %s requires it, "+
-			"and it is a declared input of graph %q - supply it with Seed, mark it with SkipSeed, "+
-			"or (inside a parent graph) bind it with In", k, requiredByLocked(g, k.name), g.id)
+	if err := g.missingInputErrorLocked(required, seeded); err != nil {
+		return nil, err
 	}
 	return entries, nil
+}
+
+// requiredInputsLocked 是「这一次运行**必须交代**的进口」：被某个节点 `Requires`、图内没人
+// 产出、且声明成了进口的那些键。调用方持 g.mu。
+//
+// 判据是**这一次运行**的，不是定义的：没人 `Requires` 的进口不逼调用方编个值出来（留作公共
+// 接口是合法的）。「既没人产出、也不是声明过的进口」那种键归静态校验（`Validate` / `Start`
+// 报 nothing provides it），这里不重复。
+func (g *Graph) requiredInputsLocked() map[string]keyRef {
+	required := make(map[string]keyRef, len(g.nodes))
+	for _, n := range g.nodes {
+		for _, k := range n.requires {
+			if src, ok := g.producer[k.name]; ok && src.kind == sourceNode {
+				continue // 内部有人产出，不需要外部喂
+			}
+			if _, ok := g.inPorts[k.name]; !ok {
+				continue // 既没人产出、也不是声明的进口：那是静态错，静态校验会报
+			}
+			required[k.name] = k
+		}
+	}
+	return required
+}
+
+// missingInputErrorLocked 报「被 `Requires` 的进口还有谁没交代」。调用方持 g.mu。
+//
+// **一份报文两个入口共用**：`NewExecution`（创建那一刻）与 `Start`（封口之前再审一次，见
+// checkStartInputsLocked），所以同一份缺失在两个时刻报出来逐字相同——`supplied` 是这份执行
+// 已经收下的键名，`required` 按**当时那张定义**算。
+func (g *Graph) missingInputErrorLocked(required map[string]keyRef, supplied map[string]struct{}) error {
+	missing := make([]string, 0, len(required))
+	for name := range required {
+		if _, ok := supplied[name]; ok {
+			continue
+		}
+		missing = append(missing, name)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	k := required[missing[0]]
+	return fmt.Errorf("pulse: input %s has no value for this run: node %s requires it, "+
+		"and it is a declared input of graph %q - supply it with Seed, mark it with SkipSeed, "+
+		"or (inside a parent graph) bind it with In", k, requiredByLocked(g, k.name), g.id)
+}
+
+// checkStartInputsLocked 在**封口之前**按当前定义再判一次这份执行的启动条件（调用方持 g.mu
+// 与 assemblyMu）。
+//
+// 为什么要第二眼：这份执行的输入是**创建那一刻**按当时的定义收下的（那是早反馈），此后定义
+// 还长得进去——`Add` 一条「`Requires` 这条声明过的进口」的节点就能让这份旧执行缺一条值。判据
+// 本身与创建时完全相同（同一个 missingInputErrorLocked），只是判的时刻挪到「就要封口」的
+// 那一刻：**判过的定义 = 封上的定义 = 真正要跑的那张**，三者必须是同一个版本。少了这一眼，
+// 那个节点会等在一条永远不来的槽上，直到 ctx 到期——一句看不出病因的超时。
+func (g *Graph) checkStartInputsLocked(supplied map[string]struct{}) error {
+	return g.missingInputErrorLocked(g.requiredInputsLocked(), supplied)
 }
 
 // requiredByLocked 找出图中第一个 Requires 这条键的节点 id（报文点名用）。调用方持 g.mu。
@@ -278,7 +329,11 @@ func (e *Execution) Context() context.Context { return e.ctx }
 //   - 依赖关系**无环**。有来源不等于能满足：环里每条 `Requires` 都有生产者，
 //     但没有任何节点能先进入 `Run`（门要等全部输入到达），所有槽永远停在 pending。
 //
-// 两条都是「运行时表现为挂死」的事：有 deadline 时是一句看不出病因的超时，
+// 第三眼判的是**这份执行**而不是定义：它收下的输入里，有没有哪条被 `Requires` 的进口是空的
+// ——定义在创建之后还能长出新要求（`Add` 一条要新进口的节点）。判据与 `NewExecution` 那一刻
+// 完全同一份、报文逐字相同，判的时刻在封口**之前**（见 checkStartInputsLocked）。
+//
+// 三条都是「运行时表现为挂死」的事：有 deadline 时是一句看不出病因的超时，
 // 没有时进程会被 runtime 判为 fatal deadlock。校验不过时这次运行**仍未启动**
 // （`started` 保持 false）：补上生产者之后可以重新 `Start`；含环的图则要改装配
 // ——引擎没有 Remove，环只能靠**重新装一张图**消除。
@@ -301,6 +356,14 @@ func (e *Execution) Start() error {
 	assemblyMu.Lock()
 	g.mu.Lock()
 	if err := g.validateLocked(e.lim.capacity()); err != nil {
+		g.mu.Unlock()
+		assemblyMu.Unlock()
+		return err
+	}
+	// 启动条件再判一眼（与创建那一刻同一份判据、同一句报文）：这份执行的输入是**创建时**
+	// 按当时那张定义收下的，而从那之后定义还长得进去——这一眼之后紧接着就是封口，于是
+	// 「判过的定义」与「封上的定义」是同一个版本（见 checkStartInputsLocked）。
+	if err := g.checkStartInputsLocked(e.seeded); err != nil {
 		g.mu.Unlock()
 		assemblyMu.Unlock()
 		return err
