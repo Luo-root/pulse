@@ -212,18 +212,29 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 	// 指针的调用方能在「父图已经跑起来、子图还没轮到」之间接着改子图（实测 `Add` 与
 	// `DeclareInput` 都进得去），于是真正跑的就不是观察与拓扑看到的那张图。
 	t.Run("启动成功也封整棵子树：父图跑起来之后、子图还没轮到也改不了", func(t *testing.T) {
-		root, mid, leaf, keys := passThrough(t)
-		// 根侧那条入口由一个等信号的节点提供：子图这一步在 Start 之后不会马上跑起来，
-		// 于是「父图已启动、子图还没开始」这个窗口是确定的，不用抢时序。
+		_, mid, leaf, keys := passThrough(t)
+		// 根图这一份单独装：入口那条键由 gate 提供，而且它是一条**内部键**（不是声明的端口）
+		// ——声明过的进口不许再被节点产出（见 DeclareInput），那样就装不出「等信号」这个
+		// 确定窗口了。
+		paper := NewKey[string]("seal.root.paper")
+		rootOut := NewKey[string]("seal.root.out2")
+		root := mustNew(t, context.Background(), "seal.root2")
 		release := make(chan struct{})
-		mustAdd(t, root, NewNode("gate", "", nil, Provides(keys["seal.root.in"]),
+		mustAdd(t, root, NewNode("gate", "", nil, Provides(paper),
 			func(rc *RunCtx) error {
 				<-release
-				return Set(rc, keys["seal.root.in"], "v")
+				return Set(rc, paper, "v")
 			}))
+		if err := Sub(root, "outer", "", []SubBind{
+			In(paper, keys["seal.mid.in"]),
+			Out(keys["seal.mid.out"], rootOut),
+		}, mid); err != nil {
+			t.Fatalf("root 挂 mid = %v", err)
+		}
 		if err := startOn(root); err != nil {
 			t.Fatalf("Start = %v", err)
 		}
+		// 此刻 root 的挂载步骤还堵在 gate 上，mid / leaf 一次都没跑过——封口照样已经盖上。
 		for _, g := range []*Graph{root, mid, leaf} {
 			err := g.Add(NewNode("late", "", nil, nil, func(rc *RunCtx) error { return nil }))
 			if !errors.Is(err, ErrGraphStarted) {

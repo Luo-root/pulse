@@ -19,6 +19,9 @@ import (
 // 撞车从「喂值那一刻报」搬到「建执行那一刻报」——纪律不变：**图内已有来源时，外面喂进来
 // 的值一律被拒**（放进来的话那个节点的产出会被幂等首写静默顶掉），下游读到的仍是节点
 // 那条值。两个方向都钉住，才算把「撞名」这件事盖全。
+//
+// 这里**不**给那条键声明端口：那样装配期会先撞「声明过的进口 + 节点产出」那条判据
+// （见 TestInputPortAndProducerConflict），盖住这里要测的「图内来源 vs 外面喂值」。
 func TestSourceConflictWhenNodeIsNamedSeed(t *testing.T) {
 	k := NewKey[string]("src.clash")
 	provide := func(rc *RunCtx) error { return Set(rc, k, "from-node") }
@@ -26,7 +29,6 @@ func TestSourceConflictWhenNodeIsNamedSeed(t *testing.T) {
 	// 先 Add 后喂：建执行当场报。
 	g := mustNew(t, context.Background(), "P")
 	mustAdd(t, g, NewNode("seed", "", nil, Provides(k), provide))
-	declareIn(t, g, NewPort(k))
 	if err := seedOn(g, k, "host"); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +57,6 @@ func TestSourceConflictWhenNodeIsNamedSeed(t *testing.T) {
 	// ——这一侧旧实现是**静默通过**的（来源表里存的是 `"seed"`，节点 id 恰好也叫
 	// `"seed"`，相等那一支放行）。
 	g2 := mustNew(t, context.Background(), "P2")
-	declareIn(t, g2, NewPort(k))
 	if err := seedOn(g2, k, "host"); err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +134,8 @@ func TestNodeNamedSeedDoesNotFakeCycle(t *testing.T) {
 // `node %q` 统一格式（不是裸 id，也不是给 `seed` 这个哨兵名字开小灶），所以节点叫
 // `seed`、叫 `none`、id 本身长成 `node "seed"` 的都分得开（见
 // TestSourceNameDistinguishesKinds）。两个方向（先 Add 后喂 / 先喂后 Add）走同一条报文。
+//
+// 同样**不**声明端口：声明了的话装配期先撞「进口 vs 产出」那条，这条文案就测不到了。
 func TestSourceConflictText(t *testing.T) {
 	const wantTmpl = `pulse: input src.txt.confl:string: this key is provided by node %q inside ` +
 		`graph "P", so a value fed from outside would be silently ignored (a key has exactly one source)`
@@ -144,7 +147,6 @@ func TestSourceConflictText(t *testing.T) {
 			// 先 Add 后喂。
 			g := mustNew(t, context.Background(), "P")
 			mustAdd(t, g, NewNode(nodeID, "", nil, Provides(k), provide))
-			declareIn(t, g, NewPort(k))
 			if err := seedOn(g, k, "v"); err != nil {
 				t.Fatal(err)
 			}
@@ -158,7 +160,6 @@ func TestSourceConflictText(t *testing.T) {
 
 			// 先喂后 Add：同一条报文（撞车在建执行那一刻判，不在 Add 那一刻）。
 			g2 := mustNew(t, context.Background(), "P")
-			declareIn(t, g2, NewPort(k))
 			if err := seedOn(g2, k, "v"); err != nil {
 				t.Fatal(err)
 			}

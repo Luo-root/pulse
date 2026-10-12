@@ -321,3 +321,65 @@ func TestDeclareOutputNeedsProducer(t *testing.T) {
 		}
 	})
 }
+
+// TestInputPortAndProducerConflict 一个键恰好一个来源，而**声明过的进口也是来源**——它只是
+// 不落在 producer 表里（那张表回答「谁会写这条槽」，端口回答「这张图接受什么」）。
+//
+// 于是「这条键既有节点产出、又声明成进口」这个状态，两个动作谁先谁后都该在装配期被拒：
+// 它过得了 `Validate`，却是一个**用不了的入口**——喂值会撞「图内已有来源」，不喂又等于白声明。
+// 判据只写一份（两个方向同一句话的两个面），都撞 `ErrDuplicateSource`。
+func TestInputPortAndProducerConflict(t *testing.T) {
+	ctx := context.Background()
+	k := NewKey[string]("ds.k")
+
+	t.Run("先声明进口，再 Add 产出它的节点", func(t *testing.T) {
+		g := mustNew(t, ctx, "ds1")
+		declareIn(t, g, NewPort(k))
+		err := g.Add(NewNode("prod", "", nil, Provides(k), func(rc *RunCtx) error { return Set(rc, k, "v") }))
+		if err == nil {
+			t.Fatal("Add 该拒：这条键已经是声明过的进口")
+		}
+		if !errors.Is(err, ErrDuplicateSource) {
+			t.Fatalf("Add = %v，want 撞来源冲突（%s）", err, ErrDuplicateSource)
+		}
+		for _, want := range []string{k.Name(), `declared input`, `"ds1"`, `"prod"`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("报文该含 %q，got %v", want, err)
+			}
+		}
+		// all-or-nothing：被拒的那一批什么都不留。
+		if err := g.Add(NewNode("other", "", nil, Provides(NewKey[string]("ds1.other")), func(rc *RunCtx) error { return nil })); err != nil {
+			t.Fatalf("失败的 Add 在图里留下了痕迹：%v", err)
+		}
+	})
+
+	t.Run("先 Add，再声明进口", func(t *testing.T) {
+		g := mustNew(t, ctx, "ds2")
+		mustAdd(t, g, NewNode("prod", "", nil, Provides(k), func(rc *RunCtx) error { return Set(rc, k, "v") }))
+		err := g.DeclareInput(NewPort(k))
+		if err == nil {
+			t.Fatal("DeclareInput 该拒：这条键在图内已经有来源")
+		}
+		if !errors.Is(err, ErrDuplicateSource) {
+			t.Fatalf("DeclareInput = %v，want 撞来源冲突（%s）", err, ErrDuplicateSource)
+		}
+		for _, want := range []string{k.Name(), `provided inside this graph`, `"prod"`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("报文该含 %q，got %v", want, err)
+			}
+		}
+		// 失败的声明不留痕：端口表里没有它，图照样跑得通（产出还是节点那一份）。
+		if _, ok := g.inPorts[k.name]; ok {
+			t.Fatal("失败的 DeclareInput 把端口写进了表")
+		}
+		if err := g.Run(ctx, Inputs{}); err != nil {
+			t.Fatalf("被拒的那次声明该什么都没留下：%v", err)
+		}
+	})
+
+	t.Run("同一条键**只是**重复声明成进口照旧幂等", func(t *testing.T) {
+		g := mustNew(t, ctx, "ds3")
+		declareIn(t, g, NewPort(k))
+		declareIn(t, g, NewPort(k))
+	})
+}

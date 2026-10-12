@@ -428,12 +428,14 @@ func TestSelfEdgeRejected(t *testing.T) {
 // 所以判据从「`Seed` 报错」搬到「建执行报错」——两个方向都钉住：先 `Add` 后喂，
 // 建执行当场报；先喂后 `Add`，装上装得进（定义里本来就没有「外面喂过」这件事），
 // 但拿那份输入去跑仍然报。判据一条没少，只是换了时刻。
+//
+// 这里**不**声明端口：那条键要是也声明成进口，装配期就先把「声明过的进口 + 节点产出」
+// 拒掉了（见 TestInputPortAndProducerConflict）——那是另一条判据，会盖住要测的这条。
 func TestSeedAndNodeProviderConflict(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
 	mustAdd(t, g, NewNode("load", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Set(rc, kA, "from-node")
 	}))
-	declareIn(t, g, NewPort(kA))
 	if err := seedOn(g, kA, "in"); err != nil {
 		t.Fatal(err)
 	}
@@ -441,9 +443,8 @@ func TestSeedAndNodeProviderConflict(t *testing.T) {
 		t.Fatal("图内已有来源，外面喂进来的值必须被拒，而不是静默忽略")
 	}
 
-	// 反过来：先喂后装。
+	// 反过来：先喂后装。喂值不占来源（`Seed` 不碰定义），所以装得进；但拿那份输入去跑仍然报。
 	g2 := mustNew(t, context.Background(), "test")
-	declareIn(t, g2, NewPort(kA))
 	if err := seedOn(g2, kA, "in"); err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +464,6 @@ func TestSkipSeedAndNodeProviderConflict(t *testing.T) {
 	mustAdd(t, g, NewNode("load", "", nil, Provides(kA), func(rc *RunCtx) error {
 		return Set(rc, kA, "from-node")
 	}))
-	declareIn(t, g, NewPort(kA))
 	if err := skipSeedOn(g, kA); err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,6 @@ func TestSkipSeedAndNodeProviderConflict(t *testing.T) {
 	}
 
 	g2 := mustNew(t, context.Background(), "test")
-	declareIn(t, g2, NewPort(kA))
 	if err := skipSeedOn(g2, kA); err != nil {
 		t.Fatal(err)
 	}
@@ -1363,5 +1362,49 @@ func inspect(g *Graph) *RunCtx {
 func TestGraphIDRequired(t *testing.T) {
 	if _, err := New("", ""); err == nil {
 		t.Fatal("empty graph id must be rejected")
+	}
+}
+
+// TestNewNodeCopiesDeclarations 节点的声明一旦交进 `NewNode`，调用方手里那份切片就不该再能
+// 改动它：`Add` 已经把依赖形状（来源表、`Requires` / `Provides`）登记进图，之后再改底层数组
+// 等于绕过装配锁与封口去改定义——跑起来的图与校验 / 拓扑看到的图成了两张。
+func TestNewNodeCopiesDeclarations(t *testing.T) {
+	a := NewKey[string]("nc.a")
+	b := NewKey[string]("nc.b")
+	out := NewKey[string]("nc.out")
+	hijack := NewKey[string]("nc.hijack")
+	req := Requires(a)
+	prov := Provides(out)
+	aspects := []Aspect{func(rc *RunCtx, next func(*RunCtx) error) error { return next(rc) }}
+
+	g := mustNew(t, context.Background(), "nc")
+	declareIn(t, g, NewPort(a))
+	mustAdd(t, g, NewNode("n", "", req, prov, func(rc *RunCtx) error {
+		v, err := Get(rc, a)
+		if err != nil {
+			return err
+		}
+		return Set(rc, out, v)
+	}, aspects...))
+
+	// 调用方改那三份切片：图里那条声明不该跟着变。
+	req[0] = Requires(b)[0]
+	prov[0] = Provides(hijack)[0]
+	aspects[0] = func(rc *RunCtx, next func(*RunCtx) error) error { return errors.New("hijacked") }
+
+	top := g.Topology()
+	if got := top.Nodes[0].Requires[0].Name; got != a.Name() {
+		t.Fatalf("Requires = %q, want %q：NewNode 该复制声明", got, a.Name())
+	}
+	if got := top.Nodes[0].Provides[0].Name; got != out.Name() {
+		t.Fatalf("Provides = %q, want %q：NewNode 该复制声明", got, out.Name())
+	}
+	// 行为判据：依赖还是 a 那条值、切面也没被换掉。
+	var in Inputs
+	if err := Seed(&in, a, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(context.Background(), in); err != nil {
+		t.Fatalf("跑 = %v，want nil：声明被调用方那份切片改掉了", err)
 	}
 }

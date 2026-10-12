@@ -938,7 +938,15 @@ func TestSubRejectsDoubleFedInlet(t *testing.T) {
 //
 // （旧版本这一条用的是「`Sub` 之后才 `Seed` 子图那条键」；`Seed` 不再碰定义之后，
 // 能改变「子图内部有没有来源」的只剩 `Add` 这一个入口。）
-func TestValidateCatchesLateChildProvider(t *testing.T) {
+// 挂上之后再让子图内部长出「产出那条进口」的节点：这一次 `Add` 本身就被拒——子图的进口面
+// （`DeclareInput`）与产出面（节点的 `Provides`）互斥，那条键已经有来源了。
+//
+// 这条以前守的是「父图 `Validate` 能抓到挂载之后子图才变的情况」（`problemsSubAtLocked`
+// 把接线重新核一遍）：那个形状现在建不出来，判据提前到了声明那一刻（见
+// `TestInputPortAndProducerConflict`）。父侧那遍重核仍在（子图的端口在挂载之后、它自己封口
+// 之前还能改），但它今天已经没有可构造的失败形状了——**这一段没有变异对照**，如实记在这里，
+// 不当作已覆盖。
+func TestLateChildProviderIsRejectedAtAssembly(t *testing.T) {
 	in := NewKey[string]("s.vs.in")
 	cin := NewKey[string]("s.vs.cin")
 	cout := NewKey[string]("s.vs.cout")
@@ -967,22 +975,31 @@ func TestValidateCatchesLateChildProvider(t *testing.T) {
 	if err := seedOn(g, in, "父侧的值"); err != nil {
 		t.Fatal(err)
 	}
-	// 挂上之后再让子图内部长出「产出那条进口」的节点——`Sub` 那一刻看不见它。
-	mustAdd(t, child, NewNode("prod", "", nil, Provides(cin), func(rc *RunCtx) error {
+	// 挂上之后再让子图内部长出「产出那条进口」的节点——`Sub` 那一刻看不见它，但 `Add` 看得见
+	// 那条进口声明：当场拒。
+	err := child.Add(NewNode("prod", "", nil, Provides(cin), func(rc *RunCtx) error {
 		return Set(rc, cin, "子图自己的默认值")
 	}))
-	err := g.Validate()
-	if err == nil || !strings.Contains(err.Error(), `is provided inside the child by node "prod"`) {
-		t.Fatalf("Validate = %v，want 装配期判据（子图内部有人产出它），不该拖到运行期", err)
+	if err == nil {
+		t.Fatal("子图内部长出「产出已声明进口」的节点：装配期就该拒")
 	}
 	if !errors.Is(err, ErrDuplicateSource) {
-		t.Fatalf("Validate = %v，want 那句点明撞的是来源冲突（%s）", err, ErrDuplicateSource)
+		t.Fatalf("Add = %v，want 撞来源冲突（%s）", err, ErrDuplicateSource)
 	}
-	// 同一份判据在静态毛病清单里也看得见（`problemsSubAtLocked` → `checkBinds`，判据同源）。
-	probs := g.Topology().Problems
-	if len(probs) == 0 || !strings.Contains(probs[0].Error(), cin.Name()) ||
-		!strings.Contains(probs[0].Error(), "provided inside the child") {
-		t.Fatalf("Topology().Problems = %v，want 点到 %s 的那条", probs, cin.Name())
+	for _, want := range []string{cin.Name(), `"P/step"`, `"prod"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("报文该含 %q，got %v", want, err)
+		}
+	}
+	// 失败的那次 Add 不留痕：整棵树照旧校验通过、跑得通，父侧那条值照旧桥回。
+	if err := g.Validate(); err != nil {
+		t.Fatalf("失败的 Add 写脏了定义：%v", err)
+	}
+	if err := runOn(g); err != nil {
+		t.Fatalf("跑：%v", err)
+	}
+	if st, v := slotOn(g, out.asRef()); st != slotReady || v != "父侧的值" {
+		t.Fatalf("out = (%v, %v)，want (ready, 父侧的值)", st, v)
 	}
 }
 
@@ -995,7 +1012,7 @@ func TestValidateCatchesLateChildProvider(t *testing.T) {
 //     子树**封口（含挂着的子图），所以「跑起来之后子图又长出新的来源」也进不来。
 //
 // 判据一条没少，只是全落在装配期：见 TestSubRejectsDoubleFedInlet 与
-// TestValidateCatchesLateChildProvider。
+// TestLateChildProviderIsRejectedAtAssembly。
 
 // deepNest 造「图套图套图」的静态链：自底向上装配，每层把下一层的图挂成一步，
 // 最深一层挂叶子节点。每层的 path 与图 id 由 `Topology()` 按挂载位置推导——

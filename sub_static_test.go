@@ -391,16 +391,22 @@ func TestSubPassThroughPort(t *testing.T) {
 	})
 }
 
-// 同一条进口在**子图内部**有来源（某个节点 `Provides` 它）：父侧那次 `In` 种值会撞
-// `ErrDuplicateSource`（一条键恰好一个来源）。与上一条同族——都是「父侧的 `In` 不可能
-// 生效」，也都能在装配期读一遍声明就定掉，别留到这一步真跑起来。
+// 同一条进口在**子图内部**有来源：父侧那次 `In` 不可能生效（一条键恰好一个来源），
+// 装配期就拒。
+//
+// 这里守的是那个形状的**剩下那一半**：子图内部自己产出这条键、却**没有**声明成端口——
+// 报文点明「它不是这张图的输入端口」（子图内部那条键是实现细节，要对外就用 `DeclareOutput`
+// 说出来）。
+//
+// 旧版本这条用例测的是另一半（子图声明了进口、内部又有节点产出它，于是挂载点报
+// `is provided inside the child by node "prod"`）：那半句随判据**提前**消失——那个状态现在
+// 根本建不出来，「一条键既是声明过的进口、又有节点产出它」在声明那一刻就撞 `ErrDuplicateSource`
+// （`DeclareInput` 与 `Add` 两个方向同一句话，见 port.go / graph.go 的 addAllLocked，
+// 用例 `TestInputPortAndProducerConflict`）。判据一条没少，只是更早。
 func TestSubRejectsInletProvidedInside(t *testing.T) {
 	ctx := context.Background()
 	k := NewKey[string]("pin.child.k")
 	child := mustNew(t, ctx, "pin.child")
-	if err := child.DeclareInput(NewPort(k)); err != nil {
-		t.Fatal(err)
-	}
 	mustAdd(t, child, NewNode("prod", "", nil, Provides(k), func(rc *RunCtx) error {
 		return Set(rc, k, "inside")
 	}))
@@ -411,11 +417,12 @@ func TestSubRejectsInletProvidedInside(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := Sub(root, "step", "", []SubBind{In(in, k)}, child)
-	if err == nil || !strings.Contains(err.Error(), "is provided inside the child by node \"prod\"") {
-		t.Fatalf("Sub = %v，want 装配期就报「子图内部有人产出它」并点到那个节点", err)
+	if err == nil || !strings.Contains(err.Error(), "is not a input port of the child graph") {
+		t.Fatalf("Sub = %v，want 装配期就报「它不是子图的输入端口」", err)
 	}
-	if !strings.Contains(err.Error(), "already has a source") {
-		t.Fatalf("报文该点明撞的是来源冲突（%s），got %v", ErrDuplicateSource, err)
+	// 补上那张声明也不行：这条键已经有来源（子图里那个节点），声明进口当场撞来源冲突。
+	if err := child.DeclareInput(NewPort(k)); !errors.Is(err, ErrDuplicateSource) {
+		t.Fatalf("DeclareInput(已经被产出的键) = %v, want ErrDuplicateSource", err)
 	}
 }
 
@@ -633,5 +640,163 @@ func TestSealedChildCanBeReusedElsewhere(t *testing.T) {
 		}
 	default:
 		t.Fatal("父侧那条出口没到达：封口过的子图在别处没跑起来")
+	}
+}
+
+// quotaStreamChild 造一张「体内有一条流」的子图：`Produce → Tee → sink` 三个节点必须
+// **同时活着**（生产端 / 复制端堵在发送上、消费端堵在读上），所以它需要 3 个名额。
+// 出口 `total` 是消费端算出来的和——用它把「这条流真的跑完了」变成可断言的证据。
+func quotaStreamChild(t *testing.T, ctx context.Context, id string, opts ...Option) (*Graph, Key[int]) {
+	t.Helper()
+	total := NewKey[int](id + ".total")
+	items := NewKey[<-chan int](id + ".items")
+	branch := NewKey[<-chan int](id + ".branch")
+	g := mustNew(t, ctx, id, opts...)
+	declareOut(t, g, NewPort(total))
+	if err := Produce(g, "gen", items, func(rc *RunCtx, send func(int) error) error {
+		for i := 0; i < 3; i++ {
+			if err := send(i); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Tee(g, "tee", items, []Key[<-chan int]{branch}); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, g, NewNode("sink", "", Requires(branch), Provides(total), func(rc *RunCtx) error {
+		ch, err := Get(rc, branch)
+		if err != nil {
+			return err
+		}
+		sum := 0
+		for v := range ch {
+			sum += v
+		}
+		return Set(rc, total, sum)
+	}))
+	return g, total
+}
+
+// TestSubInheritsEffectiveQuota 递归静态校验要按**每一层的有效名额**判流式：没声明的层
+// 继承父执行环境那一份，声明过的层按自己那份（`WithMaxRunning(m)` 不是「在父表之上再卡一道」，
+// 而是这一支退出父表、自己另算）。
+//
+// 判据必须与运行期**同一个数**：子执行的限额正是在建子执行时按同一条优先级算出来的，
+// 所以整树校验看出来的那个上限，就是它真跑起来会拿到的那个上限。少了这一层传递，
+// 子图会被按「不限」判（0 = 不限），毛病要等子图自己的 `Start` 才报——那时父图别的节点
+// 可能已经跑完并留下副作用了。
+func TestSubInheritsEffectiveQuota(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("父图声明 2、子图没声明 → 整树校验就该拒这条要 3 个名额的流", func(t *testing.T) {
+		child, cout := quotaStreamChild(t, ctx, "q1.child")
+		pout := NewKey[int]("q1.out")
+		parent := mustNew(t, ctx, "q1.parent", WithMaxRunning(2))
+		if err := Sub(parent, "step", "", []SubBind{Out(cout, pout)}, child); err != nil {
+			t.Fatal(err)
+		}
+		err := parent.Validate()
+		if err == nil {
+			t.Fatal("子图没声明限额，就该按继承来的 2 判：整树校验该拒")
+		}
+		for _, want := range []string{"needs 3 slots", "WithMaxRunning(2)", "q1.child", `mounted at "step"`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("报文该含 %q，got %v", want, err)
+			}
+		}
+		// 同一个数也在启动那一刻用（放行 = 提交节点之前就该拒）。
+		if err := parent.Run(ctx, Inputs{}); err == nil {
+			t.Fatal("Start 也该拒")
+		}
+	})
+
+	t.Run("子图自己声明 4 → 覆盖继承来的 2，校验与运行都过", func(t *testing.T) {
+		child, cout := quotaStreamChild(t, ctx, "q2.child", WithMaxRunning(4))
+		pout := NewKey[int]("q2.out")
+		parent := mustNew(t, ctx, "q2.parent", WithMaxRunning(2))
+		if err := Sub(parent, "step", "", []SubBind{Out(cout, pout)}, child); err != nil {
+			t.Fatal(err)
+		}
+		if err := parent.Validate(); err != nil {
+			t.Fatalf("这一支退出父表、自己按 4 算：%v", err)
+		}
+		var in Inputs
+		if err := parent.Run(ctx, in); err != nil {
+			t.Fatalf("跑：%v", err)
+		}
+	})
+
+	t.Run("谁都没声明，只有这一次运行给 2 → Validate 过（它只读定义），Start 拒", func(t *testing.T) {
+		child, cout := quotaStreamChild(t, ctx, "q3.child")
+		pout := NewKey[int]("q3.out")
+		parent := mustNew(t, ctx, "q3.parent")
+		if err := Sub(parent, "step", "", []SubBind{Out(cout, pout)}, child); err != nil {
+			t.Fatal(err)
+		}
+		if err := parent.Validate(); err != nil {
+			t.Fatalf("定义谁都没声明限额，Validate 只读定义、不该拒：%v", err)
+		}
+		err := parent.Run(ctx, Inputs{}, WithExecMaxRunning(2))
+		if err == nil || !strings.Contains(err.Error(), "needs 3 slots") {
+			t.Fatalf("Start 该按这一次运行的有效名额拒，got %v", err)
+		}
+	})
+}
+
+// TestSubCopiesItsBinds 挂载时**复制**接线：那份切片一旦交进 `Sub`，调用方之后改它就不该
+// 再影响这张定义。
+//
+// 不复制的话，运行期接线能在装配锁与封口之外被改掉——而父侧的 `Requires` / `Provides` 早在
+// 挂载那一刻按原样推导完了：跑起来的那张图与 `Topology()` / 校验看到的那张图成了两张。
+func TestSubCopiesItsBinds(t *testing.T) {
+	ctx := context.Background()
+	cin := NewKey[string]("cb.cin")
+	cout := NewKey[string]("cb.cout")
+	in := NewKey[string]("cb.in")
+	other := NewKey[string]("cb.other")
+	out := NewKey[string]("cb.out")
+
+	child := mustNew(t, ctx, "cb.child")
+	declareIn(t, child, NewPort(cin))
+	declareOut(t, child, NewPort(cout))
+	mustAdd(t, child, NewNode("inner", "", Requires(cin), Provides(cout), func(rc *RunCtx) error {
+		v, err := Get(rc, cin)
+		if err != nil {
+			return err
+		}
+		return Set(rc, cout, "child("+v+")")
+	}))
+
+	parent := mustNew(t, ctx, "cb.parent")
+	declareIn(t, parent, NewPort(in), NewPort(other))
+	binds := []SubBind{In(in, cin), Out(cout, out)}
+	if err := Sub(parent, "step", "", binds, child); err != nil {
+		t.Fatal(err)
+	}
+	// 调用方手里那份切片改了：挂载那一刻的事实不该跟着变。
+	binds[0] = In(other, cin)
+
+	var inputs Inputs
+	if err := Seed(&inputs, in, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Seed(&inputs, other, "y"); err != nil {
+		t.Fatal(err)
+	}
+	e, err := parent.NewExecution(ctx, inputs)
+	if err != nil {
+		t.Fatalf("NewExecution: %v", err)
+	}
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := e.Wait(); err != nil {
+		t.Fatalf("运行 = %v，want nil：跑的是挂载那一刻的接线", err)
+	}
+	if st, got := e.slotOf(out.asRef()).snapshot(); st != slotReady || got != "child(x)" {
+		t.Fatalf("out = (%v, %v), want (ready, child(x))", st, got)
 	}
 }

@@ -458,3 +458,152 @@ func TestSitePathMatchesTopology(t *testing.T) {
 		}
 	}
 }
+
+// TestSubStepRunsInEveryExecution 挂子图那一步的「只进一次」管的是**这一次运行**，
+// 不是「这张定义跑过没有」。
+//
+// 判据是两次都拿到各自正确的结果：顺序两遍、并发四份。旧形状把 `entered` / `firstErr`
+// 捕获在静态 Node 的体闭包里——那份闭包随定义建一次、每次都跑它，于是「这张定义跑过
+// 一遍」被记成了「这一步跑过了」：第二遍与并发的第二份都会被误报成重入（而它本来正是
+// 要挡住「一次运行里第二次进入这一步」）。
+func TestSubStepRunsInEveryExecution(t *testing.T) {
+	ctx := context.Background()
+	cin := NewKey[string]("se.cin")
+	cout := NewKey[string]("se.cout")
+	in := NewKey[string]("se.in")
+	out := NewKey[string]("se.out")
+
+	child := mustNew(t, ctx, "se.child")
+	declareIn(t, child, NewPort(cin))
+	declareOut(t, child, NewPort(cout))
+	mustAdd(t, child, NewNode("inner", "", Requires(cin), Provides(cout), func(rc *RunCtx) error {
+		v, err := Get(rc, cin)
+		if err != nil {
+			return err
+		}
+		return Set(rc, cout, v+"|child")
+	}))
+
+	g := mustNew(t, ctx, "se.parent")
+	declareIn(t, g, NewPort(in))
+	if err := Sub(g, "step", "", []SubBind{In(in, cin), Out(cout, out)}, child); err != nil {
+		t.Fatal(err)
+	}
+
+	// 顺序两遍。
+	for i := 0; i < 2; i++ {
+		sent, want := fmt.Sprintf("v%d", i), fmt.Sprintf("v%d|child", i)
+		var inputs Inputs
+		if err := Seed(&inputs, in, sent); err != nil {
+			t.Fatal(err)
+		}
+		e, err := g.NewExecution(ctx, inputs)
+		if err != nil {
+			t.Fatalf("第 %d 轮 NewExecution: %v", i, err)
+		}
+		if err := e.Start(); err != nil {
+			t.Fatalf("第 %d 轮 Start: %v", i, err)
+		}
+		if err := e.Wait(); err != nil {
+			t.Fatalf("第 %d 轮 Wait: %v", i, err)
+		}
+		if st, got := e.slotOf(out.asRef()).snapshot(); st != slotReady || got != want {
+			t.Fatalf("第 %d 轮 out = (%v, %v), want (ready, %s)", i, st, got, want)
+		}
+	}
+
+	// 并发四份：各建各的子执行，互不干扰（`-race` 是另一半判据）。
+	const n = 4
+	errs := make([]error, n)
+	vals := make([]any, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var inputs Inputs
+			if err := Seed(&inputs, in, fmt.Sprintf("c%d", i)); err != nil {
+				errs[i] = err
+				return
+			}
+			e, err := g.NewExecution(ctx, inputs)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			if err := e.Start(); err != nil {
+				errs[i] = err
+				return
+			}
+			if err := e.Wait(); err != nil {
+				errs[i] = err
+				return
+			}
+			_, vals[i] = e.slotOf(out.asRef()).snapshot()
+		}()
+	}
+	wg.Wait()
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("并发第 %d 份：%v", i, errs[i])
+		}
+		if want := fmt.Sprintf("c%d|child", i); vals[i] != want {
+			t.Fatalf("并发第 %d 份 out = %v, want %s", i, vals[i], want)
+		}
+	}
+}
+
+// TestStartRejectsLateRequiredInput 执行建好之后、启动之前，定义又长出一个「要这条进口」的
+// 节点：那份执行手里没有这条输入，`Start` 必须拒。
+//
+// 判据与创建那一刻是同一条（「这一次运行里，被 `Requires` 的进口都要有交代」），只是判两次：
+// 创建时判一次是**早反馈**，`Start` 再判一次是因为它接着就要封口——「这次运行要用的定义」
+// 正是被它封上的那一张，两者必须是同一个版本。少了后一次，定义就能在这两刻之间长出新要求，
+// 而这份执行只会等一个永远不来的槽（等到 ctx 到期，报一句看不出病因的超时）。
+func TestStartRejectsLateRequiredInput(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	late := NewKey[string]("lr.late")
+	out := NewKey[string]("lr.out")
+	g := mustNew(t, ctx, "lr")
+	declareIn(t, g, NewPort(late))
+
+	// 声明了却没人 Requires：空输入也建得起执行（公共接口留白是合法的）。
+	e, err := g.NewExecution(ctx, Inputs{})
+	if err != nil {
+		t.Fatalf("没人读的进口不该挡住建执行：%v", err)
+	}
+
+	// 建完执行之后，定义长出「要这条进口」的节点。
+	mustAdd(t, g, NewNode("n", "", Requires(late), Provides(out), func(rc *RunCtx) error {
+		v, err := Get(rc, late)
+		if err != nil {
+			return err
+		}
+		return Set(rc, out, v)
+	}))
+
+	err = e.Start()
+	if err == nil {
+		t.Fatal("Start 该拒：这份执行没有 late 的值，跑起来只会等到 ctx 到期")
+	}
+	for _, want := range []string{"has no value for this run", late.Name(), `"n"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("报文该含 %q，got %v", want, err)
+		}
+	}
+	// 被拒的启动不算启动过（与静态校验被拒同一条线性化规则）。
+	if err := e.Wait(); !errors.Is(err, ErrGraphNotStarted) {
+		t.Fatalf("被拒之后 Wait = %v, want ErrGraphNotStarted", err)
+	}
+
+	// 一层都没封：补上输入、换一份执行照样跑得通。
+	var in Inputs
+	if err := Seed(&in, late, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(ctx, in); err != nil {
+		t.Fatalf("补上输入之后该跑得通：%v", err)
+	}
+}
