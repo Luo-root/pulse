@@ -504,6 +504,81 @@ func TestRetryDownstreamReadFindsItsRealSource(t *testing.T) {
 	}
 }
 
+// TestNodeWritesFinishBeforeTheChainReturns 「提交先整批判过、再逐条写」这条保证底下压着一个
+// 前提：**一个节点对同一条输出的写入者是它自己那条顺序的尝试链**——体、切面、子图桥回都在同一个
+// goroutine 上，所以「判过」与「写」之间插不进第三方。
+//
+// 这条用例把那个前提本身钉成可观察的：最外层切面拿到 `next` 的返回时，**这个节点已经没有在飞的
+// 写**——① 成功那次的提交已经落地（槽位是就绪，不是「稍后才到」）；② 即使 `Timeout` 到期、内层体
+// 还在睡（它不看 ctx），链也不会在体退出之前返回（提前返回会让收尾路径与还在跑的写并发碰同一批槽）。
+//
+// 引擎侧另外两半由既有用例守着，这里不重复：一条键只有一个来源（`Add` 第二次提供撞
+// `ErrDuplicateSource`，见 `port_test.go` / `yaml`），并发进入同一个体的 `next` 被拒
+// （`TestAspectConcurrentNextCalledOnce`）。谁把提交挪到后台 goroutine、或者让超时提前返回，
+// 这条就红。
+func TestNodeWritesFinishBeforeTheChainReturns(t *testing.T) {
+	t.Run("提交在链返回前落地", func(t *testing.T) {
+		out := NewKey[string]("seqw.ok.out")
+		var attempts, stateSeen atomic.Int32
+
+		// 最外层切面：`next` 返回之后立刻看槽位——提交必须已经做完（同一条栈上）。
+		probe := func(rc *RunCtx, next func(*RunCtx) error) error {
+			err := next(rc)
+			st, _ := rc.exec.slotOf(out.asRef()).snapshot()
+			stateSeen.Store(int32(st))
+			return err
+		}
+
+		g := mustNew(t, context.Background(), "seqw-ok")
+		mustAdd(t, g, NewNode("n", "", nil, Provides(out), func(rc *RunCtx) error {
+			n := attempts.Add(1)
+			if err := Set(rc, out, fmt.Sprintf("v-%d", n)); err != nil {
+				return err
+			}
+			if n == 1 {
+				return errors.New("第一次注定失败")
+			}
+			return nil
+		}, probe, Retry(2, 0)))
+
+		if err := runOn(g); err != nil {
+			t.Fatalf("第二次尝试成功，整轮该成功，got %v", err)
+		}
+		if got := attempts.Load(); got != 2 {
+			t.Fatalf("attempts = %d, want 2", got)
+		}
+		if got := slotState(stateSeen.Load()); got != slotReady {
+			t.Fatalf("链返回时槽位 = %v，want slotReady——提交必须与链在同一条栈上做完", got)
+		}
+	})
+
+	t.Run("超时也不在体退出前返回", func(t *testing.T) {
+		out := NewKey[string]("seqw.slow.out")
+		var bodyExited, exitedWhenChainReturned atomic.Bool
+
+		probe := func(rc *RunCtx, next func(*RunCtx) error) error {
+			err := next(rc)
+			exitedWhenChainReturned.Store(bodyExited.Load())
+			return err
+		}
+
+		g := mustNew(t, context.Background(), "seqw-slow")
+		mustAdd(t, g, NewNode("n", "", nil, Provides(out), func(rc *RunCtx) error {
+			defer bodyExited.Store(true) // 体不看 ctx：`Timeout` 只能等它自己结束
+			time.Sleep(80 * time.Millisecond)
+			return Set(rc, out, "late")
+		}, probe, Timeout(20*time.Millisecond)))
+
+		err := runOn(g)
+		if err == nil || !strings.Contains(err.Error(), "timeout") {
+			t.Fatalf("Run = %v，want 超时", err)
+		}
+		if !exitedWhenChainReturned.Load() {
+			t.Fatal("链在节点体退出之前就返回了：收尾路径会与还在跑的写并发碰同一批槽")
+		}
+	})
+}
+
 // TestRetryCrossAttemptReadWaitsForItsOwnSource 跨尝试读**不回**上一次被丢弃的写。
 //
 // 这是**有意保留**的语义（不是缺陷）：那条键在这一次尝试里从来没有过值，读它就是等一个没人会写
