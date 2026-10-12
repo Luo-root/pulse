@@ -822,8 +822,9 @@ func TestSubDeclaredLimitOverridesInheritance(t *testing.T) {
 	}
 }
 
-// 子图在装配期自己种了某条**被绑定**的键 → 父侧传进来的值会被幂等首写静默
-// 忽略（「值不见了」而没有报错），所以这里当场吵出来。
+// 子图在装配期自己种了某条**被绑定**的键 → 父侧 `In` 传进来的值会被幂等首写静默
+// 忽略（「值不见了」而没有报错）。这是**读一遍声明就能定**的事，所以装配期就吵出来，
+// 三个入口判据同源：`Sub`、`Validate`、`Topology().Problems`（共用 checkBinds）。
 func TestSubRejectsChildSeedingBoundKey(t *testing.T) {
 	in := NewKey[string]("s.cs.in")
 	cin := NewKey[string]("s.cs.cin")
@@ -860,15 +861,110 @@ func TestSubRejectsChildSeedingBoundKey(t *testing.T) {
 					}
 					return Set(rc, cout, v)
 				}))
-			if err := Sub(g, "step1", "", []SubBind{In(in, cin), Out(cout, out)}, child); err != nil {
-				t.Fatal(err)
-			}
-			err := g.Run()
-			if err == nil || !strings.Contains(err.Error(), "silently ignored") ||
+			binds := []SubBind{In(in, cin), Out(cout, out)}
+			err := Sub(g, "step1", "", binds, child)
+			if err == nil || !strings.Contains(err.Error(), "could never take effect") ||
 				!strings.Contains(err.Error(), cin.Name()) {
-				t.Fatalf("Run = %v，want 「父侧的值会被静默忽略」且点到 %s", err, cin.Name())
+				t.Fatalf("Sub = %v，want 装配期就报「父侧喂的值不会生效」且点到 %s", err, cin.Name())
 			}
 		})
+	}
+}
+
+// 装配期那条判据看不见的一种：`Sub` 之后才 `Seed`。`Validate` 也要判出来
+// （它的外部输入由宿主在 Load 之后种，那一步在装配期判不了，但**种过之后**同一份
+// 判据照样跑）——reviewer 要的「别把它拖到运行期」就是这一条。
+func TestValidateCatchesSeedAfterMount(t *testing.T) {
+	in := NewKey[string]("s.vs.in")
+	cin := NewKey[string]("s.vs.cin")
+	cout := NewKey[string]("s.vs.cout")
+	out := NewKey[string]("s.vs.out")
+
+	g := mustNew(t, context.Background(), "P")
+	child := mustNew(t, context.Background(), "P/step")
+	if err := child.DeclareInput(NewPort(cin)); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.DeclareOutput(NewPort(cout)); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, child, NewNode("n", "", Requires(cin), Provides(cout),
+		func(rc *RunCtx) error {
+			v, err := Get(rc, cin)
+			if err != nil {
+				return err
+			}
+			return Set(rc, cout, v)
+		}))
+	if err := Sub(g, "step", "", []SubBind{In(in, cin), Out(cout, out)}, child); err != nil {
+		t.Fatal(err)
+	}
+	if err := Seed(g, in, "父侧的值"); err != nil {
+		t.Fatal(err)
+	}
+	// 挂上之后再种子图那条键：装配那一刻还是空的，所以 Sub 放行——轮到 Validate 判。
+	if err := Seed(child, cin, "子图自己的默认值"); err != nil {
+		t.Fatal(err)
+	}
+	err := g.Validate()
+	if err == nil || !strings.Contains(err.Error(), "could never take effect") {
+		t.Fatalf("Validate = %v，want 装配期判据（「喂的值不会生效」），不该拖到运行期", err)
+	}
+	// 同一份判据在静态毛病清单里也看得见（`problemsSubAtLocked` → `checkBinds`，判据同源）。
+	probs := g.Topology().Problems
+	if len(probs) == 0 || !strings.Contains(probs[0].Error(), cin.Name()) ||
+		!strings.Contains(probs[0].Error(), "could never take effect") {
+		t.Fatalf("Topology().Problems = %v，want 点到 %s 的那条", probs, cin.Name())
+	}
+}
+
+// 运行期兜底：`Seed` 可以落在 `Start` 之后、子图真跑起来之前（它是这一轮的值，封口不拦它），
+// 那一刻装配期已经过完了——只剩 runStaticSub 那一步能拦。少了它，父侧传进去的值会被
+// 幂等首写**静默吞掉**，一句报错都没有。
+func TestSubSeedAfterStartIsCaughtAtRun(t *testing.T) {
+	in := NewKey[string]("s.late.in")
+	cin := NewKey[string]("s.late.cin")
+	cout := NewKey[string]("s.late.cout")
+	out := NewKey[string]("s.late.out")
+
+	g := mustNew(t, context.Background(), "P")
+	child := mustNew(t, context.Background(), "P/step")
+	if err := child.DeclareInput(NewPort(cin)); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.DeclareOutput(NewPort(cout)); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, child, NewNode("n", "", Requires(cin), Provides(cout),
+		func(rc *RunCtx) error {
+			v, err := Get(rc, cin)
+			if err != nil {
+				return err
+			}
+			return Set(rc, cout, v)
+		}))
+	// 父侧那条输入由一个等信号的节点提供：子图这一步在 Start 之后不会马上跑起来。
+	gate := make(chan struct{})
+	mustAdd(t, g, NewNode("gate", "", nil, Provides(in), func(rc *RunCtx) error {
+		<-gate
+		return Set(rc, in, "父侧的值")
+	}))
+	if err := Sub(g, "step", "", []SubBind{In(in, cin), Out(cout, out)}, child); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// 图已经跑起来了（父图那份定义也封口了），但子图还没轮到：Seed 是这一轮的值，
+	// 封口不该拦它——它拦的是改定义。
+	if err := Seed(child, cin, "子图自己的默认值"); err != nil {
+		t.Fatalf("Start 之后的 Seed 该被接受（那是这一轮的值，不是定义），got %v", err)
+	}
+	close(gate)
+	err := g.Wait()
+	if err == nil || !strings.Contains(err.Error(), "silently ignored") ||
+		!strings.Contains(err.Error(), cin.Name()) {
+		t.Fatalf("Wait = %v，want 运行期兜底那句（静默忽略 + 点到 %s）", err, cin.Name())
 	}
 }
 

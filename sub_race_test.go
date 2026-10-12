@@ -173,3 +173,54 @@ func TestSubChildAssemblyVsParentReadOnly(t *testing.T) {
 		t.Fatalf("只读入口只被调了 %d 次，没盖住装配窗口", reads)
 	}
 }
+
+// checkBinds 读的是**子图**的端口表，而那张表在子图封口 / 启动之前一直受理写入
+// （`DeclareInput` / `DeclareOutput`）。所以那几次查表必须在**子图那把锁**里做完：
+// 解锁之后再去查 `g.inPorts`，就是读一张别人正在写的 map——实测 `-race` 报的正是
+// `declarePorts`（写）↔ `checkBinds`（读）这一处，且可能直接落到 runtime 的
+// concurrent map read and map write（那是 fatal，不是可恢复的 panic）。
+//
+// 读侧走 `Topology()`（它递归到 `problemsSubAtLocked` → `checkBinds`），写侧不停往
+// 子图端口表里加新端口：两条路都不建立同步，所以没加锁时竞态必然现形。
+func TestCheckBindsReadsChildPortsUnderChildLock(t *testing.T) {
+	child := mustNew(t, context.Background(), "cbr.child")
+	ck := NewKey[string]("cbr.child.k")
+	if err := child.DeclareInput(NewPort(ck)); err != nil {
+		t.Fatalf("DeclareInput = %v", err)
+	}
+	parent := mustNew(t, context.Background(), "cbr")
+	in := NewKey[string]("cbr.in")
+	if err := Sub(parent, "step", "", []SubBind{In(in, ck)}, child); err != nil {
+		t.Fatalf("Sub = %v", err)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50000; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			name := fmt.Sprintf("cbr.extra%d", i)
+			if err := child.DeclareInput(NewPort(NewKey[string](name))); err != nil {
+				return
+			}
+		}
+	}()
+
+	reads := 0
+	for i := 0; i < 5000; i++ {
+		_ = parent.Topology()
+		reads++
+	}
+	close(stop)
+	wg.Wait()
+	// 读必须真的发生过，否则这条用例是空转的
+	if reads < 100 {
+		t.Fatalf("递归校验只被调了 %d 次，没盖住写窗口", reads)
+	}
+}

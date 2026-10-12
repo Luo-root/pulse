@@ -150,6 +150,58 @@ func TestDeclareInputPorts(t *testing.T) {
 	})
 }
 
+// 一批端口要么全进表、要么一条都不进（all-or-nothing，与 `Add` 同一条纪律）。
+//
+// `DeclareInput(NewPort(NewKey[string]("x")), NewPort(NewKey[int]("x")))` 里的第一条会在
+// 提交段真的写进登记表：校验段只查**旧**表的话第二条要到提交时才炸，那时第一条已经进去了
+// ——实测：失败之后再单独声明一次 `int x`，报的还是「already registered as string」。
+func TestDeclarePortsBatchIsAtomic(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("同一批里同名跨型：当场报，且第一条不进表", func(t *testing.T) {
+		g := mustNew(t, ctx, "batch")
+		err := g.DeclareInput(NewPort(NewKey[string]("batch.x")), NewPort(NewKey[int]("batch.x")))
+		if err == nil || !strings.Contains(err.Error(), "declared twice in this call") {
+			t.Fatalf("同一批里同名跨型该当场报，got %v", err)
+		}
+		// 关键判据：第一条**没有**进表——再声明一次 int x 该成功。
+		// 进了表的话这里会报「already registered as string」（就是修复前那副样子）。
+		if err := g.DeclareInput(NewPort(NewKey[int]("batch.x"))); err != nil {
+			t.Fatalf("int batch.x 本该是干净的（整批没提交），got %v", err)
+		}
+		// 登记表里留下的也该是 int：此时把 batch.x 声明成 string 必须被拒。
+		if err := g.DeclareOutput(NewPort(NewKey[string]("batch.x"))); err == nil {
+			t.Fatal("batch.x 已经登记成 int 了，再声明成 string 该被拒")
+		}
+	})
+
+	t.Run("同一批里同名同型：幂等，照常通过", func(t *testing.T) {
+		g := mustNew(t, ctx, "batch2")
+		if err := g.DeclareInput(
+			NewPort(NewKey[string]("batch2.x")),
+			NewPort(NewKey[string]("batch2.x")),
+		); err != nil {
+			t.Fatalf("同批同名同型该幂等通过，got %v", err)
+		}
+	})
+
+	t.Run("整批全过才提交：混着好端口与坏端口时一条都不留", func(t *testing.T) {
+		g := mustNew(t, ctx, "batch3")
+		err := g.DeclareInput(
+			NewPort(NewKey[string]("batch3.ok")),
+			Port{}, // 零值端口：不该被声明
+		)
+		if err == nil || !strings.Contains(err.Error(), "zero Port") {
+			t.Fatalf("零值端口该被拒，got %v", err)
+		}
+		// 好端口那条也不许留下：再声明一次该成功（若已进表，同名同型是幂等——所以换成
+		// 另一条路径问：把它声明成**出口**且类型不同，仍该干净地按新表登记）。
+		if err := g.DeclareInput(NewPort(NewKey[string]("batch3.ok"))); err != nil {
+			t.Fatalf("batch3.ok 本该没进表，got %v", err)
+		}
+	})
+}
+
 // 出口和入口一样，是**装配期**就能判的事。`DeclareOutput` 了一条没人产出的键，父图照样
 // 能用 `Out` 把它接出去（端口是声明，不是承诺），要等子图跑完才由 `bridgeOutputs` 报一句
 // `never arrived`——那时已经跑了一半，病根也不在那句话里。

@@ -26,10 +26,15 @@ import (
 //     ——端口按那一处的接线声明，校验也按那一处各来一条（同一张图两处引用、只有一处没喂
 //     那条输入，报的就是没喂的那一处，见 #298）；
 //   - **类型在 Load 期比**：两端各按 `{name, type}` 查注册表，两端用**同一个 type 记号**，
-//     对不上就在装图期报（YAML 是运行期装配，这已是最早的时机）。
+//     对不上就在装图期报（YAML 是运行期装配，这已是最早的时机）；
+//   - **透传**：同一条子侧键同时挂在 `in:` 与 `out:` —— 与引擎「同名入口 + 出口是透传」
+//     同一条规则（见 `problemsOutputsLocked`），那条键的值来自父侧，所以不要求子图内部有人
+//     读它 / 有人产出它；但**内部有人产出它**仍要拒：那与父侧那次喂值是同一个槽的两个来源。
 //
 // 子图节点上的 `retry:` 是**装图期就拒**的（见 addSubNode）：静态挂载的子图只跑一次，
-// 第二次尝试起不来。
+// 第二次尝试起不来。Go 侧同一个形状也拒，只是时机不同——`Aspect` 是裸函数类型、闭包没有
+// 可查的身份，装配期认不出它是不是 `Retry`，所以那一边由 `Retry` 在**进 `Run` 的第一件事**
+// 当场拒（见 aspect.go）。两个入口都不静默接受。
 
 // GraphSpec 是一张可复用子图的声明：形状与顶层文档一样（`seeds` + `nodes`），
 // 但**没有**自己的 `graphs`——子图引用的是文档顶层那一张**扁平**的表（名字在
@@ -190,23 +195,27 @@ func subBinds(n NodeSpec, graphName string, child GraphSpec, reg *pulse.Registry
 	}
 
 	binds := make([]pulse.SubBind, 0, len(n.In)+len(n.Out))
+	// **透传**：同一条子侧键既挂在 `in:` 又挂在 `out:`。它是一条声明——父侧喂进去的值
+	// 就是这条出口的值（引擎的出口判据同样认它：同名入口 + 出口是透传，见
+	// problemsOutputsLocked）。所以下面两条「内部得有人读 / 有人产出」对透传不适用：
+	// 那条键的值来自父侧，不在子图内部产生。
+	passThrough := func(childKey string) bool {
+		_, ok := n.Out[childKey]
+		return ok
+	}
 	for _, childKey := range sortedMapKeys(n.In) {
-		if !required[childKey] {
+		if !required[childKey] && !passThrough(childKey) {
 			return nil, fmt.Errorf("node %q: graph %q reads %q in the binding but no node of it requires that key",
 				n.ID, graphName, childKey)
 		}
 		if provided[childKey] {
-			// 子图**自己**就有节点提供这条键：再让父侧 `in:` 喂一次，这条槽
-			// 就有了两个来源。引擎的纪律是「一条键恰好一个来源」，所以跑到
-			// 这个节点时会撞来源冲突——而这在装图期读一遍声明就能定。
-			//
-			// 除非这条键**同时**还挂在 `out:` 里：那种形状先让发动机报
-			// 「同一个子键绑了两次」——错在绑定的形状，不在来源，那句话更贴。
-			if _, both := n.Out[childKey]; !both {
-				return nil, fmt.Errorf("node %q: graph %q provides %q inside, so the binding cannot also feed it with in: — "+
-					"a key has exactly one source, and the parent's seed would hit %s the first time this step runs",
-					n.ID, graphName, childKey, pulse.ErrDuplicateSource)
-			}
+			// 子图**自己**就有节点提供这条键：再让父侧 `in:` 喂一次，这条槽就有了两个
+			// 来源。引擎的纪律是「一条键恰好一个来源」，所以跑到这个节点时会撞来源冲突
+			// ——而这在装图期读一遍声明就能定。透传也救不了它：喂进来的值与内部那次产出
+			// 是同一个槽的两个来源，照样撞（`checkBinds` 在引擎那侧判同一件事）。
+			return nil, fmt.Errorf("node %q: graph %q provides %q inside, so the binding cannot also feed it with in: — "+
+				"a key has exactly one source, and the parent's seed would hit %s the first time this step runs",
+				n.ID, graphName, childKey, pulse.ErrDuplicateSource)
 		}
 		if seeded[childKey] {
 			return nil, fmt.Errorf("node %q: graph %q seeds %q and the binding also feeds it with in: — "+
@@ -220,7 +229,7 @@ func subBinds(n NodeSpec, graphName string, child GraphSpec, reg *pulse.Registry
 		binds = append(binds, b)
 	}
 	for _, childKey := range sortedMapKeys(n.Out) {
-		if !provided[childKey] {
+		if !provided[childKey] && !passThrough(childKey) {
 			return nil, fmt.Errorf("node %q: graph %q produces %q in the binding but no node of it provides that key",
 				n.ID, graphName, childKey)
 		}
@@ -358,6 +367,9 @@ func (a *assembler) addSubNode(g *pulse.Graph, n NodeSpec, m mount, aspects []pu
 	//
 	// 为什么不留一条旧路：留着就是两套判据长期并存，而这条能力的目标形态在阶段 3 才
 	// 落地——现在拒掉，报错里直接给出今天就能用的写法。
+	//
+	// Go 侧同一个形状同样用不了，只是拒的时机不同（`Aspect` 认不出身份，判据在 `Retry`
+	// 进 `Run` 的第一件事）——两个入口一致在「都拒」，而不是一致在「都在装图期拒」。
 	if n.Retry != nil {
 		return fmt.Errorf("pulse/yaml: %snode %q: retry is not supported on a graph node yet: "+
 			"a statically mounted subgraph runs once, so a second attempt could not start it "+

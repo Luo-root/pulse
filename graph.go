@@ -47,14 +47,14 @@ type Graph struct {
 	limSet  bool
 	mu      sync.Mutex
 	started bool
-	// sealed 表示这张**定义**已经封口：`Validate()` 通过过一次。此后 `Add` /
-	// `DeclareInput` / `DeclareOutput` / 挂子图都被拒（`ErrGraphStarted` 的第二个
-	// 触发点，见 errSealed）。校验**失败**不封口——那只说明图还没装配完，
-	// 补上缺的那块再校验正是要支持的用法。
+	// sealed 表示这张**定义**已经封口：`Validate()` 通过过一次，或这张图 `Start()` 成功过。
+	// 此后 `Add` / `DeclareInput` / `DeclareOutput` / 挂子图都被拒（`ErrGraphStarted` 的第二个
+	// 触发点，见 errSealed）。校验**失败**不封口——那只说明图还没装配完，补上缺的那块再校验
+	// 正是要支持的用法。
 	//
-	// 封口是**整棵子树**的事：`Validate()` 通过时连同它挂着的子图一起封（见
-	// Validate / sealTreeLocked）——子图是这张定义的一部分，只封自己那句话就成了半句。
-	// 反过来不成立：子图自己 `Validate()` 通过只封它自己与它的子树，不回头封父图。
+	// 封口是**整棵子树**的事：`Validate()` 通过 / `Start()` 成功时连同它挂着的子图一起封
+	// （见 Validate / Start / sealTreeLocked）——子图是这张定义的一部分，只封自己那句话就成了
+	// 半句。反过来不成立：子图自己 `Validate()` 通过只封它自己与它的子树，不回头封父图。
 	sealed bool
 	// claimed 是「这张图已经被一次挂子图运行认领」。与 started 分开是因为认领必须
 	// 早于挂载对它的任何改动（挂 observer、继承名额与图级切面、种值），而 started 要到
@@ -204,6 +204,25 @@ func (g *Graph) claimSub() bool {
 	return true
 }
 
+// assemblyMu 是**装配锁**：所有「改这张图的定义」的入口（`Add` / `DeclareInput` /
+// `DeclareOutput` / `Sub`）与「判完整棵树再封口」的入口（`Validate` / `Start`）共用它。
+//
+// 两件事各自都要它，合起来才成立：
+//
+//  1. **组合环是两张图各自动作的合成结果**：A 里挂 B 与 B 里挂 A 各看各的都对，只有放在
+//     一起才成环。单看任何一张图的锁都拦不住——两个 goroutine 各自先查过「没有环」再各挂
+//     一步，环就进去了，此后递归展开是爆栈或互等锁。
+//  2. **「判完整棵树」与「封上这棵树」是两个动作**。判的每一层各自取放锁，两趟之间那些锁
+//     是空的；窗口里别人改一下子图，封住的就成了**没校验过**的那份——`Validate()` 返回 nil
+//     却封了一张跑不起来的定义，既改不了，`Start()` 又会重新报错（实测：窗口里给子图加一个
+//     「要一条没人提供的输入」的节点，`Validate()` 返回 nil，而封住的子图带 1 条毛病）。
+//     把「改定义」与「判 + 封」放进同一个临界区，封上的就一定是刚判过的那份。
+//
+// 装配是一次性动作、临界区里没有用户代码（跑图的 goroutine 在放锁之后才建），代价是零；
+// 运行期不碰它。锁序**只有一种**：先 `assemblyMu`，再图自己的锁（`g.mu` / `g.slotsMu`），
+// 从不反过来——所以它不是「另一把图锁」，而是压在所有图锁之上的一道装订线。
+var assemblyMu sync.Mutex
+
 // Add 登记节点。图启动后拒绝。
 //
 // 两段式：先全量校验（只读），全部通过才提交。半途失败必须什么都不留——
@@ -223,7 +242,18 @@ func (g *Graph) Add(n *Node) error {
 // 错误时不能留下半批节点在跑。
 //
 // Add 是它的单元素退化情形，判据与错误文案同源，所以两者行为一致。
+//
+// 两个入口分了名字：`addAll` 自己取装配锁（给包外与包内的一次性调用），`addAllLocked`
+// 假定调用方已经持着它（`Sub` 就是这样——它必须在同一个临界区里做完「查环 + 接线 + 挂上」，
+// 见 assemblyMu）。
 func (g *Graph) addAll(nodes []*Node) error {
+	assemblyMu.Lock()
+	defer assemblyMu.Unlock()
+	return g.addAllLocked(nodes)
+}
+
+// addAllLocked 是 addAll 的本体：**调用方持 assemblyMu**。
+func (g *Graph) addAllLocked(nodes []*Node) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.sealed {
@@ -393,6 +423,10 @@ func (g *Graph) Run() error {
 // （`started` 保持 false）：补上生产者 / Seed 之后可以重新 `Start`；含环的图
 // 则要改装配——引擎没有 Remove，环只能靠**重新装一张图**消除。
 //
+// **通过校验的启动会把整棵子树封口**（与 `Validate` 同一条规则，见那里）：挂着的子图
+// 也从此不改。少了这一步，持有子图指针的调用方能在父图已经跑起来、子图还没开始之间改它
+// ——`Add` / `DeclareInput` 都进得去（实测），真正跑的就不是观察与拓扑看到的那张图了。
+//
 // 通过校验后发出一次 `Observer.OnGraphStarted`——在提交**任何**节点 goroutine
 // 之前，所以它先于本轮的全部节点事件。空图也发（它的两条件同样齐）。
 //
@@ -401,19 +435,29 @@ func (g *Graph) Run() error {
 // 否则它会在节点还没提交时就从 `wg.Wait()` 返回、提前发出 finished（慢的
 // started 回调把窗口拉到几十毫秒量级，这不是理论竞态）。
 func (g *Graph) Start() error {
+	// 校验与封口在**装配锁**里做完，之后才放出去发事件、建 goroutine（临界区里不跑用户代码）：
+	// 与 Validate 同一条边界，见 assemblyMu。
+	assemblyMu.Lock()
 	g.mu.Lock()
 	if g.started {
 		g.mu.Unlock()
+		assemblyMu.Unlock()
 		return ErrGraphStarted
 	}
 	if err := g.validateLocked(); err != nil {
 		g.mu.Unlock()
+		assemblyMu.Unlock()
 		return err
 	}
+	// 通过校验地启动 = 这棵树的定义从此不再变化（**含挂着的子图**）：跑起来之后定义还在变，
+	// 观测与拓扑看到的那张图、真正在跑的那张图就成了两张。封口放在校验**之后**，所以
+	// 启动被拒的那次一层都不封——补上缺的那块重新 Start 正是要支持的用法（见 Validate）。
+	g.sealTreeLocked(mountChain{g})
 	g.started = true
 	nodes := append([]*Node(nil), g.nodes...)
 	g.wg.Add(len(nodes) + 1) // +1：started 那一发落地前，其他 goroutine 的 Wait 不该溜过去
 	g.mu.Unlock()
+	assemblyMu.Unlock()
 
 	g.notify(func(o Observer) { o.OnGraphStarted(g.id) })
 	g.wg.Done()
@@ -438,6 +482,11 @@ func (g *Graph) Start() error {
 // 用法（与 `Start` 失败后仍可 `Start` 同一条线性化规则）。所以这里是两趟：先判完整棵树，
 // 干净了再逐层封（`sealTreeLocked`）——判到一半就封的话，失败的校验会留下封口。
 //
+// **两趟之间没有窗口**：改定义的入口与这里共用装配锁 `assemblyMu`，所以第二趟（封口）
+// 拿到的树一定是第一趟判过的那一棵——不是「大概率没变」，而是「别人改不动」。少了这把锁，
+// 窗口里给子图加一个「要一条没人提供的输入」的节点，`Validate()` 会返回 nil 却把带毛病的
+// 子图封上（实测），随后既改不了、`Start()` 又重新报错。
+//
 // 封口之外它仍然是只读的：不置 `started`、不建 goroutine、不碰槽位，所以校验完照样能
 // 接着 `Seed` / `Start`——`Seed` 是**本次运行**的值，不属于定义。想「装配完立刻冻结」
 // 就调它一次，不需要另一个 `Seal()`（那与「成功即封口」职责重叠）。
@@ -447,9 +496,12 @@ func (g *Graph) Start() error {
 // 和「依赖成环」都是读一遍声明就能定的，留到运行期只会表现成挂死或一句
 // 看不出病因的超时。
 //
-// 已经启动的图直接通过：它在 `Start` 那一刻就过了同一套判据，此后 `Add` /
-// `Seed` 都不再被接受，图的内容没变过。
+// 已经启动的图直接通过：它在 `Start` 那一刻就过了同一套判据（并封了整棵树），此后
+// `Add` / `Seed` 都不再被接受，图的内容没变过。
 func (g *Graph) Validate() error {
+	// 与 Start 同一条同步边界：判 + 封在装配锁里一次做完（见 assemblyMu 与上面的说明）。
+	assemblyMu.Lock()
+	defer assemblyMu.Unlock()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err := g.validateLocked(); err != nil {
@@ -463,8 +515,8 @@ func (g *Graph) Validate() error {
 // 往下一层靠 `child.sealTree` 自己取那把锁——与校验那一趟同一个顺序（父 → 子）。
 //
 // 与校验分两趟（而不是边走边封）：校验**失败**不能留下任何封口，包括子图的。两趟之间
-// 逐层重新加锁，那一瞬若真有别的 goroutine 正在装配同一张子图，（极端情况下）封住的会是
-// 它刚变过的那份——那种子图跑不起来：`Start` 会沿子树再验一遍，验不过就不启动。
+// 逐层重新加锁，但**不存在窗口**——改定义的入口与这里共用装配锁 `assemblyMu`，那一瞬
+// 不可能有别的 goroutine 正在装配这棵树里的任何一张图（见 assemblyMu 第 2 条）。
 //
 // `chain` 上出现过的图不再重复进去（同一张子图挂多处是合法用法）；它同时兜住环——
 // 环本不该存在（见 mountChain），这里保证递归一定收敛。

@@ -5,15 +5,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
-// subMountMu 是 `Sub` 那把**全局**装配锁，包住「查一遍子树 + 真的挂上」这整段。
-//
-// 为什么必须是全局的：组合环是两张图各自动作的**合成**结果——A 里挂 B 与 B 里挂 A 各看各的
-// 都对，只有放在一起才成环。单看任何一张图的锁都拦不住（两个 goroutine 各自先查过「没有环」
-// 再各挂一步，环就进去了；此后递归展开是爆栈 / 互等锁）。装配是一次性动作、临界区里没有用户
-// 代码，代价是零；运行期不碰它。
-var subMountMu sync.Mutex
+// 本文件是**静态组合**那一套：`Sub`（挂一张现成的子图）+ 接线检查 + 挂子图那一步的运行体。
+// 装配锁 `assemblyMu` 声明在 graph.go（它同时管着 `Add` / `DeclareInput` / `Validate`）。
 
 // Sub 把一张**现成的**子图挂成 `g` 上的一个节点（「图即节点」）——这是子图组合的**唯一**
 // 公共入口。
@@ -27,25 +23,41 @@ var subMountMu sync.Mutex
 // 实现细节，不承诺」。父侧那两端由 binds 推出来（`In` 的父侧端进 Requires、`Out` 的父侧端
 // 进 Provides），所以父图自己的静态校验（来源 / 出口 / 环 / 名额）照常生效。
 //
+// 同一批 binds 的形状判据（都在装配期报，报文点着子侧键名）：
+//
+//   - **同一条子侧进口只能绑一次**：两次种同一条槽，第二次会被幂等首写静默忽略；
+//   - **一条 `In` 绑的进口在子图里不能已经有来源**：子图自己 `Seed` / `SkipSeed` 过 →
+//     父侧这次种值被静默忽略；子图内部有节点 `Provides` 它 → 那次种值撞 `ErrDuplicateSource`。
+//     两条都是「读一遍声明就能定」的事，别等到这一步真跑起来才报（见 checkBinds）；
+//   - **透传**（同一条键既是入口又是出口）是合法的：`In(父, k)` + `Out(k, 父)` 两条都写，
+//     父侧喂进去的值就是子图产出的那条值。出口**不去重**——同一条出口推给两个父侧键没有
+//     静默丢值的问题（推给同一个父侧键早在 `Add` 那层就被「declares ... twice in Provides」拒了）。
+//
 // **组合环在装配期就拒**：`Sub(A, …, B)` 之后再 `Sub(B, …, A)`（或直接自挂）会让静态递归
 // 永远展开不完，所以这里沿子图子树查一遍「父图是不是已经在它的子树里」，是就报
 // `pulse: subgraph cycle: A -> B -> A`。判据只看**当前这条路径**（见 hasAncestor）——同一张
 // 子图在**不同挂载位置**重复出现是合法的，不能用全局 visited 误拒。
 //
-// 「查一遍」与「真的挂上」在**同一个全局临界区**里（subMountMu）：对向挂载（A 里挂 B、同时
+// 「查一遍」与「真的挂上」在**同一个全局临界区**里（assemblyMu）：对向挂载（A 里挂 B、同时
 // B 里挂 A）是两张图各自动作的结果，单看任何一张图的锁都拦不住——两边都可能先看过「没有环」
 // 再各挂一步，环就进去了，此后递归展开是爆栈或互等锁。装配是一次性动作、临界区里没有用户
 // 代码，这把全局锁的代价是零。递归本身还有一道兜底判环（见 problemsSubAtLocked）。
 //
 // 运行语义与手写嵌套逐条一致（糖不改语义）：别名额（这一步不吃名额，见 WithMaxRunning）、
 // 子图失败即本节点失败且首错原样冒泡、输出按槽位桥回（就绪 → `Set`、跳过 → `Skip`，全部跳过
-// = 本节点 `NoValue()`）。两处要记住：
+// = 本节点 `NoValue()`）。三处要记住：
 //
 //  1. **一次性边界**：挂进父图的这张子图**只能跑一处**——同一张子图挂两处时，跑的那一步
 //     会报一句能照着改的话（每个挂载点各跑一份要等 `Execution` 落地，那是下一步的事）。
 //  2. **取消域**：子图那份 ctx 是它**建图时**带进来的（静态组合没有「建图时的父节点」可
 //     派生），所以这一步把父节点这一层的取消**转发**进去。不转发的话子图会跑满整段、
 //     把父图的取消吞掉——实测过：父图耗时 300ms 且报成功（见 runStaticSub 的第 4 步）。
+//  3. **`Retry` 不能装在这一步上**：静态挂载的子图只跑一次，第二次尝试起不来（还会把第一次
+//     失败的原因盖掉）。装配期认不出一个 `Aspect` 是不是 Retry（它是裸函数类型，闭包没有
+//     可查的标识——实测 `reflect` 的代码指针每次实例化都不同），所以由 `Retry` 自己在**进
+//     Run 的第一件事**拒（见 aspect.go）；用户自己写的重试切面则由 `runStaticSub` 的重入
+//     判据兜住（见下面那句 `entered`）。`pulse/yaml` 对 `graph:` 节点上的 `retry:` 是 `Load`
+//     期就拒同一个形状。
 //
 // `aspects` 作用于**父侧这个节点**（例如 `pulse.Timeout(30*time.Second)` = 整张子图限时）。
 func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspects ...Aspect) error {
@@ -67,9 +79,9 @@ func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspect
 		return fmt.Errorf("pulse: Sub %q: no binds: a step that exchanges nothing "+
 			"with its parent cannot be ordered by it either", id)
 	}
-	// 组合环那条判据是**全局**不变式：「查一遍子树」与「挂上」必须一起做完（见上面那段）。
-	subMountMu.Lock()
-	defer subMountMu.Unlock()
+	// 组合环那条判据是**全局**不变式：「查一遍子树」与「挂上」必须一起做完（见 assemblyMu）。
+	assemblyMu.Lock()
+	defer assemblyMu.Unlock()
 	// 组合环：装配期能判的，别留到递归展开时才炸（那时是栈溢出）。
 	if err := g.checkMountCycle(child); err != nil {
 		return err
@@ -80,13 +92,39 @@ func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspect
 		return err
 	}
 
-	n := NewNode(id, description, requires, provides, func(rc *RunCtx) error {
-		return runStaticSub(rc, id, binds, child)
-	}, aspects...)
+	// 这一步的身体**只能进一次**。装配期已经拒掉 `Retry(...)`，这条是给「用户自己写的
+	// 重试切面」兜底：子图跑过一次就用掉了，第二次进来只会拿到认领失败那句（把真正的
+	// 病根盖掉），所以在这里点明它，并把第一次 attempt 的失败原因一起报出来。
+	var entered atomic.Bool
+	var firstMu sync.Mutex
+	var firstErr error
+	body := func(rc *RunCtx) error {
+		if !entered.CompareAndSwap(false, true) {
+			firstMu.Lock()
+			prev := firstErr
+			firstMu.Unlock()
+			return fmt.Errorf("pulse: Sub %q: this step was entered a second time, but a statically "+
+				"mounted subgraph runs once: the first attempt already used the child graph, so a "+
+				"second attempt cannot start it (this is what a retry on a graph step would do — "+
+				"move the retry onto the node inside the child that may fail, or mount a fresh child "+
+				"per attempt once the execution tree is in place); the first attempt failed with: %v",
+				id, prev)
+		}
+		err := runStaticSub(rc, id, binds, child)
+		if err != nil {
+			firstMu.Lock()
+			if firstErr == nil {
+				firstErr = err
+			}
+			firstMu.Unlock()
+		}
+		return err
+	}
+	n := NewNode(id, description, requires, provides, body, aspects...)
 	n.sub = true // 这一步不吃运行名额：它整段都在等子图跑完（见 WithMaxRunning）
 	n.child = child
 	n.binds = binds
-	if err := g.Add(n); err != nil {
+	if err := g.addAllLocked([]*Node{n}); err != nil {
 		return fmt.Errorf("pulse: Sub %q: %w", id, err)
 	}
 	return nil
@@ -115,40 +153,75 @@ func parentBinds(binds []SubBind) (requires, provides []keyRef) {
 	return requires, provides
 }
 
-// checkBinds 检查一批绑定：零值绑定、子侧键被绑两次、子侧两端是不是声明过的对应方向端口、
-// 类型对不对。装配期一次判清。
+// checkBinds 检查一批绑定：零值绑定、同一条子侧进口绑两次、子侧两端是不是声明过的对应方向
+// 端口、类型对不对、这条进口在子图里是不是**已经有来源**。装配期一次判清。
+//
+// 整批在**子图那把锁**里判完：端口表与槽位都是子图的字段，而子图在装配那一刻就在宿主手里，
+// 解锁之后再查它那两张表就是读一张别人能改的 map（`DeclareInput` 往同一张表里写）——
+// `-race` 实测报过一处 DATA RACE（declarePorts ↔ 这里）。所以这里持着锁调 `checkPortLocked`
+// 与 `slotOf`；**持着子图锁时不许再调会自己加锁的变体**（`checkPort` 已经不在了，理由就是它）。
+//
+// 「这条进口在子图里已经有来源」分两种，都是「父侧这次 `In` 不会生效」，也都是读一遍声明
+// 就能定的：
+//
+//   - 子图自己 `Seed` / `SkipSeed` 过 → 幂等首写，父侧的值被**静默忽略**；
+//   - 子图内部有节点 `Provides` 它 → 那次种值撞 `ErrDuplicateSource`（一条键恰好一个来源）。
+//
+// 两条都留到运行期报的代价是不一样的：前者是静默丢值（最坏的一种），后者要等这一步真跑到
+// 才炸。所以判据放在这里（`Sub` 装配时 + `Validate` / `Topology` 递归时共用同一份），
+// `runStaticSub` 第 4 步那句是同一条判据的**运行期兜底**（`Seed` 可以在 `Start` 之后、
+// 子图跑起来之前才落进去，那时这里已经没机会再判了）。
 func checkBinds(child *Graph, id string, binds []SubBind) error {
-	seenChild := make(map[string]struct{}, len(binds))
+	seenIn := make(map[string]struct{}, len(binds))
+	child.mu.Lock()
+	defer child.mu.Unlock()
+	started := child.started
 	for i, b := range binds {
 		if b.parent.typ == nil || b.child.typ == nil {
 			return fmt.Errorf("pulse: Sub %q: bind %d is zero: build binds with In/Out", id, i)
 		}
-		if _, dup := seenChild[b.child.name]; dup {
-			return fmt.Errorf("pulse: Sub %q: child key %q is bound twice: "+
-				"the second seed would be silently ignored (idempotent first write)", id, b.child.name)
+		if b.in {
+			// 只有**进口**去重：两次种同一条槽，第二次被幂等首写静默忽略。出口不去重——
+			// 它没有这个病：同一条出口推给两个父侧键谁也不丢（同一个父侧键早被 Add 那层
+			// 的「declares ... twice in Provides」拒了）。
+			if _, dup := seenIn[b.child.name]; dup {
+				return fmt.Errorf("pulse: Sub %q: child inlet %q is bound twice: "+
+					"the second value would be silently ignored (idempotent first write)", id, b.child.name)
+			}
+			seenIn[b.child.name] = struct{}{}
 		}
-		seenChild[b.child.name] = struct{}{}
-		if err := child.checkPort(id, b); err != nil {
+		if err := child.checkPortLocked(id, b); err != nil {
 			return err
+		}
+		// 进口那条的「已经有来源」。子图**跑过**之后就不再判：那时槽位里留着的是那一次运行
+		// 的痕迹、不是装配事实（判据只对「还没跑的子图」成立，见上）。
+		if b.in && !started {
+			if src, ok := child.producer[b.child.name]; ok && src.kind == sourceNode {
+				return fmt.Errorf("pulse: Sub %q: child inlet %q is provided inside the child by %s, "+
+					"so this In binding cannot also feed it: the parent's value would hit %s the first "+
+					"time this step runs. Drop the binding, or stop providing that key inside the child",
+					id, b.child.name, src, ErrDuplicateSource)
+			}
+			if st, _ := child.slotOf(b.child).snapshot(); st != slotPending {
+				return fmt.Errorf("pulse: Sub %q: child inlet %q already carries a value before this "+
+					"step runs (it was seeded with Seed/SkipSeed), so the value the parent feeds in "+
+					"could never take effect: the first write wins, and it was not this binding. "+
+					"Seed the parent side instead, or drop the binding", id, b.child.name)
+			}
 		}
 	}
 	return nil
 }
 
-// checkPort 判一条绑定的子侧端是不是**声明过的、方向对的**端口。
+// checkPortLocked 判一条绑定的子侧端是不是**声明过的、方向对的**端口。调用方持 g.mu。
 //
 // 报文要能照着改，所以三种情形分开说：没声明成端口（点明「它不是这张图的端口」）、方向反了
 // （声明过、但你绑的是另一头）、类型不符（端口声明的类型与绑定不一致）。
-func (g *Graph) checkPort(stepID string, b SubBind) error {
-	g.mu.Lock()
-	inputs := g.inPorts
-	outputs := g.outPorts
-	g.mu.Unlock()
-
-	want, other := outputs, inputs // 方向说明见下：`in` 绑的是子图的**入口**
+func (g *Graph) checkPortLocked(stepID string, b SubBind) error {
+	want, other := g.outPorts, g.inPorts // 方向说明见下：`in` 绑的是子图的**入口**
 	direction, otherDirection := "output", "input"
 	if b.in {
-		want, other = inputs, outputs
+		want, other = g.inPorts, g.outPorts
 		direction, otherDirection = "input", "output"
 	}
 	if p, ok := want[b.child.name]; ok {
@@ -198,7 +271,7 @@ func portDeclMethod(in bool) string {
 }
 
 // checkMountCycle 是组合环的判据：把 child 挂进 g 之前，先看 g 是不是已经在 child 的子树里
-// （自挂也算）。调用方只是在装配（且持着 subMountMu），所以这里逐个图加锁读一次，不跨图持锁。
+// （自挂也算）。调用方只是在装配（且持着 assemblyMu），所以这里逐个图加锁读一次，不跨图持锁。
 func (g *Graph) checkMountCycle(child *Graph) error {
 	if g == child {
 		return fmt.Errorf("pulse: subgraph cycle: %s -> %s (a graph cannot be mounted inside itself)",
@@ -274,6 +347,10 @@ func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 
 	// 4) 种父侧输入。种之前先确认这条键还是空的：子图自己把它种上了的话（或标成了跳过），
 	//    这次种值会被幂等首写**静默忽略**——「父侧传进去的值不见了」而没有任何报错。
+	//
+	//    与 `checkBinds` 里那条装配期判据是**同一件事**（那里叫「这条进口在子图里已经有
+	//    来源」），这里只是运行期兜底：`Seed` 可以在 `Start` 之后、子图真跑起来之前才落进去，
+	//    那一刻装配期已经过完了。静态那条判据报得早、这条兜得住晚到的。
 	for i, b := range binds {
 		if !b.in {
 			continue

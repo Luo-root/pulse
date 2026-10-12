@@ -60,6 +60,12 @@ func (g *Graph) DeclareOutput(ports ...Port) error { return g.declarePorts(ports
 
 // declarePorts 是两段式：先全量校验（只读），全部通过才提交——半途失败不能在图里留下
 // 改了一半的端口表（与 `addAll` 同一条纪律：失败那次不留痕迹）。
+//
+// 「全量」也包括**同一批内部**：`DeclareInput(NewPort(NewKey[string]("x")),
+// NewPort(NewKey[int]("x")))` 的第一条会在提交段真的写进登记表，只查**旧**表的话第二条
+// 要到提交时才炸——那时第一条已经进表了，all-or-nothing 成了半句（实测：失败之后再单独
+// 声明一次 `int x`，报的还是「already registered as string」）。所以校验段带一张
+// **本批次**的 name → 声明 表。
 func (g *Graph) declarePorts(ports []Port, input bool) error {
 	if len(ports) == 0 {
 		return nil
@@ -69,16 +75,19 @@ func (g *Graph) declarePorts(ports []Port, input bool) error {
 		what = "DeclareInput"
 	}
 
+	// 改定义：与 `Validate` / `Start` 的「判 + 封」共用装配锁，见 assemblyMu。
+	assemblyMu.Lock()
+	defer assemblyMu.Unlock()
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.sealed {
-		return errSealed(what)
-	}
-	// 第二个冻结点：图**跑起来**之后同样不再接受改定义——判据与 `Add` 同源（那里也是先看
-	// sealed、再看 started）。少了这一条，端口声明就成了唯一能在运行期改定义的口子：端口是
-	// 「这张图接受 / 产出什么」的声明，运行中途改它，拓扑与观测看到的那张定义会跟着变。
+	// 两个冻结点先看**跑起来**那个：封口与启动同时成立时（`Start` 成功会顺带封整棵树），
+	// 报文该说的是「已经启动」——那是最贴近用户刚做过的动作的原因。
 	if g.started {
 		return ErrGraphStarted
+	}
+	if g.sealed {
+		return errSealed(what)
 	}
 
 	table := &g.outPorts
@@ -87,7 +96,8 @@ func (g *Graph) declarePorts(ports []Port, input bool) error {
 		table, other = &g.inPorts, &g.outPorts
 	}
 
-	// 校验段：只读。零值端口、键登记表冲突、与既有声明冲突，都在这段报完。
+	// 校验段：只读。零值端口、键登记表冲突、**本批次内同名跨型**、与既有声明冲突，都在这段报完。
+	batch := make(map[string]keyRef, len(ports))
 	for _, p := range ports {
 		if !p.declared() {
 			return fmt.Errorf("pulse: %s: zero Port{}: build ports with NewPort(k)", what)
@@ -95,12 +105,17 @@ func (g *Graph) declarePorts(ports []Port, input bool) error {
 		if err := g.keys.check(p.ref); err != nil {
 			return err
 		}
+		if old, ok := batch[p.ref.name]; ok && old.typ != p.ref.typ {
+			return fmt.Errorf("pulse: %s: key %q is declared twice in this call, as %s and as %s: "+
+				"one key has exactly one type", what, p.ref.name, typeName(old.typ), typeName(p.ref.typ))
+		}
 		if old, ok := (*table)[p.ref.name]; ok && old.typ != p.ref.typ {
 			return errPortType(what, p.ref, old)
 		}
 		if old, ok := (*other)[p.ref.name]; ok && old.typ != p.ref.typ {
 			return errPortType(what, p.ref, old)
 		}
+		batch[p.ref.name] = p.ref
 	}
 
 	// 提交段。
@@ -135,8 +150,12 @@ func typeName(t reflect.Type) string {
 // 不是「这一次运行已经启动」（那是 `Start` 的判据），而是「这张**定义**不再变化」。
 // 两者共用同一个哨兵（冻结面里七条哨兵不新增、不改名），语义分开写在各自的 godoc 与
 // 迁移说明里。
+//
+// 句子里两个触发点都点出来：`Validate()` 通过过一次，或这张图已经启动过（`Start` 成功
+// 会顺带封整棵树，见 Validate / Start）。单独看报文的人要能知道自己是踩了哪一个。
 func errSealed(what string) error {
-	return fmt.Errorf("pulse: %s: the graph definition is sealed: Validate() already passed, "+
-		"so the definition no longer changes (declare and add before the first successful "+
-		"Validate, or build a new graph) (%w)", what, ErrGraphStarted)
+	return fmt.Errorf("pulse: %s: the graph definition is sealed: Validate() already passed "+
+		"(or the graph has started, which seals the tree too), so the definition no longer "+
+		"changes (declare and add before the first successful Validate, or build a new graph) (%w)",
+		what, ErrGraphStarted)
 }

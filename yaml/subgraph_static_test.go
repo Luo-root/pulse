@@ -490,3 +490,67 @@ nodes:
 		t.Fatalf("报文要点明是哪张 spec：%v", err)
 	}
 }
+
+// 透传端口：同一条子侧键同时挂在 `in:` 与 `out:`。它与引擎「同名入口 + 出口是透传」
+// （见 problemsOutputsLocked）是同一条规则——那条键的值来自父侧，所以「内部得有人读它 /
+// 有人产出它」两条都不适用；而**内部有人产出它**仍要拒（同一个槽两个来源，见上一条用例）。
+//
+// 改之前这里装不出来：引擎按「同一个子键绑了两次」拒，而那条判据不认透传。
+func TestLoadPassThroughSubgraphPort(t *testing.T) {
+	const doc = `
+version: 1
+seeds:
+  - key: {name: pt.in, type: string}
+    from: {kind: literal, value: "hello"}
+graphs:
+  wrap:
+    nodes:
+      - id: use
+        uses: pt.use
+        requires: [{name: pt.k, type: string}]
+        provides: [{name: pt.seen, type: string}]
+nodes:
+  - id: step
+    graph: wrap
+    in:  {pt.k: pt.in}
+    out: {pt.k: pt.out}
+  - id: sink
+    uses: pt.sink
+    requires: [{name: pt.out, type: string}]
+    provides: []
+`
+	reg := pulse.NewRegistry()
+	for _, k := range []string{"pt.in", "pt.k", "pt.seen", "pt.out"} {
+		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
+	}
+	reg.MustRegister("pt.use", func(rc *pulse.RunCtx) error {
+		v, err := pulse.Get(rc, pulse.NewKey[string]("pt.k"))
+		if err != nil {
+			return err
+		}
+		return pulse.Set(rc, pulse.NewKey[string]("pt.seen"), "child("+v+")")
+	})
+	var got []string
+	reg.MustRegister("pt.sink", func(rc *pulse.RunCtx) error {
+		v, err := pulse.Get(rc, pulse.NewKey[string]("pt.out"))
+		if err != nil {
+			return err
+		}
+		got = append(got, v)
+		return nil
+	})
+
+	g, plan, err := pulseyaml.Load([]byte(doc), reg, pulseyaml.LoadOptions{GraphID: "PT"})
+	if err != nil {
+		t.Fatalf("透传该在 Load 期通过：%v", err)
+	}
+	if err := plan.Apply(g, nil); err != nil {
+		t.Fatalf("Apply = %v", err)
+	}
+	if err := g.Run(); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if len(got) != 1 || got[0] != "hello" {
+		t.Fatalf("父侧拿到 %v，want [hello]（喂进去什么就该取回什么）", got)
+	}
+}

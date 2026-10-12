@@ -377,7 +377,7 @@ nodes:
 			want: `graph "mid": node "dup": pulse: duplicate node id "dup"`,
 		},
 		{
-			name: "第 2 层的子键既 in 又 out（引擎 Sub 的装配期检查）",
+			name: "第 2 层的子键既 in 又 out，而子图内部有人产出它（同一个槽两个来源，装图期报）",
 			node: "toBoth",
 			body: `  mid:
     nodes:
@@ -396,7 +396,7 @@ nodes:
         requires: [{name: c.side, type: string}]
         provides: [{name: c.both, type: string}]
 `,
-			want: `graph "mid": pulse: Sub "toBoth": child key "c.both" is bound twice`,
+			want: `graph "mid": node "toBoth": graph "both" provides "c.both" inside`,
 		},
 		{
 			name: "第 3 层的依赖成环（引擎 Start 的静态判据）",

@@ -3,8 +3,10 @@ package pulse
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 装配期可以先问一句「这张图跑得起来吗」：Validate 跑的是 Start 那套只读判据
@@ -205,6 +207,37 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 		}
 	})
 
+	// 与上一条是**两个入口、同一条规则**：`Start()` 成功同样封整棵子树。少了它，持有子图
+	// 指针的调用方能在「父图已经跑起来、子图还没轮到」之间接着改子图（实测 `Add` 与
+	// `DeclareInput` 都进得去），于是真正跑的就不是观察与拓扑看到的那张图。
+	t.Run("启动成功也封整棵子树：父图跑起来之后、子图还没轮到也改不了", func(t *testing.T) {
+		root, mid, leaf, keys := passThrough(t)
+		// 根侧那条入口由一个等信号的节点提供：子图这一步在 Start 之后不会马上跑起来，
+		// 于是「父图已启动、子图还没开始」这个窗口是确定的，不用抢时序。
+		release := make(chan struct{})
+		mustAdd(t, root, NewNode("gate", "", nil, Provides(keys["seal.root.in"]),
+			func(rc *RunCtx) error {
+				<-release
+				return Set(rc, keys["seal.root.in"], "v")
+			}))
+		if err := root.Start(); err != nil {
+			t.Fatalf("Start = %v", err)
+		}
+		for _, g := range []*Graph{root, mid, leaf} {
+			err := g.Add(NewNode("late", "", nil, nil, func(rc *RunCtx) error { return nil }))
+			if !errors.Is(err, ErrGraphStarted) {
+				t.Fatalf("%s：父图 Start 成功该连子图一起封（此刻它还没跑），got %v", g.ID(), err)
+			}
+		}
+		if err := mid.DeclareInput(NewPort(NewKey[string]("seal.mid.late"))); !errors.Is(err, ErrGraphStarted) {
+			t.Fatalf("mid.DeclareInput after Start = %v, want ErrGraphStarted", err)
+		}
+		close(release)
+		if err := root.Wait(); err != nil {
+			t.Fatalf("封了并不妨碍跑：Wait = %v", err)
+		}
+	})
+
 	t.Run("校验失败时整棵都不封（补上缺的那块再校验正是要支持的用法）", func(t *testing.T) {
 		ghost := NewKey[string]("sealfail.ghost")
 		in := NewKey[string]("sealfail.in")
@@ -254,4 +287,80 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 			}
 		}
 	})
+}
+
+// `Validate()` 的两趟（判完整棵树 → 逐层封）必须在**同一个装配临界区**里：改定义的入口
+// （`Add` / `DeclareInput` / `DeclareOutput` / `Sub`）与这里共用 `assemblyMu`，所以判过的
+// 那棵树在封口那一刻不可能已经被改过。
+//
+// 少了这把锁会怎样（实测）：窗口里给挂着的子图加一个「要一条没人提供的输入」的节点，
+// `Validate()` 返回 nil，却把**没校验过**的那份封上了——此后既改不了（坏节点留在里面），
+// `Start()` 又重新报错。
+//
+// 判据是那条不变式：**`Validate()` 返回 nil ⇒ 刚封住的那棵树没有静态毛病**。
+// 窗口靠 C2 那段大子图撑开：第一趟走到 C2 要花掉一整个校验的时间，而 C1 的锁在这段时间里
+// 是空的，动刀几乎必然落进窗口（实测：改前第 0 轮就中；改后全部轮次干净）。
+func TestValidateSealsOnlyWhatItChecked(t *testing.T) {
+	const (
+		trials = 10
+		chain  = 3000
+		gap    = 300 * time.Microsecond
+	)
+	for trial := 0; trial < trials; trial++ {
+		// C1 是动刀的目标，C2 很大（第一趟在 C1 之后还要走很久）。
+		c1 := mustNew(t, context.Background(), fmt.Sprintf("atomic.c1.%d", trial))
+		k1 := NewKey[string](fmt.Sprintf("atomic.c1.k%d", trial))
+		if err := c1.DeclareInput(NewPort(k1)); err != nil {
+			t.Fatalf("DeclareInput = %v", err)
+		}
+
+		c2 := mustNew(t, context.Background(), fmt.Sprintf("atomic.c2.%d", trial))
+		head := NewKey[int](fmt.Sprintf("atomic.c2.k%d.0", trial))
+		if err := c2.DeclareInput(NewPort(head)); err != nil {
+			t.Fatalf("DeclareInput = %v", err)
+		}
+		prev := head
+		for i := 1; i <= chain; i++ {
+			next := NewKey[int](fmt.Sprintf("atomic.c2.k%d.%d", trial, i))
+			mustAdd(t, c2, NewNode(fmt.Sprintf("n%d", i), "",
+				Requires(prev), Provides(next), func(rc *RunCtx) error { return nil }))
+			prev = next
+		}
+
+		root := mustNew(t, context.Background(), fmt.Sprintf("atomic.root.%d", trial))
+		pin1 := NewKey[string](fmt.Sprintf("atomic.p1.%d", trial))
+		pin2 := NewKey[int](fmt.Sprintf("atomic.p2.%d", trial))
+		if err := Sub(root, "s1", "", []SubBind{In(pin1, k1)}, c1); err != nil {
+			t.Fatalf("Sub = %v", err)
+		}
+		if err := Sub(root, "s2", "", []SubBind{In(pin2, head)}, c2); err != nil {
+			t.Fatalf("Sub = %v", err)
+		}
+		if err := Seed(root, pin1, "v"); err != nil {
+			t.Fatalf("Seed = %v", err)
+		}
+		if err := Seed(root, pin2, 1); err != nil {
+			t.Fatalf("Seed = %v", err)
+		}
+
+		// 动刀：给 C1 加一个「要一条没人提供的输入」的节点——加完 C1 就有静态毛病。
+		bad := NewNode("bad", "", Requires(NewKey[string](fmt.Sprintf("atomic.missing.%d", trial))),
+			nil, func(rc *RunCtx) error { return nil })
+		attacked := make(chan error, 1)
+		go func() {
+			time.Sleep(gap)
+			attacked <- c1.Add(bad)
+		}()
+
+		err := root.Validate()
+		aerr := <-attacked // 先等动刀落地：下面那句读的是它的结果
+		if err != nil {
+			continue // 这轮动刀抢在了校验之前（判的时候子图已经有毛病）——窗口没被碰到
+		}
+		if aerr == nil {
+			if probs := c1.Topology().Problems; len(probs) > 0 {
+				t.Fatalf("第 %d 轮：Validate() 返回 nil，却把带毛病的子图封上了（%v）", trial, probs[0])
+			}
+		}
+	}
 }
