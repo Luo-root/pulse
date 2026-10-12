@@ -60,8 +60,8 @@ var (
 	// ErrGraphNotStarted：在 Start 之前调用 Wait / Err（Err 例外：它先看
 	// 首错与 ctx，再报这个）。
 	ErrGraphNotStarted = errors.New("pulse: graph has not started")
-	// ErrDuplicateSource：这个 Key 已经有来源了（外部 Seed/SkipSeed，或
-	// 另一个节点的 Provides）。每个 Key 至多一种来源身份。
+	// ErrDuplicateSource：这个 Key 在**定义里**已经有来源了（某个节点 Provides 它，
+	// 或挂载子图时绑定的那条键在子图里已经有来源）。一个 Key 至多一个来源。
 	ErrDuplicateSource = errors.New("pulse: key already has a source")
 	// ErrNextCalledTwice：单节点的 Run 不得并发进入——两个 goroutine 同时
 	// 跑同一节点会抢同一批槽位，语义上必然错。顺序重入是合法的，Retry

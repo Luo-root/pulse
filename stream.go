@@ -55,7 +55,7 @@ func newStreamConfig(opts []StreamOption) streamConfig {
 // 着子图自己的 `Start` 就会跑 `problemsStreamLocked`（那时继承已经写完），拒的是那一
 // 条报文；这里只补时序，不为「早一点报」去动继承次序。
 func checkStreamSlots(g *Graph, id, kind string, need int) error {
-	if c := g.lim.capacity(); c > 0 && c < need {
+	if c := g.declaredCapacity(); c > 0 && c < need {
 		return fmt.Errorf("pulse: %s %q: WithMaxRunning(%d) cannot host this stream: "+
 			"%d nodes must be live at the same time", kind, id, c, need)
 	}

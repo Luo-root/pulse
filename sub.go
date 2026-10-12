@@ -47,19 +47,20 @@ import (
 // 子图失败即本节点失败且首错原样冒泡、输出按槽位桥回（就绪 → `Set`、跳过 → `Skip`，全部跳过
 // = 本节点 `NoValue()`）。三处要记住：
 //
-//  1. **一次性边界**：挂进父图的这张子图**只能跑一处**——同一张子图挂两处时，跑的那一步
-//     会报一句能照着改的话（每个挂载点各跑一份要等 `Execution` 落地，那是下一步的事）。
-//     「封口」与「用过」是两件事：一张已封口的子图照样能挂到别处、并在那一处跑起来（见
-//     Graph 的 godoc 与 TestSealedChildCanBeReusedElsewhere）。
-//  2. **取消域**：子图那份 ctx 是它**建图时**带进来的（静态组合没有「建图时的父节点」可
-//     派生），所以这一步把父节点这一层的取消**转发**进去。不转发的话子图会跑满整段、
-//     把父图的取消吞掉——实测过：父图耗时 300ms 且报成功（见 runStaticSub 的第 4 步）。
-//  3. **`Retry` 不能装在这一步上**：静态挂载的子图只跑一次，第二次尝试起不来（还会把第一次
-//     失败的原因盖掉）。装配期认不出一个 `Aspect` 是不是 Retry（它是裸函数类型，闭包没有
-//     可查的标识——实测 `reflect` 的代码指针每次实例化都不同），所以由 `Retry` 自己在**进
-//     Run 的第一件事**拒（见 aspect.go）；用户自己写的重试切面则由 `runStaticSub` 的重入
-//     判据兜住（见下面那句 `entered`）。`pulse/yaml` 对 `graph:` 节点上的 `retry:` 是 `Load`
-//     期就拒同一个形状。
+//  1. **每个挂载位置一份子执行**：挂在这里的每一步为子图建一份**自己的**子执行
+//     （自己的 ctx / 槽位 / 状态 / 首错），所以同一张子图挂两处时两处都能跑，各自的
+//     输入输出互不干扰。子图是**定义**，可以在别处照样挂、照样跑（见 Graph 的 godoc
+//     与 TestSealedChildCanBeReusedElsewhere）。
+//  2. **取消域**：子执行的 ctx 从父节点这一层的 ctx 派生，所以取消天然传下去（含这一步
+//     上的 `Timeout` 切面）。不派生的话子图会跑满整段、把父图的取消吞掉——实测过：父图
+//     耗时 300ms 且报成功。取消**只影响这一次运行**：子图定义与别处的运行不受影响。
+//  3. **`Retry` 不能装在这一步上**：重试要重入这一步的体，而第一次 attempt 已经把输出
+//     桥回了父侧（幂等首写），第二次 attempt 的值会被**静默忽略**——下游可能拿到半成品。
+//     那要等 attempt 写集（阶段 3）才有解。装配期认不出一个 `Aspect` 是不是 Retry
+//     （它是裸函数类型，闭包没有可查的标识——实测 `reflect` 的代码指针每次实例化都不同），
+//     所以由 `Retry` 自己在**进 Run 的第一件事**拒（见 aspect.go）；用户自己写的重试切面
+//     则由 `runStaticSub` 的重入判据兜住（见下面那句 `entered`）。`pulse/yaml` 对
+//     `graph:` 节点上的 `retry:` 是 `Load` 期就拒同一个形状。
 //
 // `aspects` 作用于**父侧这个节点**（例如 `pulse.Timeout(30*time.Second)` = 整张子图限时）。
 func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspects ...Aspect) error {
@@ -95,8 +96,10 @@ func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspect
 	}
 
 	// 这一步的身体**只能进一次**。装配期已经拒掉 `Retry(...)`，这条是给「用户自己写的
-	// 重试切面」兜底：子图跑过一次就用掉了，第二次进来只会拿到认领失败那句（把真正的
-	// 病根盖掉），所以在这里点明它，并把第一次 attempt 的失败原因一起报出来。
+	// 重试切面」兜底：第二次进来会把**整棵子树再跑一遍**，而它的输出桥回父侧时，凡是第一次
+	// 已经桥过去（还没失败之前就写了）的键都会被幂等首写**静默丢掉**——父图手里就成了
+	// 「一半第一次、一半第二次」的混装，却看不出任何错；同时第一次的真正病根也被盖掉。
+	// 所以在这里点明它，并把第一次 attempt 的失败原因一起报出来。
 	var entered atomic.Bool
 	var firstMu sync.Mutex
 	var firstErr error
@@ -105,12 +108,13 @@ func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspect
 			firstMu.Lock()
 			prev := firstErr
 			firstMu.Unlock()
-			return fmt.Errorf("pulse: Sub %q: this step was entered a second time, but a statically "+
-				"mounted subgraph runs once: the first attempt already used the child graph, so a "+
-				"second attempt cannot start it (this is what a retry on a graph step would do — "+
-				"move the retry onto the node inside the child that may fail, or mount a fresh child "+
-				"per attempt once the execution tree is in place); the first attempt failed with: %v",
-				id, prev)
+			return fmt.Errorf("pulse: Sub %q: this step was entered a second time (entry-once): "+
+				"a second attempt would run the whole child subtree again, and every output the "+
+				"first attempt had already bridged would be silently ignored (the parent slots "+
+				"are idempotent first-write) — the parent would end up with a mix of both "+
+				"attempts. This is what a retry on a graph step does: put the retry on the node "+
+				"inside the child that may fail; per-attempt write sets are the next stage. "+
+				"The first attempt failed with: %v", id, prev)
 		}
 		err := runStaticSub(rc, id, binds, child)
 		if err != nil {
@@ -144,8 +148,12 @@ func subBinds(child *Graph, id string, binds []SubBind) (requires, provides []ke
 
 // parentBinds 从 binds 推出父侧那两端：`In(父, 子)` 的父侧端进 Requires、
 // `Out(子, 父)` 的父侧端进 Provides——边界写在接线处，读父图一眼看清这一步吃什么吐什么。
+// `Fix` / `FixSkip` 两边都不进：它不牵涉父侧任何键。
 func parentBinds(binds []SubBind) (requires, provides []keyRef) {
 	for _, b := range binds {
+		if b.fix != nil {
+			continue
+		}
 		if b.in {
 			requires = append(requires, b.parent)
 			continue
@@ -158,118 +166,100 @@ func parentBinds(binds []SubBind) (requires, provides []keyRef) {
 // checkBinds 检查一批绑定：零值绑定、同一条子侧进口绑两次、子侧两端是不是声明过的对应方向
 // 端口、类型对不对、这条进口在子图里是不是**已经有来源**。装配期一次判清。
 //
-// 整批在**子图那把锁**里判完：端口表与槽位都是子图的字段，而子图在装配那一刻就在宿主手里，
-// 解锁之后再查它那两张表就是读一张别人能改的 map（`DeclareInput` 往同一张表里写）——
-// `-race` 实测报过一处 DATA RACE（declarePorts ↔ 这里）。所以这里持着锁调 `checkPortLocked`
-// 与 `slotOf`；**持着子图锁时不许再调会自己加锁的变体**（`checkPort` 已经不在了，理由就是它）。
+// 整批在**子图那把锁**里判完：端口表是子图的字段，而子图在装配那一刻就在宿主手里，
+// 解锁之后再查它那张表就是读一张别人能改的 map（`DeclareInput` 往同一张表里写）——
+// `-race` 实测报过一处 DATA RACE（declarePorts ↔ 这里）。所以这里持着锁调 `checkPortLocked`；
+// **持着子图锁时不许再调会自己加锁的变体**（`checkPort` 已经不在了，理由就是它）。
 //
-// 「这条进口在子图里已经有来源」分两种，都是「父侧这次 `In` 不会生效」，也都是读一遍声明
-// 就能定的：
+// 「这条进口在子图里已经有来源」现在只剩一种形状：**子图内部有节点 `Provides` 它**。
+// （旧版本还有第二种——「子图自己 `Seed` 过这条键」——那条随 `Seed` 搬家消失了：
+// 输入属于**一次运行**，不再能往定义里垫默认值。要给子图一条默认值，就在子图里放一个
+// 产出它的节点，那才是「默认值」的诚实表达：它是个产出，不是外部来源。）
 //
-//   - 子图自己 `Seed` / `SkipSeed` 过 → 幂等首写，父侧的值被**静默忽略**；
-//   - 子图内部有节点 `Provides` 它 → 那次种值撞 `ErrDuplicateSource`（一条键恰好一个来源）。
-//
-// 两条都留到运行期报的代价是不一样的：前者是静默丢值（最坏的一种），后者要等这一步真跑到
-// 才炸。所以判据放在这里（`Sub` 装配时 + `Validate` / `Topology` 递归时共用同一份），
-// `runStaticSub` 第 4 步那句是同一条判据的**运行期兜底**（`Seed` 可以在 `Start` 之后、
-// 子图跑起来之前才落进去，那时这里已经没机会再判了）。
+// 留到运行期报的代价是这个父侧 `In` 的值会撞 `ErrDuplicateSource`，要等这一步真跑到
+// 才炸。所以判据放在这里（`Sub` 装配时 + `Validate` / `Topology` 递归时共用同一份）。
 func checkBinds(child *Graph, id string, binds []SubBind) error {
 	seenIn := make(map[string]struct{}, len(binds))
 	child.mu.Lock()
 	defer child.mu.Unlock()
-	started := child.started
 	for i, b := range binds {
-		if b.parent.typ == nil || b.child.typ == nil {
-			return fmt.Errorf("pulse: Sub %q: bind %d is zero: build binds with In/Out", id, i)
+		if b.fix != nil {
+			// `Fix` / `FixSkip`：载荷是一份（可能不止一条的）输入，逐条走同一条进口判据。
+			if b.fix.bad != nil {
+				return fmt.Errorf("pulse: Sub %q: %w", id, b.fix.bad)
+			}
+			for _, ref := range b.fixKeys() {
+				if err := checkInletLocked(child, id, ref, seenIn); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if b.child.typ == nil || b.parent.typ == nil {
+			return fmt.Errorf("pulse: Sub %q: bind %d is zero: build binds with In/Out/Fix", id, i)
 		}
 		if b.in {
-			// 只有**进口**去重：两次种同一条槽，第二次被幂等首写静默忽略。出口不去重——
-			// 它没有这个病：同一条出口推给两个父侧键谁也不丢（同一个父侧键早被 Add 那层
-			// 的「declares ... twice in Provides」拒了）。
-			if _, dup := seenIn[b.child.name]; dup {
-				return fmt.Errorf("pulse: Sub %q: child inlet %q is bound twice: "+
-					"the second value would be silently ignored (idempotent first write)", id, b.child.name)
+			if err := checkInletLocked(child, id, b.child, seenIn); err != nil {
+				return err
 			}
-			seenIn[b.child.name] = struct{}{}
+			continue
 		}
-		if err := child.checkPortLocked(id, b); err != nil {
+		if err := child.checkPortRefLocked(id, b.child, false); err != nil {
 			return err
-		}
-		// 进口那条的「已经有来源」。子图**跑过**之后就不再判：那时槽位里留着的是那一次运行
-		// 的痕迹、不是装配事实（判据只对「还没跑的子图」成立，见上）。
-		if b.in && !started {
-			if src, ok := child.producer[b.child.name]; ok && src.kind == sourceNode {
-				return fmt.Errorf("pulse: Sub %q: child inlet %q is provided inside the child by %s, "+
-					"so this In binding cannot also feed it: the parent's value would hit %s the first "+
-					"time this step runs. Drop the binding, or stop providing that key inside the child",
-					id, b.child.name, src, ErrDuplicateSource)
-			}
-			if st, _ := child.slotOf(b.child).snapshot(); st != slotPending {
-				return fmt.Errorf("pulse: Sub %q: child inlet %q already carries a value before this "+
-					"step runs (it was seeded with Seed/SkipSeed), so the value the parent feeds in "+
-					"could never take effect: the first write wins, and it was not this binding. "+
-					"Seed the parent side instead, or drop the binding", id, b.child.name)
-			}
 		}
 	}
 	return nil
 }
 
-// checkPortLocked 判一条绑定的子侧端是不是**声明过的、方向对的**端口。调用方持 g.mu。
+// checkInletLocked 是「往子图某条进口送一个值」的三条判据（`In` 与 `Fix` / `FixSkip` 共用）：
+// 方向对（是声明过的**入口**）、这一次只喂一条、子图内部没有别的来源。调用方持 child.mu；
+// `seenIn` 由调用方跨 bind 累积（同一个挂载点上两条绑定喂同一条进口 = 第二条被静默吞掉）。
+func checkInletLocked(child *Graph, id string, ref keyRef, seenIn map[string]struct{}) error {
+	if err := child.checkPortRefLocked(id, ref, true); err != nil {
+		return err
+	}
+	if _, dup := seenIn[ref.name]; dup {
+		return fmt.Errorf("pulse: Sub %q: child inlet %q is bound twice: "+
+			"the second value would be silently ignored (idempotent first write)", id, ref.name)
+	}
+	seenIn[ref.name] = struct{}{}
+	if src, ok := child.producer[ref.name]; ok && src.kind == sourceNode {
+		return fmt.Errorf("pulse: Sub %q: child inlet %q is provided inside the child by %s, "+
+			"so this binding cannot also feed it: the value would hit %w the first "+
+			"time this step runs. Drop the binding, or stop providing that key inside the child",
+			id, ref.name, src, ErrDuplicateSource)
+	}
+	return nil
+}
+
+// checkPortRefLocked 判一条绑定的子侧端是不是**声明过的、方向对的**端口。调用方持 g.mu。
 //
-// 报文要能照着改，所以三种情形分开说：没声明成端口（点明「它不是这张图的端口」）、方向反了
+// 报文要能照着改成：三种情形分开说——没声明成端口（点明「它不是这张图的端口」）、方向反了
 // （声明过、但你绑的是另一头）、类型不符（端口声明的类型与绑定不一致）。
-func (g *Graph) checkPortLocked(stepID string, b SubBind) error {
+func (g *Graph) checkPortRefLocked(stepID string, ref keyRef, intoChild bool) error {
 	want, other := g.outPorts, g.inPorts // 方向说明见下：`in` 绑的是子图的**入口**
 	direction, otherDirection := "output", "input"
-	if b.in {
+	bind, from, to, decl := "Out(子, 父)", "子", "父", "Output"
+	if intoChild {
 		want, other = g.inPorts, g.outPorts
 		direction, otherDirection = "input", "output"
+		bind, from, to, decl = "In(父, 子)", "父", "子", "Input"
 	}
-	if p, ok := want[b.child.name]; ok {
-		if p.typ != b.child.typ {
+	if p, ok := want[ref.name]; ok {
+		if p.typ != ref.typ {
 			return fmt.Errorf("pulse: Sub %q: port %q type mismatch: the child declares it as %s, "+
-				"the bind declares %s", stepID, b.child.name, typeName(p.typ), typeName(b.child.typ))
+				"the bind declares %s", stepID, ref.name, typeName(p.typ), typeName(ref.typ))
 		}
 		return nil
 	}
-	if _, ok := other[b.child.name]; ok {
+	if _, ok := other[ref.name]; ok {
 		return fmt.Errorf("pulse: Sub %q: %q is a declared %s of the child graph, but this bind "+
 			"treats it as the %s side: %s points from %s to %s",
-			stepID, b.child.name, otherDirection, direction, bindName(b.in), bindFrom(b.in), bindTo(b.in))
+			stepID, ref.name, otherDirection, direction, bind, from, to)
 	}
 	return fmt.Errorf("pulse: Sub %q: %q is not a %s port of the child graph: declare it with "+
 		"Declare%s (a key that only lives inside the child is its implementation detail), "+
-		"or bind a different key", stepID, b.child.name, direction, portDeclMethod(b.in))
-}
-
-// bindName / bindFrom / bindTo / portDeclMethod 只负责把一条绑定说成人话（报错用）。
-func bindName(in bool) string {
-	if in {
-		return "In(父, 子)"
-	}
-	return "Out(子, 父)"
-}
-
-func bindFrom(in bool) string {
-	if in {
-		return "父"
-	}
-	return "子"
-}
-
-func bindTo(in bool) string {
-	if in {
-		return "子"
-	}
-	return "父"
-}
-
-func portDeclMethod(in bool) string {
-	if in {
-		return "Input"
-	}
-	return "Output"
+		"or bind a different key", stepID, ref.name, direction, decl)
 }
 
 // checkMountCycle 是组合环的判据：把 child 挂进 g 之前，先看 g 是不是已经在 child 的子树里
@@ -311,15 +301,37 @@ func (g *Graph) findInSubtree(target *Graph, path []string) ([]string, bool) {
 	return nil, false
 }
 
-// runStaticSub 是挂子图那一步的运行体：取值 → 认领 → 种值 → 跑 → 桥回。
+// runStaticSub 是挂子图那一步的运行体：取值 → 建一份子执行 → 跑 → 桥回。
+//
+// **每个挂载位置一份子执行**：子图是**定义**，挂在这里的这一次运行要一份自己的
+// ctx / 槽位 / 状态（`newChildExecution`）。于是同一张子图挂在两处时两处都能跑，
+// 各自的输入输出互不干扰——旧版本是「一次性认领 + 运行期回写子图字段」，同一张图
+// 只能跑一处、而且两处会互相踩配置。
+//
+// 三样东西跟着消失：
+//
+//   - **认领**：不再有「这张图用过没有」这回事，定义可以跑很多次；
+//   - **回写子图字段**（旧 `adopt`）：有效观察者 / 名额 / 图级切面在**创建子执行**时
+//     按「父执行环境 + 子图自己的声明」算出来，定义保持只读；
+//   - **转发取消的那条 goroutine**：子执行的 ctx 从父节点这一层的 ctx 派生，
+//     父侧取消天然传下去（实测过旧版本不转发时父图会跑满整段并报成功）。
 func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
-	// 1) 先取父侧的全部输入：跳过是**到达**，照跳种；其它错误（取消、未声明）直接返回。
-	type inVal struct {
-		v    any
-		skip bool
-	}
-	vals := make([]inVal, len(binds))
-	for i, b := range binds {
+	// 1) 先取父侧的全部输入：跳过是**到达**，照跳（用 SkipSeed 表达）；其它错误
+	//    （取消、未声明）直接返回。`Fix` / `FixSkip` 那条不读父侧，直接写进这一次的输入。
+	var in Inputs
+	for _, b := range binds {
+		if b.fix != nil {
+			if b.fix.bad != nil {
+				return fmt.Errorf("pulse: Sub %q: %w", id, b.fix.bad)
+			}
+			for _, ref := range b.fixKeys() {
+				en := b.fix.in.entries[ref.name]
+				if err := in.set(en.ref, en.value, en.skip); err != nil {
+					return fmt.Errorf("pulse: Sub %q: %w", id, err)
+				}
+			}
+			continue
+		}
 		if !b.in {
 			continue
 		}
@@ -327,86 +339,134 @@ func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 		if err != nil {
 			return err
 		}
-		vals[i] = inVal{v: v, skip: skip}
+		if err := in.set(b.child, v, skip); err != nil {
+			return fmt.Errorf("pulse: Sub %q: %w", id, err)
+		}
 	}
 
-	// 2) 原子认领这张子图。静态组合里最容易犯的错是「同一张子图挂两处」，那句话要说清
-	//    静态形态只能跑一处、每个挂载点各跑一份要等 Execution。
-	if !child.claimSub() {
-		return fmt.Errorf("pulse: Sub %q: the child graph is already in use: a graph runs once, "+
-			"so a statically mounted subgraph can run at one mount point only (running one copy per "+
-			"mount point needs the execution tree, which is not in place yet) (%w)", id, ErrGraphStarted)
-	}
-
-	// 3) 挂接状态**一次写完**：观察者（子图没挂才继承父图的）、名额（子图自己声明过就用
-	//    它自己那份，没声明则继承父图那份）、图级切面（默认继承：父图那批前置——继承的
-	//    在外、子图自己声明的在内）。这一步**不能**少了：少了就是观察者断链（父图照常
-	//    跑完、子图的记录一条不出现）加名额各算各的。
+	// 2) 为这个挂载位置建一份子执行。父节点这一层的 ctx 是它的取消域：父侧被取消
+	//    （含这一步上的 `Timeout` 切面）子图当场停。
 	//
-	//    注意它**会写子图的字段**：这是阶段 1 明说的边界——把挂接状态收进「执行树创建时
-	//    算有效值、不写共享定义」是阶段 2（`Execution`）的事，见 object-model 第 3.2 节。
-	child.adopt(rc.g.observer, rc.g.lim, rc.g.aspects)
-
-	// 4) 种父侧输入。种之前先确认这条键还是空的：子图自己把它种上了的话（或标成了跳过），
-	//    这次种值会被幂等首写**静默忽略**——「父侧传进去的值不见了」而没有任何报错。
-	//
-	//    与 `checkBinds` 里那条装配期判据是**同一件事**（那里叫「这条进口在子图里已经有
-	//    来源」），这里只是运行期兜底：`Seed` 可以在 `Start` 之后、子图真跑起来之前才落进去，
-	//    那一刻装配期已经过完了。静态那条判据报得早、这条兜得住晚到的。
-	for i, b := range binds {
-		if !b.in {
-			continue
-		}
-		if st, _ := child.slotOf(b.child).snapshot(); st != slotPending {
-			return fmt.Errorf("pulse: Sub %q: the child graph already resolved key %s before the "+
-				"binding seeded it, so the value from the parent would be silently ignored "+
-				"(idempotent first write)", id, b.child)
-		}
-		if err := b.seed(child, vals[i].v, vals[i].skip); err != nil {
-			return err
-		}
+	//    这一步还会判子图那侧的启动条件（每条被 `Requires` 的进口都要有交代）：
+	//    父图没绑、子图里也没人产出的进口在这里报，而不是让子图跑起来之后挂死。
+	sub, err := child.newChildExecution(rc.exec, rc.Context(), rc.node.id, in)
+	if err != nil {
+		return fmt.Errorf("pulse: Sub %q: %w", id, err)
 	}
 
-	// 5) 跑。**取消要传下去**：子图那份 ctx 是它建图时带进来的（静态组合没有「建图时的
-	//    父节点」可派生），所以这里把父节点这一层的取消转发进子图的取消域。少了这一步，
-	//    子图会跑满整段并把取消吞掉——实测 F.Run() 耗时 300ms 且返回 nil（父 ctx 50ms
-	//    就被取消了）；转发之后是 51ms + context canceled。
-	//    转发是**单向、一对一**的：只把父侧的取消带进子图，不动子图自己的生命周期。
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		select {
-		case <-rc.Context().Done():
-			child.cancelRun()
-		case <-stop:
-		}
-	}()
-
-	if err := child.Run(); err != nil {
+	// 3) 跑子执行：Start + Wait。失败原样冒泡（首错就是子图的首错）。
+	if err := sub.Start(); err != nil {
+		return err
+	}
+	if err := sub.Wait(); err != nil {
 		return err
 	}
 
-	// 6) 桥回父侧：就绪 → Set，跳过 → Skip；**全部**输出都跳 → 本节点以跳过收尾。
-	return bridgeOutputs(rc, id, binds, child)
+	// 4) 桥回父侧：就绪 → Set，跳过 → Skip；**全部**输出都跳 → 本节点以跳过收尾。
+	return bridgeOutputs(rc, id, binds, sub)
 }
 
-// SubBind 是一对「父侧键 ↔ 子侧键」。用 `In` / `Out` 构造——**方向由构造器定**
-// （写反了读不出来），两端必须同一个 `T`，否则编译期就红。
+// SubBind 是一对「父侧键 ↔ 子侧键」——或者一条「固定值 ↔ 子侧键」。用 `In` / `Out` /
+// `Fix` / `FixSkip` 构造——**方向由构造器定**（写反了读不出来），`In` / `Out` 两端必须
+// 同一个 `T`，否则编译期就红。
 type SubBind struct {
 	parent keyRef
 	child  keyRef
 	in     bool
+	// fix 非 nil 表示这条绑定是**固定值 → 子**：这一步给子图那几条进口常量（或「跳过」），
+	// 不牵涉父侧任何键。载荷是一份完整的输入（而不是单个值），因为**声明式装配**那条路
+	// 要用 `SeedByName` 做类型对齐（`coerceSeedValue`），而那个函数写的就是 `Inputs`。
+	fix *fixBind
 
-	pull func(*RunCtx) (any, error)    // In：读父侧（跳过 → *SkipError）
-	seed func(*Graph, any, bool) error // In：把值（或「跳过」）种进子图
-	push func(*RunCtx, any) error      // Out：把子侧的值写回父侧
+	pull func(*RunCtx) (any, error) // In：读父侧（跳过 → *SkipError）
+	push func(*RunCtx, any) error   // Out：把子侧的值写回父侧
+}
+
+// fixBind 是一条（批）固定值绑定的载荷。`bad` 兜住「值本身就不合法」的那条路
+// （nil 值），留到 `Sub` / `Validate` 报出来——构造器保持不含 error 的形状。
+type fixBind struct {
+	in  Inputs
+	bad error
+}
+
+// intoChild 报这条绑定是不是「往子图的进口送一个值」——`In` 与 `Fix` / `FixSkip` 都是。
+// 端口方向、进口去重、「这条进口在子图里已经有来源」三条判据都按它分流。
+func (b SubBind) intoChild() bool { return b.in || b.fix != nil }
+
+// fixKeys 是一条固定值绑定喂的那几条子侧键（名字有序），`Fix` 与 `In` 共用同一套判据时用。
+func (b SubBind) fixKeys() []keyRef {
+	if b.fix == nil {
+		return nil
+	}
+	return b.fix.in.refs()
+}
+
+// Fix 声明一条「固定值 → 子图」的绑定：**这一步**给子图的 `child` 这条进口一个常量，
+// 父侧不参与。
+//
+// 什么时候要它：同一张子图挂在两处、两处要的默认值不同——那个值属于**挂载点**，
+// 不属于子图定义，所以不能写进子图里（写进去就成了「共享定义被一次运行写脏」，
+// 也正是旧 `pulse.Seed(child, k, v)` 被删掉的原因）。子图**谁都这么用**的默认值仍然
+// 建议放进子图自己（一个产出它的节点）——两种是不同的事。
+//
+// 与 `In` 同一条方向语义（箭头朝子图），所以端口判据、进口去重与「这条进口在子图里
+// 已经有来源」三条判据都是共用的。
+func Fix[T any](child Key[T], v T) SubBind {
+	var b fixBind
+	if err := b.in.set(child.asRef(), any(v), false); err != nil {
+		b.bad = err
+	}
+	return SubBind{child: child.asRef(), fix: &b}
+}
+
+// FixSkip 与 `Fix` 同形：给子图的某条进口一个**固定的跳过**。
+//
+// 跳过是到达，不是失败——「这一步的子图这次没有这条值，但你照常按没有值走」。
+func FixSkip[T any](child Key[T]) SubBind {
+	var b fixBind
+	if err := b.in.set(child.asRef(), nil, true); err != nil {
+		b.bad = err
+	}
+	return SubBind{child: child.asRef(), fix: &b}
+}
+
+// FixByName / FixSkipByName 是声明式装配（`pulse/yaml`）用的那条路：按登记表解析键名与
+// 类型记号，值再按目标类型做**形状对齐**（与 `SeedByName` 完全同一条判据——子图的
+// `seeds:` 从 YAML 解出来是 `[]any` / `map[string]any`，不 coerce 就对不上具体类型）。
+//
+// 两条都要把解析出来的 `child` 记进绑定本身：`bridgeOutputs` 按它分流「往子图送」与
+// 「从子图取」——只填 `fix` 不填 `child` 的话，这条绑定会被当成一条子侧键为空的
+// `Out`（实测报出 `its output key  never arrived`，键名是空的）。
+func FixByName(reg *Registry, name, typeTag string, v any) (SubBind, error) {
+	ref, err := reg.ResolveKey(name, typeTag)
+	if err != nil {
+		return SubBind{}, err
+	}
+	var b fixBind
+	if err := SeedByName(&b.in, reg, name, typeTag, v); err != nil {
+		return SubBind{}, err
+	}
+	return SubBind{child: ref, fix: &b}, nil
+}
+
+// FixSkipByName 见 `FixByName`。
+func FixSkipByName(reg *Registry, name, typeTag string) (SubBind, error) {
+	ref, err := reg.ResolveKey(name, typeTag)
+	if err != nil {
+		return SubBind{}, err
+	}
+	var b fixBind
+	if err := SkipSeedByName(&b.in, reg, name, typeTag); err != nil {
+		return SubBind{}, err
+	}
+	return SubBind{child: ref, fix: &b}, nil
 }
 
 // In 声明一条父 → 子的绑定：父图读 `parent`，把它种进子图的 `child`。
 //
 // 两条绑定都是**箭头读法**：来源在前、去向在后——`In(父, 子)`、`Out(子, 父)`。
 //
-// 跳过的输入照跳：父侧那条槽以跳过到达时，子图对应的键用 `SkipSeed` 种成跳过
+// 跳过的输入照跳：父侧那条槽以跳过到达时，子图对应的键用「跳过」种进去
 // （「跳过是到达」；子图自己的门按它自己的规则判）。
 //
 // 泛型参数在这里只做一件事：**逼两端用同一个 `T`**（编译期就红）。真正的实现
@@ -435,12 +495,6 @@ func InRef(parent, child keyRef) SubBind {
 		child:  child,
 		in:     true,
 		pull:   func(rc *RunCtx) (any, error) { return getRef(rc, parent) },
-		seed: func(g *Graph, v any, skip bool) error {
-			if skip {
-				return g.seedRef(child, nil, true)
-			}
-			return g.seedRef(child, v, false)
-		},
 	}
 }
 
@@ -467,16 +521,19 @@ func readParentInput(rc *RunCtx, b SubBind) (any, bool, error) {
 	return v, false, nil
 }
 
-// bridgeOutputs 把子图跑完之后的结果桥回父侧：就绪 → `Set`，跳过 → `Skip`；
+// bridgeOutputs 把子执行跑完之后的结果桥回父侧：就绪 → `Set`，跳过 → `Skip`；
 // **全部**输出都以跳过收尾 → 这一步以节点级跳过收尾（`NoValue()`，未发布的输出由引擎自动跳过）。
-func bridgeOutputs(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
+//
+// 读的是**子执行**的槽位（这一次挂载位置那一份），不是子图定义——同一张子图挂在两处时，
+// 两处各读各的那一份。
+func bridgeOutputs(rc *RunCtx, id string, binds []SubBind, sub *Execution) error {
 	hasOut, allSkipped := false, true
 	for _, b := range binds {
-		if b.in {
-			continue
+		if b.intoChild() {
+			continue // `In` 与 `Fix` / `FixSkip` 都是「往子图送」，不是输出
 		}
 		hasOut = true
-		st, _ := child.slotOf(b.child).snapshot()
+		st, _ := sub.slotOf(b.child).snapshot()
 		switch st {
 		case slotReady:
 			allSkipped = false
@@ -490,10 +547,10 @@ func bridgeOutputs(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 		return NoValue() // 节点级跳过；未发布的输出由引擎自动跳过
 	}
 	for _, b := range binds {
-		if b.in {
+		if b.intoChild() {
 			continue
 		}
-		st, v := child.slotOf(b.child).snapshot()
+		st, v := sub.slotOf(b.child).snapshot()
 		if st == slotSkipped {
 			if err := skipRef(rc, b.parent); err != nil {
 				return err
@@ -505,31 +562,4 @@ func bridgeOutputs(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 		}
 	}
 	return nil
-}
-
-// adopt 把父图的挂接状态写进子图（观察者、名额、图级切面），**一次加锁写完**。
-//
-// 为什么不能各写各的：这几个字段是「认领之后不再变」的那批，而读它们的是
-// `Validate()` / `Topology()` 这类只读入口（持 child.mu）。子图在**装配那一刻**就已经
-// 在调用方手里（`Sub` 的入参就是它），宿主完全可以把它交给别的 goroutine；挂接期间那头
-// 调只读入口，就是在读一个正在被写的字段——评审在 #304 上点的那条 race（用例
-// `TestSubHookupRaceWithReadOnlyEntry` 复现）。
-//
-// 临界区里**不做任何会再锁 child.mu 的事**（种值走的是 slotsMu，留在调用点按原顺序做）；
-// 也**不校验**——校验与报文都在调用点，这里只负责把字段写进去。
-func (g *Graph) adopt(observer Observer, lim *limiter, aspects []Aspect) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.observer == nil {
-		g.observer = observer
-	}
-	if !g.limSet {
-		g.lim = lim
-	}
-	// 图级切面默认**继承**（把父图那批前置）；`WithoutAspects()` 切断。注意切断只解开
-	// 「继承到子图节点上」这一段——父图那一步仍然被父图的图级切面包着，那是父图
-	// 对自己节点做的事。前置用**新切片**，不写坏父图那批的底层数组。
-	if !g.aspectsCut {
-		g.aspects = append(append([]Aspect{}, aspects...), g.aspects...)
-	}
 }

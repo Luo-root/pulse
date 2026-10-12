@@ -69,5 +69,6 @@
 // 并发默认无限；WithMaxRunning(n) 只限制同时进入 Run 的节点数，
 // 等数据不占名额（排队等名额也会被 ctx 取消打断）。
 //
-// 每个 Key 至多一种来源身份：外部 Seed/SkipSeed 或一个节点的 Provides。
+// 每个 Key 至多一种来源身份：**一个节点的 Provides**，或声明成入口（`DeclareInput`）
+// 由这一次运行的输入喂。
 package pulse

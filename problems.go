@@ -14,7 +14,9 @@ import (
 
 // problemsLocked 返回这张图**全部**静态可判定的毛病，顺序固定为
 // 来源 → 出口 → 依赖环 → 流式。调用方持 g.mu。
-func (g *Graph) problemsLocked() []error { return g.problemsAtLocked("", mountChain{g}) }
+func (g *Graph) problemsLocked(capacity int) []error {
+	return g.problemsAtLocked("", mountChain{g}, capacity)
+}
 
 // problemsAt 是递归的**入口**：自己加锁，再交给递归体。
 //
@@ -25,19 +27,19 @@ func (g *Graph) problemsLocked() []error { return g.problemsAtLocked("", mountCh
 func (g *Graph) problemsAt(at string, chain mountChain) []error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.problemsAtLocked(at, chain)
+	return g.problemsAtLocked(at, chain, g.declaredCapacity())
 }
 
 // problemsAtLocked 是递归体：`at` 是这张图**在本视图里**的位置（根为空串），`chain` 是从根
 // 一路挂到这张图的图链（判环用）。调用方持 g.mu。
 //
 // 五类判据，顺序固定：来源 → 出口 → 依赖环 → 流式 → **静态子树**（每处挂载各报一条）。
-func (g *Graph) problemsAtLocked(at string, chain mountChain) []error {
+func (g *Graph) problemsAtLocked(at string, chain mountChain, capacity int) []error {
 	var out []error
 	out = append(out, g.problemsSourcesLocked()...)
 	out = append(out, g.problemsOutputsLocked()...)
 	out = append(out, g.problemsCycleLocked()...)
-	out = append(out, g.problemsStreamLocked()...)
+	out = append(out, g.problemsStreamLocked(capacity)...)
 	out = append(out, g.problemsSubAtLocked(at, chain)...)
 	if len(out) == 0 {
 		return nil
@@ -88,9 +90,8 @@ func (g *Graph) problemsSubAtLocked(at string, chain mountChain) []error {
 
 // problemsSourcesLocked 报「每个 Requires 都有来源」。调用方持 g.mu。
 //
-// 判据是 producer 表里有没有这个 Key **且那条来源真的存在**：外部 Seed/SkipSeed
-// 记为 seed，节点 Provides 记为 node + 节点 id；某种来源至多一个（see
-// claimSource）。**声明过的输入端口也算有来源**（`DeclareInput`）——它表达的是
+// 判据是 producer 表里有没有这个 Key **且那条来源真的存在**：节点 Provides 记为
+// node + 节点 id，一条 Key 至多一个来源（see sourceConflict）。**声明过的输入端口也算有来源**（`DeclareInput`）——它表达的是
 // 「这本来就是外部输入」，与「你忘了接线」是两件事，前者不该被报成毛病。
 // Requires 本身不登记来源，所以「表里没有**且**没声明成入口」= 没人会写它。零值
 // （`sourceNone`）按「没有来源」处理——它不该落表，万一落了也不能当有来源，
@@ -107,8 +108,8 @@ func (g *Graph) problemsSourcesLocked() []error {
 			if _, ok := g.inPorts[k.name]; ok {
 				continue
 			}
-			out = append(out, fmt.Errorf("pulse: node %q requires %q but nothing provides or seeds it",
-				n.id, k.name))
+			out = append(out, fmt.Errorf("pulse: node %q requires %q but nothing provides it "+
+				"(declare it with DeclareInput if the value comes from outside)", n.id, k.name))
 		}
 	}
 	return out
@@ -122,7 +123,7 @@ func (g *Graph) problemsSourcesLocked() []error {
 //
 // 判据复用 sourceOfLocked（谁会写这条槽优先，没人写就看它是不是声明过的入口）：**入口与
 // 出口同名是透传**——父侧种进来的那份就是这条槽的值，所以透传不算没人产出。只有零值来源
-// （`sourceNone`：既没人 Provides、也没人 Seed、也没声明成入口）才算。
+// （`sourceNone`：既没人 Provides、也没声明成入口）才算。
 //
 // 顺序按**名字**排：出口表是 map，迭代顺序随机，而这里是报文顺序（`Topology().Problems`
 // 要用它、`Validate` 的首条也取它），同一张图两次问必须一模一样。
@@ -140,9 +141,9 @@ func (g *Graph) problemsOutputsLocked() []error {
 	out := make([]error, 0, len(missing))
 	for _, name := range missing {
 		out = append(out, fmt.Errorf("pulse: declared output %q is never produced: "+
-			"nothing in this graph provides or seeds it, so a parent binding it with Out could "+
-			"only ever report \"never arrived\" (provide it with a node, or drop the DeclareOutput)",
-			name))
+			"nothing in this graph provides it, and it is not a declared input of the same name "+
+			"(a pass-through), so a parent binding it with Out could only ever report "+
+			"\"never arrived\" (provide it with a node, or drop the DeclareOutput)", name))
 	}
 	return out
 }
@@ -268,7 +269,7 @@ func (g *Graph) sccWitness(d depGraph, comp []int) error {
 //
 // 每条出口一条毛病（没人读 / 被几个各写各的读了各一条）；名额不足那条在这批
 // 之先，与旧实现的先后一致。
-func (g *Graph) problemsStreamLocked() []error {
+func (g *Graph) problemsStreamLocked(capacity int) []error {
 	var stream []*Node
 	outlets := make(map[string]struct{})
 	for _, n := range g.nodes {
@@ -307,7 +308,7 @@ func (g *Graph) problemsStreamLocked() []error {
 	}
 
 	var out []error
-	if c := g.lim.capacity(); c > 0 && c < len(live) {
+	if c := capacity; c > 0 && c < len(live) {
 		ids := make([]string, 0, len(live))
 		for _, n := range live {
 			ids = append(ids, n.id)

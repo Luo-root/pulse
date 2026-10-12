@@ -44,7 +44,8 @@ func (p Port) declared() bool { return p.ref.typ != nil }
 //
 // 声明过之后，那几个 `Requires` **不再**算「无来源」：`Validate` 因此分得清「你忘了接线」
 // 与「这本来就是外部输入」——前者是装配错，后者是这张图的接口。静态拓扑里它们的来源是
-// `pulse.SourceInput`（不是 `SourceSeed`：`Seed` 是运行期的动作，不该出现在定义的结构里）。
+// `pulse.SourceInput`——定义层「外部来源」只有这一种写法：`Seed` 是运行期的动作，
+// 值活在一次运行的 `Inputs` 里，不进定义的结构。
 //
 // 再声明一次同一条键是幂等的（同名同类型）；同名不同类型报错。**改不了定义的时机有两个**：
 // 定义封口之后（`Validate` 通过过一次）与图跑起来之后（`Start` 成功）——两者都被拒，
@@ -81,11 +82,8 @@ func (g *Graph) declarePorts(ports []Port, input bool) error {
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	// 两个冻结点先看**跑起来**那个：封口与启动同时成立时（`Start` 成功会顺带封整棵树），
-	// 报文该说的是「已经启动」——那是最贴近用户刚做过的动作的原因。
-	if g.started {
-		return ErrGraphStarted
-	}
+	// 「已经开始过」不再单独判：某次运行 `Start()` 成功会顺带把整棵树封口，
+	// 所以它一定落在 `sealed` 里；`errSealed` 的报文两个触发点都点了名。
 	if g.sealed {
 		return errSealed(what)
 	}

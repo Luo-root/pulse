@@ -72,16 +72,18 @@ func Timeout(d time.Duration) Aspect {
 // 已经被唤醒，后续 attempt 的写会被静默忽略（对已就绪的槽 resolveValue 返回
 // nil），槽位也不会回滚——回滚等于重开槽位，与「一次性」契约冲突，所以这条
 // 只能由调用方守。需要事务性重试时，把副作用与输出挪到最后一次成功的
-// attempt 上（例如先算完再 Set），别指望引擎撤前一次。
+// attempt 上（例如先算完再 Set），别指望引擎撤前一次。**attempt 写集（失败 attempt
+// 的输出对下游不可见）是阶段 3 的事**，那时这条前提由引擎接管。
 //
-// **不能装在静态挂载的子图那一步上**（`pulse.Sub` 装出来的节点）：重试要重入这一步的
-// 体，而子图是一次性的——跑过一次就用掉了，第二次 attempt 起不来，还会用一句「子图已经在
-// 用」把第一次失败的真正原因盖掉（`Retry` 返回的是**最后一次** attempt 的错误）。
+// **不能装在静态挂载的子图那一步上**（`pulse.Sub` 装出来的节点）：第一次 attempt 已经把
+// 输出**桥回了父侧**（幂等首写），第二次 attempt 的值会被静默忽略——下游可能拿到半成品，
+// 而这一层没有任何回滚。每个 attempt 一份子执行本身已经可行（子图是定义，能跑很多次），
+// 缺的是 attempt 级的写集，那要等阶段 3。
 //
 // 装配期认不出它（`Aspect` 是裸函数类型，闭包没有可查的标识：实测 `reflect` 的代码指针
-// 每次实例化都不同），所以判据放在**进 Run 的第一件事**：那时子图还没被认领、也没种过值，
-// 整张图带一句点明改法的错收场。`pulse/yaml` 对 `graph:` 节点上的 `retry:` 是 `Load` 期拒
-// 同一个形状（那边有 spec 可读，能判得更早）。
+// 每次实例化都不同），所以判据放在**进 Run 的第一件事**：那时这一步还没读父侧输入、
+// 也没写任何东西，整张图带一句点明改法的错收场。`pulse/yaml` 对 `graph:` 节点上的 `retry:`
+// 是 `Load` 期拒同一个形状（那边有 spec 可读，能判得更早）。
 func Retry(attempts int, delay time.Duration) Aspect {
 	if attempts <= 0 {
 		attempts = 1
@@ -89,9 +91,11 @@ func Retry(attempts int, delay time.Duration) Aspect {
 	return func(rc *RunCtx, next func(*RunCtx) error) error {
 		if rc.node != nil && rc.node.sub {
 			return fmt.Errorf("pulse: Retry is not supported on a graph step (%s): "+
-				"a statically mounted subgraph runs once, so a second attempt could not start it "+
-				"(and its error would hide the first one). Move retry onto the node inside the child "+
-				"that may fail; a fresh child per attempt needs the execution tree", rc.NodeID())
+				"this step bridges the child's outputs into the parent slots inside the attempt, "+
+				"and those slots are idempotent first-write — a key the first attempt bridged before "+
+				"failing keeps that value, so a retried attempt's writes for it are silently ignored "+
+				"and the parent could keep a mix of both attempts. Put retry on the node inside the "+
+				"child that may fail; per-attempt write sets are the next stage", rc.NodeID())
 		}
 		var err error
 		for i := 0; i < attempts; i++ {
