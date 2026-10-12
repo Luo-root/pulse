@@ -135,9 +135,10 @@ func (ws *writeSet) commit(e *Execution) error {
 
 // checkCommitTarget 判这一条交出去会不会撞上「已经以另一个状态到达」。
 //
-// 它**只读**、不建条目（读路径那条纪律同样适用于此）：给外层暂存 `slotOf` 会在那里留下一个
-// 永远 `pending` 的空位，而那个空位随后会把这条键真正的来源整个遮住——一次没能提交的尝试
-// 不该在外层留下任何痕迹。
+// 它**不改任何状态**：外层暂存那条走 `peek`，**绝不建条目**——给外层 `slotOf` 会在那里留下一个
+// 永远 `pending` 的空位，而那个空位随后会把这条键真正的来源整个遮住（一次没能提交的尝试不该在
+// 外层留下任何痕迹）；执行槽位那条读的是这条键**本来就有**的槽（`prepareExecution` 已经为全图
+// 的 requires / provides 建过表，而能走到这里的键必然是这个节点的 Provide）。
 func checkCommitTarget(e *Execution, ws *writeSet, ref keyRef, st slotState) error {
 	var cur slotState
 	if ws.outer != nil {
