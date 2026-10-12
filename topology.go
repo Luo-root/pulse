@@ -16,13 +16,11 @@ const (
 	// 会拒），`Provides` 上恒为它——一条输出的来源就是它自己那个节点。要看
 	// 「谁喂了这条输入」走 `Edges`，不要在 `Provides` 上找。
 	SourceNone SourceKind = ""
-	// SourceSeed 表示外部来源：`Seed` / `SkipSeed`。它不是节点间依赖，
-	// **不建边**。它是**运行期**的动作，所以在新模型里它只表示「这一次运行
-	// 由宿主喂了值」，不再是「这张定义接受外部输入」的声明。
-	SourceSeed SourceKind = "seed"
 	// SourceInput 表示**声明过的输入端口**（`DeclareInput`）：这张图对外接受
-	// 这条 Key。与 `SourceSeed` 分得开是有意的——端口是定义的一部分，`Seed`
-	// 是某一次运行的动作，让两者在静态结构里长得一样，等于把定义与运行又混回去。
+	// 这条 Key。**外部来源在静态结构里只有这一种写法**——`Seed` / `SkipSeed`
+	// 是某一次运行的动作（值活在 `Inputs` 里，不碰定义），所以定义层没有、
+	// 也不该有「外部来源」这一档（旧的 `SourceSeed` 在阶段 2 随之一并去掉：
+	// 它已经没有产出路径了）。
 	SourceInput SourceKind = "input"
 	// SourceNode 表示某个节点的 `Provides`，`NodeID` 是那个节点。
 	SourceNode SourceKind = "node"
@@ -34,7 +32,7 @@ type Source struct {
 	NodeID string // 仅 Kind == SourceNode 时有效
 }
 
-// String 是给人看的来源名：外部来源 `seed`、节点来源 `node %q`、没有来源 `none`。
+// String 是给人看的来源名：节点来源 `node %q`、声明过的入口 `input`、没有来源 `none`。
 //
 // 节点来源**一律**带类型前缀并加引号，不是只给某个哨兵名字开小灶：节点 id 是任意用户
 // 字符串——只特判 `seed` 的话，节点叫 `none` 的会与「没有来源」撞、字面量 id
@@ -43,8 +41,6 @@ type Source struct {
 // 「日志里分得开」是同一条规则，不会各自漂。
 func (s Source) String() string {
 	switch s.Kind {
-	case SourceSeed:
-		return sourceName(sourceSeed, "")
 	case SourceInput:
 		return sourceName(sourceInput, "")
 	case SourceNode:
@@ -58,8 +54,6 @@ func (s Source) String() string {
 // 就会漂（节点 id 恰好叫 `seed` 那条路径就是这么错的，见 source.go）。
 func publicSource(s source) Source {
 	switch s.kind {
-	case sourceSeed:
-		return Source{Kind: SourceSeed}
 	case sourceInput:
 		return Source{Kind: SourceInput}
 	case sourceNode:
@@ -114,11 +108,15 @@ type NodeShape struct {
 
 // BindShape 是一条父子接线：父侧那条 Key ↔ 子图**声明的端口**。
 type BindShape struct {
-	// Parent 是父侧的键名，Child 是子侧的端口名。
+	// Parent 是父侧的键名，Child 是子侧的端口名。`Fixed` 为真时父侧不参与，
+	// `Parent` 是空串。
 	Parent string
 	Child  string
 	// In 为真表示 `In(父, 子)`（父 → 子，父侧那条进 Requires）；为假是 `Out(子, 父)`。
 	In bool
+	// Fixed 为真表示这条**往子图**的接线送的是一个常量（`Fix` / `FixSkip`）：
+	// 值属于**挂载点**、不属于子图定义，父侧没有对应的键。
+	Fixed bool
 }
 
 // bindShapes 把接线翻成公开形状（`Sub` 装的节点才有）。
@@ -128,7 +126,8 @@ func bindShapes(binds []SubBind) []BindShape {
 	}
 	out := make([]BindShape, 0, len(binds))
 	for _, b := range binds {
-		out = append(out, BindShape{Parent: b.parent.name, Child: b.child.name, In: b.in})
+		out = append(out, BindShape{Parent: b.parent.name, Child: b.child.name,
+			In: b.intoChild(), Fixed: b.fix != nil})
 	}
 	return out
 }
@@ -242,24 +241,25 @@ func (g *Graph) sourceOfLocked(k keyRef) source {
 func (g *Graph) Topology() *Topology {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.topologyAtLocked("", mountChain{g})
+	return g.topologyAtLocked("", mountChain{g}, g.declaredCapacity())
 }
 
 // topologyAt 是递归的**入口**：自己加锁，再交给递归体（与 problemsAt 同一形状、同一理由：
-// 父图持着自己的锁，子图那把锁由子图自己取）。
-func (g *Graph) topologyAt(at string, chain mountChain) *Topology {
+// 父图持着自己的锁，子图那把锁由子图自己取）。`capacity` 是这一层继承下来的有效名额上限。
+func (g *Graph) topologyAt(at string, chain mountChain, capacity int) *Topology {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.topologyAtLocked(at, chain)
+	return g.topologyAtLocked(at, chain, capacity)
 }
 
 // topologyAtLocked 是递归主体：`at` 是这张图**在本视图里**的位置，`chain` 是从根挂到这张图
-// 的图链。调用方持 g.mu。
+// 的图链，`capacity` 是**这一层继承下来的**有效名额上限（静态视图只有定义，所以根那一层给
+// `declaredCapacity()`，往下每层按同一条优先级解析）。调用方持 g.mu。
 //
 // 锁次序：沿**静态挂载边**往下递归，每往下一层取那一层的锁；挂载边不可能成环
 // （`Sub` 在装配期就拒，且装配那一步是全局串行的），所以不会出现「A 等 B 的锁、B 等 A 的锁」。
 // 兜底判环在 `chain` 上——真成了环就地收住，不再往下展开（见 problemsSubAtLocked）。
-func (g *Graph) topologyAtLocked(at string, chain mountChain) *Topology {
+func (g *Graph) topologyAtLocked(at string, chain mountChain, capacity int) *Topology {
 	d := g.depGraphLocked()
 	inDeg := make([]int, len(g.nodes))
 	outDeg := make([]int, len(g.nodes))
@@ -291,7 +291,7 @@ func (g *Graph) topologyAtLocked(at string, chain mountChain) *Topology {
 			// 定义自己的字段一个字都不改——路径是这次视图里现推的，从不上定义。
 			// 环那一处**就地收住**（`Sub` 之后没有了）：展开不完，报由 Problems 出。
 			if !chain.has(n.child) {
-				ns.Sub = n.child.topologyAt(joinPath(at, n.id), chain.push(n.child))
+				ns.Sub = n.child.topologyAt(joinPath(at, n.id), chain.push(n.child), n.child.effectiveCapacity(capacity))
 			}
 		}
 		t.Nodes = append(t.Nodes, ns)
@@ -305,7 +305,7 @@ func (g *Graph) topologyAtLocked(at string, chain mountChain) *Topology {
 			})
 		}
 	}
-	t.Problems = g.problemsAtLocked(at, chain)
+	t.Problems = g.problemsAtLocked(at, chain, capacity)
 	return t
 }
 
@@ -356,12 +356,12 @@ type depGraph struct {
 // depGraphLocked 推导节点间依赖边。调用方持 g.mu。
 //
 // 建边判据：N 的某条 `Requires` 由节点 M 提供 → 边 M → N（M 必须先跑完）。
-// 来源**不是节点**的 Key 不建边：外部 `Seed` / `SkipSeed` 在 `Start` 之前就已经
-// 到达了，零值按「没有来源」处理。自环不可能出现——`Requires` 与 `Provides`
+// 来源**不是节点**的 Key 不建边：声明过的入口由这一次运行的输入喂（它不是「上游
+// 节点」），零值按「没有来源」处理。自环不可能出现——`Requires` 与 `Provides`
 // 同名的节点在 `Add` 就被拒。
 //
 // 判据读的一定是来源的 `kind`，**不能**拿来源名去查节点索引——一个真叫 `seed`
-// 的节点会让「来自外部 Seed 的 Key」凭空多出一条边和一个不存在的环（旧实现就是
+// 的节点会让「不是节点提供的那条键」凭空多出一条边和一个不存在的环（旧实现就是
 // 这么错的）。
 func (g *Graph) depGraphLocked() depGraph {
 	index := make(map[string]int, len(g.nodes))
@@ -378,7 +378,7 @@ func (g *Graph) depGraphLocked() depGraph {
 		for _, k := range n.requires {
 			src := g.producer[k.name]
 			if !src.present() || src.kind != sourceNode {
-				continue // 外部 Seed，或没人提供（后者由 problemsSourcesLocked 拦下）
+				continue // 输入端口 / 没人提供（后者由 problemsSourcesLocked 拦下）
 			}
 			pi, ok := index[src.nodeID]
 			if !ok {

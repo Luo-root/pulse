@@ -79,14 +79,15 @@ func TestAspectInheritedBySubGraph(t *testing.T) {
 	var r rec
 	var ran atomic.Int32
 	g := mustNew(t, ctx, "P", WithAspects(r.aspect("A")))
-	if err := Seed(g, in, "v"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 	child := childWith(t, ctx, "P/step", "c", 2, cin, func(*RunCtx) error { ran.Add(1); return nil })
 	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if got := ran.Load(); got != 2 {
@@ -109,7 +110,8 @@ func TestAspectInheritOrderOuterFirst(t *testing.T) {
 
 	var r rec
 	g := mustNew(t, ctx, "P", WithAspects(r.aspect("outer")))
-	if err := Seed(g, in, "v"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 	child := childWith(t, ctx, "P/step", "c", 1, cin, func(*RunCtx) error { return nil },
@@ -117,7 +119,7 @@ func TestAspectInheritOrderOuterFirst(t *testing.T) {
 	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	// 父侧那一步的 outer 包着**整段子图**（所以子图那个节点的进出在它里面）；
@@ -141,7 +143,8 @@ func TestAspectCutInheritanceKeepsOwnAndParentStep(t *testing.T) {
 	var r rec
 	var ran atomic.Int32
 	g := mustNew(t, ctx, "P", WithAspects(r.aspect("parent")))
-	if err := Seed(g, in, "v"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 	child := childWith(t, ctx, "P/step", "c", 2, cin, func(*RunCtx) error { ran.Add(1); return nil },
@@ -149,7 +152,7 @@ func TestAspectCutInheritanceKeepsOwnAndParentStep(t *testing.T) {
 	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if got := ran.Load(); got != 2 {
@@ -177,7 +180,8 @@ func TestAspectEmptyDeclIsNotCut(t *testing.T) {
 	var r rec
 	var empty []Aspect // 传进 WithAspects(empty...) 的一个空批次
 	g := mustNew(t, ctx, "P", WithAspects(r.aspect("A")))
-	if err := Seed(g, in, "v"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 	child := childWith(t, ctx, "P/step", "c", 2, cin, func(*RunCtx) error { return nil },
@@ -185,7 +189,7 @@ func TestAspectEmptyDeclIsNotCut(t *testing.T) {
 	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if got := r.count("A"); got != 3 {
@@ -205,7 +209,8 @@ func TestAspectInheritNoDuplicatePerDepth(t *testing.T) {
 
 	var r rec
 	g := mustNew(t, ctx, "P", WithAspects(r.aspect("A")))
-	if err := Seed(g, in, "v"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -229,7 +234,7 @@ func TestAspectInheritNoDuplicatePerDepth(t *testing.T) {
 	if err := Sub(g, "step1", "", []SubBind{In(in, l1)}, mid); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	want := "in A, in A, in A, BODY, out A, out A, out A"
@@ -251,7 +256,8 @@ func TestAspectCutAtMiddleLayerHidesGrandparent(t *testing.T) {
 
 	var r rec
 	g := mustNew(t, ctx, "P", WithAspects(r.aspect("A")))
-	if err := Seed(g, in, "v"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -275,7 +281,7 @@ func TestAspectCutAtMiddleLayerHidesGrandparent(t *testing.T) {
 	if err := Sub(g, "step1", "", []SubBind{In(in, l1)}, mid); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 

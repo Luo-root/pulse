@@ -1,6 +1,6 @@
 # 快速开始
 
-Pulse 是一个**一次性运行的图引擎**，外加一层**图观测**。本页跑通最短链路：**声明 Key → 装节点 → `Run` → 挂观测**。
+Pulse 是一个**数据到达驱动的图引擎**，外加一层**图观测**。本页跑通最短链路：**声明 Key → 装节点 → `Run` → 挂观测**。
 
 ## 环境要求
 
@@ -33,13 +33,17 @@ var (
 )
 
 func main() {
-	g, err := pulse.New(context.Background(), "docs-pipeline", "文档摘要流水线")
+	g, err := pulse.New("docs-pipeline", "文档摘要流水线")
 	if err != nil {
 		panic(err)
 	}
 
-	// Seed：运行前写入外部输入，声明 docs 的来源是宿主。
-	_ = pulse.Seed(g, Docs, []string{"pulse 只做编排与观测", "槽位三态：跳过也是到达"})
+	// DeclareInput：声明 docs 是这张图的入口——先声明，运行时才喂得进去。
+	must(g.DeclareInput(pulse.NewPort(Docs)))
+
+	// Seed：把这一轮运行的值写进 Inputs——喂值之前，那条键必须已经声明成入口。
+	var in pulse.Inputs
+	_ = pulse.Seed(&in, Docs, []string{"pulse 只做编排与观测", "槽位三态：跳过也是到达"})
 
 	// summarize 等 docs 到达后才进入 Run。
 	must(g.Add(pulse.NewNode("summarize", "把 docs 折成一段摘要",
@@ -67,7 +71,7 @@ func main() {
 			return pulse.Set(rc, Report, report)
 		})))
 
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), in); err != nil {
 		panic(err)
 	}
 	fmt.Println(report)
@@ -91,9 +95,9 @@ func must(err error) {
 | 你写的 | 它是什么 |
 |---|---|
 | `pulse.NewKey[T]("docs")` | **Key**：类型化数据槽。名字用于诊断与 YAML 对账，类型给编译期安全；同名必须以同一个 `T` 注册 |
-| `pulse.Seed(g, Docs, …)` | **Seed**：运行前写入外部输入——seed 与节点都是 Key 的来源，但每个 Key 只允许一个来源（两处都产 → `ErrDuplicateSource`） |
+| `pulse.DeclareInput(...)` + `pulse.Seed(&in, Docs, …)` | **入口 + Seed**：`DeclareInput` 声明「这条键从外面来」，`Seed` 把**这一次运行**的值写进 `Inputs`——每个 Key 只允许一个来源（声明过的入口，或恰好一个节点的 `Provides`；两处都产 → `ErrDuplicateSource`） |
 | `pulse.NewNode(id, description, Requires, Provides, run)` | **Node**：只声明读哪些槽、写哪些槽。它**不声明**下一个节点是谁 |
-| `g.Run()` | **Graph**：提交全部节点并阻塞到全部终止；返回首错，**不含跳过**；取消需由节点自己看见才算结果 |
+| `g.Run(ctx, in)` | **Graph**：为这一次运行新建一份 `Execution`、提交全部节点并阻塞到全部终止；返回首错，**不含跳过**；取消需由节点自己看见才算结果 |
 
 ## 数据到达即调度
 
@@ -101,15 +105,13 @@ func must(err error) {
 - 拓扑是**隐式的**：谁写 `summary`、谁读 `summary`，依赖就在那里。没有边对象，没有调度循环；
 - `Requires` 是 **AND** 前置：全部输入到达（就绪或跳过）才判门——**到几个收几个**，只要有一条真的到了值就执行（一条值都没到才不执行，见[核心概念](/guide/concepts)）。
 
-## 一次运行一个世界
+## 定义可复用，一次运行一个世界
 
-`Graph` 是**模板的一次实例**，不是可重跑的容器。这一条是对外契约，不是实现细节：
+`Graph` 是**可复用的静态定义**（节点、依赖、端口、挂载的子图），不是一次运行本身。这一条是对外契约，不是实现细节：
 
-- `Start()` 第二次调用返回 `ErrGraphStarted`；
-- 图启动后 `Seed` 同样被拒；槽位一旦到达即关闭，不会重开；
-- 同一张图要跑第二次，正确做法是再 `New` 一次——就像 CI/CD 的 workflow 定义被 run 无数遍，每遍是一个独立 run。
-
-跨运行的状态（历史、缓存、会话）**归调用方**，引擎不持有。理由见[核心概念](/guide/concepts)。
+- 同一张图可以顺序跑很多次、并发跑很多次、挂在多处当子图；一次运行的取消 / 失败 / 完成不污染定义，也不污染别的运行；
+- `g.Run(ctx, in)` 每次调用都是**独立的一次运行**（内部就是 `NewExecution` + `Start` + `Wait`）；要分步控制就自己建一份 `Execution`，它的 `Start()` 只能成功一次，槽位一旦到达即关闭、不会重开；
+- 跨运行的状态（历史、缓存、会话）**归调用方**，引擎不持有。理由见[核心概念](/guide/concepts)。
 
 ## 加一层观测：三行
 
@@ -122,7 +124,7 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 	HostID:  "quickstart",
 	TraceID: observe.NewTraceID(),
 })
-g, err := pulse.New(ctx, "docs-pipeline", "文档摘要流水线", pulse.WithObserver(obs))
+g, err := pulse.New("docs-pipeline", "文档摘要流水线", pulse.WithObserver(obs))
 ```
 
 加上这三行后，同一张图的真实输出（运行级两条夹住节点四条；时间戳 / trace / 耗时随运行变化）：

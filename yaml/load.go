@@ -1,7 +1,6 @@
 package yaml
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"time"
@@ -86,21 +85,29 @@ type SeedPlanEntry struct {
 	From SeedFrom
 }
 
-// SeedPlan 装图产物：宿主按条目执行 Seed/SkipSeed。
+// SeedPlan 装图产物：宿主按条目给**这一次运行**的输入。
+//
+// 它**不再往图里写值**：值属于一次运行，`Graph` 是定义。宿主拿到图之后按需要跑几次就
+// 调几次 `Inputs`（每个执行一份输入；同一份 `Inputs` 传给两次运行也是两次独立的运行，
+// 但通常每次新取一份更清楚）。
 type SeedPlan struct {
 	Entries []SeedPlanEntry
 	reg     *pulse.Registry
 }
 
-// Apply 由宿主调用。resolve 负责 literal 以外的取值。
-func (p *SeedPlan) Apply(g *pulse.Graph, resolve func(SeedFrom) (any, error)) error {
+// Inputs 把计划解析成一次运行的输入。resolve 负责 literal 以外的取值。
+//
+// 每条条目按登记表解析键名与类型记号（`reg.ResolveKey`），值再按目标类型做形状对齐
+// ——与 `pulse.SeedByName` 同一条判据。
+func (p *SeedPlan) Inputs(resolve func(SeedFrom) (any, error)) (pulse.Inputs, error) {
+	var in pulse.Inputs
 	if p == nil {
-		return nil
+		return in, nil
 	}
 	for _, e := range p.Entries {
 		if e.Skip {
-			if err := pulse.SkipSeedByName(g, p.reg, e.Name, e.Type); err != nil {
-				return err
+			if err := pulse.SkipSeedByName(&in, p.reg, e.Name, e.Type); err != nil {
+				return in, err
 			}
 			continue
 		}
@@ -110,31 +117,26 @@ func (p *SeedPlan) Apply(g *pulse.Graph, resolve func(SeedFrom) (any, error)) er
 			v = e.From.Value
 		default:
 			if resolve == nil {
-				return fmt.Errorf("pulse/yaml: seed kind %q needs resolve func", e.From.Kind)
+				return in, fmt.Errorf("pulse/yaml: seed kind %q needs resolve func", e.From.Kind)
 			}
 			got, err := resolve(e.From)
 			if err != nil {
-				return err
+				return in, err
 			}
 			v = got
 		}
-		if err := pulse.SeedByName(g, p.reg, e.Name, e.Type, v); err != nil {
-			return err
+		if err := pulse.SeedByName(&in, p.reg, e.Name, e.Type, v); err != nil {
+			return in, err
 		}
 	}
-	return nil
+	return in, nil
 }
 
 // LoadOptions 装图选项。GraphID 必填（图身份，空串 Load 报错）——
 // 观测记录靠它区分「运行的是哪张图」。
 type LoadOptions struct {
-	// Context 是**根图**的 ctx：宿主取消它 = 取消这次运行（子图跟着停）。
-	//
-	// 子图**定义不挂**宿主的 ctx：静态挂载的子图是装配期建好的定义，取消是运行期从
-	// **挂载点**转发进去的（`pulse.Sub` 把父节点这一层的取消转发进子图，见
-	// runStaticSub）；挂在宿主 ctx 上只会让每一次 `Load` 都在宿主 ctx 上多挂几层
-	// （热重载反复装图 = 越攒越多）。`""` = `context.Background()`。
-	Context context.Context
+	// GraphID 是**根图**的身份（必填，空串 Load 报错）——观测记录靠它区分「运行的是
+	// 哪张图」。**一次运行**的身份由引擎给（`Execution.ID()`），同一张图跑两次靠它分开。
 	GraphID string
 	// Graph 是**根图**的选项（WithObserver / WithAspects / WithMaxRunning…）。
 	// 子图**不再拿这批**——三个图级选项都靠**继承**往下走（观察者、名额、图级切面），
@@ -187,7 +189,7 @@ func checkGraph(id string, opts LoadOptions) (*pulse.Graph, error) {
 		o = append(o, pulse.WithMaxRunning(opts.MaxRunning))
 	}
 	// 描述给空串：校验图只装不跑，装完就丢，任何出口都不会拿它去见人。
-	return pulse.New(context.Background(), id, "", o...)
+	return pulse.New(id, "", o...)
 }
 
 // Load 把 YAML 文档装成 Graph + SeedPlan。
@@ -219,25 +221,25 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 		return nil, nil, err
 	}
 	referenced := referencedGraphs(doc)
-	ctx := opts.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
-	// 装图分两遍，判据只写一份：先装一棵**只装不跑的校验树**（子图一律静态挂、
-	// 整棵建在 `context.Background()` 上、不建出口），等它整棵过完，再用同一段装配
-	// 代码装真图。
+	// 装图分两遍，判据只写一份：先装一棵**只装不跑的校验树**（子图一律静态挂、不建出口），
+	// 等它整棵过完，再用同一段装配代码装真图。
 	//
-	// 为什么是这个顺序：真图要从**宿主 ctx** 派生，而 `Load` 失败时返回值只有
-	// `(nil, nil, err)`——调用方连取消它的把手都没有，同一份坏文档反复加载
-	// （热重载）就会在宿主 ctx 上越攒越多。所以「所有可能失败的校验」必须排在
-	// 「动宿主 ctx 建根图」之前，而校验树整棵都不碰宿主的那份 ctx，可以在前面随便建。
+	// 两条边界的来历，写在这里免得再推一遍：
+	//
+	//   - **`Load` 不再碰任何 ctx**：一次运行在谁的取消域里跑是 `Run` / `NewExecution`
+	//     那时候的事（`LoadOptions.Context` 因此删掉了——留着它只会是个静默失效的旋钮）。
+	//     图是**定义**，定义没有生命周期；
+	//   - **失败时不留下任何东西**：`Load` 失败只返回 `(nil, nil, err)`，调用方连把手都
+	//     没有，所以「所有可能失败的校验」必须排在「把图交出去」之前。今天整棵装配都不碰
+	//     外部资源（图是纯内存定义），所以这条是自动成立的——写下来是为了别在将来往
+	//     `Load` 里塞一个需要回收的东西。
 	//
 	// 校验树里**每个引用点各是一张实例**：同一张 spec 挂两处，两边的 `in:` 可以不一样，
 	// 而「子图里这条键有没有来源」正是按引用点成立的——有一处没喂，那张图跑到就一定会挂。
 	// 按并集校验会把这种图放过去（#298 的口径）。每张实例的子图端口也按**那一处**的
-	// `in:` / `out:` 声明（见 assembler.declarePorts），所以两处看到的接口面本来就是
-	// 两份，报错点的是各自那条挂载路径（`step1/inner`）。
+	// `in:` / `out:` / `seeds:` 声明（见 assembler.declarePorts），所以两处看到的接口面
+	// 本来就是两份，报错点的是各自那条挂载路径（`step1/inner`）。
 	a := &assembler{doc: doc, reg: reg, opts: opts, check: true}
 	checkRoot, err := checkGraph(opts.GraphID, opts)
 	if err != nil {
@@ -248,7 +250,7 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	// id 报出来。子图那一层在它自己的 `buildChild` 里当场校验（连同子树）。
 	//
 	// 根图**自己**那几条静态判据（每个 `Requires` 有来源 / 依赖无环 / 流式）不在这里查：
-	// 根层的外部输入是宿主在 `Load` 之后种进去的（`SeedPlan.Apply`），装图期看它当然是
+	// 根层的外部输入是宿主在 `Load` 之后种进去的（`SeedPlan.Inputs`），装图期看它当然是
 	// 「没人提供」——任何一份 `seeds:` 正常的文档都会被误报。「声明归端口、值归运行输入」
 	// 是阶段 2 随 `Execution` 落地的事，所以根层那几条仍在 `Start` 那一刻报（与今天一致）。
 	if err := a.addNodes(checkRoot, doc.Nodes, mount{id: opts.GraphID}); err != nil {
@@ -275,7 +277,7 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 			return nil, nil, err
 		}
 		for _, s := range spec.Seeds {
-			if err := seedOne(g, name, s, reg); err != nil {
+			if err := seedOne(reg, name, s); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -287,9 +289,9 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 		}
 	}
 
-	// 宿主的 seeds 也先在装图之前对完账：这条检查会失败，而它原来排在根图
-	// 后面——失败返回 `nil, nil, err` 时，那张刚建好的根图连同它派生出去的
-	// ctx 就没人认领了（同一份坏文档反复加载 = 宿主 ctx 越挂越多）。
+	// 宿主的 seeds 也在装图之前对完账：这条检查会失败，而它原来排在根图
+	// 后面——失败返回 `nil, nil, err` 时，那张刚建好的根图就没人认领了
+	// （同一份坏文档反复加载 = 每次都留下一张）。
 	plan := &SeedPlan{reg: reg}
 	for i, s := range doc.Seeds {
 		if _, err := reg.ResolveKey(s.Key.Name, s.Key.Type); err != nil {
@@ -303,35 +305,57 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 		})
 	}
 
-	// 所有**可能失败**的校验都过了，才动宿主的 ctx：从这里往下一路成功，
-	// `Load` 要么把图交出去（调用方接管它的生死），要么在 `New` 这一步就
-	// 因为 graphID 空拒掉（那个检查在函数开头做过）。
+	// 所有**可能失败**的校验都过了，才把真图装出来交出去。
 	//
 	// 真图用的是**同一段**装配代码（`a.check` 关掉即可）：装的形状、接线检查、
-	// 端口声明与校验树逐字一致。两遍真正的差别只有两处，都写在这里免得再推一遍：
+	// 端口声明与校验树逐字一致。两遍真正的差别只有一处：
 	//
-	//  1. **根图那份 ctx**：校验树的根图建在 `context.Background()` 上（见 checkGraph），
-	//     真图的根图继承宿主 ctx。子图**两边都不挂**宿主 ctx——静态挂载的子图定义没有要
-	//     取消的东西，取消是运行期从挂载点转发进去的（见 runStaticSub），所以 buildChild
-	//     两遍都用 `context.Background()`；
-	//  2. **出口**：只有真图按层建 `ObserverFor`（见 buildChild），校验树一个记录都不产生。
+	//   - **出口**：只有真图按层建 `ObserverFor`（见 buildChild），校验树一个记录都不产生。
+	//
+	// ctx 两边都不碰：图是定义，一次运行在谁的取消域里跑是 `Run` / `NewExecution` 的事。
 	//
 	// 另外校验树那遍会逐张挂载点调 `child.Validate()`（见 addSubNode），真图那遍不调——
-	// 校验树已经把整棵子树判过并**封口**了（Validate 封的是整棵子树），
-	// 而 `Load` 交出去的真图要留给宿主 `Seed` / `Start`（那两者不受封口影响）。
+	// 校验树已经把整棵子树判过并**封口**了（Validate 封的是整棵子树），而封口只挡「改定义」，
+	// 不挡运行：`Load` 交出去的真图照样能跑很多次（`Run` / `NewExecution`）。
 	a.check = false
 	rootOpts := append([]pulse.Option(nil), opts.Graph...)
 	if opts.MaxRunning > 0 {
 		rootOpts = append(rootOpts, pulse.WithMaxRunning(opts.MaxRunning)) // 放最后：整棵树的额度压过 Graph 里的每层一份
 	}
-	g, err := pulse.New(ctx, opts.GraphID, doc.Description, rootOpts...)
+	g, err := pulse.New(opts.GraphID, doc.Description, rootOpts...)
 	if err != nil {
 		return nil, nil, err
 	}
 	if err := a.addNodes(g, doc.Nodes, mount{id: opts.GraphID}); err != nil {
 		return nil, nil, err
 	}
+	// 顶层 `seeds:` 那几条键是**根图的入口**：值由宿主在运行前给（`SeedPlan.Inputs`），
+	// 而「声明归端口、值归运行输入」之后不声明就成了「没人提供、也不是入口」。
+	// 声明之后：`Validate()` 分得清「宿主忘了喂」与「没人会写它」，
+	// `NewExecution` 也能在启动前把「这一次没喂」当场报出来。
+	if err := declareSeedInputs(g, doc.Seeds, reg); err != nil {
+		return nil, nil, fmt.Errorf("pulse/yaml: seeds: %w", err)
+	}
 	return g, plan, nil
+}
+
+// declareSeedInputs 把 `seeds:` 里那几条键声明成**这一层的入口**。
+//
+// 根层用它（见 Load）；子图那一层的对应物是 `declarePorts` 里那段（子图自己 seeds 的键
+// 也是它的入口，值来自挂载点上的 `Fix` 绑定）。
+func declareSeedInputs(g *pulse.Graph, seeds []SeedSpec, reg *pulse.Registry) error {
+	if len(seeds) == 0 {
+		return nil
+	}
+	ports := make([]pulse.Port, 0, len(seeds))
+	for _, s := range seeds {
+		ref, err := reg.ResolveKey(s.Key.Name, s.Key.Type)
+		if err != nil {
+			return err
+		}
+		ports = append(ports, pulse.PortRef(ref))
+	}
+	return g.DeclareInput(ports...)
 }
 
 // at 给一条装图期报错标出「这是哪张 spec 里的」：根层为空串（不写），子图写

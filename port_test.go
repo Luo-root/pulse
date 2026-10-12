@@ -11,7 +11,7 @@ import (
 //
 // 这一组管三件事：
 //  1. 入口声明让「这本来就是外部输入」与「你忘了接线」分得开（前者不该被报成毛病）；
-//  2. 静态拓扑里入口的来源是 `SourceInput`，与运行期的 `SourceSeed` 分得开、也不建边；
+//  2. 静态拓扑里入口的来源是 `SourceInput`（定义层「外部来源」只有这一种写法）、也不建边；
 //  3. 声明是两段式的（失败不留痕），封口之后不再接受声明。
 func TestDeclareInputPorts(t *testing.T) {
 	ctx := context.Background()
@@ -25,7 +25,7 @@ func TestDeclareInputPorts(t *testing.T) {
 			return Set(rc, out, "v")
 		}))
 		err := g.Validate()
-		if err == nil || !strings.Contains(err.Error(), "nothing provides or seeds it") {
+		if err == nil || !strings.Contains(err.Error(), "nothing provides it") {
 			t.Fatalf("缺来源该被报，got %v", err)
 		}
 	})
@@ -53,16 +53,16 @@ func TestDeclareInputPorts(t *testing.T) {
 		if got := from.String(); got != "input" {
 			t.Fatalf("SourceInput.String() = %q, want %q", got, "input")
 		}
-		// 入口是**外部**来源，与 Seed 一样不建边
+		// 入口是外部来源，不参与建边（它不是「上游节点」）
 		if len(top.Edges) != 0 {
 			t.Fatalf("入口不该参与建边，got %+v", top.Edges)
 		}
 
-		// 运行期照旧：Seed 就是「这一次给入口喂值」
-		if err := Seed(g, in, "from-host"); err != nil {
+		// 运行期：Seed 就是「这一次给入口喂值」（声明得排在 Validate 之前——通过即封口）
+		if err := seedOn(g, in, "from-host"); err != nil {
 			t.Fatalf("Seed 到声明的入口 = %v", err)
 		}
-		if err := g.Run(); err != nil {
+		if err := runOn(g); err != nil {
 			t.Fatalf("Run = %v", err)
 		}
 	})
@@ -126,25 +126,29 @@ func TestDeclareInputPorts(t *testing.T) {
 		}
 	})
 
-	// 另一个冻结点：图**跑起来**之后（`Start` 成功）同样不再接受改定义。判据与 `Add` 同源，
-	// 但报文不同——两个触发点共用一个哨兵，靠报文分得开（见 ErrGraphStarted 的 godoc）。
-	t.Run("跑起来的图也不能再声明端口，且报文说的是「已经启动」不是「封口」", func(t *testing.T) {
+	// 另一个冻结点：图**跑起来**之后（`Start` 成功）同样不再接受改定义——`Start` 成功会
+	// 顺带封整棵树，所以判据与「通过即封口」是同一条；两个触发点共用 ErrGraphStarted，
+	// 报文把两个都点出来（见 errSealed）。
+	t.Run("跑起来的图也不能再声明端口，报文把两个触发点都点出来", func(t *testing.T) {
 		g := mustNew(t, ctx, "started-declare")
-		if err := Seed(g, other, "v"); err != nil { // 空图也要有条来源才过静态校验
+		declareIn(t, g, NewPort(other))
+		if err := seedOn(g, other, "v"); err != nil { // 空图也要有条来源才过静态校验
 			t.Fatalf("Seed = %v", err)
 		}
-		if err := g.Start(); err != nil {
+		if err := startOn(g); err != nil {
 			t.Fatalf("Start = %v", err)
 		}
 		for _, err := range []error{g.DeclareInput(NewPort(in)), g.DeclareOutput(NewPort(out))} {
 			if !errors.Is(err, ErrGraphStarted) {
 				t.Fatalf("启动之后再声明该被拒，got %v", err)
 			}
-			if err == nil || !strings.Contains(err.Error(), "already started") || strings.Contains(err.Error(), "sealed") {
-				t.Fatalf("报文该说清是「已经启动」，got %v", err)
+			// 封口与「跑过了」是同一个判据的两个触发点（`Start` 成功也封整棵树），
+			// 报文把两个都点出来：单看报文的人得知道自己是踩了哪一个。
+			if err == nil || !strings.Contains(err.Error(), "sealed") || !strings.Contains(err.Error(), "started") {
+				t.Fatalf("报文该把「通过即封口」与「已经启动」都点出来，got %v", err)
 			}
 		}
-		if err := g.Wait(); err != nil {
+		if err := waitOn(g); err != nil {
 			t.Fatalf("Wait = %v", err)
 		}
 	})
@@ -223,7 +227,7 @@ func TestDeclareOutputNeedsProducer(t *testing.T) {
 			t.Fatalf("声明的出口没人产出该在装配期报，got %v", err)
 		}
 		// 一份判据、两个入口：Validate 与 Start 报的是同一句话
-		if serr := g.Start(); serr == nil || serr.Error() != err.Error() {
+		if serr := startOn(g); serr == nil || serr.Error() != err.Error() {
 			t.Fatalf("Validate 与 Start 的判据不一致：\nValidate %v\nStart    %v", err, serr)
 		}
 		var found bool
@@ -315,5 +319,67 @@ func TestDeclareOutputNeedsProducer(t *testing.T) {
 			!strings.Contains(err.Error(), "is never produced") {
 			t.Fatalf("报文该点明是哪里挂的子图、病在出口上，got %v", err)
 		}
+	})
+}
+
+// TestInputPortAndProducerConflict 一个键恰好一个来源，而**声明过的进口也是来源**——它只是
+// 不落在 producer 表里（那张表回答「谁会写这条槽」，端口回答「这张图接受什么」）。
+//
+// 于是「这条键既有节点产出、又声明成进口」这个状态，两个动作谁先谁后都该在装配期被拒：
+// 它过得了 `Validate`，却是一个**用不了的入口**——喂值会撞「图内已有来源」，不喂又等于白声明。
+// 判据只写一份（两个方向同一句话的两个面），都撞 `ErrDuplicateSource`。
+func TestInputPortAndProducerConflict(t *testing.T) {
+	ctx := context.Background()
+	k := NewKey[string]("ds.k")
+
+	t.Run("先声明进口，再 Add 产出它的节点", func(t *testing.T) {
+		g := mustNew(t, ctx, "ds1")
+		declareIn(t, g, NewPort(k))
+		err := g.Add(NewNode("prod", "", nil, Provides(k), func(rc *RunCtx) error { return Set(rc, k, "v") }))
+		if err == nil {
+			t.Fatal("Add 该拒：这条键已经是声明过的进口")
+		}
+		if !errors.Is(err, ErrDuplicateSource) {
+			t.Fatalf("Add = %v，want 撞来源冲突（%s）", err, ErrDuplicateSource)
+		}
+		for _, want := range []string{k.Name(), `declared input`, `"ds1"`, `"prod"`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("报文该含 %q，got %v", want, err)
+			}
+		}
+		// all-or-nothing：被拒的那一批什么都不留。
+		if err := g.Add(NewNode("other", "", nil, Provides(NewKey[string]("ds1.other")), func(rc *RunCtx) error { return nil })); err != nil {
+			t.Fatalf("失败的 Add 在图里留下了痕迹：%v", err)
+		}
+	})
+
+	t.Run("先 Add，再声明进口", func(t *testing.T) {
+		g := mustNew(t, ctx, "ds2")
+		mustAdd(t, g, NewNode("prod", "", nil, Provides(k), func(rc *RunCtx) error { return Set(rc, k, "v") }))
+		err := g.DeclareInput(NewPort(k))
+		if err == nil {
+			t.Fatal("DeclareInput 该拒：这条键在图内已经有来源")
+		}
+		if !errors.Is(err, ErrDuplicateSource) {
+			t.Fatalf("DeclareInput = %v，want 撞来源冲突（%s）", err, ErrDuplicateSource)
+		}
+		for _, want := range []string{k.Name(), `provided inside this graph`, `"prod"`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("报文该含 %q，got %v", want, err)
+			}
+		}
+		// 失败的声明不留痕：端口表里没有它，图照样跑得通（产出还是节点那一份）。
+		if _, ok := g.inPorts[k.name]; ok {
+			t.Fatal("失败的 DeclareInput 把端口写进了表")
+		}
+		if err := g.Run(ctx, Inputs{}); err != nil {
+			t.Fatalf("被拒的那次声明该什么都没留下：%v", err)
+		}
+	})
+
+	t.Run("同一条键**只是**重复声明成进口照旧幂等", func(t *testing.T) {
+		g := mustNew(t, ctx, "ds3")
+		declareIn(t, g, NewPort(k))
+		declareIn(t, g, NewPort(k))
 	})
 }

@@ -1,7 +1,6 @@
 package pulse
 
 import (
-	"context"
 	"testing"
 )
 
@@ -49,11 +48,11 @@ func TestRegisterKeyTypeTag(t *testing.T) {
 func TestSeedByNameAssignable(t *testing.T) {
 	r := NewRegistry()
 	MustRegisterKey(r, NewKey[string]("demo.s"))
-	g := mustNew(t, context.Background(), "test")
-	if err := SeedByName(g, r, "demo.s", "string", "hi"); err != nil {
+	var in Inputs
+	if err := SeedByName(&in, r, "demo.s", "string", "hi"); err != nil {
 		t.Fatal(err)
 	}
-	if err := SeedByName(g, r, "demo.s", "string", 1); err == nil {
+	if err := SeedByName(&in, r, "demo.s", "string", 1); err == nil {
 		t.Fatal("int not assignable to string")
 	}
 }

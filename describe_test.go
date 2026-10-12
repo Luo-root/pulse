@@ -1,14 +1,13 @@
 package pulse
 
 import (
-	"context"
 	"testing"
 )
 
 // 描述是**构造参数**、不是 Option：#303 阶段一的三处（图 / 节点 / `Sub` 那一步）
 // 都能读回来，空串合法，且入图后不再变（只由构造函数写入，没有 setter）。
 func TestDescriptionRoundTrip(t *testing.T) {
-	g, err := New(context.Background(), "P", "主流程")
+	g, err := New("P", "主流程")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,10 +23,10 @@ func TestDescriptionRoundTrip(t *testing.T) {
 	// `Sub` 那一步的描述落在**父侧那个节点**上（子图自己的描述走它自己的 `New`）。
 	in := NewKey[string]("desc.in")
 	cin := NewKey[string]("desc.cin")
-	if err := Seed(g, in, "v"); err != nil {
+	if err := Seed(&pendingOf(g).in, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	inner, err := New(context.Background(), "P/step", "内层子图")
+	inner, err := New("P/step", "内层子图")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +51,7 @@ func TestDescriptionRoundTrip(t *testing.T) {
 	}
 
 	// 空串 = 没写，合法。
-	empty, err := New(context.Background(), "Q", "")
+	empty, err := New("Q", "")
 	if err != nil {
 		t.Fatal(err)
 	}

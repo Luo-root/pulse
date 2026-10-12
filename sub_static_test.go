@@ -48,13 +48,14 @@ func TestStaticSub(t *testing.T) {
 		if err := Sub(d, "mount", "挂现成子图", []SubBind{In(in, ks[0]), Out(ks[1], out)}, child); err != nil {
 			t.Fatalf("Sub = %v", err)
 		}
-		if err := Seed(d, in, "host"); err != nil {
+		declareIn(t, d, NewPort(in))
+		if err := seedOn(d, in, "host"); err != nil {
 			t.Fatalf("Seed = %v", err)
 		}
-		if err := d.Run(); err != nil {
+		if err := runOn(d); err != nil {
 			t.Fatalf("Run = %v", err)
 		}
-		st, got := d.slotOf(out.asRef()).snapshot()
+		st, got := slotOn(d, out.asRef())
 		if st != slotReady {
 			t.Fatalf("父侧输出该就绪，got state=%v", st)
 		}
@@ -129,28 +130,41 @@ func TestStaticSub(t *testing.T) {
 		}
 	})
 
-	t.Run("同一张子图挂两处：装配期放过、跑的时候说清只能跑一处", func(t *testing.T) {
-		in := NewKey[string]("tw.in")
+	t.Run("同一张子图挂两处：两处都跑，各读自己的输入、各桥回自己的父侧输出", func(t *testing.T) {
+		in1 := NewKey[string]("tw.in1")
+		in2 := NewKey[string]("tw.in2")
 		out1 := NewKey[string]("tw.out1")
 		out2 := NewKey[string]("tw.out2")
 		child, ks := childWithPorts(t, "tw.child")
 
 		d := mustNew(t, ctx, "tw.parent")
-		for i, o := range [2]Key[string]{out1, out2} {
+		declareIn(t, d, NewPort(in1))
+		if err := seedOn(d, in1, "one"); err != nil {
+			t.Fatalf("Seed = %v", err)
+		}
+		declareIn(t, d, NewPort(in2))
+		if err := seedOn(d, in2, "two"); err != nil {
+			t.Fatalf("Seed = %v", err)
+		}
+		for i, pair := range [][2]Key[string]{{in1, out1}, {in2, out2}} {
 			step := []string{"m1", "m2"}[i]
-			if err := Sub(d, step, "", []SubBind{In(in, ks[0]), Out(ks[1], o)}, child); err != nil {
+			if err := Sub(d, step, "", []SubBind{In(pair[0], ks[0]), Out(ks[1], pair[1])}, child); err != nil {
 				t.Fatalf("装配第 %d 处 = %v", i+1, err)
 			}
 		}
-		if err := Seed(d, in, "host"); err != nil {
-			t.Fatalf("Seed = %v", err)
+		if err := runOn(d); err != nil {
+			t.Fatalf("同一张子图挂两处该**都跑起来**（每个挂载位置一份子执行）：%v", err)
 		}
-		err := d.Run()
-		if !errors.Is(err, ErrGraphStarted) {
-			t.Fatalf("跑到第二处该报 ErrGraphStarted，got %v", err)
+		// 判据是「两处各拿到自己那一份」——只判「都跑完了」兜不住「其实共用了一份状态」。
+		if _, v1 := slotOn(d, out1.asRef()); v1 != "child(one)" {
+			t.Fatalf("第一处桥回父侧的是 %q，want child(one)", v1)
 		}
-		if err == nil || !strings.Contains(err.Error(), "can run at one mount point only") {
-			t.Fatalf("报文要说清静态挂载只能跑一处、每个挂载点各跑一份要等执行树，got %v", err)
+		if _, v2 := slotOn(d, out2.asRef()); v2 != "child(two)" {
+			t.Fatalf("第二处桥回父侧的是 %q，want child(two)", v2)
+		}
+		// 定义也不该被这两次运行写脏。
+		if err := child.Validate(); err != nil {
+			t.Fatalf("跑完之后子图自己的定义该原样：%v", err)
 		}
 	})
 
@@ -181,12 +195,13 @@ func TestStaticSub(t *testing.T) {
 		if err := Sub(d, "mount", "", []SubBind{In(in, in), Out(out, out)}, child); err != nil {
 			t.Fatalf("Sub = %v", err)
 		}
-		if err := Seed(d, in, "host"); err != nil {
+		declareIn(t, d, NewPort(in))
+		if err := seedOn(d, in, "host"); err != nil {
 			t.Fatalf("Seed = %v", err)
 		}
 		time.AfterFunc(20*time.Millisecond, cancel)
 
-		err := d.Run()
+		err := runOn(d)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("父图被取消时该报取消，got %v（旧行为是子图跑满、父图报成功）", err)
 		}
@@ -311,13 +326,14 @@ func TestSubPassThroughPort(t *testing.T) {
 		if err := Sub(root, "step", "", []SubBind{In(in, k), Out(k, out)}, child); err != nil {
 			t.Fatalf("透传（一条 In + 一条 Out 打在同一条端口上）该被接受，got %v", err)
 		}
-		if err := Seed(root, in, "hello"); err != nil {
+		declareIn(t, root, NewPort(in))
+		if err := seedOn(root, in, "hello"); err != nil {
 			t.Fatal(err)
 		}
 		if err := root.Validate(); err != nil {
 			t.Fatalf("Validate = %v", err)
 		}
-		if err := root.Run(); err != nil {
+		if err := runOn(root); err != nil {
 			t.Fatalf("Run = %v", err)
 		}
 		select {
@@ -341,10 +357,11 @@ func TestSubPassThroughPort(t *testing.T) {
 		if err := Sub(root, "step", "", []SubBind{In(in, k), Out(k, o1), Out(k, o2)}, child); err != nil {
 			t.Fatalf("同一条出口推给两个父侧键该被接受，got %v", err)
 		}
-		if err := Seed(root, in, "v"); err != nil {
+		declareIn(t, root, NewPort(in))
+		if err := seedOn(root, in, "v"); err != nil {
 			t.Fatal(err)
 		}
-		if err := root.Run(); err != nil {
+		if err := runOn(root); err != nil {
 			t.Fatalf("Run = %v", err)
 		}
 		for i, ch := range []chan string{got1, got2} {
@@ -374,30 +391,38 @@ func TestSubPassThroughPort(t *testing.T) {
 	})
 }
 
-// 同一条进口在**子图内部**有来源（某个节点 `Provides` 它）：父侧那次 `In` 种值会撞
-// `ErrDuplicateSource`（一条键恰好一个来源）。与上一条同族——都是「父侧的 `In` 不可能
-// 生效」，也都能在装配期读一遍声明就定掉，别留到这一步真跑起来。
+// 同一条进口在**子图内部**有来源：父侧那次 `In` 不可能生效（一条键恰好一个来源），
+// 装配期就拒。
+//
+// 这里守的是那个形状的**剩下那一半**：子图内部自己产出这条键、却**没有**声明成端口——
+// 报文点明「它不是这张图的输入端口」（子图内部那条键是实现细节，要对外就用 `DeclareOutput`
+// 说出来）。
+//
+// 旧版本这条用例测的是另一半（子图声明了进口、内部又有节点产出它，于是挂载点报
+// `is provided inside the child by node "prod"`）：那半句随判据**提前**消失——那个状态现在
+// 根本建不出来，「一条键既是声明过的进口、又有节点产出它」在声明那一刻就撞 `ErrDuplicateSource`
+// （`DeclareInput` 与 `Add` 两个方向同一句话，见 port.go / graph.go 的 addAllLocked，
+// 用例 `TestInputPortAndProducerConflict`）。判据一条没少，只是更早。
 func TestSubRejectsInletProvidedInside(t *testing.T) {
 	ctx := context.Background()
 	k := NewKey[string]("pin.child.k")
 	child := mustNew(t, ctx, "pin.child")
-	if err := child.DeclareInput(NewPort(k)); err != nil {
-		t.Fatal(err)
-	}
 	mustAdd(t, child, NewNode("prod", "", nil, Provides(k), func(rc *RunCtx) error {
 		return Set(rc, k, "inside")
 	}))
 	in := NewKey[string]("pin.in")
 	root := mustNew(t, ctx, "pin")
-	if err := Seed(root, in, "v"); err != nil {
+	declareIn(t, root, NewPort(in))
+	if err := seedOn(root, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 	err := Sub(root, "step", "", []SubBind{In(in, k)}, child)
-	if err == nil || !strings.Contains(err.Error(), "is provided inside the child by node \"prod\"") {
-		t.Fatalf("Sub = %v，want 装配期就报「子图内部有人产出它」并点到那个节点", err)
+	if err == nil || !strings.Contains(err.Error(), "is not a input port of the child graph") {
+		t.Fatalf("Sub = %v，want 装配期就报「它不是子图的输入端口」", err)
 	}
-	if !strings.Contains(err.Error(), "already has a source") {
-		t.Fatalf("报文该点明撞的是来源冲突（%s），got %v", ErrDuplicateSource, err)
+	// 补上那张声明也不行：这条键已经有来源（子图里那个节点），声明进口当场撞来源冲突。
+	if err := child.DeclareInput(NewPort(k)); !errors.Is(err, ErrDuplicateSource) {
+		t.Fatalf("DeclareInput(已经被产出的键) = %v, want ErrDuplicateSource", err)
 	}
 }
 
@@ -407,8 +432,10 @@ func TestSubRejectsInletProvidedInside(t *testing.T) {
 // 而闭包没有可查的标识——实测同一份 `Retry` 字面量造出来的两个闭包，`reflect` 给出的
 // 指针都不同（`Retry(1,0)` 与 `Retry(2,0)` 差 0x220）。所以判据放在 `Retry` 自己身上。
 //
-// 不拒的话会静默接受，然后第二次 attempt 报一句「子图已经在用」——那句话把第一次失败的
-// 真正原因盖掉（`Retry` 返回的是**最后一次** attempt 的错误），病根再也看不到。
+// 不拒的话会静默接受，而第二次 attempt 会把整棵子树再跑一遍（阶段 2 之后每次尝试确实
+// 建得起一份新的子执行），可它的输出桥回父侧时会被幂等首写静默丢掉——父图手里是「一半
+// 第一次、一半第二次」的混装；同时那一句还盖掉第一次失败的真正原因（`Retry` 返回的是
+// **最后一次** attempt 的错误），病根再也看不到。缺的是 attempt 级的写集（阶段 3）。
 func TestRetryOnSubgraphStepIsRefusedAtRun(t *testing.T) {
 	ctx := context.Background()
 	k := NewKey[string]("rtry.child.k")
@@ -435,19 +462,23 @@ func TestRetryOnSubgraphStepIsRefusedAtRun(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := mustNew(t, ctx, "rtry")
-			if err := Seed(root, in, "v"); err != nil {
+			declareIn(t, root, NewPort(in))
+			if err := seedOn(root, in, "v"); err != nil {
 				t.Fatal(err)
 			}
 			// 装配期放行（认不出来）——契约是「进 Run 第一件事就拒」，不是「装不上」。
 			if err := Sub(root, "step", "", []SubBind{In(in, k)}, child, tc.aspects...); err != nil {
 				t.Fatalf("当前口径是运行期拒，装配期不该报错，got %v", err)
 			}
-			err := root.Run()
+			err := runOn(root)
 			if err == nil || !strings.Contains(err.Error(), "Retry is not supported on a graph step") {
 				t.Fatalf("Run = %v，want 点名 Retry 的那句", err)
 			}
-			if !strings.Contains(err.Error(), "Move retry onto the node inside the child") {
+			if !strings.Contains(err.Error(), "Put retry on the node inside the child") {
 				t.Fatalf("报文该给出能照着改的写法，got %v", err)
+			}
+			if !strings.Contains(err.Error(), "silently ignored") {
+				t.Fatalf("报文该说清理由（第二次 attempt 的写会被静默忽略），got %v", err)
 			}
 			if strings.Contains(err.Error(), "REAL-CAUSE") {
 				t.Fatalf("子图根本不该被启动（判据在认领与种值之前），却跑到了子图的失败：%v", err)
@@ -468,21 +499,23 @@ func TestRetryOnSubgraphStepIsRefusedAtRun(t *testing.T) {
 		}
 		mustAdd(t, okChild, NewNode("pass", "", Requires(ok), nil, func(rc *RunCtx) error { return nil }))
 		root := mustNew(t, ctx, "rtry.ok")
-		if err := Seed(root, in, "v"); err != nil {
+		declareIn(t, root, NewPort(in))
+		if err := seedOn(root, in, "v"); err != nil {
 			t.Fatal(err)
 		}
 		if err := Sub(root, "step", "", []SubBind{In(in, ok)}, okChild, Timeout(time.Second)); err != nil {
 			t.Fatalf("Timeout 该被接受，got %v", err)
 		}
-		if err := root.Run(); err != nil {
+		if err := runOn(root); err != nil {
 			t.Fatalf("Run = %v", err)
 		}
 	})
 }
 
-// 用户**自己写的**重试切面认不出来（`Aspect` 是裸函数类型，闭包只有代码地址可认，见
-// retryAspectPC），所以运行期还有一道重入判据：这一步第二次进来时点明「子图只跑一次」，
-// 并把第一次 attempt 的失败原因一起报出来——别让认领失败那句盖掉病根。
+// 用户**自己写的**重试切面认不出来（`Aspect` 是裸函数类型，闭包只有代码地址可认，而且
+// 实测同一份字面量造出来的两个闭包地址就不同），所以运行期还有一道重入判据：这一步第二次
+// 进来时点明「entry-once」与「第二次的写会被静默丢掉」，并把第一次 attempt 的失败原因一起
+// 报出来——别让别的错盖掉病根。
 func TestSubReentryGuarded(t *testing.T) {
 	ctx := context.Background()
 	k := NewKey[string]("reentry.child.k")
@@ -501,7 +534,8 @@ func TestSubReentryGuarded(t *testing.T) {
 	in := NewKey[string]("reentry.in")
 	out := NewKey[string]("reentry.out")
 	root := mustNew(t, ctx, "reentry")
-	if err := Seed(root, in, "v"); err != nil {
+	declareIn(t, root, NewPort(in))
+	if err := seedOn(root, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 	// 自己写的重试：与 Retry 同形（失败再来一次）——装配期认不出它，所以放行到运行期。
@@ -514,7 +548,7 @@ func TestSubReentryGuarded(t *testing.T) {
 	if err := Sub(root, "step", "", []SubBind{In(in, k), Out(k, out)}, child, retrying); err != nil {
 		t.Fatalf("自己写的切面不该在装配期被拒，got %v", err)
 	}
-	err := root.Run()
+	err := runOn(root)
 	if err == nil || !strings.Contains(err.Error(), "entered a second time") {
 		t.Fatalf("Run = %v，want 重入那句", err)
 	}
@@ -529,9 +563,9 @@ func TestSubReentryGuarded(t *testing.T) {
 // 封口 ≠ 用过：一张**已经被别处校验封口**的子图，照样能挂到另一张图里、并在那一处跑起来。
 //
 // 这条边界在阶段 1 特别容易被记反：`sealed` 管的是「这张**定义**不再变化」（`Add` /
-// `DeclareInput` / `DeclareOutput` / `Sub` 被拒），`claimed` / `started` 管的是「它已经被**这次
-// 运行**用掉了」——两个问题、两套判据。所以「挂得上」与「跑得了」要分开问：封口只挡前者里的
-// 「改」，不挡「挂」与「跑」。
+// `DeclareInput` / `DeclareOutput` / `Sub` 被拒），而「它已经被**这次运行**用掉了」那一问
+// 在阶段 2 之后根本不存在了——运行态长在各自的 `Execution` 上，定义可以跑很多次。
+// 所以「挂得上」与「跑得了」要分开问：封口只挡前者里的「改」，不挡「挂」与「跑」。
 //
 // （「同一张子图挂两处、两处都要跑」是另一条边界：那要等阶段 2 的 `Execution`，由
 // `TestStaticSub` 的「只能跑一处」钉着。这条用例只钉「封口之后仍然可用」。）
@@ -559,7 +593,8 @@ func TestSealedChildCanBeReusedElsewhere(t *testing.T) {
 	first := mustNew(t, ctx, "sealreuse.first")
 	firstIn := NewKey[string]("sealreuse.first_in")
 	firstOut := NewKey[string]("sealreuse.first_out")
-	if err := Seed(first, firstIn, "v"); err != nil {
+	declareIn(t, first, NewPort(firstIn))
+	if err := seedOn(first, firstIn, "v"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Sub(first, "step", "", []SubBind{In(firstIn, cin), Out(cout, firstOut)}, child); err != nil {
@@ -576,7 +611,8 @@ func TestSealedChildCanBeReusedElsewhere(t *testing.T) {
 	second := mustNew(t, ctx, "sealreuse.second")
 	secondIn := NewKey[string]("sealreuse.second_in")
 	secondOut := NewKey[string]("sealreuse.second_out")
-	if err := Seed(second, secondIn, "v"); err != nil {
+	declareIn(t, second, NewPort(secondIn))
+	if err := seedOn(second, secondIn, "v"); err != nil {
 		t.Fatal(err)
 	}
 	got := make(chan string, 1)
@@ -594,7 +630,7 @@ func TestSealedChildCanBeReusedElsewhere(t *testing.T) {
 	if err := Sub(second, "step", "", []SubBind{In(secondIn, cin), Out(cout, secondOut)}, child); err != nil {
 		t.Fatalf("已封口的子图照样该能被别处挂：%v", err)
 	}
-	if err := second.Run(); err != nil {
+	if err := runOn(second); err != nil {
 		t.Fatalf("已封口的子图该照常在别处跑：%v", err)
 	}
 	select {
@@ -604,5 +640,327 @@ func TestSealedChildCanBeReusedElsewhere(t *testing.T) {
 		}
 	default:
 		t.Fatal("父侧那条出口没到达：封口过的子图在别处没跑起来")
+	}
+}
+
+// TestSubRejectsUnboundRequiredInlet 子图**需要**的进口（有节点 `Requires` 它），这一处挂载
+// 就得给值——`In` 与 `Fix` / `FixSkip` 都算。
+//
+// 漏绑必须在**装配期**拒：只留到运行期的话，父图别的节点可能已经跑完并留下副作用，而
+// `Validate()` 还已经把这个定义封了口（`newChildExecution` 报的「has no value for this run」
+// 会晚到那时候）。
+//
+// 反向也守住：**没人 `Requires`、又没被这一处绑出去**的进口是**可选**的（留给别的挂载点的
+// 接口，或这一处用不到的透传端），不逼调用方编个值出来——与「没人 `Requires` 的进口不逼喂值」
+// 是同一条纪律。
+func TestSubRejectsUnboundRequiredInlet(t *testing.T) {
+	ctx := context.Background()
+	cin := NewKey[string]("ub.cin")
+	cout := NewKey[string]("ub.cout")
+	in := NewKey[string]("ub.in")
+	out := NewKey[string]("ub.out")
+
+	child := mustNew(t, ctx, "ub.child")
+	declareIn(t, child, NewPort(cin))
+	declareOut(t, child, NewPort(cout))
+	mustAdd(t, child, NewNode("inner", "", Requires(cin), Provides(cout), func(rc *RunCtx) error {
+		v, err := Get(rc, cin)
+		if err != nil {
+			return err
+		}
+		return Set(rc, cout, "child("+v+")")
+	}))
+
+	// 只绑出口、漏掉那条被 `Requires` 的进口：装配期就报，点名哪个节点要它、怎么补。
+	parent := mustNew(t, ctx, "ub.parent")
+	err := Sub(parent, "step", "", []SubBind{Out(cout, out)}, child)
+	if err == nil {
+		t.Fatal("漏绑必需进口：装配期就该拒")
+	}
+	for _, want := range []string{cin.Name(), `"ub.child"`, `"inner"`, "has no value for this mount", "FixSkip"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("报文该含 %q，got %v", want, err)
+		}
+	}
+
+	// 补上 `In`：装得进、跑得通，值真的桥回来。
+	parent2 := mustNew(t, ctx, "ub.parent2")
+	declareIn(t, parent2, NewPort(in))
+	if err := Sub(parent2, "step", "", []SubBind{In(in, cin), Out(cout, out)}, child); err != nil {
+		t.Fatalf("补上 In 就该装得进：%v", err)
+	}
+	if err := seedOn(parent2, in, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runOn(parent2); err != nil {
+		t.Fatalf("跑：%v", err)
+	}
+	if st, got := slotOn(parent2, out.asRef()); st != slotReady || got != "child(v)" {
+		t.Fatalf("out = (%v, %v), want (ready, child(v))", st, got)
+	}
+
+	// `Fix` 也算「给了值」——固定值属于**这一处挂载**。
+	out3 := NewKey[string]("ub.out3")
+	parent3 := mustNew(t, ctx, "ub.parent3")
+	if err := Sub(parent3, "step", "", []SubBind{Fix(cin, "fixed"), Out(cout, out3)}, child); err != nil {
+		t.Fatalf("Fix 也算给了值：%v", err)
+	}
+	if err := runOn(parent3); err != nil {
+		t.Fatalf("跑：%v", err)
+	}
+	if st, got := slotOn(parent3, out3.asRef()); st != slotReady || got != "child(fixed)" {
+		t.Fatalf("out3 = (%v, %v), want (ready, child(fixed))", st, got)
+	}
+
+	// 可选进口（声明了、没人 `Requires`、也没绑出去）：不喂也合法。
+	optional := NewKey[string]("ub.optional")
+	cout2 := NewKey[string]("ub.cout2")
+	out2 := NewKey[string]("ub.out2")
+	child2 := mustNew(t, ctx, "ub.child2")
+	declareIn(t, child2, NewPort(optional))
+	declareOut(t, child2, NewPort(cout2))
+	mustAdd(t, child2, NewNode("inner2", "", nil, Provides(cout2), func(rc *RunCtx) error {
+		return Set(rc, cout2, "v")
+	}))
+	parent4 := mustNew(t, ctx, "ub.parent4")
+	if err := Sub(parent4, "step", "", []SubBind{Out(cout2, out2)}, child2); err != nil {
+		t.Fatalf("没人需要的进口不绑也合法：%v", err)
+	}
+	if err := runOn(parent4); err != nil {
+		t.Fatalf("跑：%v", err)
+	}
+}
+
+// TestSubRejectsUnfedPassThroughOutlet 透传端（同一条键既是进口又是出口）在这一处被 `Out`
+// 绑出去时，就必须有人喂它：它不可能由节点产出（声明过的进口与节点产出互斥），所以唯一来源
+// 就是挂载点。不喂的话只能等子图跑完、`bridgeOutputs` 报一句「never arrived」。
+//
+// 反面同样守住：既不绑 `In` 也不绑 `Out` 的透传端**谁也没承诺**，不必强制（一个多口透传
+// 组件被挂在只用其中一部分口的地方，是正常用法）。
+func TestSubRejectsUnfedPassThroughOutlet(t *testing.T) {
+	ctx := context.Background()
+	k := NewKey[string]("pf.k")
+	in := NewKey[string]("pf.in")
+	out := NewKey[string]("pf.out")
+
+	child := mustNew(t, ctx, "pf.child")
+	declareIn(t, child, NewPort(k))
+	declareOut(t, child, NewPort(k))
+
+	parent := mustNew(t, ctx, "pf.parent")
+	err := Sub(parent, "step", "", []SubBind{Out(k, out)}, child)
+	if err == nil {
+		t.Fatal("透了出口却没人喂那条进口：装配期就该拒")
+	}
+	for _, want := range []string{k.Name(), "declared input", `"pf.child"`, "FixSkip"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("报文该含 %q，got %v", want, err)
+		}
+	}
+
+	// 喂上了就装得进，而且值真的透过去。
+	parent2 := mustNew(t, ctx, "pf.parent2")
+	declareIn(t, parent2, NewPort(in))
+	if err := Sub(parent2, "step", "", []SubBind{In(in, k), Out(k, out)}, child); err != nil {
+		t.Fatalf("喂上了就该装得进：%v", err)
+	}
+	if err := seedOn(parent2, in, "through"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runOn(parent2); err != nil {
+		t.Fatalf("跑：%v", err)
+	}
+	if st, got := slotOn(parent2, out.asRef()); st != slotReady || got != "through" {
+		t.Fatalf("out = (%v, %v), want (ready, through)", st, got)
+	}
+
+	// `FixSkip` 也算给了：跳过是**到达**，父侧那条出口跟着以跳过收尾，整轮成功。
+	out3 := NewKey[string]("pf.out3")
+	parent3 := mustNew(t, ctx, "pf.parent3")
+	if err := Sub(parent3, "step", "", []SubBind{FixSkip(k), Out(k, out3)}, child); err != nil {
+		t.Fatalf("FixSkip 也算给了：%v", err)
+	}
+	if err := runOn(parent3); err != nil {
+		t.Fatalf("跳过不该是失败：%v", err)
+	}
+	if st, _ := slotOn(parent3, out3.asRef()); st != slotSkipped {
+		t.Fatalf("out3 = %v, want skipped", st)
+	}
+
+	// 这一处根本不用那个透传端（既不绑进也不绑出）：谁也没承诺 → 合法。
+	k2 := NewKey[string]("pf.k2")
+	cout := NewKey[string]("pf.cout")
+	out2 := NewKey[string]("pf.out2")
+	child2 := mustNew(t, ctx, "pf.child2")
+	declareIn(t, child2, NewPort(k2))
+	declareOut(t, child2, NewPort(k2))
+	declareOut(t, child2, NewPort(cout))
+	mustAdd(t, child2, NewNode("prod", "", nil, Provides(cout), func(rc *RunCtx) error {
+		return Set(rc, cout, "v")
+	}))
+	parent4 := mustNew(t, ctx, "pf.parent4")
+	if err := Sub(parent4, "step", "", []SubBind{Out(cout, out2)}, child2); err != nil {
+		t.Fatalf("没绑出去的透传端不该被强制：%v", err)
+	}
+	if err := runOn(parent4); err != nil {
+		t.Fatalf("跑：%v", err)
+	}
+}
+
+// quotaStreamChild 造一张「体内有一条流」的子图：`Produce → Tee → sink` 三个节点必须
+// **同时活着**（生产端 / 复制端堵在发送上、消费端堵在读上），所以它需要 3 个名额。
+// 出口 `total` 是消费端算出来的和——用它把「这条流真的跑完了」变成可断言的证据。
+func quotaStreamChild(t *testing.T, ctx context.Context, id string, opts ...Option) (*Graph, Key[int]) {
+	t.Helper()
+	total := NewKey[int](id + ".total")
+	items := NewKey[<-chan int](id + ".items")
+	branch := NewKey[<-chan int](id + ".branch")
+	g := mustNew(t, ctx, id, opts...)
+	declareOut(t, g, NewPort(total))
+	if err := Produce(g, "gen", items, func(rc *RunCtx, send func(int) error) error {
+		for i := 0; i < 3; i++ {
+			if err := send(i); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Tee(g, "tee", items, []Key[<-chan int]{branch}); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, g, NewNode("sink", "", Requires(branch), Provides(total), func(rc *RunCtx) error {
+		ch, err := Get(rc, branch)
+		if err != nil {
+			return err
+		}
+		sum := 0
+		for v := range ch {
+			sum += v
+		}
+		return Set(rc, total, sum)
+	}))
+	return g, total
+}
+
+// TestSubInheritsEffectiveQuota 递归静态校验要按**每一层的有效名额**判流式：没声明的层
+// 继承父执行环境那一份，声明过的层按自己那份（`WithMaxRunning(m)` 不是「在父表之上再卡一道」，
+// 而是这一支退出父表、自己另算）。
+//
+// 判据必须与运行期**同一个数**：子执行的限额正是在建子执行时按同一条优先级算出来的，
+// 所以整树校验看出来的那个上限，就是它真跑起来会拿到的那个上限。少了这一层传递，
+// 子图会被按「不限」判（0 = 不限），毛病要等子图自己的 `Start` 才报——那时父图别的节点
+// 可能已经跑完并留下副作用了。
+func TestSubInheritsEffectiveQuota(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("父图声明 2、子图没声明 → 整树校验就该拒这条要 3 个名额的流", func(t *testing.T) {
+		child, cout := quotaStreamChild(t, ctx, "q1.child")
+		pout := NewKey[int]("q1.out")
+		parent := mustNew(t, ctx, "q1.parent", WithMaxRunning(2))
+		if err := Sub(parent, "step", "", []SubBind{Out(cout, pout)}, child); err != nil {
+			t.Fatal(err)
+		}
+		err := parent.Validate()
+		if err == nil {
+			t.Fatal("子图没声明限额，就该按继承来的 2 判：整树校验该拒")
+		}
+		for _, want := range []string{"needs 3 slots", "WithMaxRunning(2)", "q1.child", `mounted at "step"`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("报文该含 %q，got %v", want, err)
+			}
+		}
+		// 同一个数也在启动那一刻用（放行 = 提交节点之前就该拒）。
+		if err := parent.Run(ctx, Inputs{}); err == nil {
+			t.Fatal("Start 也该拒")
+		}
+	})
+
+	t.Run("子图自己声明 4 → 覆盖继承来的 2，校验与运行都过", func(t *testing.T) {
+		child, cout := quotaStreamChild(t, ctx, "q2.child", WithMaxRunning(4))
+		pout := NewKey[int]("q2.out")
+		parent := mustNew(t, ctx, "q2.parent", WithMaxRunning(2))
+		if err := Sub(parent, "step", "", []SubBind{Out(cout, pout)}, child); err != nil {
+			t.Fatal(err)
+		}
+		if err := parent.Validate(); err != nil {
+			t.Fatalf("这一支退出父表、自己按 4 算：%v", err)
+		}
+		var in Inputs
+		if err := parent.Run(ctx, in); err != nil {
+			t.Fatalf("跑：%v", err)
+		}
+	})
+
+	t.Run("谁都没声明，只有这一次运行给 2 → Validate 过（它只读定义），Start 拒", func(t *testing.T) {
+		child, cout := quotaStreamChild(t, ctx, "q3.child")
+		pout := NewKey[int]("q3.out")
+		parent := mustNew(t, ctx, "q3.parent")
+		if err := Sub(parent, "step", "", []SubBind{Out(cout, pout)}, child); err != nil {
+			t.Fatal(err)
+		}
+		if err := parent.Validate(); err != nil {
+			t.Fatalf("定义谁都没声明限额，Validate 只读定义、不该拒：%v", err)
+		}
+		err := parent.Run(ctx, Inputs{}, WithExecMaxRunning(2))
+		if err == nil || !strings.Contains(err.Error(), "needs 3 slots") {
+			t.Fatalf("Start 该按这一次运行的有效名额拒，got %v", err)
+		}
+	})
+}
+
+// TestSubCopiesItsBinds 挂载时**复制**接线：那份切片一旦交进 `Sub`，调用方之后改它就不该
+// 再影响这张定义。
+//
+// 不复制的话，运行期接线能在装配锁与封口之外被改掉——而父侧的 `Requires` / `Provides` 早在
+// 挂载那一刻按原样推导完了：跑起来的那张图与 `Topology()` / 校验看到的那张图成了两张。
+func TestSubCopiesItsBinds(t *testing.T) {
+	ctx := context.Background()
+	cin := NewKey[string]("cb.cin")
+	cout := NewKey[string]("cb.cout")
+	in := NewKey[string]("cb.in")
+	other := NewKey[string]("cb.other")
+	out := NewKey[string]("cb.out")
+
+	child := mustNew(t, ctx, "cb.child")
+	declareIn(t, child, NewPort(cin))
+	declareOut(t, child, NewPort(cout))
+	mustAdd(t, child, NewNode("inner", "", Requires(cin), Provides(cout), func(rc *RunCtx) error {
+		v, err := Get(rc, cin)
+		if err != nil {
+			return err
+		}
+		return Set(rc, cout, "child("+v+")")
+	}))
+
+	parent := mustNew(t, ctx, "cb.parent")
+	declareIn(t, parent, NewPort(in), NewPort(other))
+	binds := []SubBind{In(in, cin), Out(cout, out)}
+	if err := Sub(parent, "step", "", binds, child); err != nil {
+		t.Fatal(err)
+	}
+	// 调用方手里那份切片改了：挂载那一刻的事实不该跟着变。
+	binds[0] = In(other, cin)
+
+	var inputs Inputs
+	if err := Seed(&inputs, in, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Seed(&inputs, other, "y"); err != nil {
+		t.Fatal(err)
+	}
+	e, err := parent.NewExecution(ctx, inputs)
+	if err != nil {
+		t.Fatalf("NewExecution: %v", err)
+	}
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := e.Wait(); err != nil {
+		t.Fatalf("运行 = %v，want nil：跑的是挂载那一刻的接线", err)
+	}
+	if st, got := e.slotOf(out.asRef()).snapshot(); st != slotReady || got != "child(x)" {
+		t.Fatalf("out = (%v, %v), want (ready, child(x))", st, got)
 	}
 }

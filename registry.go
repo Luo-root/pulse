@@ -2,7 +2,6 @@ package pulse
 
 import (
 	"fmt"
-	"reflect"
 	"sync"
 )
 
@@ -161,35 +160,6 @@ func (r *Registry) KeyRefs(pairs []NameType) ([]keyRef, error) {
 	return out, nil
 }
 
-// SeedByName 按登记表解析 Key 后写入初始值。值必须能对齐到登记类型：
-// 可赋值的直接写入；声明式装图解出的泛型容器（[]any / map[string]any）
-// 按目标类型做**形状对齐**（容器递归、标量同族转换，判据见
-// coerceSeedValue）。map→struct 这类结构性猜测不做——那类取值应由
-// 宿主的 resolve 回调给出类型正确的值。
-func SeedByName(g *Graph, r *Registry, name, typeTag string, v any) error {
-	ref, err := r.ResolveKey(name, typeTag)
-	if err != nil {
-		return err
-	}
-	if v == nil {
-		return fmt.Errorf("pulse: seed %q: nil value", name)
-	}
-	vt := reflect.TypeOf(v)
-	if !vt.AssignableTo(ref.typ) {
-		converted, cerr := coerceSeedValue(v, ref.typ)
-		if cerr != nil {
-			return fmt.Errorf("pulse: seed %q: value type %s not assignable to %s (%v)", name, vt, ref.typ, cerr)
-		}
-		v = converted
-	}
-	return g.seedRef(ref, v, false)
-}
-
-// SkipSeedByName 按登记表解析 Key 后标记跳过。
-func SkipSeedByName(g *Graph, r *Registry, name, typeTag string) error {
-	ref, err := r.ResolveKey(name, typeTag)
-	if err != nil {
-		return err
-	}
-	return g.seedRef(ref, nil, true)
-}
+// SeedByName / SkipSeedByName 住在 inputs.go：它们往**一次运行**的输入里写，
+// 不再碰图（旧版本是 `pulse.Seed(g, k, v)`，第一个参数是 `*Graph`——那正是
+// 「定义被这一次运行写脏」与「一张图只能跑一次」的根）。

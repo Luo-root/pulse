@@ -46,7 +46,10 @@ and declarative assembly (`pulse/yaml`):
 
 - the slot contract (three states, skip-is-arrival) and the failure path: the first node error
   cancels the graph, cancellation wins over arrival, a skip is never rewritten into a failure;
-- graph lifecycle: one-shot semantics (`Add` / `Seed` after start are rejected), `WithMaxRunning`
+- graph lifecycle: the definition/run split (`Graph` is sealed by a passing `Validate()` or by a
+  started `Execution`, and `Add` / `DeclareInput` / `DeclareOutput` / `Sub` are rejected on every
+  graph of that subtree afterwards; a second `Start` on one execution returns `ErrGraphStarted`),
+  the per-run inputs (`Inputs` / `Seed` / `SkipSeed` and the start condition), `WithMaxRunning`
   admission, and the aspect chain (`Timeout` / `Retry`) including its re-entrancy latch;
 - the observation envelope: `Record` / `Attrs`, the built-in sinks (`LineSink`, `SlogSink`,
   `MemorySink`, `MultiSink`, `AsyncSink`) and the six encoding primitives — including anything
@@ -120,8 +123,11 @@ Pulse 目前仍在 1.0 之前（`v0.x`）。本文件说明漏洞上报方式与
 
 - 槽位契约（三态、「跳过是到达」）与失败路径：节点首错取消整图、取消优先于到达、跳过绝不
   被改写成失败；
-- 图生命周期：一次性语义（启动后的 `Add` / `Seed` 被拒）、`WithMaxRunning` 名额准入、
-  切面链（`Timeout` / `Retry`）与它的重入门闩；
+- 图生命周期：定义与运行分家（`Validate()` 通过、或某次 `Execution` 启动成功，都会把**整棵
+  子树**封口，此后子树上每一张图的 `Add` / `DeclareInput` / `DeclareOutput` / `Sub` 都被拒；
+  同一份执行第二次 `Start` 返回 `ErrGraphStarted`）、一次运行的输入（`Inputs` / `Seed` /
+  `SkipSeed` 与启动条件）、`WithMaxRunning` 名额准入、以及切面链（`Timeout` / `Retry`）与它的
+  重入门闩；
 - 观测信封：`Record` / `Attrs`、内置出口（`LineSink` / `SlogSink` / `MemorySink` /
   `MultiSink` / `AsyncSink`）与六条编码原语——包括任何「让载荷从非 `Attrs` 字段混进记录」
   的可能；

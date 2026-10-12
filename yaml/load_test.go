@@ -71,14 +71,15 @@ nodes:
     provides: [{ name: demo.final_text, type: string }]
 `)
 
-	g, plan, err := pulseyaml.Load(doc, reg, pulseyaml.LoadOptions{GraphID: "test", Context: context.Background()})
+	g, plan, err := pulseyaml.Load(doc, reg, pulseyaml.LoadOptions{GraphID: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	if final != "ans:doc:hello" {
@@ -154,7 +155,7 @@ nodes:
 		t.Fatal(err)
 	}
 	_ = plan
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), pulse.Inputs{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -188,15 +189,16 @@ nodes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.Apply(g, func(from pulseyaml.SeedFrom) (any, error) {
+	inputs, err := plan.Inputs(func(from pulseyaml.SeedFrom) (any, error) {
 		if from.Kind != "env" || from.Env != "PULSE_YAML_TEST_A" {
 			t.Fatalf("unexpected from: %+v", from)
 		}
 		return "from-env", nil
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -226,7 +228,7 @@ nodes:
 		t.Fatal(err)
 	}
 	_ = plan
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), pulse.Inputs{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -268,7 +270,7 @@ nodes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = g.Run()
+	err = g.Run(context.Background(), pulse.Inputs{})
 	if err == nil {
 		t.Fatal("want timeout error")
 	}
@@ -347,10 +349,11 @@ nodes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.Apply(g, nil); err != nil {
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	if got != 3 {
@@ -382,15 +385,82 @@ nodes:
     requires: []
     provides: [{name: demo.out, type: string}]
 `, tag))
-	g, plan, err := pulseyaml.Load(doc, reg, pulseyaml.LoadOptions{GraphID: "test"})
+	_, plan, err := pulseyaml.Load(doc, reg, pulseyaml.LoadOptions{GraphID: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = plan.Apply(g, nil)
+	// 值按目标类型形状对齐的失败（map 元素塞进 struct 字段）在建输入那一刻报。
+	_, err = plan.Inputs(nil)
 	if err == nil {
 		t.Fatal("want error for map element into struct")
 	}
 	if !strings.Contains(err.Error(), "element 0") || !strings.Contains(err.Error(), "not assignable") {
 		t.Fatalf("error should name the element and the mismatch: %v", err)
+	}
+}
+
+// 一次 `Load` 的产物跑两次：两次各自正确、互不影响。
+//
+// 这是本阶段的验收项之一（「yaml 两条路一致」）：`SeedPlan` 只**产出一次运行的输入**，
+// 不再往图里写值——所以同一份 `(g, plan)` 可以反复用，两轮的值由 resolve 每次给。
+func TestLoadProductRunsTwice(t *testing.T) {
+	ctx := context.Background()
+	in := pulse.NewKey[string]("tw.in")
+	out := pulse.NewKey[string]("tw.out")
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, in)
+	pulse.MustRegisterKey(reg, out)
+	var seen []string
+	reg.MustRegister("tw.echo", func(rc *pulse.RunCtx) error {
+		v, err := pulse.Get(rc, in)
+		if err != nil {
+			return err
+		}
+		seen = append(seen, v)
+		return pulse.Set(rc, out, v+"!")
+	})
+	doc := []byte(`
+version: 1
+seeds:
+  - key: {name: tw.in, type: string}
+    from: {kind: caller}
+nodes:
+  - id: echo
+    uses: tw.echo
+    requires: [{name: tw.in, type: string}]
+    provides: [{name: tw.out, type: string}]
+`)
+
+	g, plan, err := pulseyaml.Load(doc, reg, pulseyaml.LoadOptions{GraphID: "tw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range []string{"a", "b"} {
+		inputs, err := plan.Inputs(func(from pulseyaml.SeedFrom) (any, error) {
+			if from.Kind != "caller" {
+				t.Fatalf("第 %d 轮：unexpected from %+v", i+1, from)
+			}
+			return v, nil
+		})
+		if err != nil {
+			t.Fatalf("第 %d 轮 Inputs: %v", i+1, err)
+		}
+		if err := g.Run(ctx, inputs); err != nil {
+			t.Fatalf("第 %d 轮 Run: %v", i+1, err)
+		}
+	}
+	if !reflect.DeepEqual(seen, []string{"a", "b"}) {
+		t.Fatalf("两轮各该读到自己那一份，got %v", seen)
+	}
+	// 定义也没被这两轮写脏：同一份产物还能再取输入、再跑。
+	again, err := plan.Inputs(func(pulseyaml.SeedFrom) (any, error) { return "c", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(ctx, again); err != nil {
+		t.Fatalf("第三轮 Run: %v", err)
+	}
+	if !reflect.DeepEqual(seen, []string{"a", "b", "c"}) {
+		t.Fatalf("第三轮没读到自己那一份，got %v", seen)
 	}
 }

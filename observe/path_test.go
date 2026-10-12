@@ -1,6 +1,7 @@
 package observe
 
 import (
+	"context"
 	"testing"
 
 	"github.com/Luo-root/pulse"
@@ -18,16 +19,15 @@ func TestPathWrittenOnEveryRecord(t *testing.T) {
 	}
 	in := pulse.NewKey[string]("path.in")
 	g := mustGraph(t, "P", pulse.WithObserver(obs))
-	if err := pulse.Seed(g, in, "x"); err != nil {
-		t.Fatal(err)
-	}
+	var inputs pulse.Inputs
+	feedIn(t, g, &inputs, in, "x")
 	if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), nil, func(rc *pulse.RunCtx) error {
 		_, err := pulse.Get(rc, in)
 		return err
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	recs := sink.Snapshot()
@@ -53,16 +53,15 @@ func TestPathEmptyIsNotWritten(t *testing.T) {
 	}
 	in := pulse.NewKey[string]("path0.in")
 	g := mustGraph(t, "P", pulse.WithObserver(obs))
-	if err := pulse.Seed(g, in, "x"); err != nil {
-		t.Fatal(err)
-	}
+	var inputs pulse.Inputs
+	feedIn(t, g, &inputs, in, "x")
 	if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), nil, func(rc *pulse.RunCtx) error {
 		_, err := pulse.Get(rc, in)
 		return err
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	for _, rec := range sink.Snapshot() {
@@ -87,9 +86,8 @@ func TestPathSeparatesTwoInstances(t *testing.T) {
 	outB := pulse.NewKey[string]("np.outB")
 
 	g := mustGraph(t, "P", pulse.WithObserver(parent))
-	if err := pulse.Seed(g, in, "x"); err != nil {
-		t.Fatal(err)
-	}
+	var inputs pulse.Inputs
+	feedIn(t, g, &inputs, in, "x")
 
 	// 同一个模板，两个实例：子图在装配期各建一张，出口按**挂载路径**各建一个
 	// （静态组合由宿主在装配期给 `ObserveConfig.Path`），图 id 照旧走
@@ -128,7 +126,7 @@ func TestPathSeparatesTwoInstances(t *testing.T) {
 		build("b", "P/b")); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 

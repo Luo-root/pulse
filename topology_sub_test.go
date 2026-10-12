@@ -201,15 +201,15 @@ func TestStaticSubtreeVisibility(t *testing.T) {
 		}
 	})
 
-	t.Run("观察者照旧继承给静态子图（adopt 不能少）", func(t *testing.T) {
+	t.Run("观察者照旧继承给静态子图（子执行建得出来就有有效值）", func(t *testing.T) {
 		leaf, lin, lout := leafWithPorts(t, "obs.leaf", false)
 		dIn := NewKey[string]("obs.in")
 		dOut := NewKey[string]("obs.out")
 
 		var seen []string
 		obs := ObserverFunc{
-			Running: func(graphID, nodeID string) { seen = append(seen, "run:"+nodeID) },
-			Finished: func(graphID, nodeID string, reason NodeFinishReason, err error) {
+			Running: func(_ Site, nodeID string) { seen = append(seen, "run:"+nodeID) },
+			Finished: func(_ Site, nodeID string, reason NodeFinishReason, err error) {
 				seen = append(seen, "fin:"+nodeID)
 			},
 		}
@@ -217,10 +217,11 @@ func TestStaticSubtreeVisibility(t *testing.T) {
 		if err := Sub(d, "mount", "", []SubBind{In(dIn, lin), Out(lout, dOut)}, leaf); err != nil {
 			t.Fatalf("Sub = %v", err)
 		}
-		if err := Seed(d, dIn, "v"); err != nil {
+		declareIn(t, d, NewPort(dIn))
+		if err := seedOn(d, dIn, "v"); err != nil {
 			t.Fatalf("Seed = %v", err)
 		}
-		if err := d.Run(); err != nil {
+		if err := runOn(d); err != nil {
 			t.Fatalf("Run = %v", err)
 		}
 		var sawChild bool
@@ -231,7 +232,7 @@ func TestStaticSubtreeVisibility(t *testing.T) {
 			}
 		}
 		if !sawChild {
-			t.Fatalf("静态子图的节点事件没出现在父图的出口里（漏了 adopt）：%v", seen)
+			t.Fatalf("静态子图的节点事件没出现在父图的出口里（子执行没继承到有效出口）：%v", seen)
 		}
 	})
 }
@@ -276,9 +277,12 @@ func TestTopologyReportsForgedSubgraphCycle(t *testing.T) {
 		t.Fatalf("Sub = %v", err)
 	}
 
-	// 把 c 焊回 a：包内直接造那个挂载节点，绕开 Sub 的装配期检查
+	// 把 c 焊回 a：包内直接造那个挂载节点，绕开 Sub 的装配期检查（环在装配期就拒，只有
+	// 伪造才造得出来）。伪造的这一步也要**接线成完整形状**——`c` 需要 `cin`，不喂它的话
+	// `checkBinds` 会先报「漏绑必需进口」，那一支就不再往下展开，环反而报不出来。
 	back := NewNode("back", "", nil, nil, func(rc *RunCtx) error { return nil })
 	back.child = c
+	back.binds = []SubBind{In(cin, cin)}
 	mustAdd(t, a, back)
 
 	// 递归展开要**报环**，不是爆栈

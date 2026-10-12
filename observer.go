@@ -1,5 +1,7 @@
 package pulse
 
+import "fmt"
+
 // NodeFinishReason 是 NodeFinished / GraphFinished 的终止原因。
 //
 // 图级只会出现三个：completed / failed / canceled——「跳过」是节点级的事实
@@ -37,23 +39,31 @@ const (
 	// 各层（每一层是子图在它父图里的那个节点 id），**层级由出口自行拆分**——
 	// 引擎不提供结构化树，也不定义「第几段」的语义。
 	//
-	// 值来自**建这一层出口的那一步**（装配期按挂载路径给）：根图的记录**不写**这个 key
-	// （`Attrs` 是「有才有」，空串会让「根」与「忘了传」长得一样），一层子图是 `"step1"`、
-	// 再深一层是 `"step1/inner"`（写法见 topology.go 的 joinPath）。
+	// 值与 `Site.Path` 同源同格式（根图 `""`、一层 `"step1"`、再深
+	// `"step1/inner"`）：出口直接从回调拿到的 `Site` 里读，不必再按层建出口。
+	// 根图的记录**不写**这个 key（`Attrs` 是「有才有」，空串会让「根」与
+	// 「忘了传」长得一样）。
 	//
-	// 与 AttrGraph 的分工：`pulse.graph` 是**你起的图 id**（多图复用同一出口时
-	// 的归因），`pulse.path` 是**引擎记的层级**——同一张子图模板跑两遍就是两个
-	// 图实例、两条 path，靠它分得开。
+	// 与 AttrGraph / AttrExecution 的分工：`pulse.graph` 是**你起的图 id**（定义身份），
+	// `pulse.path` 是**挂载位置**（同一张子图挂两处就是两条 path），
+	// `pulse.execution` 是**这一次运行**（同一位置跑两次是两个执行）。
 	AttrPath = "pulse.path"
+	// AttrExecution 是产生生命周期事件的**本次运行身份**（`Site.Execution`）：
+	// 同一张图跑两次是两个不同的值。并发跑同一张图时，只靠 graph + path
+	// 两份记录会合并成一份——归因要靠它分开。
+	//
+	// 它只在**运行期**的出口上有值：静态出口（`Topology`）只有定义身份。
+	AttrExecution = "pulse.execution"
 )
 
-// Observer 观察单次 Graph 运行：图级两条 + 每个节点三条。
+// Observer 观察单次运行：图级两条 + 每个节点三条。
 // 默认无观察者（no-op）。实现必须并发安全：节点回调在各自的节点 goroutine
 // 上，图回调在 Start / Wait 的调用方 goroutine 上。panic / error 不得升格为
-// 节点失败（由 Graph 吞掉）。
+// 节点失败（由 Execution 吞掉）。
 //
-// graphID 是图身份（New 的 graphID，必填）：随每次回调发出，实现侧
-// 无需从构造参数另行携带——多图复用同一 Observer 实现时归因不漂移。
+// 每条回调带一个 `Site`：定义身份（`New` 的 graphID）+ 本次运行身份 + 挂载位置。
+// 实现侧无需从构造参数另行携带——多图、同一张图多跑几次，归因都不漂移
+// （同一张图跑两次各是一个执行，见 `Site.Execution`）。
 //
 // 次数契约（冻结面）：
 //
@@ -66,64 +76,95 @@ const (
 // 并发 / 重复 `Wait` 都在 GraphFinished 那一发返回之后才返回（任何一个 Wait
 // 返回时，本轮的收尾都已经在出口落地）。
 //
-// 图级两条在 `Start` / `Wait` 的调用路径上同步执行——所以**别在回调里调本图的
-// `Start` / `Wait`**：那是同一个 goroutine 等自己，会死等。
+// 图级两条在 `Start` / `Wait` 的调用路径上同步执行——所以**别在回调里调同一个
+// 执行的 `Start` / `Wait`**：那是同一个 goroutine 等自己，会死等。
 type Observer interface {
-	// OnGraphStarted 在图通过启动校验、开始提交节点时发出一次。
-	// 校验失败与重复 Start 都到不了这里（那时图没有启动）。
-	OnGraphStarted(graphID string)
+	// OnGraphStarted 在这次运行通过启动校验、开始提交节点时发出一次。
+	// 校验失败与重复 Start 都到不了这里（那时这次运行没有启动）。
+	OnGraphStarted(site Site)
 	// OnGraphFinished 在 Wait 返回前发出一次：reason 是运行终态（图只会是
-	// completed / failed / canceled），err 是首错（即 Graph.Err()）。
+	// completed / failed / canceled），err 是首错（即 Execution.Err()）。
 	// 只 Start 不 Wait 的宿主收不到它；重复 Wait 不重复发。
-	OnGraphFinished(graphID string, reason NodeFinishReason, err error)
-	OnNodeWaiting(graphID, nodeID string)
-	OnNodeRunning(graphID, nodeID string)
-	OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error)
+	OnGraphFinished(site Site, reason NodeFinishReason, err error)
+	OnNodeWaiting(site Site, nodeID string)
+	OnNodeRunning(site Site, nodeID string)
+	OnNodeFinished(site Site, nodeID string, reason NodeFinishReason, err error)
 }
 
-// ObserverFunc 把五条回调收成一个结构，便于测试与桥装配。
-// 图级的两个字段带 Graph 前缀，节点的三个不带——前者是后加的，
-// 改名会波及所有构造方，不值得为对称付这份破坏。
+// Site 是「谁在哪里」——一次回调、一次运行都靠它说位置。
+//
+// 它是**稳定的位置视图**，只描述定义身份、本次运行身份与挂载位置，**不带任何 Key 的值**：
+// 「绕开声明权限去读值」在这条路上没有入口（需要值的集成走各自类型校验过的出口）。
+//
+// 三处出口共用同一份位置记号，且必须逐字一致：`Topology().Graph.Path`（静态全树）、
+// `Observer` 回调里的 `Site.Path`（运行期）、以及后续的快照（一次运行的进度）。
+// 路径格式是契约：根图 `""`、一层子图是那一步的节点 id（`"step"`）、再深一层
+// `"step/inner"`，用 `/` 连接——节点 id 里不许出现 `/` 就是为了让它两两可分。
+//
+// `Execution` 为空串表示「不在运行中」：静态出口（`Topology`）只有定义身份。
+type Site struct {
+	// Graph 是定义身份（`New` 的 graphID）。
+	Graph string
+	// Execution 是**本次运行**的身份，对每个执行实例唯一。同一张定义跑两次
+	// 得到两个不同的值——观测记录靠它把两次运行分开（否则同位置的两份记录会合并）。
+	Execution string
+	// Path 是挂载位置：根图 `""`、一层子图 `"step"`、再深 `"step/inner"`。
+	Path string
+}
+
+// String 是给人看的写法（日志与报错用），不是身份本身。
+func (s Site) String() string {
+	path := s.Path
+	if path == "" {
+		path = "<root>"
+	}
+	if s.Execution == "" {
+		return fmt.Sprintf("graph %q at %s", s.Graph, path)
+	}
+	return fmt.Sprintf("execution %q (graph %q) at %s", s.Execution, s.Graph, path)
+}
+
+// ObserverFunc 把五条回调收成一个结构，便于测试与桥装配：只填要用的那几个字段。
 type ObserverFunc struct {
-	GraphStarted  func(graphID string)
-	GraphFinished func(graphID string, reason NodeFinishReason, err error)
-	Waiting       func(graphID, nodeID string)
-	Running       func(graphID, nodeID string)
-	Finished      func(graphID, nodeID string, reason NodeFinishReason, err error)
+	GraphStarted  func(site Site)
+	GraphFinished func(site Site, reason NodeFinishReason, err error)
+	Waiting       func(site Site, nodeID string)
+	Running       func(site Site, nodeID string)
+	Finished      func(site Site, nodeID string, reason NodeFinishReason, err error)
 }
 
 // OnGraphStarted 实现 Observer。
-func (o ObserverFunc) OnGraphStarted(graphID string) {
+func (o ObserverFunc) OnGraphStarted(site Site) {
 	if o.GraphStarted != nil {
-		o.GraphStarted(graphID)
+		o.GraphStarted(site)
 	}
 }
 
 // OnGraphFinished 实现 Observer。
-func (o ObserverFunc) OnGraphFinished(graphID string, reason NodeFinishReason, err error) {
+func (o ObserverFunc) OnGraphFinished(site Site, reason NodeFinishReason, err error) {
 	if o.GraphFinished != nil {
-		o.GraphFinished(graphID, reason, err)
+		o.GraphFinished(site, reason, err)
 	}
 }
 
 // OnNodeWaiting 实现 Observer。
-func (o ObserverFunc) OnNodeWaiting(graphID, nodeID string) {
+func (o ObserverFunc) OnNodeWaiting(site Site, nodeID string) {
 	if o.Waiting != nil {
-		o.Waiting(graphID, nodeID)
+		o.Waiting(site, nodeID)
 	}
 }
 
 // OnNodeRunning 实现 Observer。
-func (o ObserverFunc) OnNodeRunning(graphID, nodeID string) {
+func (o ObserverFunc) OnNodeRunning(site Site, nodeID string) {
 	if o.Running != nil {
-		o.Running(graphID, nodeID)
+		o.Running(site, nodeID)
 	}
 }
 
 // OnNodeFinished 实现 Observer。
-func (o ObserverFunc) OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error) {
+func (o ObserverFunc) OnNodeFinished(site Site, nodeID string, reason NodeFinishReason, err error) {
 	if o.Finished != nil {
-		o.Finished(graphID, nodeID, reason, err)
+		o.Finished(site, nodeID, reason, err)
 	}
 }
 
@@ -136,46 +177,46 @@ func (o ObserverFunc) OnNodeFinished(graphID, nodeID string, reason NodeFinishRe
 type MultiObserver []Observer
 
 // OnGraphStarted 实现 Observer。
-func (m MultiObserver) OnGraphStarted(graphID string) {
+func (m MultiObserver) OnGraphStarted(site Site) {
 	for _, o := range m {
 		if o != nil {
-			callSafely(func() { o.OnGraphStarted(graphID) })
+			callSafely(func() { o.OnGraphStarted(site) })
 		}
 	}
 }
 
 // OnGraphFinished 实现 Observer。
-func (m MultiObserver) OnGraphFinished(graphID string, reason NodeFinishReason, err error) {
+func (m MultiObserver) OnGraphFinished(site Site, reason NodeFinishReason, err error) {
 	for _, o := range m {
 		if o != nil {
-			callSafely(func() { o.OnGraphFinished(graphID, reason, err) })
+			callSafely(func() { o.OnGraphFinished(site, reason, err) })
 		}
 	}
 }
 
 // OnNodeWaiting 实现 Observer。
-func (m MultiObserver) OnNodeWaiting(graphID, nodeID string) {
+func (m MultiObserver) OnNodeWaiting(site Site, nodeID string) {
 	for _, o := range m {
 		if o != nil {
-			callSafely(func() { o.OnNodeWaiting(graphID, nodeID) })
+			callSafely(func() { o.OnNodeWaiting(site, nodeID) })
 		}
 	}
 }
 
 // OnNodeRunning 实现 Observer。
-func (m MultiObserver) OnNodeRunning(graphID, nodeID string) {
+func (m MultiObserver) OnNodeRunning(site Site, nodeID string) {
 	for _, o := range m {
 		if o != nil {
-			callSafely(func() { o.OnNodeRunning(graphID, nodeID) })
+			callSafely(func() { o.OnNodeRunning(site, nodeID) })
 		}
 	}
 }
 
 // OnNodeFinished 实现 Observer。
-func (m MultiObserver) OnNodeFinished(graphID, nodeID string, reason NodeFinishReason, err error) {
+func (m MultiObserver) OnNodeFinished(site Site, nodeID string, reason NodeFinishReason, err error) {
 	for _, o := range m {
 		if o != nil {
-			callSafely(func() { o.OnNodeFinished(graphID, nodeID, reason, err) })
+			callSafely(func() { o.OnNodeFinished(site, nodeID, reason, err) })
 		}
 	}
 }
@@ -186,19 +227,26 @@ func callSafely(fn func()) {
 	fn()
 }
 
-// WithObserver 挂载图级生命周期观察者；后写覆盖前写（单槽）。
+// WithObserver 声明这张**定义**的默认观察者；后写覆盖前写（单槽）。
 // 需要多个时用 MultiObserver 组合后再传入。
+//
+// 它是**默认值**：某一次运行可以用 `WithExecObserver` 覆盖（见 ExecOption），
+// 子图没自己声明时会继承父执行环境的出口。
 func WithObserver(o Observer) Option {
 	return func(g *Graph) { g.observer = o }
 }
 
-// notify 调用观察者并吞掉 panic，避免只读 seam 变成节点失败。
-func (g *Graph) notify(fn func(Observer)) {
-	if g == nil || g.observer == nil || fn == nil {
+// notify 调用本次运行的观察者并吞掉 panic，避免只读 seam 变成节点失败。
+func (e *Execution) notify(fn func(Observer)) {
+	if e == nil || fn == nil {
+		return
+	}
+	obs := e.observer
+	if obs == nil {
 		return
 	}
 	defer func() { _ = recover() }() // 只读 seam：panic 静默，不升格为节点失败
-	fn(g.observer)
+	fn(obs)
 }
 
 func finishReason(err error) NodeFinishReason {

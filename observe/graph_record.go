@@ -32,22 +32,24 @@ const (
 //
 // 归因走 Attrs：节点记录带 pulse.AttrGraph + pulse.AttrNode，运行级记录只带
 // pulse.AttrGraph（节点维度对它没有意义）——key 契约由**事实归属包** pulse
-// 定义，本包只消费。`cfg.Path` 非空时**每条**记录再带一个 pulse.AttrPath
-// （嵌套层级，引擎给值；空则不写，见 ObserveConfig.Path）。Status 为
+// 定义，本包只消费。此外每条记录都带 `pulse.AttrExecution`（**这一次运行**的身份）与
+// `pulse.AttrPath`（挂载位置，根图为空、不写）：两者都从引擎随回调发出来的
+// `pulse.Site` 里拿，所以**同一张图跑两次的记录自动分得开**——只按 graph + path 记账
+// 会把并发两次运行折叠成一份。`cfg.Path` 只在 site 给不出位置时兜底（旧装配的用法）。
+// Status 为
 // running（等待段 / 运行级 started）或终态
 // （finish reason）。跳过节点只有一条 skipped 等待记录，无运行记录。
 //
 // 记录顺序即引擎事件的顺序：运行级 started 排在本轮全部节点记录之前，
 // finished 排在它们之后。
 //
-// graphID 由 pulse 随回调发出（Graph 构造时的 graphID）——多图复用同一
+// 身份由 pulse 随回调发出（定义 id + 本次运行 id + 挂载位置）——多图复用同一
 // Observer 实现时归因不漂移。
 //
-// 单实例可复用于多图并发：内部按（graphID, nodeID）与 graphID 记账，同名
-// 节点跨图互不串扰。同图同节点 / 同 graphID 的残留条目（Finished 未达，如
-// 进程退出）会影响该键的下一次记账；**同 graphID 的两轮运行并发复用同一
-// 实例**时，整轮耗时会按后一次 Started 起算（拿不到 Started 时 Duration 为
-// 恰好 0，记录照发）。长期复用建议按图运行周期换实例。
+// 单实例可复用于多图并发：内部按（**运行 id**, nodeID）与运行 id 记账，同名
+// 节点跨图、同一张图跨运行都互不串扰。同运行同节点的残留条目（Finished 未达，如
+// 进程退出）会影响该键的下一次记账——运行 id 每个执行实例都不同，所以那一次运行
+// 之后键不会再被复用。长期复用建议按运行周期换实例。
 // 挂载：pulse.WithObserver(NewRecordObserver(cfg))；与宿主自有 Observer
 // 经 pulse.MultiObserver 组合。观察者 panic / error 不升格为节点失败
 // （pulse 侧 notify 已吞掉，只读 seam 契约）。cfg.Sink 为 nil 返回哨兵错误。
@@ -55,7 +57,7 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 	if cfg.Sink == nil {
 		return nil, ErrNilSink
 	}
-	type nodeKey struct{ graph, node string }
+	type nodeKey struct{ exec, node string }
 	type nodeState struct {
 		waitStart time.Time
 		runStart  time.Time
@@ -64,7 +66,7 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 	}
 	var mu sync.Mutex
 	states := make(map[nodeKey]*nodeState)
-	graphStart := make(map[string]time.Time)
+	execStart := make(map[string]time.Time)
 
 	newRec := func(event, status string, d time.Duration, err error) Record {
 		return Record{
@@ -78,42 +80,51 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 		}
 	}
 
-	// withPath 补上嵌套层级归因（#294）：三段归因挨着写，读起来才是「同一组的
-	// 三个维度」。`cfg.Path` 为空**不写**这个 key——根图的记录本来就没有层级，
-	// 写空串会让「根」与「忘了传」长得一样（`Attrs` 是有才有）。
-	withPath := func(rec *Record) {
-		if cfg.Path != "" {
+	// withSite 补上位置归因：定义 id / 这次运行 id / 挂载位置。三个维度挨着写，
+	// 读起来才是「同一组的三个维度」。
+	//
+	// 位置**空则不写**：根图的记录本来就没有层级，写空串会让「根」与「忘了传」
+	// 长得一样（`Attrs` 是有才有）。`cfg.Path` 只在 site 没给位置时兜底——
+	// 引擎现在把挂载位置随每条回调发出来了，宿主不必再按层建出口。
+	withSite := func(rec *Record, site pulse.Site) {
+		if site.Execution != "" {
+			Set(&rec.Attrs, pulse.AttrExecution, site.Execution)
+		}
+		switch {
+		case site.Path != "":
+			Set(&rec.Attrs, pulse.AttrPath, site.Path)
+		case cfg.Path != "":
 			Set(&rec.Attrs, pulse.AttrPath, cfg.Path)
 		}
 	}
 
-	seg := func(graphID, nodeID, event, status string, d time.Duration, err error) {
+	seg := func(site pulse.Site, nodeID, event, status string, d time.Duration, err error) {
 		rec := newRec(event, status, d, err)
-		Set(&rec.Attrs, pulse.AttrGraph, graphID)
+		Set(&rec.Attrs, pulse.AttrGraph, site.Graph)
 		Set(&rec.Attrs, pulse.AttrNode, nodeID)
-		withPath(&rec)
+		withSite(&rec, site)
 		cfg.Sink.Write(rec)
 	}
 
 	// 运行级记录只带图 ID：节点维度对它没有意义。
-	graphSeg := func(graphID, event, status string, d time.Duration, err error) {
+	graphSeg := func(site pulse.Site, event, status string, d time.Duration, err error) {
 		rec := newRec(event, status, d, err)
-		Set(&rec.Attrs, pulse.AttrGraph, graphID)
-		withPath(&rec)
+		Set(&rec.Attrs, pulse.AttrGraph, site.Graph)
+		withSite(&rec, site)
 		cfg.Sink.Write(rec)
 	}
 
 	return pulse.ObserverFunc{
-		GraphStarted: func(graphID string) {
+		GraphStarted: func(site pulse.Site) {
 			mu.Lock()
-			graphStart[graphID] = time.Now()
+			execStart[site.Execution] = time.Now()
 			mu.Unlock()
-			graphSeg(graphID, EventGraphStarted, "running", 0, nil)
+			graphSeg(site, EventGraphStarted, "running", 0, nil)
 		},
-		GraphFinished: func(graphID string, reason pulse.NodeFinishReason, err error) {
+		GraphFinished: func(site pulse.Site, reason pulse.NodeFinishReason, err error) {
 			mu.Lock()
-			start, ok := graphStart[graphID]
-			delete(graphStart, graphID)
+			start, ok := execStart[site.Execution]
+			delete(execStart, site.Execution)
 			mu.Unlock()
 			// 没见过 Started：不编造整轮耗时，**留 0**——它是「不知道」，不是
 			// 「耗时为零」。不留 `time.Since(time.Now())` 那种几十纳秒的残值：
@@ -122,16 +133,16 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 			if ok {
 				d = time.Since(start)
 			}
-			graphSeg(graphID, EventGraphFinished, string(reason), d, err)
+			graphSeg(site, EventGraphFinished, string(reason), d, err)
 		},
-		Waiting: func(graphID, nodeID string) {
+		Waiting: func(site pulse.Site, nodeID string) {
 			mu.Lock()
-			states[nodeKey{graphID, nodeID}] = &nodeState{waitStart: time.Now()}
+			states[nodeKey{site.Execution, nodeID}] = &nodeState{waitStart: time.Now()}
 			mu.Unlock()
 		},
-		Running: func(graphID, nodeID string) {
+		Running: func(site pulse.Site, nodeID string) {
 			mu.Lock()
-			k := nodeKey{graphID, nodeID}
+			k := nodeKey{site.Execution, nodeID}
 			st := states[k]
 			if st == nil {
 				st = &nodeState{waitStart: time.Now()}
@@ -146,11 +157,11 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 			st.ran = true
 			st.runStart = time.Now()
 			mu.Unlock()
-			seg(graphID, nodeID, EventNodeWaitFinished, "running", d, nil)
+			seg(site, nodeID, EventNodeWaitFinished, "running", d, nil)
 		},
-		Finished: func(graphID, nodeID string, reason pulse.NodeFinishReason, err error) {
+		Finished: func(site pulse.Site, nodeID string, reason pulse.NodeFinishReason, err error) {
 			mu.Lock()
-			k := nodeKey{graphID, nodeID}
+			k := nodeKey{site.Execution, nodeID}
 			st := states[k]
 			delete(states, k)
 			mu.Unlock()
@@ -159,11 +170,11 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 			}
 			// 未进入执行（skip / 直接失败）：只补等待段。
 			if !st.waitDone {
-				seg(graphID, nodeID, EventNodeWaitFinished, string(reason), time.Since(st.waitStart), err)
+				seg(site, nodeID, EventNodeWaitFinished, string(reason), time.Since(st.waitStart), err)
 				return
 			}
 			if st.ran {
-				seg(graphID, nodeID, EventNodeRunFinished, string(reason), time.Since(st.runStart), err)
+				seg(site, nodeID, EventNodeRunFinished, string(reason), time.Since(st.runStart), err)
 			}
 		},
 	}, nil

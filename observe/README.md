@@ -17,7 +17,7 @@ obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 	HostID:  "host-1",             // 宿主身份：跨运行稳定，与 TraceID 组成「谁 + 哪一次」
 	TraceID: observe.NewTraceID(), // 运行期身份，单一生成源
 })
-g, err := pulse.New(ctx, "demo", "演示图", pulse.WithObserver(obs))
+g, err := pulse.New("demo", "演示图", pulse.WithObserver(obs))
 // …装图、Seed、Run
 ```
 
@@ -34,9 +34,9 @@ g, err := pulse.New(ctx, "demo", "演示图", pulse.WithObserver(obs))
 
 图级两条把本轮的节点记录**夹在中间**（`started` 先于任何节点记录、`finished` 晚于全部）；只 `Start` 不 `Wait` 的宿主拿不到 `finished`。跳过节点**只有**一条 `skipped` 等待记录——它到达了，只是没执行。一轮里全部节点都跳过时运行级仍是 `completed`：跳过是节点级的事实。
 
-归因维度走 `Attrs`（`pulse.AttrGraph` / `pulse.AttrNode`，key 契约由引擎定义，本包只消费）：节点记录两个都带，运行级两条只带 `pulse.AttrGraph`——节点维度对「一次运行」没有意义。
+归因维度走 `Attrs`（`pulse.AttrGraph` / `pulse.AttrNode` / `pulse.AttrExecution`，key 契约由引擎定义，本包只消费）：节点记录两个都带，运行级两条只带 `pulse.AttrGraph`——节点维度对「一次运行」没有意义；`pulse.AttrExecution` 每条都带（同一张图跑两次的记录靠它分得开）。
 
-**嵌套层级**是第三个维度 `pulse.AttrPath`：`ObserveConfig.Path` 非空时**每一条**记录都带它，为空**不写**——空串会让「根」与「忘了传」长得一样，出口就没法用它判层级。它是**出口实例**上的一个值（不是每条记录各带一个），所以嵌套 = **按层各建一个出口**：在**建子图那一刻**建这一层的出口，把 `ObserveConfig.Path` 填成本层的**挂载路径**（装配期就定得下来；声明式装配由 `pulse/yaml` 的 `LoadOptions.ObserverFor` 按层代劳）。分层怎么拆是出口的事（按 `/` 分即可），引擎与本包都不提供结构化树。
+**嵌套层级**是第三个维度 `pulse.AttrPath`：引擎把**挂载位置**随每条回调发出来（`Site.Path`），本包由此给那一层的**每一条**记录都写上它——根图不写，空串会让「根」与「忘了传」长得一样，出口就没法用它判层级。一个出口从根挂下去就够：子图的记录自带层级，不必按层各建一个出口；`ObserveConfig.Path` 只在 `Site` 没给位置时兜底（自己直写记录之类不经过引擎的场景）。分层怎么拆是出口的事（按 `/` 分即可），引擎与本包都不提供结构化树。
 
 **耗时口径**：都是**墙钟**，且回调在调用方 goroutine 上同步执行——出口有多慢，段就有多长（`pulse.graph_finished` 的窗口覆盖整轮，其中包含出口写出的开销）。`AsyncSink` 只把**落盘**推后，不把 `Write` 调用从窗口里摘掉。段耗时被计时精度取整成 `0`（内置版式渲染 `-`）表示「量不出来」，不是「没有这一段」。
 

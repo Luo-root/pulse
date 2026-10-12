@@ -45,7 +45,8 @@ func TestSubLimitInheritedByParent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	g := mustNew(t, ctx, "P", WithMaxRunning(1))
-	if err := Seed(g, in, "v"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,7 +68,7 @@ func TestSubLimitInheritedByParent(t *testing.T) {
 	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatalf("继承父图名额之后嵌套应当跑得通：%v", err)
 	}
 	if got := done.Load(); got != 2 {
@@ -88,7 +89,8 @@ func TestSubLimitThreeDeepUnderOneSlot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	g := mustNew(t, ctx, "P", WithMaxRunning(1))
-	if err := Seed(g, in, "v"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -118,7 +120,7 @@ func TestSubLimitThreeDeepUnderOneSlot(t *testing.T) {
 	if err := Sub(g, "step1", "", []SubBind{In(in, l1)}, mid); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatalf("三层嵌套 + 限额 1 应当跑得通（占着名额等子图的话这里会是超时）：%v", err)
 	}
 	if got := leafRan.Load(); got != 1 {
@@ -139,10 +141,12 @@ func TestSubLimitSiblingsShareQuota(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	g := mustNew(t, ctx, "P", WithMaxRunning(2))
-	if err := Seed(g, in1, "v"); err != nil {
+	declareIn(t, g, NewPort(in1))
+	if err := seedOn(g, in1, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Seed(g, in2, "v"); err != nil {
+	declareIn(t, g, NewPort(in2))
+	if err := seedOn(g, in2, "v"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,7 +175,7 @@ func TestSubLimitSiblingsShareQuota(t *testing.T) {
 	if err := Sub(g, "b", "", []SubBind{In(in2, c2)}, build("P/b", c2)); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if got := done.Load(); got != 4 {
@@ -191,7 +195,8 @@ func TestSubLimitZeroOptsOutForSubtree(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	g := mustNew(t, ctx, "P", WithMaxRunning(1))
-	if err := Seed(g, in, "v"); err != nil {
+	declareIn(t, g, NewPort(in))
+	if err := seedOn(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -211,7 +216,7 @@ func TestSubLimitZeroOptsOutForSubtree(t *testing.T) {
 	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	if got := c.peak(); got != 2 {

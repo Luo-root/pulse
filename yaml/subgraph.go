@@ -1,7 +1,6 @@
 package yaml
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -31,8 +30,9 @@ import (
 //     同一条规则（见 `problemsOutputsLocked`），那条键的值来自父侧，所以不要求子图内部有人
 //     读它 / 有人产出它；但**内部有人产出它**仍要拒：那与父侧那次喂值是同一个槽的两个来源。
 //
-// 子图节点上的 `retry:` 是**装图期就拒**的（见 addSubNode）：静态挂载的子图只跑一次，
-// 第二次尝试起不来。Go 侧同一个形状也拒，只是时机不同——`Aspect` 是裸函数类型、闭包没有
+// 子图节点上的 `retry:` 是**装图期就拒**的（见 addSubNode）：这一步的输出桥回父侧是在
+// 第一次尝试里做完的，而父侧槽位是幂等首写——重试拿不到「干净的一次」(缺 attempt 级写集)。
+// Go 侧同一个形状也拒，理由与报文都一样，只是时机不同——`Aspect` 是裸函数类型、闭包没有
 // 可查的身份，装配期认不出它是不是 `Retry`，所以那一边由 `Retry` 在**进 `Run` 的第一件事**
 // 当场拒（见 aspect.go）。两个入口都不静默接受。
 
@@ -239,7 +239,32 @@ func subBinds(n NodeSpec, graphName string, child GraphSpec, reg *pulse.Registry
 		}
 		binds = append(binds, b)
 	}
+	// 子图自己声明的 `seeds:` **不再写进子图定义**（值属于一次运行）：它翻成这个挂载点上
+	// 的一组 `pulse.Fix` 绑定——「这一步给子图那条进口一个常量」。声明那一半（端口）由
+	// `declarePorts` 在子图那侧补上（见那里）。顺序按键名排序，报文才稳定。
+	for _, s := range sortedSeeds(child.Seeds) {
+		var (
+			b   pulse.SubBind
+			err error
+		)
+		if s.Skip {
+			b, err = pulse.FixSkipByName(reg, s.Key.Name, s.Key.Type)
+		} else {
+			b, err = pulse.FixByName(reg, s.Key.Name, s.Key.Type, s.From.Value)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("node %q: graph %q seed %q: %w", n.ID, graphName, s.Key.Name, err)
+		}
+		binds = append(binds, b)
+	}
 	return binds, nil
+}
+
+// sortedSeeds 按键名排序，装图与报文顺序才稳定（同一份文档每次报同一句）。
+func sortedSeeds(seeds []SeedSpec) []SeedSpec {
+	out := append([]SeedSpec(nil), seeds...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Key.Name < out[j].Key.Name })
+	return out
 }
 
 // mount 是「这一批声明装在哪一层」的两条坐标 + 一句「这是哪张 spec」。
@@ -299,7 +324,7 @@ type assembler struct {
 
 // addNodes 把一批节点声明装进 g。工厂节点与子图节点在这里分流：子图节点被翻成一个
 // **静态挂载**（`pulse.Sub`）。`retry` 落在子图节点上还不支持，由 `addSubNode` 当场拒
-// ——静态子图只跑一次，第二次尝试起不来（原因写在那里）。
+// ——这一步的桥回是在第一次尝试里做完的（原因写在那里）。
 //
 // 子图里的子图走的是同一个函数（`buildChild` 递归调它），所以嵌套不设深度上限；
 // 引用环已经在 `checkGraphRefs` 拦掉了，这里不会转圈。
@@ -360,21 +385,27 @@ func (a *assembler) addSubNode(g *pulse.Graph, n NodeSpec, m mount, aspects []pu
 	}
 	// `retry` 落在子图节点上：这一阶段**当场拒**。
 	//
-	// 为什么不是「照旧能重试」：静态子图是一次性的，`Sub` 在运行期原子认领它，第一次
-	// 尝试就把它用掉了——第二次尝试只会拿到「这张图已经在用」。而那句还会**盖掉第一次
-	// 失败的真正原因**（`Retry` 返回的是**最后一次** attempt 的错误），病根就再也看不到了。
-	// 「每次尝试各装一张新图」要等阶段 3 的事务性 `Retry`（见 object-model 第 5 节）。
+	// 为什么不是「照旧能重试」：桥回父侧是**在第一次尝试里做完的**——子图的输出那时就
+	// `Set` 进了父侧槽位，而槽位是幂等首写。第二次尝试照样会把输出再写一遍，那些写入
+	// 会被**静默丢掉**：父图手里留着第一次的半成品，重试却看起来成功了。而那句还会
+	// **盖掉第一次失败的真正原因**（`Retry` 返回的是**最后一次** attempt 的错误）。
+	// 「每次尝试各持一份写暂存、成功才提交」要等阶段 3 的事务性 `Retry`（见 object-model
+	// 第 5 节）；那时每一次尝试各建一份子执行已经是现成的（阶段 2 的 `Execution`）。
 	//
 	// 为什么不留一条旧路：留着就是两套判据长期并存，而这条能力的目标形态在阶段 3 才
 	// 落地——现在拒掉，报错里直接给出今天就能用的写法。
 	//
-	// Go 侧同一个形状同样用不了，只是拒的时机不同（`Aspect` 认不出身份，判据在 `Retry`
-	// 进 `Run` 的第一件事）——两个入口一致在「都拒」，而不是一致在「都在装图期拒」。
+	// Go 侧同一个形状同样用不了，理由与报文都一样，只是拒的时机不同（`Aspect` 认不出
+	// 身份，判据在 `Retry` 进 `Run` 的第一件事）——两个入口一致在「都拒」，
+	// 而不是一致在「都在装图期拒」。
 	if n.Retry != nil {
 		return fmt.Errorf("pulse/yaml: %snode %q: retry is not supported on a graph node yet: "+
-			"a statically mounted subgraph runs once, so a second attempt could not start it "+
-			"(a fresh child per attempt needs the execution tree). "+
-			"Move retry onto the node inside graph %q that may actually fail",
+			"this step bridges the child's outputs into the parent slots inside the attempt, and "+
+			"those slots are idempotent first-write — a key the first attempt bridged before "+
+			"failing keeps that value, so a retried attempt's writes for it are silently ignored "+
+			"and the parent could keep a mix of both attempts. "+
+			"Move retry onto the node inside graph %q that may actually fail; per-attempt write "+
+			"sets are the next stage",
 			at(m.where), n.ID, n.Graph)
 	}
 	binds, err := subBinds(n, n.Graph, spec, a.reg)
@@ -404,7 +435,7 @@ func (a *assembler) addSubNode(g *pulse.Graph, n NodeSpec, m mount, aspects []pu
 	// 与 `Start` 共用同一套判据，所以报文与它跑到那一层被拒时逐字相同）。
 	//
 	// 为什么是「每张实例各自校验」而不是「最后校验一次根图」：根图那一层**不能**
-	// 在这一刻查——它的外部输入是宿主在 `Load` 之后种进去的（`SeedPlan.Apply`），
+	// 在这一刻查——它的外部输入是宿主在 `Load` 之后种进去的（`SeedPlan.Inputs`），
 	// 装图期看它当然是「没人提供、没人 seed」，任何一份正常文档都会被误报。
 	// 「声明归端口、值归运行输入」是阶段 2 随 `Execution` 落地的事，所以根层自己那
 	// 几条判据仍在 `Start` 那一刻报（与今天一致）。子图这一层没有这个问题：它们的
@@ -454,7 +485,7 @@ func (a *assembler) buildChild(n NodeSpec, cm mount) (*pulse.Graph, error) {
 		// 校验图与真图**同额度**（理由见 checkGraph）；它同样带 opts.Graph 那批选项。
 		child, err = checkGraph(cm.id, a.opts)
 	} else {
-		child, err = pulse.New(context.Background(), cm.id, spec.Description, opts...)
+		child, err = pulse.New(cm.id, spec.Description, opts...)
 	}
 	if err != nil {
 		return nil, err
@@ -462,37 +493,40 @@ func (a *assembler) buildChild(n NodeSpec, cm mount) (*pulse.Graph, error) {
 	if err := a.addNodes(child, spec.Nodes, cm); err != nil {
 		return nil, err
 	}
-	// 子图的 seeds：只允许 literal（C3）——env / file / context 那几种要靠宿主
-	// IO，而 SeedPlan 是**父图**的产物；把子图的计划向上冒泡是另一件事，
-	// 等真有需要再说。校验在 Load 期做（checkSubSeeds）。
-	for _, s := range spec.Seeds {
-		if err := seedOne(child, n.Graph, s, a.reg); err != nil {
-			return nil, err
-		}
-	}
-	if err := a.declarePorts(child, n); err != nil {
+	// 子图自己声明的 `seeds:` 不在这里落：值属于一次运行，所以它们变成了**挂载点上**的
+	// `pulse.Fix` 绑定（见 subBinds）。这一层只按它们补上端口声明（见 declarePorts）。
+	//
+	// 值本身仍然在这里对账（键有没有登记、类型记不记得上、容器要不要 coerce）——
+	// 由 `subBinds` 那两次查表 + `FixByName` 完成，报错点在节点那一行。
+	if err := a.declarePorts(child, n, spec); err != nil {
 		return nil, err
 	}
 	return child, nil
 }
 
 // declarePorts 按这一处的接线给子图**声明端口**：`in:` 的子侧键进输入端口、`out:` 的
-// 子侧键进输出端口。
+// 子侧键进输出端口、**子图自己 `seeds:` 的键也进输入端口**。
 //
-// 为什么必须有：子图里那些节点读 `in:` 喂进来的键，而值要等运行期才种得进去
-// （`Seed` 是本次运行的值）——静态校验子图时，这条键就是「没人提供、没人 seed」。
-// 端口把「这本来就是外部输入」说清楚（静态来源是 `pulse.SourceInput`），于是「忘了接线」
-// 与「本来就是这张图的接口」分得开；端口同时也是**父侧唯一能接的接线面**（`Sub` 只认
-// 声明过的端口，接到子图内部的中间 Key 是静态错）。
+// 为什么必须有：子图里那些节点读 `in:` 喂进来的键，而值要等运行期才送得进去——静态校验
+// 子图时，这条键就是「没人提供、也不是入口」。端口把「这本来就是外部输入」说清楚
+// （静态来源是 `pulse.SourceInput`），于是「忘了接线」与「本来就是这张图的接口」分得开；
+// 端口同时也是**父侧唯一能接的接线面**（`Sub` 只认声明过的端口，接到子图内部的中间 Key
+// 是静态错）。
+//
+// `seeds:` 那几条同理：它们的值来自挂载点上的 `Fix` 绑定，对子图而言仍然是「外部输入」。
 //
 // 按**引用点**各声明各的：同一张 spec 挂两处、两边的 `in:` 不一样时，两张实例的接口面
 // 本来就不同——这正是「按引用点校验」（#298）在静态装配里的落点。
-func (a *assembler) declarePorts(child *pulse.Graph, n NodeSpec) error {
+func (a *assembler) declarePorts(child *pulse.Graph, n NodeSpec, spec GraphSpec) error {
 	in, err := a.ports(n.ID, n.In, "in")
 	if err != nil {
 		return err
 	}
-	if err := child.DeclareInput(in...); err != nil {
+	seeded, err := a.seedPorts(n.ID, spec)
+	if err != nil {
+		return err
+	}
+	if err := child.DeclareInput(append(in, seeded...)...); err != nil {
 		return fmt.Errorf("pulse/yaml: node %q in: %w", n.ID, err)
 	}
 	out, err := a.ports(n.ID, n.Out, "out")
@@ -503,6 +537,23 @@ func (a *assembler) declarePorts(child *pulse.Graph, n NodeSpec) error {
 		return fmt.Errorf("pulse/yaml: node %q out: %w", n.ID, err)
 	}
 	return nil
+}
+
+// seedPorts 把子图 `seeds:` 里那几条键翻成端口声明（顺序按键名排序，与 Fix 绑定同序）。
+func (a *assembler) seedPorts(nodeID string, spec GraphSpec) ([]pulse.Port, error) {
+	out := make([]pulse.Port, 0, len(spec.Seeds))
+	for _, s := range sortedSeeds(spec.Seeds) {
+		tag, ok := a.reg.TypeTagOf(s.Key.Name)
+		if !ok {
+			return nil, fmt.Errorf("pulse/yaml: node %q seed: key %q is not registered", nodeID, s.Key.Name)
+		}
+		ref, err := a.reg.ResolveKey(s.Key.Name, tag)
+		if err != nil {
+			return nil, fmt.Errorf("pulse/yaml: node %q seed: %w", nodeID, err)
+		}
+		out = append(out, pulse.PortRef(ref))
+	}
+	return out, nil
 }
 
 // ports 把一侧接线里的**子侧**键翻成端口声明，顺序按键名排序（声明顺序确定，
@@ -560,17 +611,22 @@ func (a *assembler) declareSpecInputs(g *pulse.Graph, name string) error {
 	return nil
 }
 
-// seedOne 把子图声明里的一条 seed 种进 g，供**校验树**与**真图**共用：同一个函数 ⇒
-// 两边拒的东西永远一致（键没登记、类型写错、值是 nil——这些都是静态可判定的，
-// 装配期报出来比跑到那一层才报好）。
-func seedOne(g *pulse.Graph, graphName string, s SeedSpec, reg *pulse.Registry) error {
+// seedOne 把子图声明里的一条 seed 在**装图期**对一次账：键有没有登记、类型记号对不对、
+// 值能不能对齐到那个类型、是不是 nil。
+//
+// 它**不碰任何图**（值属于一次运行，见 subBinds 那段）：真正把值送到子图那一步的是
+// 挂载点上的 `pulse.Fix` 绑定。这里只留「这条 seed 站不站得住」这一半，供**谁也引用不到**
+// 的那些 spec 用——那种 spec 没有挂载点，`subBinds` 没有机会跑，而「写错了没人报」
+// 比「报了」难查得多。
+func seedOne(reg *pulse.Registry, graphName string, s SeedSpec) error {
+	var in pulse.Inputs
 	if s.Skip {
-		if err := pulse.SkipSeedByName(g, reg, s.Key.Name, s.Key.Type); err != nil {
+		if err := pulse.SkipSeedByName(&in, reg, s.Key.Name, s.Key.Type); err != nil {
 			return fmt.Errorf("pulse/yaml: graph %q seed %q: %w", graphName, s.Key.Name, err)
 		}
 		return nil
 	}
-	if err := pulse.SeedByName(g, reg, s.Key.Name, s.Key.Type, s.From.Value); err != nil {
+	if err := pulse.SeedByName(&in, reg, s.Key.Name, s.Key.Type, s.From.Value); err != nil {
 		return fmt.Errorf("pulse/yaml: graph %q seed %q: %w", graphName, s.Key.Name, err)
 	}
 	return nil
@@ -580,7 +636,7 @@ func seedOne(g *pulse.Graph, graphName string, s SeedSpec, reg *pulse.Registry) 
 //
 //   - **非 skip** 的 seed 要靠宿主 IO（`env` / `file` / `context`）——子图的
 //     `SeedPlan` 不存在，只有 `literal` 能种。`skip: true` 那条不算：它只把
-//     槽标成跳过，`from` 没有语义（`seedOne` 与顶层 `SeedPlan.Apply` 都是
+//     槽标成跳过，`from` 没有语义（`seedOne` 与顶层 `SeedPlan.Inputs` 都是
 //     直接 `SkipSeed` 并忽略 `from`），所以照顶层的样子放行；
 //   - 同一张图里同一条键声明**两次** seed——第二次种值会被幂等首写静默忽略，
 //     到底哪个值生效取决于声明顺序，两行看着都像是对的。

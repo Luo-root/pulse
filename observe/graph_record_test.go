@@ -17,7 +17,7 @@ func testObsCfg(sink *MemorySink) ObserveConfig {
 // mustGraph 建图；本文件只关心观测折叠，建图失败即 Fatal。
 func mustGraph(t *testing.T, id string, opts ...pulse.Option) *pulse.Graph {
 	t.Helper()
-	g, err := pulse.New(context.Background(), id, "", opts...)
+	g, err := pulse.New(id, "", opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,14 +30,37 @@ type recordingObserver struct {
 	log []string
 }
 
-func (o *recordingObserver) OnGraphStarted(_ string) { o.add("GS") }
-func (o *recordingObserver) OnGraphFinished(_ string, _ pulse.NodeFinishReason, _ error) {
+func (o *recordingObserver) OnGraphStarted(_ pulse.Site) { o.add("GS") }
+func (o *recordingObserver) OnGraphFinished(_ pulse.Site, _ pulse.NodeFinishReason, _ error) {
 	o.add("GF")
 }
-func (o *recordingObserver) OnNodeWaiting(_, _ string) { o.add("W") }
-func (o *recordingObserver) OnNodeRunning(_, _ string) { o.add("R") }
-func (o *recordingObserver) OnNodeFinished(_, _ string, _ pulse.NodeFinishReason, _ error) {
+func (o *recordingObserver) OnNodeWaiting(_ pulse.Site, _ string) { o.add("W") }
+func (o *recordingObserver) OnNodeRunning(_ pulse.Site, _ string) { o.add("R") }
+func (o *recordingObserver) OnNodeFinished(_ pulse.Site, _ string, _ pulse.NodeFinishReason, _ error) {
 	o.add("F")
+}
+
+// 外部包用不了根包的测试脚手架，所以这一次运行的输入照**真实形状**写：
+// `DeclareInput` 声明进口 + `Seed(&in, k, v)` 给值 + `g.Run(ctx, in)`。
+func feedIn[T any](t *testing.T, g *pulse.Graph, in *pulse.Inputs, k pulse.Key[T], v T) {
+	t.Helper()
+	if err := g.DeclareInput(pulse.NewPort(k)); err != nil {
+		t.Fatalf("DeclareInput(%s): %v", k.Name(), err)
+	}
+	if err := pulse.Seed(in, k, v); err != nil {
+		t.Fatalf("Seed(%s): %v", k.Name(), err)
+	}
+}
+
+// skipIn 同形：声明这条进口，并把这一次标成**跳过**（跳过是到达，不是失败）。
+func skipIn[T any](t *testing.T, g *pulse.Graph, in *pulse.Inputs, k pulse.Key[T]) {
+	t.Helper()
+	if err := g.DeclareInput(pulse.NewPort(k)); err != nil {
+		t.Fatalf("DeclareInput(%s): %v", k.Name(), err)
+	}
+	if err := pulse.SkipSeed(in, k); err != nil {
+		t.Fatalf("SkipSeed(%s): %v", k.Name(), err)
+	}
 }
 
 func (o *recordingObserver) add(s string) {
@@ -63,9 +86,8 @@ func TestRecordObserverSegments(t *testing.T) {
 	in := pulse.NewKey[string]("obs.in")
 	out := pulse.NewKey[string]("obs.out")
 	g := mustGraph(t, "test", pulse.WithObserver(obs))
-	if err := pulse.Seed(g, in, "x"); err != nil {
-		t.Fatal(err)
-	}
+	var inputs pulse.Inputs
+	feedIn(t, g, &inputs, in, "x")
 	if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
 		time.Sleep(2 * time.Millisecond)
 		v, err := pulse.Get(rc, in)
@@ -76,7 +98,7 @@ func TestRecordObserverSegments(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 
@@ -120,16 +142,15 @@ func TestRecordObserverSkip(t *testing.T) {
 	}
 	a := pulse.NewKey[string]("obs.sa")
 	g := mustGraph(t, "test", pulse.WithObserver(obs))
-	if err := pulse.SkipSeed(g, a); err != nil {
-		t.Fatal(err)
-	}
+	var inputs pulse.Inputs
+	skipIn(t, g, &inputs, a)
 	if err := g.Add(pulse.NewNode("down", "", pulse.Requires(a), nil, func(rc *pulse.RunCtx) error {
 		t.Fatal("must not run")
 		return nil
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 
@@ -161,9 +182,8 @@ func TestRecordObserverTwoNodeIdentities(t *testing.T) {
 	k2 := pulse.NewKey[string]("obs.c2")
 	k3 := pulse.NewKey[string]("obs.c3")
 	g := mustGraph(t, "test", pulse.WithObserver(obs))
-	if err := pulse.Seed(g, k1, "x"); err != nil {
-		t.Fatal(err)
-	}
+	var inputs pulse.Inputs
+	feedIn(t, g, &inputs, k1, "x")
 	pass := func(req, ack pulse.Key[string]) func(*pulse.RunCtx) error {
 		return func(rc *pulse.RunCtx) error {
 			v, err := pulse.Get(rc, req)
@@ -179,7 +199,7 @@ func TestRecordObserverTwoNodeIdentities(t *testing.T) {
 	if err := g.Add(pulse.NewNode("answer", "", pulse.Requires(k2), pulse.Provides(k3), pass(k2, k3))); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 
@@ -213,9 +233,8 @@ func TestRecordObserverCombinedWithHostObserver(t *testing.T) {
 	in := pulse.NewKey[string]("obs.cc.in")
 	out := pulse.NewKey[string]("obs.cc.out")
 	g := mustGraph(t, "test", pulse.WithObserver(pulse.MultiObserver{obs, host}))
-	if err := pulse.Seed(g, in, "x"); err != nil {
-		t.Fatal(err)
-	}
+	var inputs pulse.Inputs
+	feedIn(t, g, &inputs, in, "x")
 	if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
 		v, err := pulse.Get(rc, in)
 		if err != nil {
@@ -225,7 +244,7 @@ func TestRecordObserverCombinedWithHostObserver(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	log := host.snapshot()
@@ -265,9 +284,8 @@ func TestRecordObserverConcurrentGraphAttribution(t *testing.T) {
 	var wg sync.WaitGroup
 	for _, graphID := range []string{"ga", "gb"} {
 		g := mustGraph(t, graphID, pulse.WithObserver(obs))
-		if err := pulse.Seed(g, in, "x"); err != nil {
-			t.Fatal(err)
-		}
+		var inputs pulse.Inputs
+		feedIn(t, g, &inputs, in, "x")
 		if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
 			time.Sleep(time.Millisecond)
 			v, err := pulse.Get(rc, in)
@@ -281,7 +299,7 @@ func TestRecordObserverConcurrentGraphAttribution(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := g.Run(); err != nil {
+			if err := g.Run(context.Background(), inputs); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -314,6 +332,71 @@ func TestRecordObserverConcurrentGraphAttribution(t *testing.T) {
 
 // 运行级锚：一轮恰好两条（started / finished）且夹住节点记录，整轮耗时与宿主在
 // Run() 外掐的表同量级；归因只带图（节点维度对运行级事实没有意义）。
+// 同一张**定义**并发跑两次：两份记录靠 `pulse.execution` 分得开。
+//
+// 「一次运行」的身份是阶段 2 新增的（`Execution.ID()`）——只看 `pulse.graph` 会把两轮
+// 折叠成一份（定义本来就是同一张），恢复 / 归因都指望这一对字段。
+func TestRecordObserverSameGraphTwiceDistinctExecutions(t *testing.T) {
+	sink := &MemorySink{}
+	obs, err := NewRecordObserver(testObsCfg(sink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := pulse.NewKey[string]("twice.in")
+	out := pulse.NewKey[string]("twice.out")
+	g := mustGraph(t, "twice", pulse.WithObserver(obs))
+	if err := g.DeclareInput(pulse.NewPort(in)); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
+		v, err := pulse.Get(rc, in)
+		if err != nil {
+			return err
+		}
+		return pulse.Set(rc, out, v)
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for _, want := range []string{"x", "y"} {
+		var inputs pulse.Inputs
+		if err := pulse.Seed(&inputs, in, want); err != nil {
+			t.Fatal(err)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := g.Run(context.Background(), inputs); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	execs := map[string]int{}
+	for _, rec := range sink.Snapshot() {
+		eid, ok := Get[string](rec.Attrs, pulse.AttrExecution)
+		if !ok || eid == "" {
+			t.Fatalf("记录缺少本次运行的身份 %s：%+v", pulse.AttrExecution, rec)
+		}
+		if gid, ok := Get[string](rec.Attrs, pulse.AttrGraph); !ok || gid != "twice" {
+			t.Fatalf("图归因 = %q %v, want twice", gid, ok)
+		}
+		execs[eid]++
+	}
+	if len(execs) != 2 {
+		t.Fatalf("两轮该有两个身份，got %v", execs)
+	}
+	// 每轮各 4 条（图级两条 + 节点两条：等待段与运行段各一条）：身份不是「每轮随机撒」，
+	// 而是成组地分得开。
+	for eid, n := range execs {
+		if n != 4 {
+			t.Fatalf("身份 %q 名下有 %d 条，want 4（一整轮）", eid, n)
+		}
+	}
+}
+
 func TestRecordObserverGraphSegments(t *testing.T) {
 	sink := &MemorySink{}
 	obs, err := NewRecordObserver(testObsCfg(sink))
@@ -323,9 +406,8 @@ func TestRecordObserverGraphSegments(t *testing.T) {
 	in := pulse.NewKey[string]("obs.gs.in")
 	out := pulse.NewKey[string]("obs.gs.out")
 	g := mustGraph(t, "segment", pulse.WithObserver(obs))
-	if err := pulse.Seed(g, in, "x"); err != nil {
-		t.Fatal(err)
-	}
+	var inputs pulse.Inputs
+	feedIn(t, g, &inputs, in, "x")
 	if err := g.Add(pulse.NewNode("n", "", pulse.Requires(in), pulse.Provides(out), func(rc *pulse.RunCtx) error {
 		time.Sleep(5 * time.Millisecond)
 		v, err := pulse.Get(rc, in)
@@ -337,7 +419,7 @@ func TestRecordObserverGraphSegments(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	elapsed := time.Since(start)
@@ -395,7 +477,7 @@ func TestRecordObserverGraphFinishedFailed(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); !errors.Is(err, boom) {
+	if err := g.Run(context.Background(), pulse.Inputs{}); !errors.Is(err, boom) {
 		t.Fatalf("Run err = %v, want node error", err)
 	}
 
@@ -434,16 +516,15 @@ func TestRecordObserverGraphFinishedOnAllSkipped(t *testing.T) {
 	}
 	a := pulse.NewKey[string]("obs.allskip")
 	g := mustGraph(t, "allskip", pulse.WithObserver(obs))
-	if err := pulse.SkipSeed(g, a); err != nil {
-		t.Fatal(err)
-	}
+	var inputs pulse.Inputs
+	skipIn(t, g, &inputs, a)
 	if err := g.Add(pulse.NewNode("down", "", pulse.Requires(a), nil, func(rc *pulse.RunCtx) error {
 		t.Fatal("must not run")
 		return nil
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), inputs); err != nil {
 		t.Fatal(err)
 	}
 	recs := sink.Snapshot()
@@ -463,7 +544,7 @@ func TestRecordObserverGraphFinishedWithoutStarted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	obs.OnGraphFinished("orphan", pulse.NodeCompleted, nil)
+	obs.OnGraphFinished(pulse.Site{Graph: "orphan"}, pulse.NodeCompleted, nil)
 
 	recs := sink.Snapshot()
 	if len(recs) != 1 {

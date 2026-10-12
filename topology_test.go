@@ -89,12 +89,12 @@ func TestTopologyNodesEdgesDegrees(t *testing.T) {
 	}
 
 	// 形状与运行无关：跑一遍不该改动它（这条同时是「跑完再问也一样」的一半）。
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// TestTopologySourceKinds 钉住来源语义：外部 Seed 与节点来源分得清，而且
+// TestTopologySourceKinds 钉住来源语义：声明过的入口与节点来源分得清，而且
 // **一个真叫 `seed` 的节点**照样分得清、也不会凭空多出一条边（阶段零修的那
 // 两类静默错误，在公开面上就是这个形状）。
 func TestTopologySourceKinds(t *testing.T) {
@@ -103,7 +103,8 @@ func TestTopologySourceKinds(t *testing.T) {
 	out := NewKey[string]("tp.out")
 
 	g := mustNew(t, context.Background(), "srcs")
-	if err := Seed(g, seeded, "v"); err != nil {
+	declareIn(t, g, NewPort(seeded))
+	if err := seedOn(g, seeded, "v"); err != nil {
 		t.Fatal(err)
 	}
 	mustAdd(t, g, NewNode("seed", "", nil, Provides(fromSeed), func(rc *RunCtx) error {
@@ -121,18 +122,18 @@ func TestTopologySourceKinds(t *testing.T) {
 
 	top := g.Topology()
 	req := top.Nodes[1].Requires
-	if req[0].Name != "tp.seeded" || req[0].From.Kind != SourceSeed || req[0].From.NodeID != "" {
-		t.Fatalf("外部 Seed 那一条 = %+v", req[0])
+	if req[0].Name != "tp.seeded" || req[0].From.Kind != SourceInput || req[0].From.NodeID != "" {
+		t.Fatalf("声明过的入口那一条 = %+v", req[0])
 	}
 	if req[1].From.Kind != SourceNode || req[1].From.NodeID != "seed" {
 		t.Fatalf("节点来源那一条 = %+v", req[1])
 	}
-	// 两种来源都叫 seed，但 **Kind 分得开**——而且公开出口上的文本也要分得开，
-	// 否则这个歧义会从日志 / 格式化输出绕回来（评审在 #308 上点的这条）。
-	if req[0].From.String() != "seed" || req[1].From.String() != `node "seed"` {
+	// 两种来源的**公开文本**也要分得开，否则这个歧义会从日志 / 格式化输出绕回来
+	// （评审在 #308 上点的这条）。
+	if req[0].From.String() != "input" || req[1].From.String() != `node "seed"` {
 		t.Fatalf("两种来源在公开出口上必须分得开：%q / %q", req[0].From, req[1].From)
 	}
-	// Seed 不建边：只有那条节点来源的边，且它来自**那个节点**。
+	// 入口不建边：只有那条节点来源的边，且它来自**那个节点**。
 	want := []EdgeShape{{From: "seed", To: "reader", Keys: []string{"tp.fromseed"}}}
 	if !reflect.DeepEqual(top.Edges, want) {
 		t.Fatalf("Edges = %+v\nwant %+v", top.Edges, want)
@@ -140,7 +141,7 @@ func TestTopologySourceKinds(t *testing.T) {
 	if len(top.Problems) != 0 {
 		t.Fatalf("没毛病：%v", top.Problems)
 	}
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -162,8 +163,10 @@ func TestTopologyProblemsAllAtOnce(t *testing.T) {
 	mustAdd(t, g, NewNode("D", "", Requires(missing2), nil, done))
 
 	top := g.Topology()
-	wantSrc := `pulse: node "C" requires "tp.missing" but nothing provides or seeds it`
-	wantSrc2 := `pulse: node "D" requires "tp.missing2" but nothing provides or seeds it`
+	wantSrc := `pulse: node "C" requires "tp.missing" but nothing provides it ` +
+		`(declare it with DeclareInput if the value comes from outside)`
+	wantSrc2 := `pulse: node "D" requires "tp.missing2" but nothing provides it ` +
+		`(declare it with DeclareInput if the value comes from outside)`
 	wantCycle := `pulse: dependency cycle: A -> B -> A (A requires "tp.y", B requires "tp.x")`
 	// 每个缺来源的 Requires 各一条（不是只报第一个），环那条排在它们后面。
 	if len(top.Problems) != 3 {
@@ -194,7 +197,7 @@ func TestTopologyProblemsAllAtOnce(t *testing.T) {
 	if err := g.Validate(); err == nil || err.Error() != wantSrc {
 		t.Fatalf("Validate = %v", err)
 	}
-	if err := g.Start(); err == nil || err.Error() != wantSrc {
+	if err := startOn(g); err == nil || err.Error() != wantSrc {
 		t.Fatalf("Start = %v", err)
 	}
 }
@@ -264,7 +267,7 @@ func TestTopologyCycleWitnessStaysInCycle(t *testing.T) {
 	if err := g.Validate(); err == nil || err.Error() != want {
 		t.Fatalf("Validate = %v\nwant %q", err, want)
 	}
-	if err := g.Start(); err == nil || err.Error() != want {
+	if err := startOn(g); err == nil || err.Error() != want {
 		t.Fatalf("Start = %v\nwant %q", err, want)
 	}
 	// 结构照样给全：节点与边都在（B→A、A→C、A→B 三条），但**剥得掉的一批是空的**
@@ -316,7 +319,7 @@ func TestTopologySourceStringDistinguishesKinds(t *testing.T) {
 		src  Source
 		want string
 	}{
-		{"外部来源", Source{Kind: SourceSeed}, "seed"},
+		{"声明过的入口", Source{Kind: SourceInput}, "input"},
 		{"普通节点", Source{Kind: SourceNode, NodeID: "load"}, `node "load"`},
 		{"节点 id 恰好是 seed", Source{Kind: SourceNode, NodeID: "seed"}, `node "seed"`},
 		{"节点 id 恰好是 none", Source{Kind: SourceNode, NodeID: "none"}, `node "none"`},
@@ -439,7 +442,7 @@ func TestTopologyStreamProblems(t *testing.T) {
 	if err := g.Validate(); err == nil || err.Error() != top.Problems[0].Error() {
 		t.Fatalf("Validate 报首条：%v", err)
 	}
-	if err := g.Start(); err == nil || err.Error() != top.Problems[0].Error() {
+	if err := startOn(g); err == nil || err.Error() != top.Problems[0].Error() {
 		t.Fatalf("Start 报首条：%v", err)
 	}
 }
@@ -469,7 +472,7 @@ func TestTopologyStreamCapacityProblem(t *testing.T) {
 		t.Fatalf("Problems = %v\nwant %q", top.Problems, want)
 	}
 	// 拒在 Start：不是跑到一半卡死。
-	if err := g.Run(); err == nil || err.Error() != want {
+	if err := runOn(g); err == nil || err.Error() != want {
 		t.Fatalf("Run = %v", err)
 	}
 }
@@ -517,7 +520,7 @@ func TestTopologyStableAndIsolated(t *testing.T) {
 	}
 
 	// 跑完再问：形状不随运行变。
-	if err := g.Run(); err != nil {
+	if err := runOn(g); err != nil {
 		t.Fatal(err)
 	}
 	fourth := g.Topology()
@@ -531,7 +534,7 @@ func TestTopologyIgnoresDescription(t *testing.T) {
 	build := func(id, graphDesc string, withDesc bool) *Graph {
 		a := NewKey[string]("tp.d.a")
 		b := NewKey[string]("tp.d.b")
-		g, err := New(context.Background(), id, graphDesc)
+		g, err := New(id, graphDesc)
 		if err != nil {
 			t.Fatal(err)
 		}

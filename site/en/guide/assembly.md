@@ -76,18 +76,18 @@ func main() {
 
 	// 2) Assemble: the topology comes from the YAML.
 	g, plan, err := yaml.Load([]byte(doc), reg, yaml.LoadOptions{
-		Context: context.Background(),
 		GraphID: "yaml-demo", // required: observation uses it to tell which graph ran
 	})
 	if err != nil {
 		panic(err)
 	}
 
-	// 3) The host applies the seed plan, then runs.
-	if err := plan.Apply(g, nil); err != nil { // anything beyond literal needs resolve
+	// 3) The host resolves the seed plan into this run's inputs, then runs.
+	in, err := plan.Inputs(nil) // anything beyond literal needs resolve
+	if err != nil {
 		panic(err)
 	}
-	if err := g.Run(); err != nil {
+	if err := g.Run(context.Background(), in); err != nil {
 		panic(err)
 	}
 	fmt.Println("run ok:", g.ID())
@@ -120,7 +120,7 @@ A few points:
 - **Keys are reconciled by `{name, type}`**. `type` is `reflect.Type.String()` (`string`, `[]string`, `[]Doc`, …) and must match what `RegisterKey` registered; a name that does not line up, or a missing `type`, fails at `Load` time.
 - **Time fields** use Go's `ParseDuration` form (`30s` / `100ms`); never write a bare number.
 - **Aspect order**: whatever is listed first is further outside → `timeout` outside, `retry` inside, i.e. "the total duration is bounded, each attempt retries on its own".
-- **The engine does no IO**. When `from.kind` is not `literal`, `Load` only hands it to `plan.Apply(g, resolve)` as-is; reading files, reading environment variables and pulling a context out of a request are all the host's job.
+- **The engine does no IO**. When `from.kind` is not `literal`, `Load` only hands it to `plan.Inputs(resolve)` as-is; reading files, reading environment variables and pulling a context out of a request are all the host's job.
 - The `observer` field is a documentation hint and `Load` ignores it — observers go through `LoadOptions.Graph` (`pulse.WithObserver(...)`) and `LoadOptions.ObserverFor` (per level, see below).
 
 ## Subgraphs: one step = one graph
@@ -149,7 +149,7 @@ nodes:
 It expands to the **static composition `pulse.Sub`** of [a graph as a node](/en/guide/orchestration): the child graph is **built at `Load` time**, one instance per mounting point; the parent-side node's `Requires` / `Provides` follow from `in` / `out`, and the engine's static validation (sources / cycles / slots) still applies. From that:
 
 - **The whole tree is visible once assembled, without running it**: `g.Topology()` recurses along the static mounting edges, `Nodes[i].Sub` is the child graph mounted at that point (go one level deeper with `.Sub` again), paths are derived from the **mounting position** (`step1`, `step1/toInner`), and the graph identity is `<root id>/<mounting path>`;
-- **A child graph's static problems are reported at `Load`**, and the message names the **mounting path**: `pulse/yaml: graph "inner" (mounted at "step1/toInner"): pulse: node "leaf" requires "c.nope" but nothing provides or seeds it`;
+- **A child graph's static problems are reported at `Load`**, and the message names the **mounting path**: `pulse/yaml: graph "inner" (mounted at "step1/toInner"): pulse: node "leaf" requires "c.nope" but nothing provides it (declare it with DeclareInput if the value comes from outside)`;
 - **The same spec mounted in several places = several independent instances**: each place has its own slots and mounting path, both places run, and observation tells them apart by graph id and `pulse.path`;
 - **Cancellation enters the child from the mounting point**: cancel the parent ctx and the child's nodes see it on the spot — not a run that lasts the whole span and swallows the cancellation.
 
@@ -159,16 +159,16 @@ Rules:
 - **Types and names are both compared at `Load`**: each end is resolved against `{name, type}` with the **same** type token (a parent-side key registered with another type is reported); referencing a graph that does not exist, binding a key no node of the child declares, or a graph with no nodes — all three are reported by name.
 - **Reference cycles are caught at `Load`**: nesting a graph inside a graph is allowed with no depth limit, while `a → b → a` is rejected with one concrete path.
 - **The boundary has exactly one spelling**: a graph node may not also carry `requires` / `provides`, and a **factory node may not carry `in` / `out`** — writing the wrong side silently does nothing, so both are reported at assembly time.
-- **A key fed by `in:` may not also be provided inside the child**: a key has exactly one source, so running that step would hit `ErrDuplicateSource`.
+- **A key fed by `in:` may not also be provided inside the child**: a key has exactly one source, and what `in:` does is declare that key as an inlet of the child — the declaration itself hits `ErrDuplicateSource`, reported at Load.
 - **A subgraph's `seeds`**: the ones that actually carry a value may only use `literal` (`env` / `file` / `context` need host IO, and `SeedPlan` belongs to the parent graph; the `from` of a `skip: true` entry has no meaning and follows the top-level `seeds` reading); names and types are reconciled against the registry; **the same key seeded twice in one graph** is also reported — the second write would be silently ignored and which value wins depends on declaration order.
-- **Every *referenced* `graphs:` declaration is checked, once per reference site**: assembly first builds a **build-only, never-run** check tree — **the very same assembly code**, every child mounted in its static form, one instance per reference site. Each instance declares its own interface as ports from **that site's** `in:` / `out:` (`DeclareInput` / `DeclareOutput`), which keeps "this was an external input all along" apart from "you forgot to wire it" and makes seeding "fake sources" into the check tree unnecessary; finally the engine's own recursive `Validate` judges it — so "a `Requires` nothing provides or seeds", "a declared outlet nobody produces" and "dependency cycle" inside a child are reported at `Load` too, **word for word the message `Start` would give**, naming the **mounting path** (for example: `graph "inner" (mounted at "step1/toInner")`). Per reference site rather than per union: the same spec mounted in two places can have different `in:` sets, and a union check would read "the other site fed it" as "this site fed it as well".
+- **Every *referenced* `graphs:` declaration is checked, once per reference site**: assembly first builds a **build-only, never-run** check tree — **the very same assembly code**, every child mounted in its static form, one instance per reference site. Each instance declares its own interface as ports from **that site's** `in:` / `out:` (`DeclareInput` / `DeclareOutput`), which keeps "this was an external input all along" apart from "you forgot to wire it" and makes seeding "fake sources" into the check tree unnecessary; finally the engine's own recursive `Validate` judges it — so "a `Requires` nothing provides (and it is not a declared inlet)", "a declared outlet nobody produces" and "dependency cycle" inside a child are reported at `Load` too, **word for word the message `Start` would give**, naming the **mounting path** (for example: `graph "inner" (mounted at "step1/toInner")`). Per reference site rather than per union: the same spec mounted in two places can have different `in:` sets, and a union check would read "the other site fed it" as "this site fed it as well".
 - **A spec nothing references is checked for what *is* decidable**: it has no mounting site, hence no interface — "nothing feeds this key" cannot be judged there (judging it as a closed graph reports every unresolved key as "a typo", so one template not wired up yet would fail the whole document's `Load`). Factory names / empty `nodes` / duplicate ids / source conflicts / dependency cycles / the streaming set are reported as usual; its sources are judged once it is **actually referenced**, per **that site's** `in:` / `out:`.
-- **The check tree never touches the host's context, and neither does a child definition**: the whole check tree is created on `context.Background()`; in the real graph a child's definition likewise does not hang off the host context (cancellation is forwarded in from the mounting point at run time) — hanging it there would only pile another layer onto the host context on every `Load`. A failed `Load` returns `nil, nil, err`, so the caller has no handle to clean anything up — which is why every fallible check runs before the root graph is built. The root graph still inherits the host context (so cancellation reaches it), and the host releases it when `Wait` returns.
-- **Aspects land on the parent-side node**: `timeout: 30s` puts a time limit on the whole child graph, while nodes **inside** the child keep their own. **`retry:` on a graph node, however, is rejected at `Load`**: a statically mounted child runs once, so a second attempt could not start it — and `Retry` reports the **last** attempt's error, which would mask the real cause of the first failure. Put `retry:` on the node inside the child that may actually fail (a fresh graph per attempt is stage 3 work).
+- **`Load` touches no ctx at all**: a graph is a definition and a definition has no lifetime — which cancellation domain a run lives in is decided at `Run` / `NewExecution` time (`LoadOptions.Context` was deleted for that reason: keeping it would only be a silently dead knob). A child's cancellation still reaches in from the mounting point (at run time the mounting step derives the child execution's ctx from that layer's parent node). A failed `Load` returns `nil, nil, err`, so the caller has no handle to clean anything up — which is why every fallible check runs before the graph is handed out.
+- **Aspects land on the parent-side node**: `timeout: 30s` puts a time limit on the whole child graph, while nodes **inside** the child keep their own. **`retry:` on a graph node, however, is rejected at `Load`**: the bridge back into the parent happens inside the first attempt and those parent slots are idempotent first-write, so a retried attempt's writes are silently dropped — and `Retry` reports the **last** attempt's error, which would mask the real cause of the first failure. Put `retry:` on the node inside the child that may actually fail (a fresh graph per attempt is stage 3 work).
 - **Each mounting point builds one instance with its own slots and mounting path, and both places run**: the same spec referenced twice is two independent instances, which observation tells apart by graph id and `pulse.path`.
-- **The root level's own criteria are still reported at `Start` time**: the root's external inputs are seeded by the host after `Load` via `SeedPlan.Apply` — at assembly time they naturally look like "nothing provides or seeds them", and validating at that step would misreport any document whose `seeds:` block is fine.
+- **The root level's own criteria are still reported the moment a run starts** (`Run` / `NewExecution`; the root layer is not judged at assembly time): the top-level `seeds:` only declares keys as the root graph's inlets, and the values are supplied by the host via `SeedPlan.Inputs` before a run — the root's external input surface can still grow with host-declared inlets after `Load`, so the sources criterion is left to start time.
 
-**Observation is per level**: `LoadOptions.ObserverFor(path)` builds an egress for each level (empty for the root, the node id for one level, `outer/inner` for two) — hand it to `observe.ObserveConfig.Path` and every record of that level carries `pulse.path`, which is what makes nested logs and traces fold back into a tree. When it is called: a child graph gets it **once, when `Load` mounts that level** (one call per mounting point, and the egress it returns belongs to that level alone); the build-only, never-run check tree **does not** call it — the host's callback count does not change because an extra validation pass happened.
+**Observation is per level (optional)**: `LoadOptions.ObserverFor(path)` can build an egress for each level (empty for the root, the node id for one level, `outer/inner` for two) — reach for it when layers land in different destinations. When it is called: a child graph gets it **once, when `Load` mounts that level** (one call per mounting point, and the egress it returns belongs to that level alone); a level it returns nil for follows whatever `LoadOptions.Graph` attached — the child inherits the parent's observer, and the **mounting position still arrives with every callback** (`Site.Path`), so the inherited egress carries `pulse.path` too and nested logs and traces fold back into a tree all the same. The build-only, never-run check tree **does not** call it — the host's callback count does not change because an extra validation pass happened.
 
 ## Edges and pitfalls
 
@@ -182,10 +182,10 @@ Three things it deliberately does **not** do (each fails loudly — use `resolve
 | string ↔ number coercion | `pulse: seed "demo.in": … (element 0: cannot convert string to int)` |
 | truncating a float into an int / narrowing out of range | `… (element 0: cannot convert float64 to int)` · `… (element 0: cannot convert int to int8)` |
 
-When you need one of those, use `resolve` to produce a correctly typed value yourself:
+When you need one of those, hand `resolve` to `plan.Inputs` to produce a correctly typed value yourself:
 
 ```go
-plan.Apply(g, func(from yaml.SeedFrom) (any, error) {
+in, err := plan.Inputs(func(from yaml.SeedFrom) (any, error) {
 	if from.Kind == "file" {
 		raw, err := os.ReadFile(from.Path) // the host does the IO
 		if err != nil {

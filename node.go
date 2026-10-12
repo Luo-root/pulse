@@ -3,6 +3,7 @@ package pulse
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 // Node 是图中的一个计算单元：声明读哪些 Key、写哪些 Key，以及到达后做什么。
@@ -85,8 +86,20 @@ func Deps(groups ...[]keyRef) []keyRef {
 // 那是调用点的错，单元测试兜不住。放在 `id` 后面是因为读调用点时描述就在眼前；
 // 写反的后果只是元数据不对，而 `Topology()` / Mermaid / 快照正是让元数据一眼可见
 // 的那一层。
+//
+// **三份声明都复制一份收下**（`requires` / `provides` / `aspects`）：节点一旦 `Add` 进图，
+// 它的依赖形状就登记进来源表与依赖边了，此后调用方手里那份切片还能改底层数组的话，
+// 就等于绕过装配锁与封口改定义——`Topology()` 与校验看到的图、真跑的那张成了两张。
+// 复制是防御性的，诚实的调用方看不出区别（`Requires` / `Provides` / `Deps` 本来就返回新切片）。
 func NewNode(id, description string, requires, provides []keyRef, run func(*RunCtx) error, aspects ...Aspect) *Node {
-	return &Node{id: id, desc: description, requires: requires, provides: provides, run: run, aspects: aspects}
+	return &Node{
+		id:       id,
+		desc:     description,
+		requires: append([]keyRef(nil), requires...),
+		provides: append([]keyRef(nil), provides...),
+		run:      run,
+		aspects:  append([]Aspect(nil), aspects...),
+	}
 }
 
 // ID 返回节点标识。
@@ -95,18 +108,33 @@ func (n *Node) ID() string { return n.id }
 // Description 是构造时给的说明（`""` = 没写）。
 func (n *Node) Description() string { return n.desc }
 
-// RunCtx 是节点（及切面）在一次运行里能看到的世界：声明过的槽位 +
+// RunCtx 是节点（及切面）在一次运行里能看到的世界：这次运行的槽位 +
 // 本层可取消的 context。拿不到整个黑板。
 type RunCtx struct {
-	g       *Graph
+	exec    *Execution
 	node    *Node
 	ctx     context.Context
 	cancel  context.CancelFunc
 	allowed map[string]keyRef // name → 声明过的 key
 	wrote   map[string]struct{}
+	// attempt 是**这一次运行里这个节点**的尝试账（见 attemptLedger）。它长在这里而不是
+	// 节点上：节点属于**定义**、要跨运行复用，而 `newRunCtx` 是每个 (执行, 节点) 一份
+	// ——「这一步进过一次没有」是那一次运行的事实。`Fork` 浅拷贝，所以 `Timeout` 里面
+	// 那层看到的是同一份账。
+	attempt *attemptLedger
 }
 
-func newRunCtx(g *Graph, n *Node, parent context.Context) *RunCtx {
+// attemptLedger 是**一次运行里一个节点**的尝试账：体进过没有、第一次失败是什么。
+//
+// 目前只有 `Sub` 那一步用它（桥回父侧的输出是幂等首写，第二次进入会静默丢值，见 sub.go）。
+// 放在执行级而不是定义级正是本账的全部意义：同一张定义顺序跑两遍、并发跑两份，各是各的账。
+type attemptLedger struct {
+	mu       sync.Mutex
+	entered  bool
+	firstErr error
+}
+
+func newRunCtx(e *Execution, n *Node, parent context.Context) *RunCtx {
 	ctx, cancel := context.WithCancel(parent)
 	allowed := make(map[string]keyRef, len(n.requires)+len(n.provides))
 	for _, k := range n.requires {
@@ -116,12 +144,13 @@ func newRunCtx(g *Graph, n *Node, parent context.Context) *RunCtx {
 		allowed[k.name] = k
 	}
 	return &RunCtx{
-		g:       g,
+		exec:    e,
 		node:    n,
 		ctx:     ctx,
 		cancel:  cancel,
 		allowed: allowed,
 		wrote:   make(map[string]struct{}),
+		attempt: &attemptLedger{},
 	}
 }
 
@@ -199,7 +228,7 @@ func getRef(rc *RunCtx, ref keyRef) (any, error) {
 	if err := rc.must(ref, false); err != nil {
 		return nil, err
 	}
-	v, err := rc.g.slotOf(ref).wait(rc.ctx)
+	v, err := rc.exec.slotOf(ref).wait(rc.ctx)
 	if err != nil {
 		if err == ErrSkipped {
 			return nil, skipErr(ref.name)
@@ -215,7 +244,7 @@ func TryGet[T any](rc *RunCtx, k Key[T]) (v T, ok bool, skipped bool, err error)
 	if err = rc.must(ref, false); err != nil {
 		return
 	}
-	st, raw := rc.g.slotOf(ref).snapshot()
+	st, raw := rc.exec.slotOf(ref).snapshot()
 	switch st {
 	case slotReady:
 		out, cast := raw.(T)
@@ -241,7 +270,7 @@ func setRef(rc *RunCtx, ref keyRef, v any) error {
 	if err := rc.must(ref, true); err != nil {
 		return err
 	}
-	if err := rc.g.slotOf(ref).resolveValue(v); err != nil {
+	if err := rc.exec.slotOf(ref).resolveValue(v); err != nil {
 		return err
 	}
 	rc.wrote[ref.name] = struct{}{}
@@ -257,7 +286,7 @@ func skipRef(rc *RunCtx, ref keyRef) error {
 	if err := rc.must(ref, true); err != nil {
 		return err
 	}
-	if err := rc.g.slotOf(ref).resolveSkip(); err != nil {
+	if err := rc.exec.slotOf(ref).resolveSkip(); err != nil {
 		return err
 	}
 	rc.wrote[ref.name] = struct{}{}
@@ -274,7 +303,7 @@ func awaitAll(rc *RunCtx, keys []keyRef) ([]string, error) {
 		if err := rc.must(k, false); err != nil {
 			return nil, err
 		}
-		_, err := rc.g.slotOf(k).wait(rc.ctx)
+		_, err := rc.exec.slotOf(k).wait(rc.ctx)
 		if err == ErrSkipped {
 			skipped = append(skipped, k.name)
 			continue

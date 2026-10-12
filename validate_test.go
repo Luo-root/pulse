@@ -33,12 +33,12 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 			t.Fatalf("环要报出成环的那条路径，got %v", verr)
 		}
 		// 一份判据、两个入口：两边的报文逐字相同，装图期提前报的那句才不需要翻译
-		serr := g.Start()
+		serr := startOn(g)
 		if serr == nil || serr.Error() != verr.Error() {
 			t.Fatalf("Validate 与 Start 的判据不一致：\nValidate %v\nStart    %v", verr, serr)
 		}
 		// 校验不改状态：图仍是「没启动」，Wait 照报 ErrGraphNotStarted
-		if werr := g.Wait(); !errors.Is(werr, ErrGraphNotStarted) {
+		if werr := waitOn(g); !errors.Is(werr, ErrGraphNotStarted) {
 			t.Fatalf("Validate 把图启动起来了？Wait() = %v", werr)
 		}
 	})
@@ -50,11 +50,12 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 		if err == nil {
 			t.Fatal("Validate 放行了一张等不到值的图")
 		}
-		if !strings.Contains(err.Error(), `"waiter"`) || !strings.Contains(err.Error(), `nothing provides or seeds it`) {
+		if !strings.Contains(err.Error(), `"waiter"`) || !strings.Contains(err.Error(), `nothing provides it`) {
 			t.Fatalf("错误里要能读到节点 id 与病因，got %v", err)
 		}
 		// 补上来源（这正是装配器要留出的余地：问一次不该把图问死）
-		if err := Seed(g, kA, "seeded"); err != nil {
+		declareIn(t, g, NewPort(kA))
+		if err := seedOn(g, kA, "seeded"); err != nil {
 			t.Fatalf("Validate 之后补 Seed 被拒：%v（说明它改了状态）", err)
 		}
 		if err := g.Validate(); err != nil {
@@ -86,11 +87,12 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "sealed") {
 			t.Fatalf("封口后 Add 的报错该说清是定义封口，got %v", err)
 		}
-		// Seed 是**本次运行**的值，不属于定义：封口后照样能 seed、能跑
-		if err := Seed(g, kA, "from-host"); err != nil {
+		// Seed 是**本次运行**的值，不属于定义：封口后照样能喂、能跑（`kA` 在开头就
+		// 声明成入口了，封口不会再拦它）
+		if err := seedOn(g, kA, "from-host"); err != nil {
 			t.Fatalf("封口后 Seed 被拒：%v（Seed 是本次运行的值，不属于定义）", err)
 		}
-		if err := g.Run(); err != nil {
+		if err := runOn(g); err != nil {
 			t.Fatalf("封口之后照常跑：%v", err)
 		}
 		// 已经启动的图直接通过：它在 Start 那一刻就过了同一套判据
@@ -180,15 +182,14 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 				t.Fatalf("%s：声明也该被拒，got %v", g.ID(), err)
 			}
 		}
-		// 封口只管**定义**：子图上照样能 seed（那是这一轮运行的值，不属于定义；这里种的
-		// 是一条谁都不读的键，只为证明「封口没把 Seed 一起挡掉」），整棵树照样能跑
-		if err := Seed(leaf, NewKey[string]("seal.leaf.spare"), "v"); err != nil {
-			t.Fatalf("封口后子图 Seed 被拒：%v（Seed 是本次运行的值，不属于定义）", err)
+		// 封口只管**定义**：这一次运行的值不属于定义，所以封口之后照样喂得进去、
+		// 整棵树照样能跑。（旧版本这里还有半句「封口后子图上照样能 seed」——阶段 2
+		// 起「往子图种值」这条入口整个消失：子图的输入由挂载点的绑定给，那是装配期的
+		// 事，不是某一次运行的值。）
+		if err := seedOn(root, keys["seal.root.in"], "from-host"); err != nil {
+			t.Fatalf("封口后根图 Seed 被拒：%v（Seed 是本次运行的值，不属于定义）", err)
 		}
-		if err := Seed(root, keys["seal.root.in"], "from-host"); err != nil {
-			t.Fatalf("封口后根图 Seed 被拒：%v", err)
-		}
-		if err := root.Run(); err != nil {
+		if err := runOn(root); err != nil {
 			t.Fatalf("封口之后照常跑：%v", err)
 		}
 		// 同一张子图挂两处：两处都封得上（重复走到已经封住的那张上不报错、也不重复递归）
@@ -211,18 +212,29 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 	// 指针的调用方能在「父图已经跑起来、子图还没轮到」之间接着改子图（实测 `Add` 与
 	// `DeclareInput` 都进得去），于是真正跑的就不是观察与拓扑看到的那张图。
 	t.Run("启动成功也封整棵子树：父图跑起来之后、子图还没轮到也改不了", func(t *testing.T) {
-		root, mid, leaf, keys := passThrough(t)
-		// 根侧那条入口由一个等信号的节点提供：子图这一步在 Start 之后不会马上跑起来，
-		// 于是「父图已启动、子图还没开始」这个窗口是确定的，不用抢时序。
+		_, mid, leaf, keys := passThrough(t)
+		// 根图这一份单独装：入口那条键由 gate 提供，而且它是一条**内部键**（不是声明的端口）
+		// ——声明过的进口不许再被节点产出（见 DeclareInput），那样就装不出「等信号」这个
+		// 确定窗口了。
+		paper := NewKey[string]("seal.root.paper")
+		rootOut := NewKey[string]("seal.root.out2")
+		root := mustNew(t, context.Background(), "seal.root2")
 		release := make(chan struct{})
-		mustAdd(t, root, NewNode("gate", "", nil, Provides(keys["seal.root.in"]),
+		mustAdd(t, root, NewNode("gate", "", nil, Provides(paper),
 			func(rc *RunCtx) error {
 				<-release
-				return Set(rc, keys["seal.root.in"], "v")
+				return Set(rc, paper, "v")
 			}))
-		if err := root.Start(); err != nil {
+		if err := Sub(root, "outer", "", []SubBind{
+			In(paper, keys["seal.mid.in"]),
+			Out(keys["seal.mid.out"], rootOut),
+		}, mid); err != nil {
+			t.Fatalf("root 挂 mid = %v", err)
+		}
+		if err := startOn(root); err != nil {
 			t.Fatalf("Start = %v", err)
 		}
+		// 此刻 root 的挂载步骤还堵在 gate 上，mid / leaf 一次都没跑过——封口照样已经盖上。
 		for _, g := range []*Graph{root, mid, leaf} {
 			err := g.Add(NewNode("late", "", nil, nil, func(rc *RunCtx) error { return nil }))
 			if !errors.Is(err, ErrGraphStarted) {
@@ -233,7 +245,7 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 			t.Fatalf("mid.DeclareInput after Start = %v, want ErrGraphStarted", err)
 		}
 		close(release)
-		if err := root.Wait(); err != nil {
+		if err := waitOn(root); err != nil {
 			t.Fatalf("封了并不妨碍跑：Wait = %v", err)
 		}
 	})
@@ -273,10 +285,15 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 				t.Fatalf("%s：校验失败不该封口，got %v", g.ID(), err)
 			}
 		}
-		// 补上病根，再校验一次：这次整棵一起封
-		if err := Seed(child, ghost, "v"); err != nil {
-			t.Fatalf("Seed = %v", err)
-		}
+		// 补上病根，再校验一次：这次整棵一起封。
+		//
+		// 补法是一条**子图内部的产出**，而不是「把 ghost 声明成子图的进口」：声明成进口
+		// 之后它就成了这张子图必需的进口（节点 `hungry` 要它），而这一处挂载并没有绑它
+		// ——那是另一条装配期判据（见 TestSubRejectsUnboundRequiredInlet），会先报出来。
+		// 两种补法都对，只是选哪一条决定了谁会报。
+		mustAdd(t, child, NewNode("feeder", "", nil, Provides(ghost), func(rc *RunCtx) error {
+			return Set(rc, ghost, "v")
+		}))
 		if err := root.Validate(); err != nil {
 			t.Fatalf("补上来源之后该通过：%v", err)
 		}
@@ -336,10 +353,12 @@ func TestValidateSealsOnlyWhatItChecked(t *testing.T) {
 		if err := Sub(root, "s2", "", []SubBind{In(pin2, head)}, c2); err != nil {
 			t.Fatalf("Sub = %v", err)
 		}
-		if err := Seed(root, pin1, "v"); err != nil {
+		declareIn(t, root, NewPort(pin1))
+		if err := seedOn(root, pin1, "v"); err != nil {
 			t.Fatalf("Seed = %v", err)
 		}
-		if err := Seed(root, pin2, 1); err != nil {
+		declareIn(t, root, NewPort(pin2))
+		if err := seedOn(root, pin2, 1); err != nil {
 			t.Fatalf("Seed = %v", err)
 		}
 

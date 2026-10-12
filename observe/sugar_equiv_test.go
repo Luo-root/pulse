@@ -1,6 +1,7 @@
 package observe
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"sort"
@@ -30,9 +31,8 @@ func TestSugarMatchesHandwrittenRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	sg := mustGraph(t, "equiv", pulse.WithObserver(sugarObs))
-	if err := pulse.Seed(sg, in, "doc"); err != nil {
-		t.Fatal(err)
-	}
+	var sugarInputs pulse.Inputs
+	feedIn(t, sg, &sugarInputs, in, "doc")
 	if err := pulse.FanOut(sg, "worker", in, []pulse.Key[string]{r1, r2},
 		func(rc *pulse.RunCtx, shard int, v string) (string, error) {
 			if shard == 2 {
@@ -48,7 +48,7 @@ func TestSugarMatchesHandwrittenRecords(t *testing.T) {
 		}); err != nil {
 		t.Fatal(err)
 	}
-	if err := sg.Run(); err != nil {
+	if err := sg.Run(context.Background(), sugarInputs); err != nil {
 		t.Fatal(err)
 	}
 
@@ -59,9 +59,8 @@ func TestSugarMatchesHandwrittenRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	hg := mustGraph(t, "equiv", pulse.WithObserver(handObs))
-	if err := pulse.Seed(hg, in, "doc"); err != nil {
-		t.Fatal(err)
-	}
+	var handInputs pulse.Inputs
+	feedIn(t, hg, &handInputs, in, "doc")
 	for i, out := range []pulse.Key[string]{r1, r2} {
 		out, shard := out, i+1
 		if err := hg.Add(pulse.NewNode("worker-"+fmt.Sprint(shard), "", pulse.Requires(in), pulse.Provides(out),
@@ -97,7 +96,7 @@ func TestSugarMatchesHandwrittenRecords(t *testing.T) {
 		})); err != nil {
 		t.Fatal(err)
 	}
-	if err := hg.Run(); err != nil {
+	if err := hg.Run(context.Background(), handInputs); err != nil {
 		t.Fatal(err)
 	}
 
@@ -161,7 +160,7 @@ func TestOnlyMatchesHandwrittenRecords(t *testing.T) {
 	}
 	addUse(sg, "useA", a, &sugarUseA)
 	addUse(sg, "useB", b, &sugarUseB)
-	if err := sg.Run(); err != nil {
+	if err := sg.Run(context.Background(), pulse.Inputs{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -183,7 +182,7 @@ func TestOnlyMatchesHandwrittenRecords(t *testing.T) {
 	}
 	addUse(hg, "useA", a, &handUseA)
 	addUse(hg, "useB", b, &handUseB)
-	if err := hg.Run(); err != nil {
+	if err := hg.Run(context.Background(), pulse.Inputs{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -257,7 +256,7 @@ func TestStreamSugarMatchesHandwrittenRecords(t *testing.T) {
 	if err := consume("sinkB", sB); err != nil {
 		t.Fatal(err)
 	}
-	if err := sg.Run(); err != nil {
+	if err := sg.Run(context.Background(), pulse.Inputs{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -351,7 +350,7 @@ func TestStreamSugarMatchesHandwrittenRecords(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := hg.Run(); err != nil {
+	if err := hg.Run(context.Background(), pulse.Inputs{}); err != nil {
 		t.Fatal(err)
 	}
 

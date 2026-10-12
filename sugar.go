@@ -291,7 +291,7 @@ func Only[T any](rc *RunCtx, k Key[T], v T) error {
 	// 可能已经被唤醒（引擎不回滚已发布的值）。
 	// 跳过过的 sibling 不算冲突：Skip 幂等，补一次是 no-op。
 	for _, p := range rc.node.provides {
-		if p.name != want && rc.g.slotOf(p).isReady() {
+		if p.name != want && rc.exec.slotOf(p).isReady() {
 			return ErrConflict
 		}
 	}

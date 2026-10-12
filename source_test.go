@@ -2,7 +2,7 @@ package pulse
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,33 +11,58 @@ import (
 // 节点 ID 恰好叫 `seed` 时，「一个 Key 一个来源」不能被绕过。
 //
 // 旧实现把外部来源记成字符串哨兵 `"seed"`：节点 `seed` 提供 K 之后来源表里存的就是
-// `"seed"`，于是 `Seed(g, K, …)` 的冲突判据认为「同一个来源」——**静默返回 nil**，
-// 宿主的值抢先占住槽位，下游读到宿主值，整图照样成功。结构化来源之后，两条路都必须
-// 报 ErrDuplicateSource。
+// `"seed"`，于是那条冲突判据认为「同一个来源」——**静默返回 nil**，宿主的值抢先占住
+// 槽位，下游读到宿主值，整图照样成功。结构化来源之后，表里只有节点来源、判据只按
+// `kind` 走，名字再像也分得开。
+//
+// 阶段 2 之后「喂值」不再往定义里写（`Seed` 写的是**这一次运行的** `Inputs`），所以这次
+// 撞车从「喂值那一刻报」搬到「建执行那一刻报」——纪律不变：**图内已有来源时，外面喂进来
+// 的值一律被拒**（放进来的话那个节点的产出会被幂等首写静默顶掉），下游读到的仍是节点
+// 那条值。两个方向都钉住，才算把「撞名」这件事盖全。
+//
+// 这里**不**给那条键声明端口：那样装配期会先撞「声明过的进口 + 节点产出」那条判据
+// （见 TestInputPortAndProducerConflict），盖住这里要测的「图内来源 vs 外面喂值」。
 func TestSourceConflictWhenNodeIsNamedSeed(t *testing.T) {
 	k := NewKey[string]("src.clash")
-	provide := func(*RunCtx) error { return nil }
+	provide := func(rc *RunCtx) error { return Set(rc, k, "from-node") }
 
-	// 先 Add 后 Seed：旧实现这里静默通过。
+	// 先 Add 后喂：建执行当场报。
 	g := mustNew(t, context.Background(), "P")
 	mustAdd(t, g, NewNode("seed", "", nil, Provides(k), provide))
-	if err := Seed(g, k, "host"); !errors.Is(err, ErrDuplicateSource) {
-		t.Fatalf("先 Add 后 Seed：want ErrDuplicateSource，got %v", err)
-	}
-	// 失败的 Seed 不许留下痕迹（与 Add 同一条纪律）。
-	if st, _ := g.slotOf(k.asRef()).snapshot(); st != slotPending {
-		t.Fatalf("失败的 Seed 写进了槽位：state = %v, want slotPending", st)
-	}
-
-	// 先 Seed 后 Add：这一侧旧实现**同样静默通过**——来源表里存的是 `"seed"`，
-	// 而节点的 id 恰好也是 `"seed"`，`prev != owner` 落到相等那一支。两个方向都钉住，
-	// 才算把「撞名」这件事盖全。
-	g2 := mustNew(t, context.Background(), "P2")
-	if err := Seed(g2, k, "host"); err != nil {
+	if err := seedOn(g, k, "host"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g2.Add(NewNode("seed", "", nil, Provides(k), provide)); !errors.Is(err, ErrDuplicateSource) {
-		t.Fatalf("先 Seed 后 Add：want ErrDuplicateSource，got %v", err)
+	if _, err := g.NewExecution(context.Background(), pendingOf(g).in); err == nil {
+		t.Fatal("先 Add 后喂：图内已有来源，外面喂的值必须被拒，不能静默顶掉节点的产出")
+	}
+	// 「值不许被顶掉」的正面证据：清掉那份输入再跑，读到的必须是节点那条。
+	pendingOf(g).in = Inputs{}
+	var got string
+	mustAdd(t, g, NewNode("reader", "", Requires(k), nil, func(rc *RunCtx) error {
+		v, err := Get(rc, k)
+		if err != nil {
+			return err
+		}
+		got = v
+		return nil
+	}))
+	if err := runOn(g); err != nil {
+		t.Fatal(err)
+	}
+	if got != "from-node" {
+		t.Fatalf("读到的值 = %q，want from-node（宿主那份不该被写进去）", got)
+	}
+
+	// 先喂后 Add：装得进去（喂值不占来源），但拿那份输入去跑的建执行那一刻同样被拒
+	// ——这一侧旧实现是**静默通过**的（来源表里存的是 `"seed"`，节点 id 恰好也叫
+	// `"seed"`，相等那一支放行）。
+	g2 := mustNew(t, context.Background(), "P2")
+	if err := seedOn(g2, k, "host"); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, g2, NewNode("seed", "", nil, Provides(k), provide))
+	if _, err := g2.NewExecution(context.Background(), pendingOf(g2).in); err == nil {
+		t.Fatal("先喂后 Add：装完节点再拿那份输入跑，必须报")
 	}
 
 	// 来源表里不许出现零值（sourceNone）——「没有来源」的表达是「表里没有这个 Key」。
@@ -89,87 +114,64 @@ func TestNodeNamedSeedDoesNotFakeCycle(t *testing.T) {
 			cancel()
 			t.Fatal(err)
 		}
-		if err := Seed(g, external, "v"); err != nil {
+		declareIn(t, g, NewPort(external))
+		if err := seedOn(g, external, "v"); err != nil {
 			cancel()
 			t.Fatal(err)
 		}
-		err = g.Run()
+		err = runOn(g)
 		cancel()
 		if err != nil {
 			t.Fatalf("节点 id %q：合法的无环图被拒了：%v", id, err)
 		}
-		if st, v := g.slotOf(final.asRef()).snapshot(); st != slotReady || v != "v-ok!" {
+		if st, v := slotOn(g, final.asRef()); st != slotReady || v != "v-ok!" {
 			t.Fatalf("节点 id %q：final = (%v, %v)，want (ready, v-ok!)", id, st, v)
 		}
 	}
 }
 
-// 冲突文案：来源名一律**带类型**——外部来源 `seed`、节点来源 `node %q`。节点 id 是任意
-// 用户字符串，所以「不带类型前缀的裸 id」一定存在撞名的写法（见
-// TestSourceNameDistinguishesKinds），报错里必须分得清谁在跟谁抢。
+// 冲突文案：报文要**点名那条键与那个节点**，且节点 id 是任意用户字符串——一律写成
+// `node %q` 统一格式（不是裸 id，也不是给 `seed` 这个哨兵名字开小灶），所以节点叫
+// `seed`、叫 `none`、id 本身长成 `node "seed"` 的都分得开（见
+// TestSourceNameDistinguishesKinds）。两个方向（先 Add 后喂 / 先喂后 Add）走同一条报文。
+//
+// 同样**不**声明端口：声明了的话装配期先撞「进口 vs 产出」那条，这条文案就测不到了。
 func TestSourceConflictText(t *testing.T) {
-	provide := func(*RunCtx) error { return nil }
-	cases := []struct {
-		name string
-		want string
-		run  func(t *testing.T) error
-	}{
-		{
-			name: "Add 普通节点后 Seed：已有来源是那个节点，写成 node \"load\"",
-			want: `pulse: key already has a source: "src.txt.a" already sourced by node "load"`,
-			run: func(t *testing.T) error {
-				k := NewKey[string]("src.txt.a")
-				g := mustNew(t, context.Background(), "P")
-				mustAdd(t, g, NewNode("load", "", nil, Provides(k), provide))
-				return Seed(g, k, "v")
-			},
-		},
-		{
-			name: "Seed 后 Add 普通节点：已有来源是外部，写成 seed",
-			want: `pulse: key already has a source: "src.txt.b" already sourced by seed`,
-			run: func(t *testing.T) error {
-				k := NewKey[string]("src.txt.b")
-				g := mustNew(t, context.Background(), "P")
-				if err := Seed(g, k, "v"); err != nil {
-					t.Fatal(err)
-				}
-				return g.Add(NewNode("load", "", nil, Provides(k), provide))
-			},
-		},
-		{
-			name: "Add 节点 seed 后 Seed：节点同样写成 node \"seed\"——统一格式，不是特判",
-			want: `pulse: key already has a source: "src.txt.c" already sourced by node "seed"`,
-			run: func(t *testing.T) error {
-				k := NewKey[string]("src.txt.c")
-				g := mustNew(t, context.Background(), "P")
-				mustAdd(t, g, NewNode("seed", "", nil, Provides(k), provide))
-				return Seed(g, k, "v")
-			},
-		},
-		{
-			name: "Seed 后 Add 节点 seed：已有来源是**外部**，写成 seed",
-			want: `pulse: key already has a source: "src.txt.d" already sourced by seed`,
-			run: func(t *testing.T) error {
-				k := NewKey[string]("src.txt.d")
-				g := mustNew(t, context.Background(), "P")
-				if err := Seed(g, k, "v"); err != nil {
-					t.Fatal(err)
-				}
-				return g.Add(NewNode("seed", "", nil, Provides(k), provide))
-			},
-		},
-	}
-	for _, c := range cases {
-		err := c.run(t)
-		if err == nil {
-			t.Fatalf("%s：want 冲突，got nil", c.name)
-		}
-		if !errors.Is(err, ErrDuplicateSource) {
-			t.Fatalf("%s：want ErrDuplicateSource 在错误链里，got %v", c.name, err)
-		}
-		if err.Error() != c.want {
-			t.Fatalf("%s：文案不对\n got %s\nwant %s", c.name, err.Error(), c.want)
-		}
+	const wantTmpl = `pulse: input src.txt.confl:string: this key is provided by node %q inside ` +
+		`graph "P", so a value fed from outside would be silently ignored (a key has exactly one source)`
+	for _, nodeID := range []string{"load", "seed", "none", `node "seed"`} {
+		t.Run(nodeID, func(t *testing.T) {
+			k := NewKey[string]("src.txt.confl")
+			provide := func(*RunCtx) error { return nil }
+
+			// 先 Add 后喂。
+			g := mustNew(t, context.Background(), "P")
+			mustAdd(t, g, NewNode(nodeID, "", nil, Provides(k), provide))
+			if err := seedOn(g, k, "v"); err != nil {
+				t.Fatal(err)
+			}
+			_, err := g.NewExecution(context.Background(), pendingOf(g).in)
+			if err == nil {
+				t.Fatal("want 冲突，got nil")
+			}
+			if want := fmt.Sprintf(wantTmpl, nodeID); err.Error() != want {
+				t.Fatalf("文案不对\n got %s\nwant %s", err.Error(), want)
+			}
+
+			// 先喂后 Add：同一条报文（撞车在建执行那一刻判，不在 Add 那一刻）。
+			g2 := mustNew(t, context.Background(), "P")
+			if err := seedOn(g2, k, "v"); err != nil {
+				t.Fatal(err)
+			}
+			mustAdd(t, g2, NewNode(nodeID, "", nil, Provides(k), provide))
+			_, err = g2.NewExecution(context.Background(), pendingOf(g2).in)
+			if err == nil {
+				t.Fatal("want 冲突，got nil")
+			}
+			if want := fmt.Sprintf(wantTmpl, nodeID); err.Error() != want {
+				t.Fatalf("文案不对\n got %s\nwant %s", err.Error(), want)
+			}
+		})
 	}
 }
 
@@ -183,7 +185,7 @@ func TestSourceNameDistinguishesKinds(t *testing.T) {
 		src  source
 		want string
 	}{
-		{"外部来源", source{kind: sourceSeed}, "seed"},
+		{"声明过的入口", source{kind: sourceInput}, "input"},
 		{"普通节点", source{kind: sourceNode, nodeID: "load"}, `node "load"`},
 		{"节点 id 恰好是 seed", source{kind: sourceNode, nodeID: "seed"}, `node "seed"`},
 		{"节点 id 恰好是 none", source{kind: sourceNode, nodeID: "none"}, `node "none"`},
@@ -217,7 +219,7 @@ func TestZeroSourceInTableCountsAsMissing(t *testing.T) {
 	if _, ok := g.producer[k.name]; ok {
 		t.Fatal("没声明过的 Key 不该出现在来源表里")
 	}
-	if err := g.Validate(); err == nil || !strings.Contains(err.Error(), "nothing provides or seeds it") {
+	if err := g.Validate(); err == nil || !strings.Contains(err.Error(), "nothing provides it") {
 		t.Fatalf("没有来源的 Key 必须被拒：%v", err)
 	}
 
@@ -225,12 +227,12 @@ func TestZeroSourceInTableCountsAsMissing(t *testing.T) {
 	g.mu.Lock()
 	g.producer[k.name] = source{}
 	g.mu.Unlock()
-	if err := g.Validate(); err == nil || !strings.Contains(err.Error(), "nothing provides or seeds it") {
+	if err := g.Validate(); err == nil || !strings.Contains(err.Error(), "nothing provides it") {
 		t.Fatalf("零值来源必须按「没有来源」拒：%v", err)
 	}
 
 	// 同一个零值也不能让 `Start` 放行——那是「等不到值的图」被判成合法。
-	if err := g.Start(); err == nil || !strings.Contains(err.Error(), "nothing provides or seeds it") {
+	if err := startOn(g); err == nil || !strings.Contains(err.Error(), "nothing provides it") {
 		t.Fatalf("零值来源必须挡住 Start：%v", err)
 	}
 }

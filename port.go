@@ -44,11 +44,18 @@ func (p Port) declared() bool { return p.ref.typ != nil }
 //
 // 声明过之后，那几个 `Requires` **不再**算「无来源」：`Validate` 因此分得清「你忘了接线」
 // 与「这本来就是外部输入」——前者是装配错，后者是这张图的接口。静态拓扑里它们的来源是
-// `pulse.SourceInput`（不是 `SourceSeed`：`Seed` 是运行期的动作，不该出现在定义的结构里）。
+// `pulse.SourceInput`——定义层「外部来源」只有这一种写法：`Seed` 是运行期的动作，
+// 值活在一次运行的 `Inputs` 里，不进定义的结构。
 //
 // 再声明一次同一条键是幂等的（同名同类型）；同名不同类型报错。**改不了定义的时机有两个**：
 // 定义封口之后（`Validate` 通过过一次）与图跑起来之后（`Start` 成功）——两者都被拒，
 // 共用 `ErrGraphStarted`，报文里分得出是哪一种（封口那句写着 sealed）。
+//
+// **一个键恰好一个来源**：这条键在图内已经有节点 `Provides` 时，声明成进口会被拒
+// （`ErrDuplicateSource`）——那样的声明只会得到一个**用不了的入口**：喂值会撞「图内已有
+// 来源」，不喂又等于白声明。反过来也拒：先声明进口，再 `Add` 一个产出它的节点，同样报
+// （见 `Add`）。想要「子图自己有一个默认值」就在子图里放一个产出它的节点（那是产出，不是
+// 外部来源）；想要「这一处挂载换个值」用挂载点的 `Fix` / `FixSkip`。
 func (g *Graph) DeclareInput(ports ...Port) error { return g.declarePorts(ports, true) }
 
 // DeclareOutput 声明「这张图对外产出这几条 Key」（出口）。
@@ -81,11 +88,8 @@ func (g *Graph) declarePorts(ports []Port, input bool) error {
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	// 两个冻结点先看**跑起来**那个：封口与启动同时成立时（`Start` 成功会顺带封整棵树），
-	// 报文该说的是「已经启动」——那是最贴近用户刚做过的动作的原因。
-	if g.started {
-		return ErrGraphStarted
-	}
+	// 「已经开始过」不再单独判：某次运行 `Start()` 成功会顺带把整棵树封口，
+	// 所以它一定落在 `sealed` 里；`errSealed` 的报文两个触发点都点了名。
 	if g.sealed {
 		return errSealed(what)
 	}
@@ -114,6 +118,18 @@ func (g *Graph) declarePorts(ports []Port, input bool) error {
 		}
 		if old, ok := (*other)[p.ref.name]; ok && old.typ != p.ref.typ {
 			return errPortType(what, p.ref, old)
+		}
+		// 一个键恰好一个来源，而**节点产出**也是来源：这条键在图内已经有人产出时，声明成
+		// 进口只会得到一个用不了的入口（喂值撞「图内已有来源」，不喂又等于白声明），所以
+		// 装配期就拒。判据的另一面（先声明、后产出）在 `addAllLocked`，两条同一句话、
+		// 都撞 `ErrDuplicateSource`。**出口**不受这条限制：同一个节点产出这条键正是出口
+		// 想要的形状。
+		if input {
+			if prev, ok := g.producer[p.ref.name]; ok && prev.present() {
+				return fmt.Errorf("pulse: %s: key %q is provided inside this graph by %s, so it "+
+					"cannot also be declared as an input: a value fed from outside would be "+
+					"silently ignored (%w)", what, p.ref.name, prev, ErrDuplicateSource)
+			}
 		}
 		batch[p.ref.name] = p.ref
 	}
