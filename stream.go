@@ -83,9 +83,12 @@ func checkStreamSlots(g *Graph, id, kind string, need int) error {
 //     人消费、**只喂一个下游**。代价是禁掉「小流 + 大缓冲」这类能凑合跑的
 //     配置——那种配置的成败取决于数据量，不该被依赖。
 //
-// 生产端不开切面：`Retry` 会撞上「已发布的槽」（幂等首写 → 第二次 attempt 直接
-// `ErrConflict`），`Timeout` 与「节点活着发完」冲突（它只把流掐断，消费端看到的
-// 只是「提前关闭」）。两个切面在这里都没有干净语义。
+// 生产端不开切面：`Timeout` 与「节点活着发完」冲突（它只把流掐断，消费端看到的
+// 只是「提前关闭」）。更要紧的是**写入暂存类的切面**（`Retry` 是典型）：那条
+// channel 要等这次尝试**提交之后**才发布，而消费端在拿到它之前只能等着，双方互等、
+// 整轮挂到 ctx 到期（实测：图级 `Retry` 套在 `Produce` 上，3s 到期时
+// `produced=1, consumed_sum=0`）——所以那是**运行期当场报错**，不是静默挂死
+// （见 checkChannelVisibleNow）。根子上说，重试会**重开一条流**，已经发出去的值收不回来。
 func Produce[T any](g *Graph, id string, out Key[<-chan T],
 	fn func(rc *RunCtx, send func(T) error) error, opts ...StreamOption) error {
 	if g == nil {
@@ -102,6 +105,9 @@ func Produce[T any](g *Graph, id string, out Key[<-chan T],
 	}
 	cfg := newStreamConfig(opts)
 	n := NewNode(id, "", nil, Provides(out), func(rc *RunCtx) error {
+		if err := checkChannelVisibleNow(rc, "Produce", id, out.asRef()); err != nil {
+			return err
+		}
 		ch := make(chan T, cfg.buf)
 		defer close(ch)
 		if err := Set(rc, out, ch); err != nil {
@@ -123,6 +129,33 @@ func Produce[T any](g *Graph, id string, out Key[<-chan T],
 	return g.Add(n)
 }
 
+// checkChannelVisibleNow 挡住「把一条 channel 写进一次尝试的写暂存」——那条路一定跑不通，
+// 而且要**当场报**，不能让它挂成一句看不出病因的超时。
+//
+// `Produce` / `Tee` 的形状都是**先 `Set` 一条 channel、再往它里面发值**：有尝试边界时那条
+// channel 只有等这次尝试**提交之后**才发布，而消费端在拿到它之前只能等着——发送方与接收方
+// 于是互等，整轮挂到 ctx 到期（实测：图级 `Retry` 套在 `Produce` 上，3s 到期时
+// `produced=1, consumed_sum=0`）。
+//
+// 今天能套到流节点上的切面只有**图级**那批（`WithAspects` / `WithExecAspects`，以及
+// `pulse/yaml` 的图级声明）——`Retry` 是最典型的一个，它给每次尝试各开一条写暂存。判据直接
+// 看「有没有写暂存」，不去认切面的身份：`Aspect` 是裸函数类型，装配期认不出来（实测
+// `reflect` 的代码指针每次实例化都不同）。顺带说清为什么流生产端本来就不能重试：重试会
+// **重开一条流**，而已经发出去的值收不回来。
+func checkChannelVisibleNow(rc *RunCtx, sugar, nodeID string, out keyRef) error {
+	if rc.writes == nil {
+		return nil
+	}
+	return fmt.Errorf("pulse: %s %q: this stream node is running inside a per-attempt write set "+
+		"(a Retry or another write-staging aspect is on its layer): the channel it writes (%q) "+
+		"would only be published once that attempt commits, but its consumer needs the channel "+
+		"while this node is still running — sender and receiver wait for each other and the graph "+
+		"hangs until the ctx expires. Take the write-staging aspect off this layer (WithAspects / "+
+		"WithExecAspects / the document-level declaration): a stream producer cannot be retried — "+
+		"a retry restarts the stream, and values already sent cannot be taken back",
+		sugar, nodeID, out.name)
+}
+
 // Consume 是流式消费的语法糖：循环、取消、提前退出都收进一次调用。
 //
 // 循环是 **select**（收到值 / `rc.Context().Done()`），**不是 `for range`**——
@@ -137,7 +170,8 @@ func Produce[T any](g *Graph, id string, out Key[<-chan T],
 //   - channel 正常关闭后返回 nil 是合法的：流上的错误记在生产节点上。
 //
 // 消费端也不开切面：`Retry` 对流的语义说不通——流的位置不可回退，重试只会拿到
-// 后半段。（要限时就把 ctx 交给调用方，或在上游节点上装 `Timeout`。）
+// 后半段。它不写 channel，所以不会撞上生产端那条互等（见 checkChannelVisibleNow），
+// 也就没有被拒。（要限时就把 ctx 交给调用方，或在上游节点上装 `Timeout`。）
 func Consume[T any](g *Graph, id string, in Key[<-chan T],
 	fn func(rc *RunCtx, v T) error) error {
 	if g == nil {
@@ -208,6 +242,10 @@ func Consume[T any](g *Graph, id string, in Key[<-chan T],
 //     Tee 承诺的是「每个下游拿到完整同序的数据」，所以 `Start` 直接拒。要再分
 //     一层就再接一个 `Tee`；要「抢」（每个数据只做一次）就用 `FanOut`——同一组
 //     worker 共读一条出口是显式声明，不算多消费者。
+//   - **写入暂存类的切面（`Retry`）照拒**：`Tee` 同样是**先 `Set` 通道、再往里发**
+//     的生产端，有尝试边界时通道只有等这次尝试提交才发布，与消费端互等（同
+//     `Produce`，见 checkChannelVisibleNow）。这一条是运行期判的——判据是「有没有
+//     写暂存」，因为 `Aspect` 是裸函数类型，装配期认不出哪个切面开了边界。
 func Tee[T any](g *Graph, id string, in Key[<-chan T], outs []Key[<-chan T],
 	opts ...StreamOption) error {
 	if g == nil {
@@ -238,6 +276,9 @@ func Tee[T any](g *Graph, id string, in Key[<-chan T], outs []Key[<-chan T],
 			}
 		}()
 		for i, out := range outs {
+			if err := checkChannelVisibleNow(rc, "Tee", id, out.asRef()); err != nil {
+				return err
+			}
 			if err := Set(rc, out, chans[i]); err != nil {
 				return err
 			}

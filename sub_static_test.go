@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -426,96 +428,105 @@ func TestSubRejectsInletProvidedInside(t *testing.T) {
 	}
 }
 
-// `Retry` 装在挂载子图那一步上：**装配期认不出来，进 Run 的第一件事就拒**。
+// `Retry` 装在挂载子图那一步上：**每次尝试各跑一份新的子执行**，父侧只拿得到成功那一次
+// 的输出。
 //
-// 认不出来的原因是硬的：`Aspect` 是裸函数类型（冻结面：它是函数不是接口，贴不了标签），
-// 而闭包没有可查的标识——实测同一份 `Retry` 字面量造出来的两个闭包，`reflect` 给出的
-// 指针都不同（`Retry(1,0)` 与 `Retry(2,0)` 差 0x220）。所以判据放在 `Retry` 自己身上。
+// 阶段 2 及以前这条是**反的**（当时那条用例叫 `TestRetryOnSubgraphStepIsRefusedAtRun`，
+// 钉的是「进 Run 第一件事就拒」）：那一步的输出一桥回父侧就被幂等首写锁死，重试拿不到
+// 「干净的一次」。阶段 3 把 attempt 写暂存补上之后，那条限制的理由整个消失——子图是**定义**，
+// 本来就能跑很多次，缺的只是让第一次尝试的桥回随它那条暂存一起作废。
 //
-// 不拒的话会静默接受，而第二次 attempt 会把整棵子树再跑一遍（阶段 2 之后每次尝试确实
-// 建得起一份新的子执行），可它的输出桥回父侧时会被幂等首写静默丢掉——父图手里是「一半
-// 第一次、一半第二次」的混装；同时那一句还盖掉第一次失败的真正原因（`Retry` 返回的是
-// **最后一次** attempt 的错误），病根再也看不到。缺的是 attempt 级的写集（阶段 3）。
-func TestRetryOnSubgraphStepIsRefusedAtRun(t *testing.T) {
+// 三条判据各自钉一件事：**父侧只看到成功那一次的值**（隔离）、**子图真的被跑了两遍**
+// （重试确实发生了）、**两遍是两份不同的子执行**（观测上分得开，按「观测身份」的定案）。
+func TestRetryOnSubgraphStepRunsEveryAttemptOnAFreshChildExecution(t *testing.T) {
 	ctx := context.Background()
-	k := NewKey[string]("rtry.child.k")
-	child := mustNew(t, ctx, "rtry.child")
-	if err := child.DeclareInput(NewPort(k)); err != nil {
+	ck := NewKey[string]("rtry2.child.in")
+	cout := NewKey[string]("rtry2.child.out")
+	child := mustNew(t, ctx, "rtry2.child")
+	if err := child.DeclareInput(NewPort(ck)); err != nil {
 		t.Fatal(err)
 	}
-	entered := make(chan struct{}, 1)
-	mustAdd(t, child, NewNode("boom", "", Requires(k), nil, func(rc *RunCtx) error {
-		select {
-		case entered <- struct{}{}:
-		default:
+	if err := child.DeclareOutput(NewPort(cout)); err != nil {
+		t.Fatal(err)
+	}
+	var childRuns atomic.Int32
+	mustAdd(t, child, NewNode("flaky", "", Requires(ck), Provides(cout), func(rc *RunCtx) error {
+		n := childRuns.Add(1)
+		v, err := Get(rc, ck)
+		if err != nil {
+			return err
 		}
-		return errors.New("REAL-CAUSE")
+		if err := Set(rc, cout, fmt.Sprintf("%s-%d", v, n)); err != nil {
+			return err
+		}
+		if n == 1 {
+			return errors.New("第一次尝试注定失败")
+		}
+		return nil
 	}))
 
-	in := NewKey[string]("rtry.in")
-	for _, tc := range []struct {
-		name    string
-		aspects []Aspect
-	}{
-		{"Retry 单独", []Aspect{Retry(2, 0)}},
-		{"Retry 与别的切面混着（不看位置）", []Aspect{Timeout(time.Second), Retry(2, 0)}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			root := mustNew(t, ctx, "rtry")
-			declareIn(t, root, NewPort(in))
-			if err := seedOn(root, in, "v"); err != nil {
-				t.Fatal(err)
-			}
-			// 装配期放行（认不出来）——契约是「进 Run 第一件事就拒」，不是「装不上」。
-			if err := Sub(root, "step", "", []SubBind{In(in, k)}, child, tc.aspects...); err != nil {
-				t.Fatalf("当前口径是运行期拒，装配期不该报错，got %v", err)
-			}
-			err := runOn(root)
-			if err == nil || !strings.Contains(err.Error(), "Retry is not supported on a graph step") {
-				t.Fatalf("Run = %v，want 点名 Retry 的那句", err)
-			}
-			if !strings.Contains(err.Error(), "Put retry on the node inside the child") {
-				t.Fatalf("报文该给出能照着改的写法，got %v", err)
-			}
-			if !strings.Contains(err.Error(), "silently ignored") {
-				t.Fatalf("报文该说清理由（第二次 attempt 的写会被静默忽略），got %v", err)
-			}
-			if strings.Contains(err.Error(), "REAL-CAUSE") {
-				t.Fatalf("子图根本不该被启动（判据在认领与种值之前），却跑到了子图的失败：%v", err)
-			}
-			select {
-			case <-entered:
-				t.Fatal("子图被跑过了：拒 Retry 的判据该在它前面")
-			default:
-			}
-		})
+	pin := NewKey[string]("rtry2.in")
+	pout := NewKey[string]("rtry2.out")
+	root := mustNew(t, ctx, "rtry2")
+	declareIn(t, root, NewPort(pin))
+	if err := seedOn(root, pin, "v"); err != nil {
+		t.Fatal(err)
 	}
 
-	t.Run("Timeout 这类切面照旧装得上、跑得通（拒的是 Retry，不是「子图节点不能有切面」）", func(t *testing.T) {
-		ok := NewKey[string]("rtry.ok.k")
-		okChild := mustNew(t, ctx, "rtry.ok.child")
-		if err := okChild.DeclareInput(NewPort(ok)); err != nil {
-			t.Fatal(err)
+	// 子图那一步的每一次尝试都是一份**新的**子执行：按 `Site.Path == "step"` 数图级开始事件。
+	var childExecs sync.Map
+	root.observer = ObserverFunc{GraphStarted: func(site Site) {
+		if site.Path == "step" {
+			childExecs.Store(site.Execution, struct{}{})
 		}
-		mustAdd(t, okChild, NewNode("pass", "", Requires(ok), nil, func(rc *RunCtx) error { return nil }))
-		root := mustNew(t, ctx, "rtry.ok")
-		declareIn(t, root, NewPort(in))
-		if err := seedOn(root, in, "v"); err != nil {
-			t.Fatal(err)
-		}
-		if err := Sub(root, "step", "", []SubBind{In(in, ok)}, okChild, Timeout(time.Second)); err != nil {
-			t.Fatalf("Timeout 该被接受，got %v", err)
-		}
-		if err := runOn(root); err != nil {
-			t.Fatalf("Run = %v", err)
-		}
-	})
+	}}
+
+	if err := Sub(root, "step", "", []SubBind{In(pin, ck), Out(cout, pout)}, child, Retry(2, 0)); err != nil {
+		t.Fatalf("Retry 装在子图步骤上该被接受，got %v", err)
+	}
+	if err := runOn(root); err != nil {
+		t.Fatalf("第二次尝试成功，整轮该成功，got %v", err)
+	}
+	if got := childRuns.Load(); got != 2 {
+		t.Fatalf("子图节点跑了 %d 次，want 2（重试确实发生了）", got)
+	}
+	if st, v := slotOn(root, pout.asRef()); st != slotReady || v != "v-2" {
+		t.Fatalf("父侧输出槽 = (%v, %v)，want (slotReady, v-2)——只该拿到成功那一次的值", st, v)
+	}
+	n := 0
+	childExecs.Range(func(_, _ any) bool { n++; return true })
+	if n != 2 {
+		t.Fatalf("子图执行实例数 = %d，want 2（每次尝试一份新的子执行）", n)
+	}
+}
+
+// `Retry` 解禁不等于「什么切面都能重复推进」：Timeout 这类切面照旧装得上、跑得通。
+func TestSubStepAcceptsOtherAspects(t *testing.T) {
+	ctx := context.Background()
+	ok := NewKey[string]("rtry.ok.k")
+	okChild := mustNew(t, ctx, "rtry.ok.child")
+	if err := okChild.DeclareInput(NewPort(ok)); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, okChild, NewNode("pass", "", Requires(ok), nil, func(rc *RunCtx) error { return nil }))
+	in := NewKey[string]("rtry.ok.in")
+	root := mustNew(t, ctx, "rtry.ok")
+	declareIn(t, root, NewPort(in))
+	if err := seedOn(root, in, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sub(root, "step", "", []SubBind{In(in, ok)}, okChild, Timeout(time.Second)); err != nil {
+		t.Fatalf("Timeout 该被接受，got %v", err)
+	}
+	if err := runOn(root); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
 }
 
 // 用户**自己写的**重试切面认不出来（`Aspect` 是裸函数类型，闭包只有代码地址可认，而且
-// 实测同一份字面量造出来的两个闭包地址就不同），所以运行期还有一道重入判据：这一步第二次
-// 进来时点明「entry-once」与「第二次的写会被静默丢掉」，并把第一次 attempt 的失败原因一起
-// 报出来——别让别的错盖掉病根。
+// 实测同一份字面量造出来的两个闭包地址就不同），所以运行期有一道**推进闸**兜底：这一步在
+// 没有开新尝试边界的情况下第二次推进时，点明「无边界重入」并把第一次推进的失败原因一起
+// 报出来——别让别的错盖掉病根（`Retry` 返回的是**最后一次**尝试的错误）。
 func TestSubReentryGuarded(t *testing.T) {
 	ctx := context.Background()
 	k := NewKey[string]("reentry.child.k")
@@ -549,14 +560,17 @@ func TestSubReentryGuarded(t *testing.T) {
 		t.Fatalf("自己写的切面不该在装配期被拒，got %v", err)
 	}
 	err := runOn(root)
-	if err == nil || !strings.Contains(err.Error(), "entered a second time") {
-		t.Fatalf("Run = %v，want 重入那句", err)
+	if err == nil || !errors.Is(err, ErrNextCalledTwice) {
+		t.Fatalf("Run = %v，want ErrNextCalledTwice（无边界重入）", err)
+	}
+	if !strings.Contains(err.Error(), "advanced a second time without a new attempt boundary") {
+		t.Fatalf("报文要点明是无边界重入：%v", err)
 	}
 	if strings.Contains(err.Error(), "already in use") {
 		t.Fatalf("别让认领失败那句盖掉病根：%v", err)
 	}
 	if !strings.Contains(err.Error(), "REAL-CAUSE") {
-		t.Fatalf("第一次 attempt 的失败原因该一起报出来：%v", err)
+		t.Fatalf("第一次推进的失败原因该一起报出来：%v", err)
 	}
 }
 

@@ -18,9 +18,10 @@ func buildChain(aspects []Aspect, core func(*RunCtx) error) func(*RunCtx) error 
 		a := aspects[i]
 		next := invoker
 		invoker = func(rc *RunCtx) error {
-			// 门闩：单节点的 Run 不得并发进入（两个 goroutine 同时跑同一
-			// 节点会抢同一批槽位，语义上必然错）；顺序重入合法——Retry
-			// 正依赖它（1→0→1）。
+			// 门闩：单节点的体不得**并发**进入（两个 goroutine 同时跑同一
+			// 节点会抢同一批槽位，语义上必然错）。顺序重入的判据不在这里——
+			// 「有没有新的尝试边界」由最内层的推进闸判（见 RunCtx.beginAdvance），
+			// 所以 `Retry` 与用户自写的重试切面在那里被分开。
 			var depth atomic.Int32
 			return a(rc, func(nextRC *RunCtx) error {
 				if depth.Add(1) > 1 {
@@ -39,9 +40,9 @@ func buildChain(aspects []Aspect, core func(*RunCtx) error) func(*RunCtx) error 
 //
 // 超时是**协作式**的：到期后先取消本层 ctx，再等内层返回（内层不看 ctx 时
 // 只能等它自己结束）。不能拿到 `ctx.Done()` 就返回——`Fork` 与父 RunCtx
-// 共享 `wrote`，提前返回会让收尾路径（`skipAllOrUnwritten`）和还在跑的
+// 共享写入目标与推进账，提前返回会让收尾路径（`settleUnwritten`）和还在跑的
 // `Run` 同时碰同一批槽，既有数据竞态，也让 `Run()` 的「阻塞到全部终止」
-// 失真。已发布的槽不会撤回：超时是失败，不是回滚。
+// 失真。已经落地的输出不会撤回：超时是失败，不是回滚。
 func Timeout(d time.Duration) Aspect {
 	return func(rc *RunCtx, next func(*RunCtx) error) error {
 		child := rc.Fork()
@@ -67,43 +68,61 @@ func Timeout(d time.Duration) Aspect {
 // Retry 在节点 Run（含其内层切面）失败时重试。等数据阶段的取消不重试；
 // 跳过也不重试——跳过是「到达」，不是失败（判据见 isSkipped）。
 //
-// **重试安全的前提**：失败前没有写过任何 Provide，也没有不可重入的副作用。
-// 槽位是「到达即发布、幂等首写」的：前一次 attempt 一旦 Set/Skip 过，下游
-// 已经被唤醒，后续 attempt 的写会被静默忽略（对已就绪的槽 resolveValue 返回
-// nil），槽位也不会回滚——回滚等于重开槽位，与「一次性」契约冲突，所以这条
-// 只能由调用方守。需要事务性重试时，把副作用与输出挪到最后一次成功的
-// attempt 上（例如先算完再 Set），别指望引擎撤前一次。**attempt 写集（失败 attempt
-// 的输出对下游不可见）是阶段 3 的事**，那时这条前提由引擎接管。
+// **它给每一次尝试开一条独立的写暂存**（attempt 写集）：`Retry` 里面（`next` 之内、
+// 含更内层的切面）的 `Set` / `Skip` 先落在这条暂存上，**不碰执行槽位**。于是：
 //
-// **不能装在静态挂载的子图那一步上**（`pulse.Sub` 装出来的节点）：第一次 attempt 已经把
-// 输出**桥回了父侧**（幂等首写），第二次 attempt 的值会被静默忽略——下游可能拿到半成品，
-// 而这一层没有任何回滚。每个 attempt 一份子执行本身已经可行（子图是定义，能跑很多次），
-// 缺的是 attempt 级的写集，那要等阶段 3。
+//   - 尝试**失败**且还要重试 → 整条暂存**丢掉**：失败那一次的输出版本，下游从未见过；
+//     后续尝试的写也不会被幂等首写静默吞掉。旧的「重试安全的前提由调用方自己守」从
+//     这一版起由引擎接管。
+//   - 尝试**成功**（或以跳过收尾）→ 整条暂存交出去：外层还有一层暂存就交给外层
+//     （嵌套 `Retry` 时内层的结果属于外层那一次尝试），否则逐条写进执行槽位。
+//     多 Key 是**逐条**发布的，不承诺严格原子可见（提交窗口里可能「一部分输出已就绪、
+//     其余仍 pending」，等这些输出的下游可能被先到的那一条先唤醒）。
 //
-// 装配期认不出它（`Aspect` 是裸函数类型，闭包没有可查的标识：实测 `reflect` 的代码指针
-// 每次实例化都不同），所以判据放在**进 Run 的第一件事**：那时这一步还没读父侧输入、
-// 也没写任何东西，整张图带一句点明改法的错收场。`pulse/yaml` 对 `graph:` 节点上的 `retry:`
-// 是 `Load` 期拒同一个形状（那边有 spec 可读，能判得更早）。
+// 三条要记住的边界：
+//
+//  1. **只回滚引擎管理的输出**。用户 `Run` 里已经发生的任意外部副作用（数据库提交、
+//     HTTP 请求、邮件、写文件）**不可能**被自动撤销——把副作用挪到最后一次成功的尝试上，
+//     或者自己用幂等键 / outbox / 去重 / 补偿。内存里暂存过，不代表外部世界能回滚。
+//  2. **事务边界就是 `Retry` 套的那一层**。`Retry` 外面（更外层切面）的写不属于任何
+//     attempt，也不参与回滚。
+//  3. **跨尝试读不回被丢弃的写**。那条键在这一次尝试里从来没有过值，所以读它就是等一个
+//     没人会写的槽（与「一条键没人产出」同一个形状，直到本层 ctx 取消）；尝试**内部**
+//     读回自己刚写的值是自洽的（写暂存优先）。
+//
+// **它可以装在 `pulse.Sub` 装出来的那一步上**：每一次尝试各建一份**新的子执行**，
+// 第一次尝试的桥回随它的暂存一起作废，父侧只拿得到成功那一次的输出版本。
+//
+// 重试的**次数与时机**不变：最多 `attempts` 次、每次之间 `delay`；进 `Retry` 这一层
+// 拿到的 ctx 已经取消 / 到期时**不重试**（外层 `Timeout` 或父取消就是这样），而 `Retry`
+// 内层自己包的超时只是**这一次尝试**的失败，照常重试。
+//
+// 与推进闸的关系：一个节点在**同一次执行**里只允许成功推进一次，而 `Retry` 每次尝试都
+// 换一条新的写暂存——所以它的重入是「有边界的重入」、放行；用户自己写的重试切面开不了
+// 边界，第二次推进会当场被拒（见 `RunCtx.beginAdvance` 与 `ErrNextCalledTwice`）。
 func Retry(attempts int, delay time.Duration) Aspect {
 	if attempts <= 0 {
 		attempts = 1
 	}
 	return func(rc *RunCtx, next func(*RunCtx) error) error {
-		if rc.node != nil && rc.node.sub {
-			return fmt.Errorf("pulse: Retry is not supported on a graph step (%s): "+
-				"this step bridges the child's outputs into the parent slots inside the attempt, "+
-				"and those slots are idempotent first-write — a key the first attempt bridged before "+
-				"failing keeps that value, so a retried attempt's writes for it are silently ignored "+
-				"and the parent could keep a mix of both attempts. Put retry on the node inside the "+
-				"child that may fail; per-attempt write sets are the next stage", rc.NodeID())
-		}
 		var err error
 		for i := 0; i < attempts; i++ {
+			// 开边界 → 跑 → 关边界。暂存是**这一次尝试**的：失败就整份丢掉，而「丢掉」
+			// 什么都不用做——没有东西被写进执行槽位，下游也就从未被唤醒过。
+			prev := rc.writes
+			ws := &writeSet{outer: prev}
+			rc.writes = ws
 			err = next(rc)
-			// 跳过不是失败：WaitAll 的跳过返回 *SkipError（带被跳过的
-			// Key 名），只有 errors.Is 成立——用 == 比较会让整段
-			// 「等输入 + 执行」被重跑 attempts-1 次并逐次等待。
+			rc.writes = prev
+
+			// 跳过不是失败：WaitAll 的跳过返回 *SkipError（带被跳过的 Key 名），
+			// 只有 errors.Is 成立——用 == 比较会让整段「等输入 + 执行」被重跑
+			// attempts-1 次并逐次等待。以跳过收尾的尝试**照常提交**它的写集：
+			// 那些写是这一次运行真真切切产出的东西。
 			if err == nil || isSkipped(err) {
+				if cerr := ws.commit(rc.exec); cerr != nil {
+					return cerr
+				}
 				return err
 			}
 			if rc.ctx.Err() != nil {

@@ -3,6 +3,7 @@ package yaml_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -235,116 +236,147 @@ nodes:
 	}
 }
 
-// 声明了 `retry:` 的子图节点在 `Load` 期就拒。
+// 子图节点上的 `retry:` 现在**照装、照跑**：每一次尝试各建一份**新的子执行**，父侧只拿得到
+// 成功那一次的输出版本。
 //
-// 为什么不是「照旧能重试」：静态子图是一次性的，`Sub` 在运行期原子认领它，第一次尝试
-// 就把它用掉了——第二次尝试只会拿到「这张图已经在用」，而那句还会盖掉第一次失败的
-// 真正原因（`Retry` 返回的是**最后一次** attempt 的错误）。「每次尝试各装一张新图」
-// 要等阶段 3 的事务性 `Retry`，所以这一阶段当场拒，并在报文里给出今天就能用的写法。
-func TestLoadRetryGraphNodeRejected(t *testing.T) {
+// 阶段 1 / 2 这里是**反的**（当时那条用例叫 `TestLoadRetryGraphNodeRejected`，钉的是「装图期
+// 就拒」）：那时缺「一次尝试一份写暂存」的机制，第一次尝试已经桥回父侧的输出会被幂等首写
+// 静默吞掉。阶段 3 把 attempt 写集补上之后那条理由整个消失——Go 侧与 YAML 侧同一个语义，
+// 同一处判据（引擎最内层的推进闸 + `Retry` 的写暂存）。
+func TestLoadRetryGraphNodeRunsEveryAttemptOnAFreshChild(t *testing.T) {
 	reg := pulse.NewRegistry()
-	for _, k := range []string{"rt.in", "rt.out"} {
-		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
-	}
-	reg.MustRegister("rt.flaky", func(rc *pulse.RunCtx) error {
-		return pulse.Set(rc, pulse.NewKey[string]("rt.out"), "ok")
+	in := pulse.NewKey[string]("rt2.in")
+	out := pulse.NewKey[string]("rt2.out")
+	seen := pulse.NewKey[string]("rt2.seen")
+	pulse.MustRegisterKey(reg, in)
+	pulse.MustRegisterKey(reg, out)
+	pulse.MustRegisterKey(reg, seen)
+
+	var runs int32
+	reg.MustRegister("rt2.flaky", func(rc *pulse.RunCtx) error {
+		n := atomic.AddInt32(&runs, 1)
+		v, err := pulse.Get(rc, in)
+		if err != nil {
+			return err
+		}
+		if err := pulse.Set(rc, out, fmt.Sprintf("%s-%d", v, n)); err != nil {
+			return err
+		}
+		if n == 1 {
+			return errors.New("第一次尝试注定失败")
+		}
+		return nil
+	})
+	var read atomic.Value
+	reg.MustRegister("rt2.check", func(rc *pulse.RunCtx) error {
+		v, err := pulse.Get(rc, out)
+		if err != nil {
+			return err
+		}
+		read.Store(v)
+		return pulse.Set(rc, seen, v)
 	})
 
 	const doc = `
 version: 1
 seeds:
-  - key: {name: rt.in, type: string}
+  - key: {name: rt2.in, type: string}
     from: {kind: literal, value: "v"}
 graphs:
   flaky:
     nodes:
       - id: boom
-        uses: rt.flaky
-        requires: [{name: rt.in, type: string}]
-        provides: [{name: rt.out, type: string}]
+        uses: rt2.flaky
+        requires: [{name: rt2.in, type: string}]
+        provides: [{name: rt2.out, type: string}]
 nodes:
   - id: step
     graph: flaky
     retry: {attempts: 2, delay: 1ms}
-    in:  {rt.in: rt.in}
-    out: {rt.out: rt.out}
+    in:  {rt2.in: rt2.in}
+    out: {rt2.out: rt2.out}
+  - id: check
+    uses: rt2.check
+    requires: [{name: rt2.out, type: string}]
+    provides: [{name: rt2.seen, type: string}]
 `
-	_, _, err := pulseyaml.Load([]byte(doc), reg, pulseyaml.LoadOptions{GraphID: "RT"})
-	if err == nil {
-		t.Fatal("子图节点上的 retry 该在 Load 期被拒，不该装出一张图来")
+	g, plan, err := pulseyaml.Load([]byte(doc), reg, pulseyaml.LoadOptions{GraphID: "RT2"})
+	if err != nil {
+		t.Fatalf("子图节点上的 retry 现在该装得起来：%v", err)
 	}
-	for _, want := range []string{`node "step"`, "retry is not supported on a graph node", `graph "flaky"`} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("报文要能照着改（缺 %q）：%v", want, err)
-		}
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// 控制组：同一份文档**只去掉那一行**就装得起来——被拒的是那条声明，不是这张图。
-	const withoutRetry = `
-version: 1
-seeds:
-  - key: {name: rt.in, type: string}
-    from: {kind: literal, value: "v"}
-graphs:
-  flaky:
-    nodes:
-      - id: boom
-        uses: rt.flaky
-        requires: [{name: rt.in, type: string}]
-        provides: [{name: rt.out, type: string}]
-nodes:
-  - id: step
-    graph: flaky
-    in:  {rt.in: rt.in}
-    out: {rt.out: rt.out}
-`
-	if _, _, err := pulseyaml.Load([]byte(withoutRetry), reg, pulseyaml.LoadOptions{GraphID: "RT"}); err != nil {
-		t.Fatalf("去掉 retry 之后该装得起来：%v", err)
+	if err := g.Run(context.Background(), inputs); err != nil {
+		t.Fatalf("第二次尝试成功，整轮该成功：%v", err)
+	}
+	if got := atomic.LoadInt32(&runs); got != 2 {
+		t.Fatalf("子图工厂被调 %d 次，want 2（重试确实发生了）", got)
+	}
+	if v := read.Load(); v != "v-2" {
+		t.Fatalf("下游读到 %v，want v-2——失败那一次的输出不该被任何人看见", v)
 	}
 }
 
-// 嵌在 spec 里的那一层：报错要点明是**哪张 spec** 里的哪一格——同一份文档里多处
-// 引用同一张 spec 时，只说节点 id 不够定位。
-func TestLoadRetryGraphNodeReportsSpec(t *testing.T) {
+// 嵌在 spec 里的那一层同样照装照跑：一张 spec 引用另一张 spec，里层那个子图节点带
+// `retry:`——报错定位那套（「哪张 spec 里的哪一格」）随装图期拒绝一起消失了，这里改成
+// 钉住它**真的跑得起来**，而且里层工厂确实被重试过。
+func TestLoadRetryOnNestedSpecGraphNodeRuns(t *testing.T) {
 	reg := pulse.NewRegistry()
-	for _, k := range []string{"nr.in", "nr.out"} {
-		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
+	for _, name := range []string{"nr2.in", "nr2.out"} {
+		pulse.MustRegisterKey(reg, pulse.NewKey[string](name))
 	}
-	reg.MustRegister("nr.leaf", func(rc *pulse.RunCtx) error {
-		return pulse.Set(rc, pulse.NewKey[string]("nr.out"), "ok")
+	var runs int32
+	reg.MustRegister("nr2.leaf", func(rc *pulse.RunCtx) error {
+		n := atomic.AddInt32(&runs, 1)
+		if err := pulse.Set(rc, pulse.NewKey[string]("nr2.out"), "ok"); err != nil {
+			return err
+		}
+		if n == 1 {
+			return errors.New("第一次尝试注定失败")
+		}
+		return nil
 	})
 
 	const doc = `
 version: 1
 seeds:
-  - key: {name: nr.in, type: string}
+  - key: {name: nr2.in, type: string}
     from: {kind: literal, value: "v"}
 graphs:
   leaf:
     nodes:
       - id: work
-        uses: nr.leaf
-        requires: [{name: nr.in, type: string}]
-        provides: [{name: nr.out, type: string}]
+        uses: nr2.leaf
+        requires: [{name: nr2.in, type: string}]
+        provides: [{name: nr2.out, type: string}]
   mid:
     nodes:
       - id: boom
         graph: leaf
-        retry: {attempts: 2}
-        in:  {nr.in: nr.in}
-        out: {nr.out: nr.out}
+        retry: {attempts: 2, delay: 1ms}
+        in:  {nr2.in: nr2.in}
+        out: {nr2.out: nr2.out}
 nodes:
   - id: step
     graph: mid
-    in:  {nr.in: nr.in}
-    out: {nr.out: nr.out}
+    in:  {nr2.in: nr2.in}
+    out: {nr2.out: nr2.out}
 `
-	_, _, err := pulseyaml.Load([]byte(doc), reg, pulseyaml.LoadOptions{GraphID: "NR"})
-	if err == nil {
-		t.Fatal("嵌在 spec 里的子图节点带 retry 也该被拒")
+	g, plan, err := pulseyaml.Load([]byte(doc), reg, pulseyaml.LoadOptions{GraphID: "NR2"})
+	if err != nil {
+		t.Fatalf("嵌在 spec 里的子图节点带 retry 现在该装得起来：%v", err)
 	}
-	if !strings.Contains(err.Error(), `graph "mid": node "boom"`) {
-		t.Fatalf("报文要点明是哪张 spec 里的哪一格：%v", err)
+	inputs, err := plan.Inputs(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Run(context.Background(), inputs); err != nil {
+		t.Fatalf("第二次尝试成功，整轮该成功：%v", err)
+	}
+	if got := atomic.LoadInt32(&runs); got != 2 {
+		t.Fatalf("里层工厂被调 %d 次，want 2（重试确实发生了）", got)
 	}
 }
 

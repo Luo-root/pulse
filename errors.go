@@ -63,8 +63,16 @@ var (
 	// ErrDuplicateSource：这个 Key 在**定义里**已经有来源了（某个节点 Provides 它，
 	// 或挂载子图时绑定的那条键在子图里已经有来源）。一个 Key 至多一个来源。
 	ErrDuplicateSource = errors.New("pulse: key already has a source")
-	// ErrNextCalledTwice：单节点的 Run 不得并发进入——两个 goroutine 同时
-	// 跑同一节点会抢同一批槽位，语义上必然错。顺序重入是合法的，Retry
-	// 正依赖它（1→0→1），所以判据是「重叠」而不是「多次」。
+	// ErrNextCalledTwice：**两个触发点**，都是「这一层不该再往下推进了」——
+	//
+	//	① **并发进入**：两个 goroutine 同时跑同一节点的体（`next` 重叠）。它们会抢同一批
+	//	   槽位，语义上必然错——切面里的 `next` 不许并发调；
+	//	② **无边界重入**：同一个节点执行上下文里推进过第二次，而这两次之间**没有新的尝试
+	//	   边界**（`Retry` 每试都开一条新的写暂存，见 RunCtx.beginAdvance）。没有隔离的
+	//	   第二次推进，第一次写出去的东西会被幂等首写静默吞掉，节点手里就成了两次的混装。
+	//
+	// 两者共用一个哨兵（冻结面里七条哨兵不新增、不改名），所以 `errors.Is` 分不出是哪一种；
+	// 要区分就读报文。**限制的是「这一次执行里这个节点」的推进次数**，不是按节点 id 全局
+	// 禁止：另一次 `Execution` / 另一次 `Run` 是全新的执行上下文，照常跑。
 	ErrNextCalledTwice = errors.New("pulse: aspect next called concurrently/overlapping")
 )

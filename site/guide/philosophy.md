@@ -12,7 +12,7 @@ Pulse 是 Go 的**数据到达驱动**执行引擎，外加一层**图观测**�
 2. **推进**：一条 Key 到达（有值或显式跳过）就让等它的节点具备就绪条件——没有边对象、没有「先排序再执行」的调度阶段、没有调度循环；
 3. **讲清楚**：跑到哪了、谁在等谁、失败在哪。
 
-它不是**传统的中心调度式 DAG 工作流引擎**——Pulse 同样从 `Requires` / `Provides` 推出依赖图、同样拒绝依赖环、同样给拓扑视图，差别在于推进由 Key 到达驱动而不是中心调度器；重试必须**显式声明**（`Retry` 切面），引擎不做隐式补偿；不是业务框架（不碰 IO、不认识业务字段），不是 DSL（Go 里就是 Go，声明式只在 `pulse/yaml` 那一层存在）。
+它不是**传统的中心调度式 DAG 工作流引擎**——Pulse 同样从 `Requires` / `Provides` 推出依赖图、同样拒绝依赖环、同样给拓扑视图，差别在于推进由 Key 到达驱动而不是中心调度器；重试必须**显式声明**（`Retry` 切面）——声明之后那一段的槽位写入由引擎按尝试边界管住（失败的那一次不发布给下游），但引擎不做隐式补偿、也不去撤你已经在外部世界里做过的事；不是业务框架（不碰 IO、不认识业务字段），不是 DSL（Go 里就是 Go，声明式只在 `pulse/yaml` 那一层存在）。
 
 ## 六条你会直接感受到的理念
 
@@ -73,4 +73,4 @@ Pulse 是 Go 的**数据到达驱动**执行引擎，外加一层**图观测**�
 
 **执行**：`Graph` 是**可复用的静态定义**，一次运行的 ctx / 输入值 / 槽位 / 节点状态 / 首错 / 取消域全在新的 `Execution` 里——同一张图可以顺序跑很多次、并发跑很多次，也可以挂在多处当子图（每个挂载位置一份自己的子执行），一次运行的取消 / 失败 / 完成不污染定义，也不污染别的运行。输入（`Inputs` + `Seed` / `SkipSeed`）属于**这一次运行**，定义只声明「这条键从外面来」（`DeclareInput`）。
 
-还在路上的：事务性 `Retry`（attempt 写集：失败 attempt 的输出对下游不可见）等后续阶段按 [#311](https://github.com/Luo-root/pulse/issues/311) 推进，契约与阶段路线见 [`docs/design/object-model.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/object-model.md)。
+还在路上的：阶段 4（快照 / 观测 / YAML 对齐）与阶段 5（迁移与发布）按 [#311](https://github.com/Luo-root/pulse/issues/311) 推进；**阶段 1（静态组合）/ 2（`Execution` 拆分）/ 3（事务性 `Retry`）都已落地**，契约与逐阶段落地情况见 [`docs/design/object-model.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/object-model.md)。

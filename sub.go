@@ -56,13 +56,12 @@ import (
 //  2. **取消域**：子执行的 ctx 从父节点这一层的 ctx 派生，所以取消天然传下去（含这一步
 //     上的 `Timeout` 切面）。不派生的话子图会跑满整段、把父图的取消吞掉——实测过：父图
 //     耗时 300ms 且报成功。取消**只影响这一次运行**：子图定义与别处的运行不受影响。
-//  3. **`Retry` 不能装在这一步上**：重试要重入这一步的体，而第一次 attempt 已经把输出
-//     桥回了父侧（幂等首写），第二次 attempt 的值会被**静默忽略**——下游可能拿到半成品。
-//     那要等 attempt 写集（阶段 3）才有解。装配期认不出一个 `Aspect` 是不是 Retry
-//     （它是裸函数类型，闭包没有可查的标识——实测 `reflect` 的代码指针每次实例化都不同），
-//     所以由 `Retry` 自己在**进 Run 的第一件事**拒（见 aspect.go）；用户自己写的重试切面
-//     则由 `runStaticSub` 的重入判据兜住（见下面那句 `rc.attempt`）。`pulse/yaml` 对
-//     `graph:` 节点上的 `retry:` 是 `Load` 期就拒同一个形状。
+//  3. **`Retry` 可以装在这一步上**：每一次尝试各建一份**新的子执行**（子图是定义，能跑
+//     很多次），而尝试级的写暂存由 `Retry` 提供（见 aspect.go）——第一次尝试的桥回随
+//     它那条暂存一起作废，父侧只拿得到成功那一次的输出版本。**没有边界的重入仍然被拒**：
+//     判据在最内层的推进闸上（所有节点共用一处，见 `RunCtx.beginAdvance`），用户自己写的
+//     重试切面开不了边界，第二次推进会连第一次的失败原因一起报出来。`pulse/yaml` 对
+//     `graph:` 节点上的 `retry:` 是**照装**（与 Go 侧同一个语义），不再在 `Load` 期拒。
 //
 // `aspects` 作用于**父侧这个节点**（例如 `pulse.Timeout(30*time.Second)` = 整张子图限时）。
 func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspects ...Aspect) error {
@@ -103,40 +102,14 @@ func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspect
 		return err
 	}
 
-	// 这一步的身体**在一次运行里只能进一次**。装配期已经拒掉 `Retry(...)`，这条是给
-	// 「用户自己写的重试切面」兜底：第二次进来会把**整棵子树再跑一遍**，而它的输出桥回父侧时，
-	// 凡是第一次已经桥过去（还没失败之前就写了）的键都会被幂等首写**静默丢掉**——父图手里
-	// 就成了「一半第一次、一半第二次」的混装，却看不出任何错；同时第一次的真正病根也被盖掉。
-	// 所以在这里点明它，并把第一次 attempt 的失败原因一起报出来。
-	//
-	// 账记在 `rc.attempt` 上（**这一次运行**里这个节点的），不是记在这个体闭包里：闭包随
-	// **定义**只建一次、每次运行都跑它，账记在闭包里就等于把「这张定义跑过一遍」记成
-	// 「这一步跑过了」——第二遍与并发的第二份都会被误报成重入（实测过）。
+	// 这一步的体就是「跑子图 + 桥回」，**没有自己的重入账**：一个节点在同一次执行里
+	// 只允许成功推进一次，那条判据在最内层的推进闸上、所有节点共用一处（见
+	// `RunCtx.beginAdvance`）。`Retry` 每次尝试都开一条新的写暂存，于是它的重入是
+	// 「有边界的重入」——每一次尝试各建一份**新的子执行**，第一次尝试的桥回随它的
+	// 暂存一起作废，父侧只拿得到成功那一次的输出版本。用户自己写的重试切面开不了
+	// 边界，第二次推进在那里当场被拒（报文连第一次的失败原因一起报出来）。
 	body := func(rc *RunCtx) error {
-		le := rc.attempt
-		le.mu.Lock()
-		if le.entered {
-			prev := le.firstErr
-			le.mu.Unlock()
-			return fmt.Errorf("pulse: Sub %q: this step was entered a second time (entry-once): "+
-				"a second attempt would run the whole child subtree again, and every output the "+
-				"first attempt had already bridged would be silently ignored (the parent slots "+
-				"are idempotent first-write) — the parent would end up with a mix of both "+
-				"attempts. This is what a retry on a graph step does: put the retry on the node "+
-				"inside the child that may fail; per-attempt write sets are the next stage. "+
-				"The first attempt failed with: %v", id, prev)
-		}
-		le.entered = true
-		le.mu.Unlock()
-		err := runStaticSub(rc, id, binds, child)
-		if err != nil {
-			le.mu.Lock()
-			if le.firstErr == nil {
-				le.firstErr = err
-			}
-			le.mu.Unlock()
-		}
-		return err
+		return runStaticSub(rc, id, binds, child)
 	}
 	n := NewNode(id, description, requires, provides, body, aspects...)
 	n.sub = true // 这一步不吃运行名额：它整段都在等子图跑完（见 WithMaxRunning）
