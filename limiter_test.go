@@ -51,24 +51,20 @@ func TestSubLimitInheritedByParent(t *testing.T) {
 
 	var c conc
 	var done atomic.Int32
-	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(), "") // 不声明名额 → 继承父图那份
-		if err != nil {
-			return nil, err
-		}
-		for _, id := range []string{"w1", "w2"} {
-			if err := child.Add(NewNode(id, "", Requires(cin), nil, func(rc *RunCtx) error {
-				leave := c.enter()
-				defer leave()
-				done.Add(1)
-				time.Sleep(60 * time.Millisecond)
-				return nil
-			})); err != nil {
-				return nil, err
-			}
-		}
-		return child, nil
-	}); err != nil {
+	child := mustNew(t, ctx, "P/step") // 不声明名额 → 运行期继承父图那份
+	if err := child.DeclareInput(NewPort(cin)); err != nil {
+		t.Fatalf("DeclareInput = %v", err)
+	}
+	for _, id := range []string{"w1", "w2"} {
+		mustAdd(t, child, NewNode(id, "", Requires(cin), nil, func(rc *RunCtx) error {
+			leave := c.enter()
+			defer leave()
+			done.Add(1)
+			time.Sleep(60 * time.Millisecond)
+			return nil
+		}))
+	}
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
@@ -82,7 +78,7 @@ func TestSubLimitInheritedByParent(t *testing.T) {
 	}
 }
 
-// 今天会死锁的那条路径：限额 1 + 三层嵌套。若 `Sub` 那一步占着名额等子图，
+// 今天会死锁的那条路径：限额 1 + 三层嵌套。若挂子图那一步占着名额等子图，
 // 内层永远拿不到名额 → 整轮超时（同形实测：探针 probe-sharedsem 限额 1 → 超前收尾）。
 func TestSubLimitThreeDeepUnderOneSlot(t *testing.T) {
 	in := NewKey[string]("lim.deep.in")
@@ -99,31 +95,25 @@ func TestSubLimitThreeDeepUnderOneSlot(t *testing.T) {
 	var c conc
 	var leafRan atomic.Int32
 
-	leaf := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(), "")
-		if err != nil {
-			return nil, err
-		}
-		if err := child.Add(NewNode("leaf", "", Requires(l2), nil, func(rc *RunCtx) error {
-			leave := c.enter()
-			defer leave()
-			leafRan.Add(1)
-			time.Sleep(30 * time.Millisecond)
-			return nil
-		})); err != nil {
-			return nil, err
-		}
-		return child, nil
+	// 三层子图全部在装配期建好：最内层吃 l2，中间层把 l1 转给 l2，顶层挂 step1。
+	leaf := mustNew(t, ctx, "P/step1/step2")
+	if err := leaf.DeclareInput(NewPort(l2)); err != nil {
+		t.Fatalf("DeclareInput = %v", err)
 	}
-	mid := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(), "")
-		if err != nil {
-			return nil, err
-		}
-		if err := Sub(child, "step2", "", []SubBind{In(l1, l2)}, leaf); err != nil {
-			return nil, err
-		}
-		return child, nil
+	mustAdd(t, leaf, NewNode("leaf", "", Requires(l2), nil, func(rc *RunCtx) error {
+		leave := c.enter()
+		defer leave()
+		leafRan.Add(1)
+		time.Sleep(30 * time.Millisecond)
+		return nil
+	}))
+
+	mid := mustNew(t, ctx, "P/step1")
+	if err := mid.DeclareInput(NewPort(l1)); err != nil {
+		t.Fatalf("DeclareInput = %v", err)
+	}
+	if err := Sub(mid, "step2", "", []SubBind{In(l1, l2)}, leaf); err != nil {
+		t.Fatal(err)
 	}
 	if err := Sub(g, "step1", "", []SubBind{In(in, l1)}, mid); err != nil {
 		t.Fatal(err)
@@ -158,30 +148,27 @@ func TestSubLimitSiblingsShareQuota(t *testing.T) {
 
 	var c conc
 	var done atomic.Int32
-	build := func(key Key[string]) func(*SubCtx) (*Graph, error) {
-		return func(sc *SubCtx) (*Graph, error) {
-			child, err := New(sc.Context(), sc.GraphID(), "")
-			if err != nil {
-				return nil, err
-			}
-			for _, id := range []string{"w1", "w2"} {
-				if err := child.Add(NewNode(id, "", Requires(key), nil, func(rc *RunCtx) error {
-					leave := c.enter()
-					defer leave()
-					done.Add(1)
-					time.Sleep(60 * time.Millisecond)
-					return nil
-				})); err != nil {
-					return nil, err
-				}
-			}
-			return child, nil
+	// 装配期按同一段代码建两张子图（两个实例），各自的入口端口先声明。
+	build := func(graphID string, key Key[string]) *Graph {
+		child := mustNew(t, ctx, graphID)
+		if err := child.DeclareInput(NewPort(key)); err != nil {
+			t.Fatalf("DeclareInput = %v", err)
 		}
+		for _, id := range []string{"w1", "w2"} {
+			mustAdd(t, child, NewNode(id, "", Requires(key), nil, func(rc *RunCtx) error {
+				leave := c.enter()
+				defer leave()
+				done.Add(1)
+				time.Sleep(60 * time.Millisecond)
+				return nil
+			}))
+		}
+		return child
 	}
-	if err := Sub(g, "a", "", []SubBind{In(in1, c1)}, build(c1)); err != nil {
+	if err := Sub(g, "a", "", []SubBind{In(in1, c1)}, build("P/a", c1)); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "b", "", []SubBind{In(in2, c2)}, build(c2)); err != nil {
+	if err := Sub(g, "b", "", []SubBind{In(in2, c2)}, build("P/b", c2)); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
@@ -209,23 +196,19 @@ func TestSubLimitZeroOptsOutForSubtree(t *testing.T) {
 	}
 
 	var c conc
-	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(), "", WithMaxRunning(0)) // 声明：这一子树不限
-		if err != nil {
-			return nil, err
-		}
-		for _, id := range []string{"w1", "w2"} {
-			if err := child.Add(NewNode(id, "", Requires(cin), nil, func(rc *RunCtx) error {
-				leave := c.enter()
-				defer leave()
-				time.Sleep(60 * time.Millisecond)
-				return nil
-			})); err != nil {
-				return nil, err
-			}
-		}
-		return child, nil
-	}); err != nil {
+	child := mustNew(t, ctx, "P/step", WithMaxRunning(0)) // 声明：这一子树不限
+	if err := child.DeclareInput(NewPort(cin)); err != nil {
+		t.Fatalf("DeclareInput = %v", err)
+	}
+	for _, id := range []string{"w1", "w2"} {
+		mustAdd(t, child, NewNode(id, "", Requires(cin), nil, func(rc *RunCtx) error {
+			leave := c.enter()
+			defer leave()
+			time.Sleep(60 * time.Millisecond)
+			return nil
+		}))
+	}
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {

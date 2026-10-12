@@ -1,6 +1,7 @@
 package yaml
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -8,26 +9,34 @@ import (
 	"github.com/Luo-root/pulse"
 )
 
-// 声明式装配里的「一步 = 一张子图」（#295）。
+// 声明式装配里的「一步 = 一张子图」（#295、#313 阶段 1）。
 //
-// 这一层只把引擎已有的能力（`pulse.Sub`）**写出来**：拓扑归 YAML，`Run` 还是归
-// 注册的工厂；子图是「拓扑的复用单元」，不该逼人为了复用一段三步流程去写 Go 工厂。
+// 分工没变：**拓扑归 YAML**（`in` / `out` 写接线、`graphs` 写可复用的子图），`Run` 还是
+// 归注册的工厂；子图是「拓扑的复用单元」，不该逼人为了复用一段三步流程去写 Go 工厂。
 //
-// 三条判据，与引擎侧同一套口径：
+// 四条判据，与引擎侧同一套口径：
 //
 //   - **边界写在接线处**：`in` / `out` 就是 `pulse.In` / `pulse.Out`，一律
 //     「**子键: 父键**」——读 YAML 一眼看清这一步吃什么、吐什么；
-//   - **类型在 Load 期比**：两端各按 `{name, type}` 查注册表，两端用**同一个
-//     type 记号**，对不上就在装图期报（YAML 是运行期装配，这已是最早的时机）；
-//   - **子图是一次性的**：每次运行都按 spec 装一张新图（`pulse.Sub` 的工厂形态），
-//     所以同一张子图被引用两次 = 两个独立实例。
+//   - **子图在 Load 期装一次**：一格 `graph:` 节点 = 一张**装配期就建好**的子图
+//     （`pulse.Sub`），所以父图在运行之前就能递归看完整个子树
+//     （`Topology().Nodes[i].Sub`），子图的静态毛病也在 `Load` 那一刻报出来，而不是
+//     等跑到那一层才炸；
+//   - **按引用点**：同一张 spec 挂几处就是几张**独立实例**，每处的 `in` / `out` 各写各的
+//     ——端口按那一处的接线声明，校验也按那一处各来一条（同一张图两处引用、只有一处没喂
+//     那条输入，报的就是没喂的那一处，见 #298）；
+//   - **类型在 Load 期比**：两端各按 `{name, type}` 查注册表，两端用**同一个 type 记号**，
+//     对不上就在装图期报（YAML 是运行期装配，这已是最早的时机）。
+//
+// 子图节点上的 `retry:` 是**装图期就拒**的（见 addSubNode）：静态挂载的子图只跑一次，
+// 第二次尝试起不来。
 
 // GraphSpec 是一张可复用子图的声明：形状与顶层文档一样（`seeds` + `nodes`），
 // 但**没有**自己的 `graphs`——子图引用的是文档顶层那一张**扁平**的表（名字在
 // 文档内唯一），递归靠「图引用图」表达，环在 `Load` 期拦掉。
 type GraphSpec struct {
-	// Description 落到**这张 spec 装出来的每张子图**的 `Description()`（一次运行
-	// 一张，但描述的是同一个）；`""` = 没写。根图的那条在文档顶层。
+	// Description 落到**这张 spec 装出来的每张子图**的 `Description()`（一处挂载
+	// 一张）；`""` = 没写。根图的那条在文档顶层。
 	Description string     `yaml:"description"`
 	Seeds       []SeedSpec `yaml:"seeds"`
 	Nodes       []NodeSpec `yaml:"nodes"`
@@ -37,6 +46,11 @@ type GraphSpec struct {
 // **引用一张不存在的子图**、**子图引用环**（含自引用）。两者都会装出一张
 // 永远装不完或跑不起来的图，且都是「静态可判定」的——与引擎在 `Start` 拦
 // 死图的口径一致。
+//
+// 引用环这一条还挡着装配器的递归：装配是**按挂载位置递归**建图的（一格
+// `graph:` 节点就当场建一张子图），环会让它转不完。引擎里那道组合环判据
+// （`Sub` 挂载时沿子树查祖先）拦的是「已经建好的图被挂进它自己的子树」，
+// 到不了「装配期还在往下建」这一步，所以这一条留在装配器这边。
 //
 // 环的报法照抄引擎的依赖环：给出一条**具体**的路径（`a -> b -> a`），
 // 遍历按名字排序取第一条，所以同一份文档每次报同一句。
@@ -128,7 +142,8 @@ func declaredKeys(spec GraphSpec) (required, provided map[string]bool) {
 	return required, provided
 }
 
-// subBinds 把一条 `graph:` 节点的 `in` / `out` 翻成 `pulse.Sub` 的绑定。
+// subBinds 把一条 `graph:` 节点的 `in` / `out` 翻成引擎的绑定（`pulse.InRef` /
+// `pulse.OutRef`）。
 //
 // 顺序**确定**（键名排序）：父侧节点的 Requires / Provides 顺序跟着它走，
 // 报错也才稳定。
@@ -185,7 +200,7 @@ func subBinds(n NodeSpec, graphName string, child GraphSpec, reg *pulse.Registry
 			// 就有了两个来源。引擎的纪律是「一条键恰好一个来源」，所以跑到
 			// 这个节点时会撞来源冲突——而这在装图期读一遍声明就能定。
 			//
-			// 除非这条键**同时**还挂在 `out:` 里：那种形状先让 `pulse.Sub` 报
+			// 除非这条键**同时**还挂在 `out:` 里：那种形状先让发动机报
 			// 「同一个子键绑了两次」——错在绑定的形状，不在来源，那句话更贴。
 			if _, both := n.Out[childKey]; !both {
 				return nil, fmt.Errorf("node %q: graph %q provides %q inside, so the binding cannot also feed it with in: — "+
@@ -218,47 +233,289 @@ func subBinds(n NodeSpec, graphName string, child GraphSpec, reg *pulse.Registry
 	return binds, nil
 }
 
-// buildSub 是 `pulse.Sub` 的工厂：**每次运行**都按 spec 装一张新图，
-// 一次性契约天然满足。
+// mount 是「这一批声明装在哪一层」的两条坐标 + 一句「这是哪张 spec」。
 //
-// 出口按层给（`LoadOptions.ObserverFor`）：声明式装配里每一层是另一张图，
-// 一个出口实例只能带一条 `pulse.path`，所以「按层各建一个」这件事得由宿主
-// 决定——这里把这一层的路径交给它。
-func buildSub(sc *pulse.SubCtx, graphName string, spec GraphSpec,
-	graphs map[string]GraphSpec, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, error) {
+//   - `id` 是这一层的**图身份**：根 = `LoadOptions.GraphID`，一层子图 =
+//     `<父 id>/<节点 id>`，它进观测的 `pulse.graph`；
+//   - `path` 是这一层的**挂载位置**：根 = `""`，一层 = 挂载它的那个节点 id，再深 =
+//     `outer/inner`（与引擎的 `joinPath` 同一套写法），它进观测的 `pulse.path`；
+//   - `where` 是这批声明属于哪张 spec（根层为空串），只用于把报错点到位。
+//
+// 根那一层 id 有值、path 为空，所以两者得分开存：「身份」与「位置」揉进一个字段的话，
+// 根这一层会把图 id 当成路径写进观测。
+type mount struct {
+	id    string
+	path  string
+	where string
+}
 
-	// 子图**不**再拿 `opts.Graph`：那批选项里能影响子图的三件（观察者 / 名额 / 图级
-	// 切面）都靠**继承**往下走（见各自的 godoc），逐层再声明一遍就成了「每层各一份」
-	// ——切面更糟，会一层叠一遍（两层两份、三层三份）。`Option` 是不透明闭包、没法挑着
-	// 传，所以这里只传「该按层不同」的那一条：出口。
-	childOpts := make([]pulse.Option, 0, 1)
-	if opts.ObserverFor != nil {
-		if o := opts.ObserverFor(sc.Path()); o != nil {
-			childOpts = append(childOpts, pulse.WithObserver(o))
+// child 是「挂在 n 这个位置上的那一层」：id 与 path 各加一段。
+func (m mount) child(n NodeSpec) mount {
+	return mount{id: m.id + "/" + n.ID, path: joinPath(m.path, n.ID), where: n.Graph}
+}
+
+// joinPath 拼嵌套路径：根为空串，一层是挂载它的那个节点 id，再深是 `outer/inner`。
+// 与引擎的 `joinPath` 同一套写法（节点 id 不许含 `/` 就是为它）。
+func joinPath(at, id string) string {
+	if at == "" {
+		return id
+	}
+	return at + "/" + id
+}
+
+// mountedAt 是校验报错里那句「挂在哪」：同一张 spec 挂两处时，两处看到的含义不同
+// （见 assembler.buildChild），报文里带上路径，读的人照着就能找到该改的那一处。
+func mountedAt(path string) string {
+	return fmt.Sprintf(" (mounted at %q)", path)
+}
+
+// assembler 是这一遍装配的全部状态。同一段装配代码走**两遍**：先装一棵只装不跑的
+// **校验树**，等它整棵过完，再用同一段代码装真图（见 Load）。
+//
+// 两遍的差别只有两处，都是「校验树只装不跑」的直接后果：
+//
+//   - 子图**在 `Load` 期装一次**（`pulse.Sub`）：父图在运行之前就递归看得见整棵子树，
+//     子图的静态毛病也在这一刻报出来——校验树要的就是这个形状；
+//   - **不建出口**：`ObserverFor` 不调——校验树一个记录也不会产生，宿主的回调次数不会
+//     因为「多校验一遍」而变。
+//
+// 其余一切（接线检查、端口声明、递归、报错文案）都是同一份，所以「校验期报的那句」与
+// 「真图装到一半报的那句」逐字相同。
+type assembler struct {
+	doc   Document
+	reg   *pulse.Registry
+	opts  LoadOptions
+	check bool
+}
+
+// addNodes 把一批节点声明装进 g。工厂节点与子图节点在这里分流：子图节点被翻成一个
+// **静态挂载**（`pulse.Sub`）。`retry` 落在子图节点上还不支持，由 `addSubNode` 当场拒
+// ——静态子图只跑一次，第二次尝试起不来（原因写在那里）。
+//
+// 子图里的子图走的是同一个函数（`buildChild` 递归调它），所以嵌套不设深度上限；
+// 引用环已经在 `checkGraphRefs` 拦掉了，这里不会转圈。
+//
+// `m` 说这批声明装在哪一层（根层传 `{id: GraphID}`），报错与观测都按它定位。
+func (a *assembler) addNodes(g *pulse.Graph, specs []NodeSpec, m mount) error {
+	for i, n := range specs {
+		if n.ID == "" {
+			return fmt.Errorf("pulse/yaml: %snodes[%d] missing id", at(m.where), i)
+		}
+		aspects := nodeAspects(n)
+		switch {
+		case n.Graph != "" && n.Uses != "":
+			return fmt.Errorf("pulse/yaml: %snode %q: uses and graph are mutually exclusive", at(m.where), n.ID)
+
+		case n.Graph != "":
+			if err := a.addSubNode(g, n, m, aspects); err != nil {
+				return err
+			}
+
+		case n.Uses != "":
+			// 工厂节点的边界只有 `requires` / `provides` 一处说法。写了 `in` /
+			// `out` 不报的话，配置看着接好了、实际一个字都没生效（YAML 会照常
+			// 解码这两个字段）——与子图节点拒 `requires` / `provides` 对称。
+			if len(n.In) > 0 || len(n.Out) > 0 {
+				return fmt.Errorf("pulse/yaml: %snode %q: a factory node declares its boundary with requires/provides, not in/out",
+					at(m.where), n.ID)
+			}
+			run, ok := a.reg.Lookup(n.Uses)
+			if !ok {
+				return fmt.Errorf("pulse/yaml: %snode %q uses unknown factory %q", at(m.where), n.ID, n.Uses)
+			}
+			requires, err := a.reg.KeyRefs(toNameTypes(n.Requires))
+			if err != nil {
+				return fmt.Errorf("pulse/yaml: %snode %q requires: %w", at(m.where), n.ID, err)
+			}
+			provides, err := a.reg.KeyRefs(toNameTypes(n.Provides))
+			if err != nil {
+				return fmt.Errorf("pulse/yaml: %snode %q provides: %w", at(m.where), n.ID, err)
+			}
+			if err := g.Add(pulse.NewNode(n.ID, n.Description, requires, provides, run, aspects...)); err != nil {
+				return fmt.Errorf("pulse/yaml: %snode %q: %w", at(m.where), n.ID, err)
+			}
+
+		default:
+			return fmt.Errorf("pulse/yaml: %snode %q missing uses or graph", at(m.where), n.ID)
 		}
 	}
-	child, err := pulse.New(sc.Context(), sc.GraphID(), spec.Description, childOpts...)
+	return nil
+}
+
+// addSubNode 装一格 `graph:` 节点：边界先由 `in` / `out` 翻成绑定，再把这一处的
+// 子图（或它的工厂）挂上去。
+func (a *assembler) addSubNode(g *pulse.Graph, n NodeSpec, m mount, aspects []pulse.Aspect) error {
+	spec, ok := a.doc.Graphs[n.Graph]
+	if !ok {
+		return fmt.Errorf("pulse/yaml: %snode %q references unknown graph %q", at(m.where), n.ID, n.Graph)
+	}
+	// `retry` 落在子图节点上：这一阶段**当场拒**。
+	//
+	// 为什么不是「照旧能重试」：静态子图是一次性的，`Sub` 在运行期原子认领它，第一次
+	// 尝试就把它用掉了——第二次尝试只会拿到「这张图已经在用」。而那句还会**盖掉第一次
+	// 失败的真正原因**（`Retry` 返回的是**最后一次** attempt 的错误），病根就再也看不到了。
+	// 「每次尝试各装一张新图」要等阶段 3 的事务性 `Retry`（见 object-model 第 5 节）。
+	//
+	// 为什么不留一条旧路：留着就是两套判据长期并存，而这条能力的目标形态在阶段 3 才
+	// 落地——现在拒掉，报错里直接给出今天就能用的写法。
+	if n.Retry != nil {
+		return fmt.Errorf("pulse/yaml: %snode %q: retry is not supported on a graph node yet: "+
+			"a statically mounted subgraph runs once, so a second attempt could not start it "+
+			"(a fresh child per attempt needs the execution tree). "+
+			"Move retry onto the node inside graph %q that may actually fail",
+			at(m.where), n.ID, n.Graph)
+	}
+	binds, err := subBinds(n, n.Graph, spec, a.reg)
+	if err != nil {
+		// subBinds 的报错自己就带 `node %q:` 那句，这里只补「哪张 spec」——
+		// 再加一层 node id 会打成 `node "x": node "x": …`。
+		return fmt.Errorf("pulse/yaml: %s%w", at(m.where), err)
+	}
+
+	// 装配期就有一张现成的子图（`pulse.Sub`）：父图在运行之前递归看得见整个子树，
+	// 子图的静态毛病也在 `Load` 那一刻报出来。
+	cm := m.child(n)
+	// 子图定义不挂宿主的 ctx（`context.Background()`）：取消是从**挂载点**传下去的
+	// ——`Sub` 在运行期把父节点这一层的取消转发进子图（见 runStaticSub）。挂在宿主
+	// ctx 上只会让「每一次 Load 都在宿主 ctx 上多挂几层」（热重载反复装图 = 越攒越多），
+	// 而定义本身没有要取消的东西。
+	child, err := a.buildChild(n, cm)
+	if err != nil {
+		return err
+	}
+	// 顺序：接线形状的毛病先报（它们更贴使用者刚写下的那一行，也不必先钻进子图里
+	// 找），再让这一张子图过静态判据。
+	if err := pulse.Sub(g, n.ID, n.Description, binds, child, aspects...); err != nil {
+		return fmt.Errorf("pulse/yaml: %s%w", at(m.where), err)
+	}
+	// 校验树这一遍：这一张子图实例**连同它的子树**当场过一遍静态判据（`Validate`
+	// 与 `Start` 共用同一套判据，所以报文与它跑到那一层被拒时逐字相同）。
+	//
+	// 为什么是「每张实例各自校验」而不是「最后校验一次根图」：根图那一层**不能**
+	// 在这一刻查——它的外部输入是宿主在 `Load` 之后种进去的（`SeedPlan.Apply`），
+	// 装图期看它当然是「没人提供、没人 seed」，任何一份正常文档都会被误报。
+	// 「声明归端口、值归运行输入」是阶段 2 随 `Execution` 落地的事，所以根层自己那
+	// 几条判据仍在 `Start` 那一刻报（与今天一致）。子图这一层没有这个问题：它们的
+	// 输入面就是引用点的 `in:`，装配期已经声明成端口了（declarePorts）。
+	//
+	// 报文带上**绝对挂载路径**：同一张 spec 挂两处，两处看到的含义不同，照着路径
+	// 才找得到该改的那一处。子图里再嵌一层时，内层先报（内层在装配时就校验过了，
+	// 错误一路往上返回，不再包第二层）。
+	if a.check {
+		if err := child.Validate(); err != nil {
+			return fmt.Errorf("pulse/yaml: graph %q%s: %w", n.Graph, mountedAt(cm.path), err)
+		}
+	}
+	return nil
+}
+
+// buildChild 装这一处的子图：建图 → 递归装它的节点 → 种它自己的 seeds → 按这一处的
+// 接线**声明端口**。
+//
+// 校验树与真图共用它（同一段代码、同一批判据）。三件事在这里定：
+//
+//   - 建在哪个 ctx 上：一律 `context.Background()`——取消是从**挂载点**转发下去的
+//     （见 runStaticSub），子图定义本身没有要取消的东西，也不需要一条通往宿主的链。
+//     挂在宿主 ctx 上只会让「每一次 Load 都在宿主 ctx 上多挂几层」（热重载反复装图
+//     = 越攒越多）；
+//   - 出口：`ObserverFor` 按这一层的**挂载路径**建（声明式装配里每一层是另一张图，
+//     一个出口实例只能带一条 `pulse.path`，所以「按层各建一个」得由宿主决定）。
+//     校验树不调它：它只装不跑，一个记录也不会产生；
+//   - 图级选项：子图**不拿** `opts.Graph`——那批里能影响子图的三件（观察者 / 名额 /
+//     图级切面）都靠**继承**往下走（见各自的 godoc），逐层再声明一遍就成了「每层各一份」
+//     ——切面更糟，会一层叠一遍（两层两份、三层三份）。`Option` 是不透明闭包、没法挑着
+//     传，所以这里只传「该按层不同」的那一条：出口。
+func (a *assembler) buildChild(n NodeSpec, cm mount) (*pulse.Graph, error) {
+	spec := a.doc.Graphs[n.Graph]
+
+	var opts []pulse.Option
+	if !a.check && a.opts.ObserverFor != nil {
+		if o := a.opts.ObserverFor(cm.path); o != nil {
+			opts = append(opts, pulse.WithObserver(o))
+		}
+	}
+	var (
+		child *pulse.Graph
+		err   error
+	)
+	if a.check {
+		// 校验图与真图**同额度**（理由见 checkGraph）；它同样带 opts.Graph 那批选项。
+		child, err = checkGraph(cm.id, a.opts)
+	} else {
+		child, err = pulse.New(context.Background(), cm.id, spec.Description, opts...)
+	}
 	if err != nil {
 		return nil, err
 	}
-	if err := addNodes(child, spec.Nodes, graphName, graphs, reg, opts); err != nil {
+	if err := a.addNodes(child, spec.Nodes, cm); err != nil {
 		return nil, err
 	}
 	// 子图的 seeds：只允许 literal（C3）——env / file / context 那几种要靠宿主
 	// IO，而 SeedPlan 是**父图**的产物；把子图的计划向上冒泡是另一件事，
 	// 等真有需要再说。校验在 Load 期做（checkSubSeeds）。
 	for _, s := range spec.Seeds {
-		if err := seedOne(child, graphName, s, reg); err != nil {
+		if err := seedOne(child, n.Graph, s, a.reg); err != nil {
 			return nil, err
 		}
+	}
+	if err := a.declarePorts(child, n); err != nil {
+		return nil, err
 	}
 	return child, nil
 }
 
-// seedOne 把子图声明里的一条 seed 种进 g，供**装配期**（Load 的校验图）与
-// **运行期**（buildSub 建出来的那张图）共用：同一个函数 ⇒ 两边拒的东西永远
-// 一致（键没登记、类型写错、值是 nil——这些都是静态可判定的，装配期报出来
-// 比跑到那一层才报好）。
+// declarePorts 按这一处的接线给子图**声明端口**：`in:` 的子侧键进输入端口、`out:` 的
+// 子侧键进输出端口。
+//
+// 为什么必须有：子图里那些节点读 `in:` 喂进来的键，而值要等运行期才种得进去
+// （`Seed` 是本次运行的值）——静态校验子图时，这条键就是「没人提供、没人 seed」。
+// 端口把「这本来就是外部输入」说清楚（静态来源是 `pulse.SourceInput`），于是「忘了接线」
+// 与「本来就是这张图的接口」分得开；端口同时也是**父侧唯一能接的接线面**（`Sub` 只认
+// 声明过的端口，接到子图内部的中间 Key 是静态错）。
+//
+// 按**引用点**各声明各的：同一张 spec 挂两处、两边的 `in:` 不一样时，两张实例的接口面
+// 本来就不同——这正是「按引用点校验」（#298）在静态装配里的落点。
+func (a *assembler) declarePorts(child *pulse.Graph, n NodeSpec) error {
+	in, err := a.ports(n.ID, n.In, "in")
+	if err != nil {
+		return err
+	}
+	if err := child.DeclareInput(in...); err != nil {
+		return fmt.Errorf("pulse/yaml: node %q in: %w", n.ID, err)
+	}
+	out, err := a.ports(n.ID, n.Out, "out")
+	if err != nil {
+		return err
+	}
+	if err := child.DeclareOutput(out...); err != nil {
+		return fmt.Errorf("pulse/yaml: node %q out: %w", n.ID, err)
+	}
+	return nil
+}
+
+// ports 把一侧接线里的**子侧**键翻成端口声明，顺序按键名排序（声明顺序确定，
+// 校验与报文才稳定）。
+//
+// 空集返回空切片：`DeclareInput()` 本身把零个端口当无事发生，所以两侧都可以无条件调。
+func (a *assembler) ports(nodeID string, keys map[string]string, side string) ([]pulse.Port, error) {
+	out := make([]pulse.Port, 0, len(keys))
+	for _, name := range sortedMapKeys(keys) {
+		tag, ok := a.reg.TypeTagOf(name)
+		if !ok {
+			return nil, fmt.Errorf("pulse/yaml: node %q %s: key %q is not registered", nodeID, side, name)
+		}
+		ref, err := a.reg.ResolveKey(name, tag)
+		if err != nil {
+			return nil, fmt.Errorf("pulse/yaml: node %q %s: %w", nodeID, side, err)
+		}
+		out = append(out, pulse.PortRef(ref))
+	}
+	return out, nil
+}
+
+// seedOne 把子图声明里的一条 seed 种进 g，供**校验树**与**真图**共用：同一个函数 ⇒
+// 两边拒的东西永远一致（键没登记、类型写错、值是 nil——这些都是静态可判定的，
+// 装配期报出来比跑到那一层才报好）。
 func seedOne(g *pulse.Graph, graphName string, s SeedSpec, reg *pulse.Registry) error {
 	if s.Skip {
 		if err := pulse.SkipSeedByName(g, reg, s.Key.Name, s.Key.Type); err != nil {
@@ -272,65 +529,6 @@ func seedOne(g *pulse.Graph, graphName string, s SeedSpec, reg *pulse.Registry) 
 	return nil
 }
 
-// checkSite 是「装配期要静态校验的一张图」，按**引用点**列出来。
-type checkSite struct {
-	graph string   // 被校验的 spec 名
-	owner string   // 引用它的那张图（"" = 根层）
-	node  string   // 引用它的节点 id（谁也引用不到时为空）
-	bound []string // 这个引用点用 `in:` 喂进来的子侧键（按名排序）
-}
-
-// via 说明这张图是**哪个引用点**在看它，附在校验报错后面：同一张 spec 被两处
-// 引用时两边的 `in:` 可以不一样，同一句「这条键没来源」在两处看到的含义不同
-// ——不说清是哪一处，读的人还得自己找。无人引用时为空串。
-func (s checkSite) via() string {
-	if s.node == "" {
-		return ""
-	}
-	if s.owner == "" {
-		return fmt.Sprintf(" (as referenced by node %q of the root graph)", s.node)
-	}
-	return fmt.Sprintf(" (as referenced by node %q of graph %q)", s.node, s.owner)
-}
-
-// checkSites 列出所有要静态校验的图：**每个引用点各一条**，加上谁也引用不到
-// 的 spec 各一条。
-//
-// 为什么按引用点而不是按 spec：同一张 spec 被两处引用时，两边的 `in:` 可以不
-// 一样，而「子图里这条键有没有来源」正是**按引用点**成立的——有一处没喂，
-// 那张图跑到就一定会挂。按并集校验会把这种图放过去。
-//
-// 谁也引用不到的 spec 也过一遍（没有任何外部来源那种形状）：它是死配置，
-// 但「写错了没人报」比「报了」难查得多。
-func checkSites(doc Document) []checkSite {
-	var sites []checkSite
-	referenced := make(map[string]bool, len(doc.Graphs))
-	add := func(owner string, specs []NodeSpec) {
-		for _, n := range specs {
-			if n.Graph == "" {
-				continue
-			}
-			referenced[n.Graph] = true
-			sites = append(sites, checkSite{
-				graph: n.Graph,
-				owner: owner,
-				node:  n.ID,
-				bound: sortedMapKeys(n.In),
-			})
-		}
-	}
-	add("", doc.Nodes) // 根图的节点先过：报错顺序跟着读文档的顺序走
-	for _, name := range sortedNames(doc.Graphs) {
-		add(name, doc.Graphs[name].Nodes)
-	}
-	for _, name := range sortedNames(doc.Graphs) {
-		if !referenced[name] {
-			sites = append(sites, checkSite{graph: name})
-		}
-	}
-	return sites
-}
-
 // checkSubSeeds 在 Load 期拦掉子图 seed 本身的毛病（C3 + 重复声明）：
 //
 //   - **非 skip** 的 seed 要靠宿主 IO（`env` / `file` / `context`）——子图的
@@ -340,8 +538,8 @@ func checkSites(doc Document) []checkSite {
 //   - 同一张图里同一条键声明**两次** seed——第二次种值会被幂等首写静默忽略，
 //     到底哪个值生效取决于声明顺序，两行看着都像是对的。
 //
-// 键名 / 类型 / 值能不能对上登记表，由装配期的校验图**种一遍**来判
-// （seedOne 与运行期同一个函数）。
+// 键名 / 类型 / 值能不能对上登记表，由装配期的校验树**种一遍**来判
+// （seedOne 与真图同一个函数）。
 func checkSubSeeds(graphs map[string]GraphSpec) error {
 	for _, name := range sortedNames(graphs) {
 		seen := make(map[string]bool, len(graphs[name].Seeds))
@@ -364,6 +562,25 @@ func checkSubSeeds(graphs map[string]GraphSpec) error {
 		}
 	}
 	return nil
+}
+
+// referencedGraphs 是「至少有一处引用了它」的 spec 名（根与各 spec 的 `graph:`
+// 都算）。谁的引用都没有的那些要单独校验：它们是死配置，但「写错了没人报」比「报了」
+// 难查得多。
+func referencedGraphs(doc Document) map[string]bool {
+	out := make(map[string]bool, len(doc.Graphs))
+	add := func(specs []NodeSpec) {
+		for _, n := range specs {
+			if n.Graph != "" {
+				out[n.Graph] = true
+			}
+		}
+	}
+	add(doc.Nodes)
+	for _, name := range sortedNames(doc.Graphs) {
+		add(doc.Graphs[name].Nodes)
+	}
+	return out
 }
 
 func sortedNames(m map[string]GraphSpec) []string {

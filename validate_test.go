@@ -60,24 +60,55 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 		}
 	})
 
-	t.Run("通过之后还能接着装、接着跑", func(t *testing.T) {
+	t.Run("通过即封口：定义不再变，但运行照旧", func(t *testing.T) {
 		g := mustNew(t, context.Background(), "test")
-		mustAdd(t, g, NewNode("n", "", nil, Provides(kB), func(rc *RunCtx) error {
-			return Set(rc, kB, "v")
+		// 这条输入是**声明的入口**：它让「没人在图里提供 kA」不再算毛病
+		if err := g.DeclareInput(NewPort(kA)); err != nil {
+			t.Fatalf("声明入口失败：%v", err)
+		}
+		mustAdd(t, g, NewNode("n", "", Requires(kA), Provides(kB), func(rc *RunCtx) error {
+			v, err := Get(rc, kA)
+			if err != nil {
+				return err
+			}
+			return Set(rc, kB, v)
 		}))
 		if err := g.Validate(); err != nil {
 			t.Fatalf("干净的图不该被 Validate 拒：%v", err)
 		}
-		mustAdd(t, g, NewNode("m", "", Requires(kB), nil, func(rc *RunCtx) error { return nil }))
-		if err := g.Validate(); err != nil {
-			t.Fatalf("补节点后仍该通过：%v", err)
+		// 封口 = 定义不再变化：补节点被拒，而且是 ErrGraphStarted 这个哨兵
+		err := g.Add(NewNode("m", "", Requires(kB), nil, func(rc *RunCtx) error { return nil }))
+		if !errors.Is(err, ErrGraphStarted) {
+			t.Fatalf("封口后 Add 的错应是 ErrGraphStarted，got %v", err)
+		}
+		if err == nil || !strings.Contains(err.Error(), "sealed") {
+			t.Fatalf("封口后 Add 的报错该说清是定义封口，got %v", err)
+		}
+		// Seed 是**本次运行**的值，不属于定义：封口后照样能 seed、能跑
+		if err := Seed(g, kA, "from-host"); err != nil {
+			t.Fatalf("封口后 Seed 被拒：%v（Seed 是本次运行的值，不属于定义）", err)
 		}
 		if err := g.Run(); err != nil {
-			t.Fatalf("Validate 之后照常跑：%v", err)
+			t.Fatalf("封口之后照常跑：%v", err)
 		}
 		// 已经启动的图直接通过：它在 Start 那一刻就过了同一套判据
 		if err := g.Validate(); err != nil {
 			t.Fatalf("已跑完的图 Validate = %v, want nil", err)
+		}
+	})
+
+	t.Run("校验失败不封口：补上缺的那块再校验正是要支持的用法", func(t *testing.T) {
+		g := mustNew(t, context.Background(), "test")
+		mustAdd(t, g, NewNode("waiter", "", Requires(kA), nil, func(rc *RunCtx) error { return nil }))
+		if err := g.Validate(); err == nil {
+			t.Fatal("缺来源的图不该过校验")
+		}
+		// 失败之后**没有**封口：补一个提供者就能接着装、接着校验
+		mustAdd(t, g, NewNode("feeder", "", nil, Provides(kA), func(rc *RunCtx) error {
+			return Set(rc, kA, "v")
+		}))
+		if err := g.Validate(); err != nil {
+			t.Fatalf("补上提供者后应通过：%v", err)
 		}
 	})
 }

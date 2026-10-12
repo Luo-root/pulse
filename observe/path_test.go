@@ -6,7 +6,7 @@ import (
 	"github.com/Luo-root/pulse"
 )
 
-// #294：`pulse.path` 由**引擎给值**（`SubCtx.Path()`）、**出口写记录**
+// #294：`pulse.path` 的**取值面在装配期**（每一层按自己的挂载路径收）、**出口写记录**
 // （`ObserveConfig.Path`）——引擎不认识本包，记录长什么样是本包的事。
 func TestPathWrittenOnEveryRecord(t *testing.T) {
 	sink := &MemorySink{}
@@ -72,7 +72,7 @@ func TestPathEmptyIsNotWritten(t *testing.T) {
 	}
 }
 
-// 同一张子图模板跑两遍 = 两个图实例：记录靠 `pulse.path` 分得开，且**每个图
+// 同一段装配代码建两张子图 = 两个图实例：记录靠 `pulse.path` 分得开，且**每个图
 // 实例自己的**次数契约各自成立（冻结面按图实例算，不跨实例累加）。
 func TestPathSeparatesTwoInstances(t *testing.T) {
 	sink := &MemorySink{}
@@ -91,31 +91,41 @@ func TestPathSeparatesTwoInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 同一个模板，两个实例：出口按层各建一个（`build` 里正合适）。
-	build := func(sc *pulse.SubCtx) (*pulse.Graph, error) {
+	// 同一个模板，两个实例：子图在装配期各建一张，出口按**挂载路径**各建一个
+	// （静态组合由宿主在装配期给 `ObserveConfig.Path`），图 id 照旧走
+	// `<父图 id>/<节点 id>`。
+	build := func(path, graphID string) *pulse.Graph {
 		childObs, err := NewRecordObserver(ObserveConfig{
-			Sink: sink, HostID: "h", TraceID: "tr-f", Path: sc.Path(),
+			Sink: sink, HostID: "h", TraceID: "tr-f", Path: path,
 		})
 		if err != nil {
-			return nil, err
+			t.Fatal(err)
 		}
-		child, err := pulse.New(sc.Context(), sc.GraphID(), "", pulse.WithObserver(childObs))
-		if err != nil {
-			return nil, err
+		child := mustGraph(t, graphID, pulse.WithObserver(childObs))
+		if err := child.DeclareInput(pulse.NewPort(cin)); err != nil {
+			t.Fatalf("DeclareInput = %v", err)
 		}
-		return child, child.Add(pulse.NewNode("inner", "", pulse.Requires(cin), pulse.Provides(cout),
+		if err := child.DeclareOutput(pulse.NewPort(cout)); err != nil {
+			t.Fatalf("DeclareOutput = %v", err)
+		}
+		if err := child.Add(pulse.NewNode("inner", "", pulse.Requires(cin), pulse.Provides(cout),
 			func(rc *pulse.RunCtx) error {
 				v, err := pulse.Get(rc, cin)
 				if err != nil {
 					return err
 				}
 				return pulse.Set(rc, cout, v)
-			}))
+			})); err != nil {
+			t.Fatal(err)
+		}
+		return child
 	}
-	if err := pulse.Sub(g, "a", "", []pulse.SubBind{pulse.In(in, cin), pulse.Out(cout, outA)}, build); err != nil {
+	if err := pulse.Sub(g, "a", "", []pulse.SubBind{pulse.In(in, cin), pulse.Out(cout, outA)},
+		build("a", "P/a")); err != nil {
 		t.Fatal(err)
 	}
-	if err := pulse.Sub(g, "b", "", []pulse.SubBind{pulse.In(in, cin), pulse.Out(cout, outB)}, build); err != nil {
+	if err := pulse.Sub(g, "b", "", []pulse.SubBind{pulse.In(in, cin), pulse.Out(cout, outB)},
+		build("b", "P/b")); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {

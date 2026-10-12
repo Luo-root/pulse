@@ -27,9 +27,14 @@ func TestDescriptionRoundTrip(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	err = Sub(g, "step", "跑一张子图", []SubBind{In(in, cin)}, func(sc *SubCtx) (*Graph, error) {
-		return New(sc.Context(), sc.GraphID(), "内层子图")
-	})
+	inner, err := New(context.Background(), "P/step", "内层子图")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inner.DeclareInput(NewPort(cin)); err != nil {
+		t.Fatal(err)
+	}
+	err = Sub(g, "step", "跑一张子图", []SubBind{In(in, cin)}, inner)
 	if err != nil {
 		t.Fatal(err)
 	}

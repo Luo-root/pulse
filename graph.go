@@ -25,6 +25,12 @@ type Graph struct {
 	slots    map[string]*slot
 	slotsMu  sync.Mutex
 
+	// inPorts / outPorts 是**声明**的端口表（名字 → 声明）。端口是静态接口：入口声明过
+	// 之后那条 `Requires` 不再算「无来源」（见 DeclareInput）；出口是组合这张图时 `Out`
+	// 允许绑定的那批（见 DeclareOutput）。两张表都由声明写入，**封口后不再变**。
+	inPorts  map[string]keyRef
+	outPorts map[string]keyRef
+
 	nodes []*Node
 	// aspects 是这张图的**有效**图级切面（继承来的排在前面）。见 WithAspects。
 	aspects []Aspect
@@ -32,22 +38,23 @@ type Graph struct {
 	// 只在运行期被读一次，见 runSub 的切面继承点。
 	aspectsCut bool
 	observer   Observer
-	// lim 是这张图的**有效**名额表（nil = 无限）。默认自己一份；作为子图被 Sub
+	// lim 是这张图的**有效**名额表（nil = 无限）。默认自己一份；作为子图被挂载起来
 	// 跑起来、而自己没声明过 WithMaxRunning 时，继承父图那一份（同一份计数）——
 	// 于是「一棵图树同时有几个节点在干活」由根图决定。见 limiter。
 	lim *limiter
 	// limSet 记录这张图**自己**声明过名额。声明了就用自己的、不再继承；
 	// n<=0 也算声明（那是「这一子树不限额」的口子）。
-	limSet bool
-	// path 是本图在嵌套里的位置（节点 id 链，根图为空串）。由 Sub 在跑子图之前
-	// 盖上去——宿主不用管，所以也不会「忘了传」。#293 / #294。
-	path string
-
+	limSet  bool
 	mu      sync.Mutex
 	started bool
-	// claimed 是「这张图已经被一次 Sub 运行认领」。与 started 分开是因为认领必须
-	// 早于 Sub 对它的任何改动（改 path、挂 observer、种值），而 started 要到
-	// Start 才置上——两者之间那一整段，并发的两次 Sub 会一起写同一批字段。
+	// sealed 表示这张**定义**已经封口：`Validate()` 通过过一次。此后 `Add` /
+	// `DeclareInput` / `DeclareOutput` / 挂子图都被拒（`ErrGraphStarted` 的第二个
+	// 触发点，见 errSealed）。校验**失败**不封口——那只说明图还没装配完，
+	// 补上缺的那块再校验正是要支持的用法。
+	sealed bool
+	// claimed 是「这张图已经被一次挂子图运行认领」。与 started 分开是因为认领必须
+	// 早于挂载对它的任何改动（挂 observer、继承名额与图级切面、种值），而 started 要到
+	// Start 才置上——两者之间那一整段，并发的两次挂载会一起写同一批字段。
 	claimed bool
 	done    bool // Wait 返回过：此后 cancel 只是收尾，不再算运行结果
 	err     error
@@ -65,7 +72,7 @@ type Option func(*Graph)
 // （默认）。
 //
 // 名额是**整棵树共享一份计数**（除非哪一层自己声明了，见下）：作为子图跑起来、且自己
-// 没声明过 WithMaxRunning 时，它继承父图那一份；`Sub` 那一步**不吃名额**（它整段都在
+// 没声明过 WithMaxRunning 时，它继承父图那一份；挂子图那一步**不吃名额**（它整段都在
 // 等子图跑完，占着就等于把父侧的额度锁在「等」上）。所以**在没有人自己声明过的图树
 // 里**，「根图声明 n」= 整棵树同时最多 n 个节点在干活。
 //
@@ -77,7 +84,7 @@ type Option func(*Graph)
 // 父图的节点与子图的节点是**同一份额度里的竞争者，互不为对方让路**：额度够就并发，
 // 不够才排队（实测同一张图：额度 4 时父图 1 个节点 + 子图 2 个节点一起跑完 201ms；
 // 额度 2 时同样三个活儿要 402ms 分两批）。额度管的是「干活」——观察者眼里 `running`
-// 的行数可以比 n 多，多出来的就是各层 `Sub` 那几步在等子图（那不是并发度超了）。
+// 的行数可以比 n 多，多出来的就是各层的挂子图步骤在等子图（那不是并发度超了）。
 //
 // 与流式糖的关系：流式校验按**有效容量**判（继承来的也算），所以「这一层的流节点数
 // 超过容量」会在那一层 `Start` 就被拒。但那只是**必要条件**，不是「运行时一定拿得
@@ -94,24 +101,24 @@ func WithMaxRunning(n int) Option {
 }
 
 // WithAspects 安装**图级**切面：这一层的每个节点都被它包住（先于节点自己的切面，
-// 外层先跑），并且会**继承给子图**——`Sub` 跑子图时把这批**前置**到子图的切面链上，
+// 外层先跑），并且会**继承给子图**——挂子图那一步跑子图时把这批**前置**到子图的切面链上，
 // 子图自己声明的那批排在其后（**叠加**，不是替换）。不想要就 `WithoutAspects()`。
 //
-// **图级切面慎用，尽量用节点级切面。** 它一次落在这一层**所有**节点上，包括 `Sub`
-// 那一步（那一步背后是一整张子图），而且还会继续往子图里的每个节点上叠——量级不同的
+// **图级切面慎用，尽量用节点级切面。** 它一次落在这一层**所有**节点上，包括挂子图
+// 那一步（它背后是一整张子图），而且还会继续往子图里的每个节点上叠——量级不同的
 // 东西被同一个参数管住，很容易跑出不在预期的行为。`Timeout` 是最容易被咬到的那个：
-// 一个图级 `Timeout(d)` 同时是「父图普通节点各自的时限」「`Sub` 那一步（= 整张子图）
+// 一个图级 `Timeout(d)` 同时是「父图普通节点各自的时限」「挂子图那一步（= 整张子图）
 // 的时限」「子图里每个节点的时限」，而**子图天生比普通节点更容易超时**。要限时就写在
-// 该限时的那一个节点上：`NewNode(..., pulse.Timeout(...))`，整张子图限时则用
-// `Sub(..., pulse.Timeout(...))`。图级留给「全树都要一致施加」的那类（追踪 / 指标），
+// 该限时的那一个节点上：`NewNode(..., pulse.Timeout(...))`；整张子图限时就用挂子图那
+// 一步的 `aspects`（`pulse.Timeout(...)`）。图级留给「全树都要一致施加」的那类（追踪 / 指标），
 // 并且心里清楚它会往下叠。
 //
 // 两条容易算错的账，写在这里省得再推一遍：
 //
-//  1. **子图的「总时间」先被 `Sub` 上那个 `d` 掐死**，不会变成「每个节点各 `d`、加起来
+//  1. **子图的「总时间」先被挂子图那一步上的 `d` 掐死**，不会变成「每个节点各 `d`、加起来
 //     `N*d`」——继承下来的那个 `d` 虽然套在子图每个节点上，但它只是更外层那个 `d`
 //     里面的一段；
-//  2. 名额紧时，**超时可能发生在子图拿到名额之前**：`Sub` 那一步不吃名额，可它的 `d`
+//  2. 名额紧时，**超时可能发生在子图拿到名额之前**：挂子图那一步不吃名额，可它的 `d`
 //     从进入 `Run` 就开始计时，而此刻子图的节点还在排队等额度。
 //
 // 零参调用 = **没声明**（照旧继承）；`WithAspects(list...)` 传进空切片也是没声明。
@@ -122,7 +129,7 @@ func WithAspects(as ...Aspect) Option {
 // WithoutAspects 声明**这一层不继承**父图的图级切面（自己 `WithAspects` 写的照挂；
 // 只写它 = 这一层什么图级切面都不要）。
 //
-// 它只管「继承到子图节点上」这一段：父图那一步 `Sub` **仍然**被父图的图级切面包着
+// 它只管「继承到子图节点上」这一段：父图那一步**仍然**被父图的图级切面包着
 // ——那是父图对自己节点做的事，不是继承。所以「这棵子树要长跑」不能只靠它，得让父图
 // 别把那个切面挂在图级（见 `WithAspects` 的说明）。
 func WithoutAspects() Option {
@@ -167,18 +174,19 @@ func (g *Graph) ID() string { return g.id }
 // Description 是 New 时给的说明（`""` = 没写）。
 func (g *Graph) Description() string { return g.desc }
 
-// claimSub 把这张图**原子**地认领给一次 Sub 运行：返回 false 表示它已经用过
-// （被别的 Sub 认领过，或已经启动过）。供 Sub 在跑子图之前拦「复用同一张图」。
+// claimSub 把这张图**原子**地认领给一次挂子图运行：
+// 返回 false 表示它已经用过（被别处认领过，或已经启动过）。供挂子图那一步在跑子图之前
+// 拦「复用同一张图」。
 //
-// 为什么不是「看一眼 started」：看一眼与随后的写（Sub 要改 path、挂 observer、
-// 再种值）之间没有原子性。两个并发的 Sub 复用同一张尚未启动的图时，两边都会看到
+// 为什么不是「看一眼 started」：看一眼与随后的写（挂载要挂 observer、继承名额与
+// 图级切面、再种值）之间没有原子性。两个并发的挂载复用同一张尚未启动的图时，两边都会看到
 // 「没启动」，然后一起写同一批字段——`-race` 实测就是一处 DATA RACE。认领放在
 // 所有改动**之前**，抢不到的一方当场拿到 `ErrGraphStarted` 走人：既不再碰这张图，
 // 也照样拿得到那句「怎么改」的翻译。
 //
 // 认领**比 started 严**：它是一次性消费的标记——图交出去一次就用掉了，即使这一轮
-// 因为校验没过而没真正启动，也不还回来。一次性契约下正确写法本来就是「每次 build
-// 造一张新的」，留一个「失败了还能拿回来重来」的缝，只会让复用更难被发现。
+// 因为校验没过而没真正启动，也不还回来。一次性契约下正确写法本来就是「一图一处」
+// （挂进父图的那张只能跑一处），留一个「失败了还能拿回来重来」的缝，只会让复用更难被发现。
 //
 // 实现上它取代了早先那个只读的 `isStarted()`：只读一眼拦不住并发，而认领顺带
 // 覆盖了「已经启动过」那一半（`g.started`）。
@@ -214,6 +222,9 @@ func (g *Graph) Add(n *Node) error {
 func (g *Graph) addAll(nodes []*Node) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.sealed {
+		return errSealed("Add")
+	}
 	if g.started {
 		return ErrGraphStarted
 	}
@@ -410,10 +421,17 @@ func (g *Graph) Start() error {
 	return nil
 }
 
-// Validate 只读校验这张图跑不跑得起来：判据与 Start 完全同一套（每个
-// `Requires` 都有来源 / 依赖无环 / 流式名额与出口），但**不改图的状态**——
-// 不置 `started`、不建 goroutine、不碰槽位，所以校验完照样能接着 `Add` /
-// `Seed` / `Start`。
+// Validate 校验这张图跑不跑得起来：判据与 Start 完全同一套（每个
+// `Requires` 都有来源 / 依赖无环 / 流式名额与出口）。
+//
+// **通过即封口**：这张定义从此不再变化——`Add` / `DeclareInput` / `DeclareOutput` /
+// 挂子图都被拒（`ErrGraphStarted`，见 errSealed）。校验**失败不封口**：那只说明图还没
+// 装配完，补上缺的那块再校验正是要支持的用法（与 `Start` 失败后仍可 `Start` 同一条
+// 线性化规则）。
+//
+// 封口之外它仍然是只读的：不置 `started`、不建 goroutine、不碰槽位，所以校验完照样能
+// 接着 `Seed` / `Start`——`Seed` 是**本次运行**的值，不属于定义。想「装配完立刻冻结」
+// 就调它一次，不需要另一个 `Seal()`（那与「成功即封口」职责重叠）。
 //
 // 给**装配期**用：声明式装配（`pulse/yaml`）在装图那一刻就把每张子图的静态
 // 毛病报出来，而不是等它第一次运行到才炸——那些毛病里「没人提供、没人 seed」
@@ -425,7 +443,11 @@ func (g *Graph) Start() error {
 func (g *Graph) Validate() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.validateLocked()
+	if err := g.validateLocked(); err != nil {
+		return err
+	}
+	g.sealed = true
+	return nil
 }
 
 // validateLocked 是 Start 与 Validate 共用的那一套判据：**一份判据，两个入口**，
@@ -475,6 +497,11 @@ func (g *Graph) Wait() error {
 	g.cancel()
 	return err
 }
+
+// cancelRun 取消这张图的**运行**上下文（`New` 派生出来的那一份）。包内入口，给静态组合
+// 转发父侧的取消用（见 runStaticSub 第 4 步）：静态子图那份 ctx 是它建图时带进来的，
+// 父节点这一层的取消只能靠转发进去。`sync.Once` 语义由 `context.CancelFunc` 自己保证。
+func (g *Graph) cancelRun() { g.cancel() }
 
 // Err 返回首个节点错误或取消原因。不含单纯的跳过。运行结束后
 // （Wait 返回过）收尾的那次 cancel 不再算结果——否则干净跑完的图会
@@ -549,7 +576,7 @@ func (g *Graph) runNode(n *Node) {
 		if len(n.requires) > 0 && len(skipped) == len(n.requires) {
 			return skipErr(skipped...)
 		}
-		// Sub 那一步**不吃名额**：它整段（build + 子图 + 桥回）都在等子图跑完，
+		// 挂子图那一步**不吃名额**：它整段（取值 + 子图 + 桥回）都在等子图跑完，
 		// 占着名额就等于把父侧额度锁在「等」上——名额共享之后那就是死锁
 		// （限额 ≤ 嵌套深度时必现，实测见 .workbase/probe-sharedsem）。
 		if !n.sub {

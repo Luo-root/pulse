@@ -13,13 +13,47 @@ import (
 
 // problemsLocked 返回这张图**全部**静态可判定的毛病，顺序固定为
 // 来源 → 依赖环 → 流式。调用方持 g.mu。
-func (g *Graph) problemsLocked() []error {
+func (g *Graph) problemsLocked() []error { return g.problemsAtLocked("") }
+
+// problemsAtLocked 是 problemsLocked 的递归版：`at` 是这张图**在本视图里**的位置
+// （根为空串）。调用方持 g.mu。
+//
+// 四类判据，顺序固定：来源 → 依赖环 → 流式 → **静态子树**（每处挂载各报一条）。
+func (g *Graph) problemsAtLocked(at string) []error {
 	var out []error
 	out = append(out, g.problemsSourcesLocked()...)
 	out = append(out, g.problemsCycleLocked()...)
 	out = append(out, g.problemsStreamLocked()...)
+	out = append(out, g.problemsSubAtLocked(at)...)
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// problemsSubAtLocked 按**引用点**报静态子树里的毛病，一处挂载一条。
+//
+// 为什么要按引用点而不是按定义：同一张子图可以挂在好几处，你需要的不是「这张子图有病」，
+// 而是**从哪一处的视角看它有问题**——报文里带上挂载位置（`at`），照着就能找到该改的那一处。
+// 这与 #298 给 yaml 立的口径是同一条（那里报的是「哪一处引用」，这里报的是「哪一处挂载」）。
+//
+// 顺带把接线**重新核一遍**：子图的端口可能在挂载之后、它自己封口之前改过（挂载那一刻核过
+// 一次，但那是当时的事实）。判据与 `Sub` 共用同一份 checkBinds，报文逐字相同。
+func (g *Graph) problemsSubAtLocked(at string) []error {
+	var out []error
+	for _, n := range g.nodes {
+		if n.child == nil {
+			continue
+		}
+		here := joinPath(at, n.id)
+		if err := checkBinds(n.child, n.id, n.binds); err != nil {
+			out = append(out, fmt.Errorf("pulse: subgraph mounted at %q: %w", here, err))
+			continue
+		}
+		for _, err := range n.child.problemsAtLocked(here) {
+			out = append(out, fmt.Errorf("pulse: subgraph %q (mounted at %q): %w",
+				n.child.id, here, err))
+		}
 	}
 	return out
 }
@@ -28,7 +62,9 @@ func (g *Graph) problemsLocked() []error {
 //
 // 判据是 producer 表里有没有这个 Key **且那条来源真的存在**：外部 Seed/SkipSeed
 // 记为 seed，节点 Provides 记为 node + 节点 id；某种来源至多一个（see
-// claimSource）。Requires 本身不登记来源，所以「表里没有」= 没人会写它。零值
+// claimSource）。**声明过的输入端口也算有来源**（`DeclareInput`）——它表达的是
+// 「这本来就是外部输入」，与「你忘了接线」是两件事，前者不该被报成毛病。
+// Requires 本身不登记来源，所以「表里没有**且**没声明成入口」= 没人会写它。零值
 // （`sourceNone`）按「没有来源」处理——它不该落表，万一落了也不能当有来源，
 // 否则等它的节点会永远停在 pending。
 //
@@ -37,10 +73,14 @@ func (g *Graph) problemsSourcesLocked() []error {
 	var out []error
 	for _, n := range g.nodes {
 		for _, k := range n.requires {
-			if s, ok := g.producer[k.name]; !ok || !s.present() {
-				out = append(out, fmt.Errorf("pulse: node %q requires %q but nothing provides or seeds it",
-					n.id, k.name))
+			if s, ok := g.producer[k.name]; ok && s.present() {
+				continue
 			}
+			if _, ok := g.inPorts[k.name]; ok {
+				continue
+			}
+			out = append(out, fmt.Errorf("pulse: node %q requires %q but nothing provides or seeds it",
+				n.id, k.name))
 		}
 	}
 	return out

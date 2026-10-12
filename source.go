@@ -21,8 +21,13 @@ type sourceKind uint8
 
 const (
 	sourceNone sourceKind = iota // 只作为零值
-	sourceSeed                   // 外部 Seed / SkipSeed
+	sourceSeed                   // 外部 Seed / SkipSeed（运行期喂值）
 	sourceNode                   // 某个节点 Provides
+	// sourceInput 是**声明过的输入端口**（`DeclareInput`）。它**不落来源表**
+	// ——端口属于定义，不是「谁会写这条槽」的那张表；`publicSource` 与
+	// `keyShapes` 用它把「入口」写进静态拓扑。放进来只是为了让「内部种类 →
+	// 公开写法」这条映射只存在一份（sourceName）。
+	sourceInput
 )
 
 // source 是一条来源记录。`nodeID` 只在 `sourceNode` 时有意义。
@@ -68,6 +73,8 @@ func sourceName(kind sourceKind, nodeID string) string {
 	switch kind {
 	case sourceSeed:
 		return "seed"
+	case sourceInput:
+		return "input"
 	case sourceNode:
 		return fmt.Sprintf("node %q", nodeID)
 	default:
