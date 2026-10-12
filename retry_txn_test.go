@@ -315,3 +315,276 @@ func TestAdvanceLedgerIsPerExecution(t *testing.T) {
 		t.Fatalf("节点跑了 %d 次，want 2", got)
 	}
 }
+
+// TestRetryKeepsRetryingPastSeveralFailures `Retry` 的常规形状：**连续失败多次**、最后成功。
+// 每一次作废的暂存各丢各的——第三次的值既不是第一次的、也不是第二次的。
+//
+// （旧的隐藏实现只在「失败一次就成功」上过过眼；这条把「多次失败」也钉住，同时确认
+// 判定「要不要再试」的那条路线在前一次作废之后照常工作。）
+func TestRetryKeepsRetryingPastSeveralFailures(t *testing.T) {
+	out := NewKey[string]("rtx.many.out")
+	var attempts, downstreamRuns atomic.Int32
+	var seen atomic.Value
+
+	g := mustNew(t, context.Background(), "rtx-many")
+	mustAdd(t, g, NewNode("flaky", "", nil, Provides(out), func(rc *RunCtx) error {
+		n := attempts.Add(1)
+		if err := Set(rc, out, fmt.Sprintf("v-%d", n)); err != nil {
+			return err
+		}
+		if n < 3 {
+			return fmt.Errorf("第 %d 次注定失败", n)
+		}
+		return nil
+	}, Retry(3, 0)))
+	mustAdd(t, g, NewNode("downstream", "", Requires(out), nil, func(rc *RunCtx) error {
+		v, err := Get(rc, out)
+		if err != nil {
+			return err
+		}
+		seen.Store(v)
+		downstreamRuns.Add(1)
+		return nil
+	}))
+
+	if err := runOn(g); err != nil {
+		t.Fatalf("第三次尝试成功，整轮该成功，got %v", err)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
+	}
+	if got := downstreamRuns.Load(); got != 1 {
+		t.Fatalf("下游进入 Run %d 次，want 1（前两次失败都不该唤醒它）", got)
+	}
+	if v := seen.Load(); v != "v-3" {
+		t.Fatalf("下游读到 %v，want v-3", v)
+	}
+	if st, v := slotOn(g, out.asRef()); st != slotReady || v != "v-3" {
+		t.Fatalf("槽位终态 = (%v, %v)，want (slotReady, v-3)", st, v)
+	}
+}
+
+// TestRetryCommitConflictPublishesNothing 提交**先整批判过，再逐条写**：一条落不下去就整批
+// 不发布。
+//
+// 为什么需要这条：「逐条写、写到一半才发现冲突」会留下一个没有可解释语义的中间态——按 key 名
+// 排序时**排在前面的那几条已经落地**（下游可能已经被唤醒、拿它开始干活），而这个节点整轮是失败的。
+// 那不是「多 Key 提交期间不承诺原子可见」那条窗口（那条讲的是提交期间读者能看到一部分），而是
+// 「提交失败留下半批」，所以判据是整批先判。
+//
+// 可达形状：**外科层切面先 `Skip` 一条键、被重试的尝试又 `Set` 它**——同一个节点对同一条键
+// 写两次、状态相反，提交时撞 `ErrConflict`。冲突那条故意起名排在后面（`k2`），好让「挡不住」
+// 的实现先把 `k1` 发布出去。
+func TestRetryCommitConflictPublishesNothing(t *testing.T) {
+	k1 := NewKey[string]("rtx.cf.k1")
+	k2 := NewKey[string]("rtx.cf.k2")
+
+	// 外层切面不属于任何尝试：它写的是**执行槽位**（这里是把它标成跳过）。
+	outer := func(rc *RunCtx, next func(*RunCtx) error) error {
+		if err := Skip(rc, k2); err != nil {
+			return err
+		}
+		return next(rc)
+	}
+
+	g := mustNew(t, context.Background(), "rtx-commit-conflict")
+	mustAdd(t, g, NewNode("src", "", nil, Provides(k1, k2), func(rc *RunCtx) error {
+		if err := Set(rc, k1, "a"); err != nil {
+			return err
+		}
+		return Set(rc, k2, "b") // 提交时撞「k2 已经以跳过到达」
+	}, outer, Retry(2, 0)))
+
+	err := runOn(g)
+	if err == nil || !errors.Is(err, ErrConflict) {
+		t.Fatalf("Run = %v，want 提交冲突（ErrConflict）", err)
+	}
+	if !strings.Contains(err.Error(), "rtx.cf.k2") {
+		t.Fatalf("报文要点名落不下去的那条键：%v", err)
+	}
+
+	// 硬判据：**一条都不该发布**。挡不住冲突的实现会把 k1 留在 ready("a") 上。
+	if st, v := slotOn(g, k1.asRef()); st == slotReady {
+		t.Fatalf("k1 = (%v, %v)：提交整批判不过时，一条都不该发布", st, v)
+	}
+	if st, v := slotOn(g, k2.asRef()); st != slotSkipped || v != nil {
+		t.Fatalf("k2 = (%v, %v)，want (slotSkipped, nil)——外层那一笔不动", st, v)
+	}
+}
+
+// TestNestedRetryInnerResultBelongsToOuterAttempt 嵌套 `Retry`：**内层的结果属于外层那一次
+// 尝试**——内层提交之后外层又失败，那一批写必须随外层的暂存一起作废，不能直接落到执行槽位上。
+//
+// 这里用「中间那个切面第一次必失败」把这条路走出来：外层尝试 1 里内层成功、写进外层暂存，
+// 随后中间那层报错 → 外层的整条暂存丢掉；外层尝试 2 里内层再写一次、这次整条交出去。
+// 挡不住「内层直接落执行槽位」的实现会在尝试 1 就把 `v-1` 发出去，而 `v-2` 会被幂等首写
+// 静默吞掉——终态停在 `v-1`。
+func TestNestedRetryInnerResultBelongsToOuterAttempt(t *testing.T) {
+	out := NewKey[string]("rtx.nest.out")
+	var rounds, outerCalls atomic.Int32
+	var seen atomic.Value
+
+	// 中间的切面：`next` 成功后，第一次必失败（外层因此需要重试）。
+	tripwire := func(rc *RunCtx, next func(*RunCtx) error) error {
+		if err := next(rc); err != nil {
+			return err
+		}
+		if outerCalls.Add(1) == 1 {
+			return errors.New("外层这一次注定失败")
+		}
+		return nil
+	}
+
+	g := mustNew(t, context.Background(), "rtx-nested")
+	mustAdd(t, g, NewNode("src", "", nil, Provides(out), func(rc *RunCtx) error {
+		n := rounds.Add(1)
+		return Set(rc, out, fmt.Sprintf("v-%d", n))
+	}, Retry(2, 0), tripwire, Retry(3, 0)))
+	mustAdd(t, g, NewNode("downstream", "", Requires(out), nil, func(rc *RunCtx) error {
+		v, err := Get(rc, out)
+		if err != nil {
+			return err
+		}
+		seen.Store(v)
+		return nil
+	}))
+
+	if err := runOn(g); err != nil {
+		t.Fatalf("外层第二次尝试成功，整轮该成功，got %v", err)
+	}
+	if got := rounds.Load(); got != 2 {
+		t.Fatalf("节点体跑了 %d 次，want 2（每次外层尝试里的内层各成功一次）", got)
+	}
+	if got := outerCalls.Load(); got != 2 {
+		t.Fatalf("外层尝试 %d 次，want 2", got)
+	}
+	if v := seen.Load(); v != "v-2" {
+		t.Fatalf("下游读到 %v，want v-2——内层第一次的写属于外层那次失败的尝试", v)
+	}
+	if st, v := slotOn(g, out.asRef()); st != slotReady || v != "v-2" {
+		t.Fatalf("槽位终态 = (%v, %v)，want (slotReady, v-2)", st, v)
+	}
+}
+
+// TestRetryDownstreamReadFindsItsRealSource 有尝试边界时，**读路径不许在暂存里凭空建条目**：
+// 读一条本次尝试根本没写过的键，必须找到它**真正的来源**（上游节点的槽位）。
+//
+// 建条目那条错写法（`slotOf` 而不是 `peek`）会留下一个永远 `pending` 的空位，正好把真正的来源
+// 遮住——整张图从「跑得通」变成「挂到 ctx 到期」，而且看不出病因。这里在图级 `Retry` 下走一遍
+// 上游 → 下游，读不到就挂到 3s 上限。
+func TestRetryDownstreamReadFindsItsRealSource(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	mid := NewKey[string]("rtx.src.mid")
+	out := NewKey[string]("rtx.src.out")
+	var seen atomic.Value
+
+	g := mustNew(t, ctx, "rtx-read-source", WithAspects(Retry(1, 0)))
+	mustAdd(t, g, NewNode("up", "", nil, Provides(mid), func(rc *RunCtx) error {
+		return Set(rc, mid, "upstream")
+	}))
+	mustAdd(t, g, NewNode("down", "", Requires(mid), Provides(out), func(rc *RunCtx) error {
+		v, err := Get(rc, mid)
+		if err != nil {
+			return err
+		}
+		seen.Store(v)
+		return Set(rc, out, v)
+	}))
+
+	if err := runOn(g); err != nil {
+		t.Fatalf("图级 Retry 下读上游的键应当照常读得到，got %v", err)
+	}
+	if v := seen.Load(); v != "upstream" {
+		t.Fatalf("下游读到 %v，want upstream", v)
+	}
+	if st, v := slotOn(g, out.asRef()); st != slotReady || v != "upstream" {
+		t.Fatalf("下游输出 = (%v, %v)，want (slotReady, upstream)", st, v)
+	}
+}
+
+// TestRetryCrossAttemptReadWaitsForItsOwnSource 跨尝试读**不回**上一次被丢弃的写。
+//
+// 这是**有意保留**的语义（不是缺陷）：那条键在这一次尝试里从来没有过值，读它就是等一个没人会写
+// 的槽——与「一条键没人产出」同一个形状。它会一直等到本层 ctx 取消，所以很容易被误当成死锁；
+// 文档点名了这条边界，用例在这里把它钉成两半：① 非阻塞地问（`TryGet`）看到的是 `pending`
+// （既不是作废的值、也不是一个凭空造出来的空位）；② 真的去读（`Get`）就是等到 ctx 到期。
+//
+// 谁要是在将来为了「消除等待」把作废的写恢复成可读，① 会立刻变红。
+func TestRetryCrossAttemptReadWaitsForItsOwnSource(t *testing.T) {
+	t.Run("TryGet 看到 pending", func(t *testing.T) {
+		a := NewKey[string]("rtx.cross.a")
+		var attempts, okSeen, skippedSeen atomic.Int32
+		var valueSeen atomic.Value
+
+		g := mustNew(t, context.Background(), "rtx-cross-try")
+		mustAdd(t, g, NewNode("src", "", nil, Provides(a), func(rc *RunCtx) error {
+			if attempts.Add(1) == 1 {
+				if err := Set(rc, a, "a1"); err != nil {
+					return err
+				}
+				return errors.New("第一次注定失败")
+			}
+			// 第二次尝试：读第一次试过、但被丢弃的那条键。非阻塞地问，看到的是 pending。
+			v, ok, skipped, err := TryGet(rc, a)
+			if err != nil {
+				return err
+			}
+			if ok {
+				valueSeen.Store(v)
+				okSeen.Add(1)
+			}
+			if skipped {
+				skippedSeen.Add(1)
+			}
+			return nil
+		}, Retry(2, 0)))
+
+		if err := runOn(g); err != nil {
+			t.Fatalf("第二次尝试正常返回，整轮该成功（输出按跳过收尾），got %v", err)
+		}
+		if got := attempts.Load(); got != 2 {
+			t.Fatalf("attempts = %d, want 2", got)
+		}
+		if got := okSeen.Load(); got != 0 {
+			t.Fatalf("第二次尝试读到了上一次被丢弃的值 %v——作废的写不该重新变得可读", valueSeen.Load())
+		}
+		if got := skippedSeen.Load(); got != 0 {
+			t.Fatalf("读到的是「跳过」而不是「还没到」：被判成 %d 次", got)
+		}
+		if st, v := slotOn(g, a.asRef()); st != slotSkipped || v != nil {
+			t.Fatalf("输出槽终态 = (%v, %v)，want (slotSkipped, nil)", st, v)
+		}
+	})
+
+	t.Run("Get 等到 ctx 到期", func(t *testing.T) {
+		a := NewKey[string]("rtx.cross.get")
+		var attempts atomic.Int32
+
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+
+		g := mustNew(t, ctx, "rtx-cross-get")
+		mustAdd(t, g, NewNode("src", "", nil, Provides(a), func(rc *RunCtx) error {
+			if attempts.Add(1) == 1 {
+				if err := Set(rc, a, "a1"); err != nil {
+					return err
+				}
+				return errors.New("第一次注定失败")
+			}
+			if _, err := Get(rc, a); err != nil {
+				return err // 没人会写这条键：等到本层 ctx 到期
+			}
+			return nil
+		}, Retry(2, 0)))
+
+		err := runOn(g)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Run = %v，want context.DeadlineExceeded（等一个没人会写的槽，直到本层 ctx 取消）", err)
+		}
+		if got := attempts.Load(); got != 2 {
+			t.Fatalf("attempts = %d, want 2（ctx 到期之后不该再试）", got)
+		}
+	})
+}
