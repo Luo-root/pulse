@@ -42,7 +42,7 @@ A slot has exactly three states: `pending` (not there yet), `ready` (has a value
 
 **Why**: problems that only show up once the graph runs are the expensive ones — hangs, timeouts, silently reading a zero value. All three are hard to debug and none points at the line that was actually wrong.
 
-**What you get**: `Start` rejects the statically-decidable dead graphs (a `Requires` nothing provides, a dependency cycle — the cycle comes with **one concrete witness path**); `Validate` lets assembly ask as often as it likes; declarative assembly (`pulse/yaml`) checks child graphs **per reference site**, layer by layer; error messages name the spot (`Sub "b"` and friends) instead of saying "failed".
+**What you get**: `Start` rejects the statically-decidable dead graphs (a `Requires` nothing provides, a dependency cycle — the cycle comes with **one concrete witness path**); `Validate` lets assembly ask as often as it likes; declarative assembly (`pulse/yaml`) validates child graphs at `Load` time too, per reference site, the message naming the **mounting path**; error messages name the spot (`Sub "b"` and friends) instead of saying "failed".
 
 ### 5. Observation shares the engine's semantics, and never changes them
 
@@ -69,8 +69,10 @@ A slot has exactly three states: `pending` (not there yet), `ready` (has a value
 
 ## One thing that is changing: a graph is a definition, a run is an instance
 
-Today a `Graph` is **both** the definition and one run: `Start` succeeds once, `Wait` releases the context, slots and node state live on the graph — and `Sub` has to build its child graph at run time, so "composed but not yet running, and I cannot see the whole structure" and "build / binding errors surface only when the run reaches them" come as a package.
+Splitting "the definition of a graph" from "one run of it" is half done. **The composition-and-static-validation half has landed**: `Sub` — composition's one public entry — mounts a **ready-made** child graph built at assembly time, so once assembled the whole tree is visible recursively along the static mounting edges without running anything (`Topology()`), and a child's static problems (no source / a declared outlet nobody produces / dependency cycle) are reported the moment it is mounted, per reference site, the message naming the **mounting path**; ports (`DeclareInput` / `DeclareOutput`) are the only wiring surface, and `Validate()` recurses through the tree and **seals the definition on success** — the whole subtree, mounted children included.
 
-The target model splits them: **`Graph` is a reusable static definition** (executable many times, sequentially or concurrently, and mountable as a child graph in several places), while **`Execution` carries everything about one run**. This is being designed and rolled out in stages under [#311](https://github.com/Luo-root/pulse/issues/311); the contract draft and the staged plan are in [`docs/design/object-model.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/object-model.md).
+**What is left**: the execution state (slots / node state / first error / cancellation domain) still lives on the `Graph` — `Start` succeeds only once and `Wait` releases the context; mounting one definition at several sites still lets only one site run it (one copy per mounting site needs the `Execution` of stage 2); reusing one definition across runs waits for that same step.
+
+The target model splits them apart: **`Graph` is a reusable static definition** (executable many times, sequentially or concurrently, and mountable as a child graph in several places), while **`Execution` carries everything about one run**. This is being designed and rolled out in stages under [#311](https://github.com/Luo-root/pulse/issues/311); the contract draft and the staged plan are in [`docs/design/object-model.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/object-model.md).
 
 Until then, wherever the docs say "a `Graph` is one run's world", they are describing **what exists today** — the target shape lives in the object-model document.

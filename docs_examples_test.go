@@ -21,10 +21,10 @@ import (
 // 判据不只有实参个数：旧签名漏掉 `description` 时，落到那个位置上的是**选项与绑定**——
 //   - `New(ctx, id, pulse.WithObserver(obs))`   ← 选项落在描述位（实参个数照样是 3，只数个数看不见）
 //   - `NewNode(id, nil, pulse.Provides(k), run)` ← `nil` 落在描述位
-//   - `Sub(g, id, []pulse.SubBind{…}, build)`    ← 绑定切片落在描述位
+//   - `Sub(g, id, []pulse.SubBind{…}, child)`    ← 绑定切片落在描述位
 //
-// 所以描述位（`New` / `Sub` 的第 3 个、`NewNode` 的第 2 个）必须是字符串字面量或变量，
-// 是 `nil` / 选项调用 / 复合字面量就报错。
+// 所以描述位（`New` / `Sub` 的第 3 个、`NewNode` 的第 2 个）必须是字符串字面量
+// 或变量，是 `nil` / 选项调用 / 复合字面量就报错。
 //
 // 判据还有第二层：描述位得是**能给出 string 的东西**。`123` / `1.5` / `0x1f` / `1e9` 与
 // `true` / `false` / `iota` 看上去都「像标识符」，但一个是不合法标识符、一个是预声明常量，
@@ -91,6 +91,7 @@ func TestDocsExampleGateNegativeControls(t *testing.T) {
 		{name: "变量", doc: `pulse.New(ctx, "demo", desc)`},
 		{name: "限定变量", doc: `pulse.NewNode("load", cfg.Desc, pulse.Provides(k), run)`},
 		{name: "描述里带括号", doc: `pulse.New(ctx, "demo", "演示 (v2) 图")`},
+		{name: "子图组合的描述变量", doc: `pulse.Sub(g, "child", desc, binds, child)`},
 
 		// —— 反例：像标识符，却给不出 string ——
 		{name: "整数", doc: `pulse.New(ctx, "demo", 123)`, want: "description 位"},
@@ -105,11 +106,12 @@ func TestDocsExampleGateNegativeControls(t *testing.T) {
 		// —— 反例：旧签名退化到这一位的东西 ——
 		{name: "nil", doc: `pulse.NewNode("sum", nil, pulse.Provides(k), run)`, want: "description 位"},
 		{name: "选项调用", doc: `pulse.New(ctx, "demo", pulse.WithObserver(obs))`, want: "description 位"},
-		{name: "绑定切片", doc: `pulse.Sub(g, "child", []pulse.SubBind{{Key: k, From: "up"}}, build)`, want: "description 位"},
+		{name: "子图组合的绑定切片", doc: `pulse.Sub(g, "child", []pulse.SubBind{In(a, b)}, child)`, want: "description 位"},
 		{name: "形参名占位", doc: `pulse.NewNode("sum", requires, provides, run)`, want: "description 位"},
 
 		// —— 反例：实参根本不够 ——
 		{name: "实参不够", doc: `pulse.New(ctx, "demo")`, want: "只给了 2 个实参"},
+		{name: "子图组合实参不够", doc: `pulse.Sub(g, "child")`, want: "只给了 2 个实参"},
 	}
 
 	for _, tc := range cases {
@@ -130,7 +132,7 @@ func TestDocsExampleGateNegativeControls(t *testing.T) {
 	}
 }
 
-// ctorCall 只认**恰好**跟着左括号的那三个名字：`NewKey(` / `NewRecordObserver(` 这类
+// ctorCall 只认**恰好**跟着左括号的那几个名字：`NewKey(` / `NewRecordObserver(` 这类
 // 前缀相同的构造函数不会被误伤。
 var ctorCall = regexp.MustCompile(`(pulse\.)?(New|NewNode|Sub)\(`)
 
@@ -152,8 +154,8 @@ func docExampleFindings(path, text string) (findings []string, checked, elided, 
 		args, frag, ok := splitCallArgs(text, loc[1]-1)
 		line := 1 + strings.Count(text[:loc[0]], "\n")
 		if !ok {
-			// 括号不闭合 = 这只是一处**散文提及**（「`New(` / `NewNode(` / `Sub(`」这种
-			// 罗列），不是调用——真示例的括号一定闭得上。跳过，别在这里误报；
+			// 括号不闭合 = 这只是一处**散文提及**（「`New(` / `NewNode(` / `Sub(`」
+			// 这种罗列），不是调用——真示例的括号一定闭得上。跳过，别在这里误报；
 			// 代价是把「示例真的漏了右括号」也一起放过，那不是这条用例要管的事。
 			ignored++
 			continue
@@ -216,7 +218,7 @@ func looksLikeDescription(arg string) bool {
 }
 
 var paramNames = map[string]bool{
-	"requires": true, "provides": true, "run": true, "binds": true, "build": true,
+	"requires": true, "provides": true, "run": true, "binds": true,
 	// 签名表里的形参写法（`pulse.NewNode(id, Requires, Provides, run)`）也是同一类占位。
 	"Requires": true, "Provides": true, "Run": true,
 }

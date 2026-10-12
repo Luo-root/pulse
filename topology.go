@@ -1,5 +1,7 @@
 package pulse
 
+import "strings"
+
 // 本文件是图的**静态形状**：这一层装成什么样、谁喂谁、排得出什么顺序。
 // 与运行时快照的分工是「形状 vs 进度」——形状不随运行变，跑完再问也一样。
 //
@@ -15,8 +17,13 @@ const (
 	// 「谁喂了这条输入」走 `Edges`，不要在 `Provides` 上找。
 	SourceNone SourceKind = ""
 	// SourceSeed 表示外部来源：`Seed` / `SkipSeed`。它不是节点间依赖，
-	// **不建边**。
+	// **不建边**。它是**运行期**的动作，所以在新模型里它只表示「这一次运行
+	// 由宿主喂了值」，不再是「这张定义接受外部输入」的声明。
 	SourceSeed SourceKind = "seed"
+	// SourceInput 表示**声明过的输入端口**（`DeclareInput`）：这张图对外接受
+	// 这条 Key。与 `SourceSeed` 分得开是有意的——端口是定义的一部分，`Seed`
+	// 是某一次运行的动作，让两者在静态结构里长得一样，等于把定义与运行又混回去。
+	SourceInput SourceKind = "input"
 	// SourceNode 表示某个节点的 `Provides`，`NodeID` 是那个节点。
 	SourceNode SourceKind = "node"
 )
@@ -38,6 +45,8 @@ func (s Source) String() string {
 	switch s.Kind {
 	case SourceSeed:
 		return sourceName(sourceSeed, "")
+	case SourceInput:
+		return sourceName(sourceInput, "")
 	case SourceNode:
 		return sourceName(sourceNode, s.NodeID)
 	default:
@@ -51,6 +60,8 @@ func publicSource(s source) Source {
 	switch s.kind {
 	case sourceSeed:
 		return Source{Kind: SourceSeed}
+	case sourceInput:
+		return Source{Kind: SourceInput}
 	case sourceNode:
 		return Source{Kind: SourceNode, NodeID: s.nodeID}
 	default:
@@ -74,9 +85,9 @@ type KeyShape struct {
 type GraphShape struct {
 	ID          string
 	Description string
-	// Path 是这张图在嵌套里的位置（根图为 `""`，一层子图是它的节点 id，再深一层
-	// 是 `outer/inner`）。由 `Sub` 在跑子图之前盖上，所以**子图 build 回调返回前
-	// 读它可能还是上一层的值**；一旦被 `Sub` 认领并进入启动流程，路径即稳定。
+	// Path 是这张图在**这一次视图里**的位置（根图为 `""`，一层子图是它的节点 id，再深
+	// 一层是 `outer/inner`），由**挂载位置**推导——不需要运行、也不会被运行改写，所以
+	// 同一张定义被两处挂载时，两处各看得到自己那份。
 	Path string
 }
 
@@ -92,6 +103,78 @@ type NodeShape struct {
 	Provides    []KeyShape
 	InDegree    int
 	OutDegree   int
+	// Sub 是这一步挂的子图**定义**的静态形状（递归）。`Sub` 装的节点才有它。
+	//
+	// 它让「无运行即可递归看全树」成立：装配完拿到根，一路 `.Sub.Sub…` 就能看到整棵树。
+	Sub *Topology
+	// Binds 是这一步的父子接线（`In(父, 子)` / `Out(子, 父)` 的箭头读法，来源在前）。
+	// 只在 `Sub` 装的节点上有。
+	Binds []BindShape
+}
+
+// BindShape 是一条父子接线：父侧那条 Key ↔ 子图**声明的端口**。
+type BindShape struct {
+	// Parent 是父侧的键名，Child 是子侧的端口名。
+	Parent string
+	Child  string
+	// In 为真表示 `In(父, 子)`（父 → 子，父侧那条进 Requires）；为假是 `Out(子, 父)`。
+	In bool
+}
+
+// bindShapes 把接线翻成公开形状（`Sub` 装的节点才有）。
+func bindShapes(binds []SubBind) []BindShape {
+	if len(binds) == 0 {
+		return nil
+	}
+	out := make([]BindShape, 0, len(binds))
+	for _, b := range binds {
+		out = append(out, BindShape{Parent: b.parent.name, Child: b.child.name, In: b.in})
+	}
+	return out
+}
+
+// joinPath 拼嵌套路径：根为空串，一层是挂载它的那个节点 id，再深是 `outer/inner`。
+// 节点 id 不许含 `/` 就是为它（观测里那条 `pulse.path` 用的是同一套写法）。
+func joinPath(at, id string) string {
+	if at == "" {
+		return id
+	}
+	return at + "/" + id
+}
+
+// mountChain 是「从根一路挂到当前这张图」的图链（含当前那张）。两条用途：
+// ① 判环——同一张图不能出现在自己的祖先链上（递归展开不完，加锁时还会两层互等）；
+// ② 报错时给出那条链。
+//
+// 深度就是个嵌套层数，线性扫描足够，不值一份 map。**判据是「这条路径」而不是「访问过」**：
+// 同一张子图在**不同挂载位置**重复出现是合法复用，用全局 visited 会把它误判成环。
+type mountChain []*Graph
+
+// has 判这张图是不是已经在这条链上。
+func (c mountChain) has(g *Graph) bool {
+	for _, x := range c {
+		if x == g {
+			return true
+		}
+	}
+	return false
+}
+
+// push 返回「这条链 + 一张子图」。整片复制：链由各层视图共享，往后 append 不能写进别人的
+// 底层数组（同一张子图挂两处时，两条分支各推各的）。
+func (c mountChain) push(g *Graph) mountChain {
+	out := make(mountChain, len(c), len(c)+1)
+	copy(out, c)
+	return append(out, g)
+}
+
+// String 把链拼成人话：`a -> b -> c`。图的 id 入图后不变，读它不必持锁。
+func (c mountChain) String() string {
+	ids := make([]string, 0, len(c))
+	for _, g := range c {
+		ids = append(ids, g.id)
+	}
+	return strings.Join(ids, " -> ")
 }
 
 // EdgeShape 是一条节点间依赖边：`From` 必须先跑完，`To` 的 `Keys` 由它提供。
@@ -120,7 +203,7 @@ type Topology struct {
 	// 但别把它当业务语义）。有环时它只含剥得掉的那批，环写进 `Problems`。
 	Order []string
 	// Problems 是**静态可判定**的毛病，一次给全（`Validate` 只报第一条）。
-	// 顺序固定：来源 → 依赖环 → 流式。空 = 没毛病。
+	// 顺序固定：来源 → 出口 → 依赖环 → 流式。空 = 没毛病。
 	//
 	// 依赖环那一类：**每个环分量（强连通分量）一条**具体见证，不是「每条简单环一条」
 	// （简单环的数量可能指数增长），报的也一定是**真环**——只是环下游的节点不算环。
@@ -130,14 +213,53 @@ type Topology struct {
 	Problems []error
 }
 
-// Topology 返回这张图的静态形状快照。
+// sourceOfLocked 是「这条键的来源是什么」的**唯一**判据（调用方持 g.mu）：
+// 「谁会写它」（外部 `Seed` / 某个节点 `Provides`）优先，没有的话看它是不是声明过的入口，
+// 两者都不是 = 没有来源（零值）。与 `problemsSourcesLocked` 的判据同源——那边判「有没有」，
+// 这边判「写成什么」。
+func (g *Graph) sourceOfLocked(k keyRef) source {
+	if s, ok := g.producer[k.name]; ok && s.present() {
+		return s
+	}
+	if _, ok := g.inPorts[k.name]; ok {
+		return source{kind: sourceInput}
+	}
+	return source{}
+}
+
+// Topology 返回这张图的静态形状快照——**递归**：静态挂载的子图在 `Nodes[i].Sub` 里，
+// 一路 `.Sub.Sub…` 就是整棵树（无需运行、也不改任何定义）。
 //
 // 只读、加锁、任何时候可调；返回的是副本（`Nodes` / `Edges` / `Order` /
-// `Problems` 全是新切片），改它不会碰图。
+// `Problems` / `Sub` 全是新对象），改它不会碰图。
+//
+// 视图里那张图的 `Graph.Path` 是**它在这次视图里的位置**（根为空串、一层子图是挂载它的
+// 节点 id、再深是 `outer/inner`），由挂载位置**推导**——不读运行期盖章的那个字段：同一张
+// 定义被两处挂载时，那个字段只会留下最后一次跑过的痕迹，拿它当结构信息是错的。
+//
+// `Problems` 也是整棵树的：每个挂载点各一条，报文点明是哪一处引用看到的（见
+// problemsSubAtLocked）——同一张子图挂两处，你要能照着路径找到该改的那一处。
 func (g *Graph) Topology() *Topology {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	return g.topologyAtLocked("", mountChain{g})
+}
 
+// topologyAt 是递归的**入口**：自己加锁，再交给递归体（与 problemsAt 同一形状、同一理由：
+// 父图持着自己的锁，子图那把锁由子图自己取）。
+func (g *Graph) topologyAt(at string, chain mountChain) *Topology {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.topologyAtLocked(at, chain)
+}
+
+// topologyAtLocked 是递归主体：`at` 是这张图**在本视图里**的位置，`chain` 是从根挂到这张图
+// 的图链。调用方持 g.mu。
+//
+// 锁次序：沿**静态挂载边**往下递归，每往下一层取那一层的锁；挂载边不可能成环
+// （`Sub` 在装配期就拒，且装配那一步是全局串行的），所以不会出现「A 等 B 的锁、B 等 A 的锁」。
+// 兜底判环在 `chain` 上——真成了环就地收住，不再往下展开（见 problemsSubAtLocked）。
+func (g *Graph) topologyAtLocked(at string, chain mountChain) *Topology {
 	d := g.depGraphLocked()
 	inDeg := make([]int, len(g.nodes))
 	outDeg := make([]int, len(g.nodes))
@@ -149,20 +271,30 @@ func (g *Graph) Topology() *Topology {
 	}
 
 	t := &Topology{
-		Graph: GraphShape{ID: g.id, Description: g.desc, Path: g.path},
+		Graph: GraphShape{ID: g.id, Description: g.desc, Path: at},
 		Nodes: make([]NodeShape, 0, len(g.nodes)),
 		Edges: make([]EdgeShape, 0),
 		Order: d.order(g.nodes),
 	}
 	for i, n := range g.nodes {
-		t.Nodes = append(t.Nodes, NodeShape{
+		ns := NodeShape{
 			ID:          n.id,
 			Description: n.desc,
 			Requires:    g.keyShapes(n.requires, true),
 			Provides:    g.keyShapes(n.provides, false),
 			InDegree:    inDeg[i],
 			OutDegree:   outDeg[i],
-		})
+		}
+		if n.child != nil {
+			ns.Binds = bindShapes(n.binds)
+			// 递归展开静态子树：路径按**挂载位置**推下去（`outer/inner`），子图那份
+			// 定义自己的字段一个字都不改——路径是这次视图里现推的，从不上定义。
+			// 环那一处**就地收住**（`Sub` 之后没有了）：展开不完，报由 Problems 出。
+			if !chain.has(n.child) {
+				ns.Sub = n.child.topologyAt(joinPath(at, n.id), chain.push(n.child))
+			}
+		}
+		t.Nodes = append(t.Nodes, ns)
 	}
 	for ci := range g.nodes {
 		for _, e := range d.in[ci] {
@@ -173,12 +305,16 @@ func (g *Graph) Topology() *Topology {
 			})
 		}
 	}
-	t.Problems = g.problemsLocked()
+	t.Problems = g.problemsAtLocked(at, chain)
 	return t
 }
 
 // keyShapes 把一组键指纹翻成公开形状。sourced 为真时填来源（只有 `Requires`
 // 需要）——表里没有这条 Key 就是「没有来源」，不是零值落表。
+//
+// 来源两条路：**谁会写它**（外部 `Seed` / 某个节点 `Provides`）优先；没人写就看它是不是
+// 声明过的入口（`DeclareInput`）→ `SourceInput`。端口**不落** producer 表（那张表回答
+// 「谁会写这条槽」，端口回答「这张图接受什么」），所以必须两步问，不能只看表。
 func (g *Graph) keyShapes(refs []keyRef, sourced bool) []KeyShape {
 	out := make([]KeyShape, 0, len(refs))
 	for _, k := range refs {
@@ -188,7 +324,7 @@ func (g *Graph) keyShapes(refs []keyRef, sourced bool) []KeyShape {
 		}
 		ks := KeyShape{Name: k.name, Type: typ}
 		if sourced {
-			ks.From = publicSource(g.producer[k.name])
+			ks.From = publicSource(g.sourceOfLocked(k))
 		}
 		out = append(out, ks)
 	}

@@ -2,24 +2,86 @@ package pulse
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
-// 本文件是**静态校验**那一套的唯一实现：来源 → 依赖环 → 流式，一次给全。
+// 本文件是**静态校验**那一套的唯一实现：来源 → 出口 → 依赖环 → 流式，一次给全。
 //
 // 两个入口共用它：`Start` / `Validate` 只取第一条（`validateLocked`），
 // `Topology().Problems` 取全部。所以「装配期提前报的那句」与「启动时拒的那句」
 // 逐字同源——「一份判据」这条纪律在这里就是「一个函数」。
 
 // problemsLocked 返回这张图**全部**静态可判定的毛病，顺序固定为
-// 来源 → 依赖环 → 流式。调用方持 g.mu。
-func (g *Graph) problemsLocked() []error {
+// 来源 → 出口 → 依赖环 → 流式。调用方持 g.mu。
+func (g *Graph) problemsLocked() []error { return g.problemsAtLocked("", mountChain{g}) }
+
+// problemsAt 是递归的**入口**：自己加锁，再交给递归体。
+//
+// 递归读子图必须走这里：父图持着自己的锁，子图那把锁由子图自己取（`topologyAt` 同理）。
+// 沿挂载边一层层往下取，锁序恒为「父 → 子」；挂载边不可能成环（`Sub` 装配期就拒，且装配
+// 那一步是全局串行的），所以不会两层互等对方的锁。万一真成了环，`chain` 会在那一层当场
+// 报出来而不是一路递归下去（见 problemsSubAtLocked）。
+func (g *Graph) problemsAt(at string, chain mountChain) []error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.problemsAtLocked(at, chain)
+}
+
+// problemsAtLocked 是递归体：`at` 是这张图**在本视图里**的位置（根为空串），`chain` 是从根
+// 一路挂到这张图的图链（判环用）。调用方持 g.mu。
+//
+// 五类判据，顺序固定：来源 → 出口 → 依赖环 → 流式 → **静态子树**（每处挂载各报一条）。
+func (g *Graph) problemsAtLocked(at string, chain mountChain) []error {
 	var out []error
 	out = append(out, g.problemsSourcesLocked()...)
+	out = append(out, g.problemsOutputsLocked()...)
 	out = append(out, g.problemsCycleLocked()...)
 	out = append(out, g.problemsStreamLocked()...)
+	out = append(out, g.problemsSubAtLocked(at, chain)...)
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// problemsSubAtLocked 按**引用点**报静态子树里的毛病，一处挂载一条。
+//
+// 为什么要按引用点而不是按定义：同一张子图可以挂在好几处，你需要的不是「这张子图有病」，
+// 而是**从哪一处的视角看它有问题**——报文里带上挂载位置（`at`），照着就能找到该改的那一处。
+// 这与 #298 给 yaml 立的口径是同一条（那里报的是「哪一处引用」，这里报的是「哪一处挂载」）。
+//
+// 顺带把接线**重新核一遍**：子图的端口可能在挂载之后、它自己封口之前改过（挂载那一刻核过
+// 一次，但那是当时的事实）。判据与 `Sub` 共用同一份 checkBinds，报文逐字相同。
+//
+// 往下一层是 `n.child.problemsAt`（**它自己加锁**），不是直接读字段：父图那把锁管不到子图，
+// 而子图在装配期一直躺在宿主手里——那头一边 `Add`、这头一边读，就是一处竞态（用例
+// TestSubChildAssemblyVsParentReadOnly）。
+func (g *Graph) problemsSubAtLocked(at string, chain mountChain) []error {
+	var out []error
+	for _, n := range g.nodes {
+		if n.child == nil {
+			continue
+		}
+		here := joinPath(at, n.id)
+		// 兜底判环：环本不该存在（`Sub` 装配期拒 + 装配全局串行），但一路展开碰上环的代价
+		// 不是一句错话——是爆栈（单线程）或两层互等对方的锁（并发）。所以每往下一层都自己
+		// 数一遍「这张子图是不是已经在这条链上」。
+		if chain.has(n.child) {
+			out = append(out, fmt.Errorf("pulse: subgraph cycle: %s -> %s "+
+				"(mounting %q at %q would put graph %q inside its own subtree)",
+				chain.String(), n.child.id, n.child.id, here, n.child.id))
+			continue
+		}
+		if err := checkBinds(n.child, n.id, n.binds); err != nil {
+			out = append(out, fmt.Errorf("pulse: subgraph mounted at %q: %w", here, err))
+			continue
+		}
+		sub := chain.push(n.child)
+		for _, err := range n.child.problemsAt(here, sub) {
+			out = append(out, fmt.Errorf("pulse: subgraph %q (mounted at %q): %w",
+				n.child.id, here, err))
+		}
 	}
 	return out
 }
@@ -28,7 +90,9 @@ func (g *Graph) problemsLocked() []error {
 //
 // 判据是 producer 表里有没有这个 Key **且那条来源真的存在**：外部 Seed/SkipSeed
 // 记为 seed，节点 Provides 记为 node + 节点 id；某种来源至多一个（see
-// claimSource）。Requires 本身不登记来源，所以「表里没有」= 没人会写它。零值
+// claimSource）。**声明过的输入端口也算有来源**（`DeclareInput`）——它表达的是
+// 「这本来就是外部输入」，与「你忘了接线」是两件事，前者不该被报成毛病。
+// Requires 本身不登记来源，所以「表里没有**且**没声明成入口」= 没人会写它。零值
 // （`sourceNone`）按「没有来源」处理——它不该落表，万一落了也不能当有来源，
 // 否则等它的节点会永远停在 pending。
 //
@@ -37,11 +101,48 @@ func (g *Graph) problemsSourcesLocked() []error {
 	var out []error
 	for _, n := range g.nodes {
 		for _, k := range n.requires {
-			if s, ok := g.producer[k.name]; !ok || !s.present() {
-				out = append(out, fmt.Errorf("pulse: node %q requires %q but nothing provides or seeds it",
-					n.id, k.name))
+			if s, ok := g.producer[k.name]; ok && s.present() {
+				continue
 			}
+			if _, ok := g.inPorts[k.name]; ok {
+				continue
+			}
+			out = append(out, fmt.Errorf("pulse: node %q requires %q but nothing provides or seeds it",
+				n.id, k.name))
 		}
+	}
+	return out
+}
+
+// problemsOutputsLocked 报「声明过的出口都有人产出」。调用方持 g.mu。
+//
+// 与 problemsSourcesLocked 对称，判的是另一头：那条说「没人喂我」，这条说「我承诺了却没人
+// 产出」。出口是**对外的承诺**（父图能用 `Out` 接出去），没人产出时那句 `never arrived`
+// 要等子图跑完才出现——而它读一遍声明就能定，和入口那条一样属于装配期该报的毛病。
+//
+// 判据复用 sourceOfLocked（谁会写这条槽优先，没人写就看它是不是声明过的入口）：**入口与
+// 出口同名是透传**——父侧种进来的那份就是这条槽的值，所以透传不算没人产出。只有零值来源
+// （`sourceNone`：既没人 Provides、也没人 Seed、也没声明成入口）才算。
+//
+// 顺序按**名字**排：出口表是 map，迭代顺序随机，而这里是报文顺序（`Topology().Problems`
+// 要用它、`Validate` 的首条也取它），同一张图两次问必须一模一样。
+func (g *Graph) problemsOutputsLocked() []error {
+	if len(g.outPorts) == 0 {
+		return nil
+	}
+	var missing []string
+	for name, ref := range g.outPorts {
+		if g.sourceOfLocked(ref).kind == sourceNone {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	out := make([]error, 0, len(missing))
+	for _, name := range missing {
+		out = append(out, fmt.Errorf("pulse: declared output %q is never produced: "+
+			"nothing in this graph provides or seeds it, so a parent binding it with Out could "+
+			"only ever report \"never arrived\" (provide it with a node, or drop the DeclareOutput)",
+			name))
 	}
 	return out
 }

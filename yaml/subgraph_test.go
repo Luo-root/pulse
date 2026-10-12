@@ -15,7 +15,7 @@ import (
 	pulseyaml "github.com/Luo-root/pulse/yaml"
 )
 
-// #295：YAML 里「一步 = 一张子图」。这一层只把引擎已有的能力（pulse.Sub）
+// #295：YAML 里「一步 = 一张子图」。这一层只把引擎已有的能力（`pulse.Sub`）
 // 写出来——拓扑归 YAML，Run 还是归注册的工厂。
 const subDoc = `
 version: 1
@@ -254,8 +254,8 @@ nodes:
 // 的 spec 更是永远不炸（它们本来就是最贵的两类）。
 //
 // 每一行都压在第 2 层（`mid`）或更深，根层那批另有用例。这里同时钉住两件事：
-// 报错点在**哪张 spec**（不点名的话读的人还得自己找），以及引擎那边的装配期
-// 检查（`Sub` / `Add`）也纳进来了——它们原来是等运行到才跑的。
+// 报错点在**哪张 spec、挂在哪一处**（不点名的话读的人还得自己找），以及引擎那边的
+// 装配期检查（`Sub` / `Add`）也纳进来了——它们原来是等运行到才跑的。
 func TestLoadChecksEveryGraphSpec(t *testing.T) {
 	const head = `
 version: 1
@@ -377,7 +377,7 @@ nodes:
 			want: `graph "mid": node "dup": pulse: duplicate node id "dup"`,
 		},
 		{
-			name: "第 2 层的子键既 in 又 out（引擎 Sub 的装配期检查）",
+			name: "第 2 层的子键既 in 又 out，而子图内部有人产出它（同一个槽两个来源，装图期报）",
 			node: "toBoth",
 			body: `  mid:
     nodes:
@@ -396,7 +396,7 @@ nodes:
         requires: [{name: c.side, type: string}]
         provides: [{name: c.both, type: string}]
 `,
-			want: `graph "mid": pulse: Sub "toBoth": child key "c.both" is bound twice`,
+			want: `graph "mid": node "toBoth": graph "both" provides "c.both" inside`,
 		},
 		{
 			name: "第 3 层的依赖成环（引擎 Start 的静态判据）",
@@ -422,7 +422,7 @@ nodes:
         requires: [{name: c.cin, type: string}]
         provides: [{name: c.cout, type: string}]
 `,
-			want: `graph "inner" (as referenced by node "toInner" of graph "mid"): pulse: dependency cycle: a -> b -> a`,
+			want: `graph "inner" (mounted at "step1/toInner"): pulse: dependency cycle: a -> b -> a`,
 		},
 		{
 			name: "第 2 层有个节点读一条没人提供、也没人 seed 的键",
@@ -440,7 +440,7 @@ nodes:
         requires: [{name: c.cin, type: string}, {name: c.nope, type: string}]
         provides: [{name: c.cout, type: string}]
 `,
-			want: `graph "inner" (as referenced by node "toInner" of graph "mid"): pulse: node "leaf" requires "c.nope" but nothing provides or seeds it`,
+			want: `graph "inner" (mounted at "step1/toInner"): pulse: node "leaf" requires "c.nope" but nothing provides or seeds it`,
 		},
 		{
 			name: "in: 喂的那条子侧键，子图自己也提供（两个来源）",
@@ -962,8 +962,9 @@ nodes:
 	if err == nil {
 		t.Fatal("第二处引用没喂 rs.cin，装图期就该报——别等跑到那一层")
 	}
-	// 报错要说清是**哪一处**引用看到的：同一张图在两处看到的东西不一样
-	if !strings.Contains(err.Error(), `graph "inner" (as referenced by node "hungry" of graph "notmid")`) {
+	// 报错要说清是**哪一处**引用看到的：报的是那一处的**挂载路径**（同一张图在两处
+	// 看到的东西不一样，照着路径找得到该改的那一处）
+	if !strings.Contains(err.Error(), `graph "inner" (mounted at "top2/hungry")`) {
 		t.Fatalf("报错没点明引用点：%v", err)
 	}
 	if !strings.Contains(err.Error(), `requires "rs.cin" but nothing provides or seeds it`) {
@@ -1138,7 +1139,7 @@ nodes:
 }
 
 // `skip: true` 的 seed 只把槽标成跳过，`from` 没有语义——装配期的 `seedOne`
-// 与运行期的 `buildSub` 都是直接 `SkipSeed` 并忽略 `from`，顶层的
+// 与运行期的装配都是直接 `SkipSeed` 并忽略 `from`，顶层的
 // `SeedPlan.Apply` 也一样。所以子图里 `skip: true` 带着 `env` / `file` /
 // `context` 不该被拒；只有**要种值**的那条才必须给得出 `literal`。
 func TestLoadSubgraphSkipSeedIgnoresFrom(t *testing.T) {
@@ -1197,7 +1198,7 @@ nodes:
 }
 
 // LoadOptions.MaxRunning 是**整棵声明树**的额度：根图拿它建名额，子图在运行期
-// 继承同一份（`Sub` 那一步自己不吃名额）。这里两个子图实例合计只能同时有一个
+// 继承同一份（挂子图那一步自己不吃名额）。这里两个子图实例合计只能同时有一个
 // 节点在跑——若额度被当成「每层各一份」，峰值会变成 2。
 func TestLoadMaxRunningCoversWholeTree(t *testing.T) {
 	summary := pulse.NewKey[string]("ml.summary")

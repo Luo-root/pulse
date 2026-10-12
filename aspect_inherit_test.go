@@ -51,21 +51,20 @@ func (r *rec) all() []string {
 }
 
 // childWith 造一个子图：n 个节点都吃 `cin`，各自跑 body，可带构造选项。
-func childWith(t *testing.T, id string, n int, cin Key[string], body func(*RunCtx) error,
-	opts ...Option) func(*SubCtx) (*Graph, error) {
+//
+// 静态形态：子图在**装配期**就建好，所以 `cin` 先声明成入口端口（接线只能接端口），
+// 图 id 走 `<父图 id>/<节点 id>` 那套口径。
+func childWith(t *testing.T, ctx context.Context, graphID, nodePrefix string, n int, cin Key[string],
+	body func(*RunCtx) error, opts ...Option) *Graph {
 	t.Helper()
-	return func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(), "", opts...)
-		if err != nil {
-			return nil, err
-		}
-		for i := 0; i < n; i++ {
-			if err := child.Add(NewNode(fmt.Sprintf("%s-node%d", id, i), "", Requires(cin), nil, body)); err != nil {
-				return nil, err
-			}
-		}
-		return child, nil
+	child := mustNew(t, ctx, graphID, opts...)
+	if err := child.DeclareInput(NewPort(cin)); err != nil {
+		t.Fatalf("DeclareInput = %v", err)
 	}
+	for i := 0; i < n; i++ {
+		mustAdd(t, child, NewNode(fmt.Sprintf("%s-node%d", nodePrefix, i), "", Requires(cin), nil, body))
+	}
+	return child
 }
 
 // 图级切面**默认继承**：父图 WithAspects(A)、子图不声明 ⇒ 子图里的节点也被 A 包住。
@@ -83,8 +82,8 @@ func TestAspectInheritedBySubGraph(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step", "", []SubBind{In(in, cin)},
-		childWith(t, "c", 2, cin, func(*RunCtx) error { ran.Add(1); return nil })); err != nil {
+	child := childWith(t, ctx, "P/step", "c", 2, cin, func(*RunCtx) error { ran.Add(1); return nil })
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
@@ -113,9 +112,9 @@ func TestAspectInheritOrderOuterFirst(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step", "", []SubBind{In(in, cin)},
-		childWith(t, "c", 1, cin, func(*RunCtx) error { return nil },
-			WithAspects(r.aspect("inner")))); err != nil {
+	child := childWith(t, ctx, "P/step", "c", 1, cin, func(*RunCtx) error { return nil },
+		WithAspects(r.aspect("inner")))
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
@@ -145,9 +144,9 @@ func TestAspectCutInheritanceKeepsOwnAndParentStep(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step", "", []SubBind{In(in, cin)},
-		childWith(t, "c", 2, cin, func(*RunCtx) error { ran.Add(1); return nil },
-			WithoutAspects(), WithAspects(r.aspect("own")))); err != nil {
+	child := childWith(t, ctx, "P/step", "c", 2, cin, func(*RunCtx) error { ran.Add(1); return nil },
+		WithoutAspects(), WithAspects(r.aspect("own")))
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
@@ -181,9 +180,9 @@ func TestAspectEmptyDeclIsNotCut(t *testing.T) {
 	if err := Seed(g, in, "v"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sub(g, "step", "", []SubBind{In(in, cin)},
-		childWith(t, "c", 2, cin, func(*RunCtx) error { return nil },
-			WithAspects(empty...))); err != nil {
+	child := childWith(t, ctx, "P/step", "c", 2, cin, func(*RunCtx) error { return nil },
+		WithAspects(empty...))
+	if err := Sub(g, "step", "", []SubBind{In(in, cin)}, child); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Run(); err != nil {
@@ -210,25 +209,22 @@ func TestAspectInheritNoDuplicatePerDepth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	leaf := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(), "")
-		if err != nil {
-			return nil, err
-		}
-		return child, child.Add(NewNode("leaf", "", Requires(l2), nil, func(rc *RunCtx) error {
-			r.append("BODY")
-			return nil
-		}))
+	// 静态形态：三层子图都在装配期建好，端口先声明，再逐层挂上去。
+	leaf := mustNew(t, ctx, "P/step1/step2")
+	if err := leaf.DeclareInput(NewPort(l2)); err != nil {
+		t.Fatal(err)
 	}
-	mid := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(), "")
-		if err != nil {
-			return nil, err
-		}
-		if err := Sub(child, "step2", "", []SubBind{In(l1, l2)}, leaf); err != nil {
-			return nil, err
-		}
-		return child, nil
+	mustAdd(t, leaf, NewNode("leaf", "", Requires(l2), nil, func(rc *RunCtx) error {
+		r.append("BODY")
+		return nil
+	}))
+
+	mid := mustNew(t, ctx, "P/step1")
+	if err := mid.DeclareInput(NewPort(l1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sub(mid, "step2", "", []SubBind{In(l1, l2)}, leaf); err != nil {
+		t.Fatal(err)
 	}
 	if err := Sub(g, "step1", "", []SubBind{In(in, l1)}, mid); err != nil {
 		t.Fatal(err)
@@ -260,27 +256,21 @@ func TestAspectCutAtMiddleLayerHidesGrandparent(t *testing.T) {
 	}
 
 	// 最内层：不声明任何切面 → 只能拿到中间层那层有效列表 = [B]。
-	leaf := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(), "")
-		if err != nil {
-			return nil, err
-		}
-		return child, child.Add(NewNode("leaf", "", Requires(l2), nil, func(rc *RunCtx) error {
-			r.append("BODY")
-			return nil
-		}))
+	leaf := mustNew(t, ctx, "P/step1/step2")
+	if err := leaf.DeclareInput(NewPort(l2)); err != nil {
+		t.Fatal(err)
 	}
+	mustAdd(t, leaf, NewNode("leaf", "", Requires(l2), nil, func(rc *RunCtx) error {
+		r.append("BODY")
+		return nil
+	}))
 	// 中间层：切断继承（A 不从这一层往下走），自己声明 B。
-	mid := func(sc *SubCtx) (*Graph, error) {
-		child, err := New(sc.Context(), sc.GraphID(), "",
-			WithoutAspects(), WithAspects(r.aspect("B")))
-		if err != nil {
-			return nil, err
-		}
-		if err := Sub(child, "step2", "", []SubBind{In(l1, l2)}, leaf); err != nil {
-			return nil, err
-		}
-		return child, nil
+	mid := mustNew(t, ctx, "P/step1", WithoutAspects(), WithAspects(r.aspect("B")))
+	if err := mid.DeclareInput(NewPort(l1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sub(mid, "step2", "", []SubBind{In(l1, l2)}, leaf); err != nil {
+		t.Fatal(err)
 	}
 	if err := Sub(g, "step1", "", []SubBind{In(in, l1)}, mid); err != nil {
 		t.Fatal(err)

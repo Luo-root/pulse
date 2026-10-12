@@ -23,10 +23,16 @@ type Node struct {
 	// 一条流出口只喂一个下游；**同一组** worker 共读一条出口是显式声明的
 	// 「抢」（FanOut 本来就是这么用的），不算静默瓜分——见 Graph.problemsStreamLocked。
 	compete string
-	// sub 表示这个节点是 `Sub` 装出来的一步（「图即节点」）。它整段都在等子图
-	// 跑完，所以**不吃运行名额**——占着就等于把父侧额度锁在「等」上，名额跨图
-	// 共享之后那是死锁（见 WithMaxRunning / Graph.runNode）。
+	// sub 表示这个节点是挂子图的一步（「图即节点」，`Sub` 置它）。
+	// 它整段都在等子图跑完，所以**不吃运行名额**——占着就等于把父侧额度锁在「等」上，
+	// 名额跨图共享之后那是死锁（见 WithMaxRunning / Graph.runNode）。
 	sub bool
+	// child 是这一步挂的子图**定义**（`Sub` 装的节点才有它）。静态拓扑靠它递归展开
+	// 整棵树，组合环也靠它判（见 Sub 与 findInSubtree）。
+	child *Graph
+	// binds 是这一步的接线。递归校验要用它重新核一遍端口（子图的端口可能在挂载之后、
+	// 它自己封口之前改过），静态拓扑要用它展示父子接线。
+	binds []SubBind
 }
 
 // Requires 声明本节点依赖的输入槽。
