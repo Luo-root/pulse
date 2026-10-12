@@ -46,7 +46,15 @@ var (
 	// ErrConflict：同一个槽位先 Set 后 Skip（或反过来）——槽位一旦以某种
 	// 状态到达就不再改写，冲突一律报错而不是静默覆盖。
 	ErrConflict = errors.New("pulse: slot already resolved with a conflicting state")
-	// ErrGraphStarted：图已经启动过；启动后的 Add / Seed / Start 都被拒。
+	// ErrGraphStarted：**两个触发点**，两个都是「你不能再改这张图了」但原因不同——
+	//
+	//	① 这张图已经启动过（`Start` 成功过一次）：再 `Start` / `Add` / `Seed` 都被拒；
+	//	② 这张**定义**已经封口（`Validate` 通过过一次，连同它挂着的子图整棵一起封，
+	//	   见 Graph.sealed）：`Add` / `DeclareInput` / `DeclareOutput` / 挂子图被拒，
+	//	   但 `Start` / `Seed` **照旧可以**——`Seed` 是这一轮运行的值，不属于定义。
+	//
+	// 两者共用一个哨兵（冻结面里七条哨兵不新增、不改名），所以 `errors.Is` 分不出是哪一种；
+	// 要区分就读报文（封口那句写着 sealed），别把「定义冻了」当成「已经跑过」。
 	// 一次性契约见 Graph。
 	ErrGraphStarted = errors.New("pulse: graph already started")
 	// ErrGraphNotStarted：在 Start 之前调用 Wait / Err（Err 例外：它先看

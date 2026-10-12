@@ -254,8 +254,14 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	if err := a.addNodes(checkRoot, doc.Nodes, mount{id: opts.GraphID}); err != nil {
 		return nil, nil, err
 	}
-	// 谁也引用不到的 spec：没有任何外部来源那种形状的死配置，也得报。「写错了没人报」
-	// 比「报了」难查得多，代价只是装图期多建一张只装不跑的图。
+	// 谁也引用不到的 spec：它**没有挂载点**，因此**没有接口面**——里面那些「没人提供」的键
+	// 究竟是「等将来挂上去时由那一处的 `in:` 喂」还是「名字写错了」，装配期判不了。按闭合图
+	// 去校验会把前者一律报成后者（正常的模板库只要有一张暂时没接上，整份文档就 `Load` 不过）。
+	//
+	// 所以这里只留**真判得了**的那几条：工厂名 / 重复 id / 来源冲突 / 依赖成环 / 流式那批
+	// 照旧，**来源那条不作数**——它的接口面按「读到的都当入口」补上（declareSpecInputs，
+	// 补在一张只装不跑的校验图上）。等它被引用时，接口面由**那一处**的 `in:` / `out:` 定，
+	// 来源判据在那时按引用点生效（见 addSubNode 与 #298 的口径）。
 	for _, name := range sortedNames(doc.Graphs) {
 		if referenced[name] {
 			continue
@@ -272,6 +278,9 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 			if err := seedOne(g, name, s, reg); err != nil {
 				return nil, nil, err
 			}
+		}
+		if err := a.declareSpecInputs(g, name); err != nil {
+			return nil, nil, err
 		}
 		if err := g.Validate(); err != nil {
 			return nil, nil, fmt.Errorf("pulse/yaml: graph %q: %w", name, err)
@@ -299,8 +308,17 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	// 因为 graphID 空拒掉（那个检查在函数开头做过）。
 	//
 	// 真图用的是**同一段**装配代码（`a.check` 关掉即可）：装的形状、接线检查、
-	// 端口声明与校验树逐字一致，差别只有子图的 ctx（静态挂载的定义不挂宿主 ctx，
-	// 取消从挂载点转发下去）与出口（这一遍按层建 `ObserverFor`）。
+	// 端口声明与校验树逐字一致。两遍真正的差别只有两处，都写在这里免得再推一遍：
+	//
+	//  1. **根图那份 ctx**：校验树的根图建在 `context.Background()` 上（见 checkGraph），
+	//     真图的根图继承宿主 ctx。子图**两边都不挂**宿主 ctx——静态挂载的子图定义没有要
+	//     取消的东西，取消是运行期从挂载点转发进去的（见 runStaticSub），所以 buildChild
+	//     两遍都用 `context.Background()`；
+	//  2. **出口**：只有真图按层建 `ObserverFor`（见 buildChild），校验树一个记录都不产生。
+	//
+	// 另外校验树那遍会逐张挂载点调 `child.Validate()`（见 addSubNode），真图那遍不调——
+	// 校验树已经把整棵子树判过并**封口**了（Validate 封的是整棵子树），
+	// 而 `Load` 交出去的真图要留给宿主 `Seed` / `Start`（那两者不受封口影响）。
 	a.check = false
 	rootOpts := append([]pulse.Option(nil), opts.Graph...)
 	if opts.MaxRunning > 0 {

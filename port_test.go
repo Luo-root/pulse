@@ -126,3 +126,119 @@ func TestDeclareInputPorts(t *testing.T) {
 		}
 	})
 }
+
+// 出口和入口一样，是**装配期**就能判的事。`DeclareOutput` 了一条没人产出的键，父图照样
+// 能用 `Out` 把它接出去（端口是声明，不是承诺），要等子图跑完才由 `bridgeOutputs` 报一句
+// `never arrived`——那时已经跑了一半，病根也不在那句话里。
+//
+// 判据与 `problemsSourcesLocked`（「入口没人提供」）对称，用的是同一个来源判据
+// （`sourceOfLocked`：谁会写这条槽优先，没人写就看它是不是声明过的入口）——所以
+// **入口与出口同名（透传）不算没人产出**：父侧种进来的值就是这条槽的值。
+func TestDeclareOutputNeedsProducer(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("没人产出的出口：Validate / Start 都拒，Report 也有一条", func(t *testing.T) {
+		out := NewKey[string]("op.none")
+		g := mustNew(t, ctx, "op.none")
+		if err := g.DeclareOutput(NewPort(out)); err != nil {
+			t.Fatalf("DeclareOutput = %v", err)
+		}
+		err := g.Validate()
+		if err == nil || !strings.Contains(err.Error(), `declared output "op.none" is never produced`) {
+			t.Fatalf("声明的出口没人产出该在装配期报，got %v", err)
+		}
+		// 一份判据、两个入口：Validate 与 Start 报的是同一句话
+		if serr := g.Start(); serr == nil || serr.Error() != err.Error() {
+			t.Fatalf("Validate 与 Start 的判据不一致：\nValidate %v\nStart    %v", err, serr)
+		}
+		var found bool
+		for _, p := range g.Topology().Problems {
+			if strings.Contains(p.Error(), "is never produced") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("Topology().Problems 里也该有这条：%v", g.Topology().Problems)
+		}
+	})
+
+	t.Run("有节点产出就过", func(t *testing.T) {
+		in := NewKey[string]("op.ok_in")
+		out := NewKey[string]("op.ok_out")
+		g := mustNew(t, ctx, "op.ok")
+		if err := g.DeclareInput(NewPort(in)); err != nil {
+			t.Fatalf("DeclareInput = %v", err)
+		}
+		if err := g.DeclareOutput(NewPort(out)); err != nil {
+			t.Fatalf("DeclareOutput = %v", err)
+		}
+		mustAdd(t, g, NewNode("n", "", Requires(in), Provides(out), func(rc *RunCtx) error {
+			return Set(rc, out, "v")
+		}))
+		if err := g.Validate(); err != nil {
+			t.Fatalf("有人产出就不该报：%v", err)
+		}
+	})
+
+	t.Run("透传（同名入口 + 出口）不算没人产出", func(t *testing.T) {
+		through := NewKey[string]("op.through")
+		g := mustNew(t, ctx, "op.through")
+		if err := g.DeclareInput(NewPort(through)); err != nil {
+			t.Fatalf("DeclareInput = %v", err)
+		}
+		if err := g.DeclareOutput(NewPort(through)); err != nil {
+			t.Fatalf("DeclareOutput = %v", err)
+		}
+		if err := g.Validate(); err != nil {
+			t.Fatalf("透传的出口有来源（就是那条入口），不该报：%v", err)
+		}
+	})
+
+	t.Run("多条没产出的出口：报文顺序按名字排，不跟 map 迭代走", func(t *testing.T) {
+		g := mustNew(t, ctx, "op.order")
+		// 故意按倒序声明：顺序要是跟着声明走，这里就该反着来
+		for _, name := range []string{"op.z2", "op.z3", "op.z1"} {
+			if err := g.DeclareOutput(NewPort(NewKey[string](name))); err != nil {
+				t.Fatalf("DeclareOutput = %v", err)
+			}
+		}
+		probs := g.Topology().Problems
+		if len(probs) != 3 {
+			t.Fatalf("三条没产出的出口该各一条，got %d：%v", len(probs), probs)
+		}
+		want := []string{"op.z1", "op.z2", "op.z3"}
+		for i, w := range want {
+			if !strings.Contains(probs[i].Error(), w) {
+				t.Fatalf("第 %d 条该是 %s（按名字排，两次问要一模一样）：%v", i, w, probs)
+			}
+		}
+		// 同一张图问两次必须一样：map 迭代顺序是随机的，拿它当顺序的写法在这里会飘
+		again := g.Topology().Problems
+		for i := range probs {
+			if probs[i].Error() != again[i].Error() {
+				t.Fatalf("两次问的顺序不一样：\n%v\n%v", probs, again)
+			}
+		}
+	})
+
+	t.Run("挂进父图之后按挂载点报（装配期，不必等它跑完）", func(t *testing.T) {
+		out := NewKey[string]("op.mount_out")
+		sink := NewKey[string]("op.mount_sink")
+		child := mustNew(t, ctx, "op.child")
+		if err := child.DeclareOutput(NewPort(out)); err != nil {
+			t.Fatalf("DeclareOutput = %v", err)
+		}
+		d := mustNew(t, ctx, "op.parent")
+		if err := Sub(d, "mount", "", []SubBind{Out(out, sink)}, child); err != nil {
+			t.Fatalf("Sub = %v", err)
+		}
+		err := d.Validate()
+		if err == nil {
+			t.Fatal("子图声明了一条没人产出的出口，父图装配期就该报")
+		}
+		if !strings.Contains(err.Error(), `subgraph "op.child" (mounted at "mount")`) ||
+			!strings.Contains(err.Error(), "is never produced") {
+			t.Fatalf("报文该点明是哪里挂的子图、病在出口上，got %v", err)
+		}
+	})
+}

@@ -513,6 +513,41 @@ func (a *assembler) ports(nodeID string, keys map[string]string, side string) ([
 	return out, nil
 }
 
+// declareSpecInputs 给「谁也引用不到」的那张 spec 补上它**可能**的接口面：把解析不到来源的
+// 每条 `Requires` 声明成入口，好让那张只装不跑的校验图过得了来源那条判据（见 Load 里的说明：
+// 没有挂载点就没有接口面，来源判据在这张图上本来就不成立）。
+//
+// 判据不在 yaml 这边重写：谁是「没有来源」由引擎自己的出口给——`Topology()` 里
+// `Requires[].From` 就是 `sourceOfLocked` 写出来的那个来源，`SourceNone` 即没有来源。所以
+// 这里既不必分节点类型（工厂节点 / 子图节点一视同仁），也不重算一遍来源表；名与类型都从
+// 那条键自己来（`KeyShape.Type` 就是登记表的类型记号），形状与真被引用时由 `in:` 声明的一致。
+//
+// 收集顺序是确定的（节点声明序 × Requires 顺序 × 首次出现），所以端口表与报文顺序都稳定。
+func (a *assembler) declareSpecInputs(g *pulse.Graph, name string) error {
+	var ports []pulse.Port
+	seen := make(map[string]struct{})
+	for _, ns := range g.Topology().Nodes {
+		for _, ks := range ns.Requires {
+			if ks.From.Kind != pulse.SourceNone {
+				continue
+			}
+			if _, dup := seen[ks.Name]; dup {
+				continue
+			}
+			seen[ks.Name] = struct{}{}
+			ref, err := a.reg.ResolveKey(ks.Name, ks.Type)
+			if err != nil {
+				return fmt.Errorf("%s%w", at(name), err)
+			}
+			ports = append(ports, pulse.PortRef(ref))
+		}
+	}
+	if err := g.DeclareInput(ports...); err != nil {
+		return fmt.Errorf("%s%w", at(name), err)
+	}
+	return nil
+}
+
 // seedOne 把子图声明里的一条 seed 种进 g，供**校验树**与**真图**共用：同一个函数 ⇒
 // 两边拒的东西永远一致（键没登记、类型写错、值是 nil——这些都是静态可判定的，
 // 装配期报出来比跑到那一层才报好）。

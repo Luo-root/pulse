@@ -2,6 +2,7 @@ package pulse
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -108,4 +109,67 @@ func TestSubHookupRaceWithTopology(t *testing.T) {
 		_ = child.Topology()
 		return nil
 	})
+}
+
+// TestSubChildAssemblyVsParentReadOnly 走的是另一条缝：**父图的只读入口要递归读子图**，
+// 而子图在装配期是宿主手里的对象。那头一边 `Add`（往子图里接着装），这头一边
+// `parent.Topology()`——两边必须共用**子图**那把锁。父图那把锁管不到子图：`Topology()`
+// 先锁父图，再沿挂载边往下走，**每往下走一层都要取那一层的锁**；少了任何一层，-race 就会
+// 在这里报 DATA RACE（父图锁着自己、读别人正在写的字段）。
+//
+// 读路只走 `Topology()`：`Validate()` 通过会封口，子图一封就没法再 `Add`，竞态也就没得跑了。
+//
+// 变异对照：把递归那一层（`child.problemsAt` / `child.topologyAt` 的自加锁）换回直接读字段
+// → 本用例在 `-race` 下必红。
+func TestSubChildAssemblyVsParentReadOnly(t *testing.T) {
+	in := NewKey[string]("cra.in")
+	out := NewKey[string]("cra.out")
+	pin := NewKey[string]("cra.pin")
+	pout := NewKey[string]("cra.pout")
+
+	child := mustNew(t, context.Background(), "cra.child")
+	if err := child.DeclareInput(NewPort(in)); err != nil {
+		t.Fatalf("DeclareInput = %v", err)
+	}
+	if err := child.DeclareOutput(NewPort(out)); err != nil {
+		t.Fatalf("DeclareOutput = %v", err)
+	}
+	mustAdd(t, child, NewNode("make", "", Requires(in), Provides(out), func(rc *RunCtx) error { return nil }))
+
+	parent := mustNew(t, context.Background(), "cra.parent")
+	if err := parent.DeclareInput(NewPort(pin)); err != nil {
+		t.Fatalf("DeclareInput = %v", err)
+	}
+	if err := Sub(parent, "mount", "", []SubBind{In(pin, in), Out(out, pout)}, child); err != nil {
+		t.Fatalf("Sub = %v", err)
+	}
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { // 拿到子图指针的那一头：接着往子图里装
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			k := NewKey[string](fmt.Sprintf("cra.late%d", i))
+			_ = child.Add(NewNode(fmt.Sprintf("late%d", i), "", nil, Provides(k), func(*RunCtx) error { return nil }))
+		}
+	}()
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	reads := 0
+	for time.Now().Before(deadline) {
+		_ = parent.Topology()
+		reads++
+	}
+	close(done)
+	wg.Wait()
+	// 读必须真的发生过，否则这条用例是空转的
+	if reads < 100 {
+		t.Fatalf("只读入口只被调了 %d 次，没盖住装配窗口", reads)
+	}
 }

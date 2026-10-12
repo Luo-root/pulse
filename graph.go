@@ -51,6 +51,10 @@ type Graph struct {
 	// `DeclareInput` / `DeclareOutput` / 挂子图都被拒（`ErrGraphStarted` 的第二个
 	// 触发点，见 errSealed）。校验**失败**不封口——那只说明图还没装配完，
 	// 补上缺的那块再校验正是要支持的用法。
+	//
+	// 封口是**整棵子树**的事：`Validate()` 通过时连同它挂着的子图一起封（见
+	// Validate / sealTreeLocked）——子图是这张定义的一部分，只封自己那句话就成了半句。
+	// 反过来不成立：子图自己 `Validate()` 通过只封它自己与它的子树，不回头封父图。
 	sealed bool
 	// claimed 是「这张图已经被一次挂子图运行认领」。与 started 分开是因为认领必须
 	// 早于挂载对它的任何改动（挂 observer、继承名额与图级切面、种值），而 started 要到
@@ -422,12 +426,17 @@ func (g *Graph) Start() error {
 }
 
 // Validate 校验这张图跑不跑得起来：判据与 Start 完全同一套（每个
-// `Requires` 都有来源 / 依赖无环 / 流式名额与出口）。
+// `Requires` 都有来源 / 声明的出口都有人产出 / 依赖无环 / 流式名额与出口）。
 //
-// **通过即封口**：这张定义从此不再变化——`Add` / `DeclareInput` / `DeclareOutput` /
-// 挂子图都被拒（`ErrGraphStarted`，见 errSealed）。校验**失败不封口**：那只说明图还没
-// 装配完，补上缺的那块再校验正是要支持的用法（与 `Start` 失败后仍可 `Start` 同一条
-// 线性化规则）。
+// **通过即封口，封的是整棵子树**：这张定义连同它挂着的子图从此都不再变化——`Add` /
+// `DeclareInput` / `DeclareOutput` / 挂子图都被拒（`ErrGraphStarted`，见 errSealed）。
+// 为什么连子图一起封：挂上去的子图是这张定义的一部分，只封父图的话，子图还能接着 `Add`，
+// 刚校验过的那棵树会变——「通过即封口」就成了半句话。子图**自己**那份定义的封口也不冲突：
+// 同一张子图挂多处时，第一处校验通过就把它封上，别处照样挂得进去（挂载不改子图定义，见 Sub）。
+//
+// 校验**失败不封口，一层都不封**：那只说明图还没装配完，补上缺的那块再校验正是要支持的
+// 用法（与 `Start` 失败后仍可 `Start` 同一条线性化规则）。所以这里是两趟：先判完整棵树，
+// 干净了再逐层封（`sealTreeLocked`）——判到一半就封的话，失败的校验会留下封口。
 //
 // 封口之外它仍然是只读的：不置 `started`、不建 goroutine、不碰槽位，所以校验完照样能
 // 接着 `Seed` / `Start`——`Seed` 是**本次运行**的值，不属于定义。想「装配完立刻冻结」
@@ -446,8 +455,34 @@ func (g *Graph) Validate() error {
 	if err := g.validateLocked(); err != nil {
 		return err
 	}
-	g.sealed = true
+	g.sealTreeLocked(mountChain{g})
 	return nil
+}
+
+// sealTreeLocked 把**整棵子树**一起封口（自己 + 挂着的子图，递归）。调用方持 g.mu；
+// 往下一层靠 `child.sealTree` 自己取那把锁——与校验那一趟同一个顺序（父 → 子）。
+//
+// 与校验分两趟（而不是边走边封）：校验**失败**不能留下任何封口，包括子图的。两趟之间
+// 逐层重新加锁，那一瞬若真有别的 goroutine 正在装配同一张子图，（极端情况下）封住的会是
+// 它刚变过的那份——那种子图跑不起来：`Start` 会沿子树再验一遍，验不过就不启动。
+//
+// `chain` 上出现过的图不再重复进去（同一张子图挂多处是合法用法）；它同时兜住环——
+// 环本不该存在（见 mountChain），这里保证递归一定收敛。
+func (g *Graph) sealTreeLocked(chain mountChain) {
+	g.sealed = true
+	for _, n := range g.nodes {
+		if n.child == nil || chain.has(n.child) {
+			continue
+		}
+		n.child.sealTree(chain.push(n.child))
+	}
+}
+
+// sealTree 是 sealTreeLocked 的自加锁入口（收口：谁持锁进哪个函数写在名字上）。
+func (g *Graph) sealTree(chain mountChain) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.sealTreeLocked(chain)
 }
 
 // validateLocked 是 Start 与 Validate 共用的那一套判据：**一份判据，两个入口**，

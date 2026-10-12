@@ -111,4 +111,147 @@ func TestValidateReportsWhatStartWouldReject(t *testing.T) {
 			t.Fatalf("补上提供者后应通过：%v", err)
 		}
 	})
+
+	// passThrough 是三层嵌套的一棵树：root → mid → leaf，每层都是「入口 → 出口」。
+	// 挂上去的子图是**父图这张定义的一部分**，所以封口封的是整棵子树（见 Graph.Validate）。
+	passThrough := func(t *testing.T) (root, mid, leaf *Graph, keys map[string]Key[string]) {
+		t.Helper()
+		keys = map[string]Key[string]{}
+		k := func(name string) Key[string] {
+			if _, ok := keys[name]; !ok {
+				keys[name] = NewKey[string](name)
+			}
+			return keys[name]
+		}
+		ports := func(id string) *Graph {
+			t.Helper()
+			g := mustNew(t, context.Background(), id)
+			if err := g.DeclareInput(NewPort(k(id + ".in"))); err != nil {
+				t.Fatalf("%s.DeclareInput = %v", id, err)
+			}
+			if err := g.DeclareOutput(NewPort(k(id + ".out"))); err != nil {
+				t.Fatalf("%s.DeclareOutput = %v", id, err)
+			}
+			return g
+		}
+		// 只有最内层有真正干活的节点，中间两层各只有「挂子图」那一步——
+		// 于是每层那条出口的来源都是它自己的挂载节点，不会跟别的节点撞来源。
+		leaf = ports("seal.leaf")
+		mustAdd(t, leaf, NewNode("step", "", Requires(k("seal.leaf.in")), Provides(k("seal.leaf.out")), func(rc *RunCtx) error {
+			v, err := Get(rc, k("seal.leaf.in"))
+			if err != nil {
+				return err
+			}
+			return Set(rc, k("seal.leaf.out"), v)
+		}))
+		mid = ports("seal.mid")
+		if err := Sub(mid, "inner", "", []SubBind{
+			In(k("seal.mid.in"), k("seal.leaf.in")),
+			Out(k("seal.leaf.out"), k("seal.mid.out")),
+		}, leaf); err != nil {
+			t.Fatalf("mid 挂 leaf = %v", err)
+		}
+		root = ports("seal.root")
+		if err := Sub(root, "outer", "", []SubBind{
+			In(k("seal.root.in"), k("seal.mid.in")),
+			Out(k("seal.mid.out"), k("seal.root.out")),
+		}, mid); err != nil {
+			t.Fatalf("root 挂 mid = %v", err)
+		}
+		return root, mid, leaf, keys
+	}
+
+	t.Run("通过即封口：整棵子树一起封（挂上去的子图也是这张定义的一部分）", func(t *testing.T) {
+		root, mid, leaf, keys := passThrough(t)
+		if err := root.Validate(); err != nil {
+			t.Fatalf("干净的图树不该被 Validate 拒：%v", err)
+		}
+		for _, g := range []*Graph{root, mid, leaf} {
+			err := g.Add(NewNode("late", "", nil, nil, func(rc *RunCtx) error { return nil }))
+			if !errors.Is(err, ErrGraphStarted) {
+				t.Fatalf("%s：挂上去的子图也在这次校验里，该一起封，got %v", g.ID(), err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "sealed") {
+				t.Fatalf("%s：报错该点明是定义封口，got %v", g.ID(), err)
+			}
+			if err := g.DeclareInput(NewPort(NewKey[string](g.ID() + ".late_in"))); !errors.Is(err, ErrGraphStarted) {
+				t.Fatalf("%s：声明也该被拒，got %v", g.ID(), err)
+			}
+		}
+		// 封口只管**定义**：子图上照样能 seed（那是这一轮运行的值，不属于定义；这里种的
+		// 是一条谁都不读的键，只为证明「封口没把 Seed 一起挡掉」），整棵树照样能跑
+		if err := Seed(leaf, NewKey[string]("seal.leaf.spare"), "v"); err != nil {
+			t.Fatalf("封口后子图 Seed 被拒：%v（Seed 是本次运行的值，不属于定义）", err)
+		}
+		if err := Seed(root, keys["seal.root.in"], "from-host"); err != nil {
+			t.Fatalf("封口后根图 Seed 被拒：%v", err)
+		}
+		if err := root.Run(); err != nil {
+			t.Fatalf("封口之后照常跑：%v", err)
+		}
+		// 同一张子图挂两处：两处都封得上（重复走到已经封住的那张上不报错、也不重复递归）
+		other := mustNew(t, context.Background(), "seal.other")
+		if err := other.DeclareInput(NewPort(keys["seal.leaf.in"])); err != nil {
+			t.Fatalf("other.DeclareInput = %v", err)
+		}
+		if err := Sub(other, "again", "", []SubBind{
+			In(keys["seal.leaf.in"], keys["seal.leaf.in"]),
+			Out(keys["seal.leaf.out"], keys["seal.leaf.out"]),
+		}, leaf); err != nil {
+			t.Fatalf("已封口的子图照样能被别处挂：%v", err)
+		}
+		if err := other.Validate(); err != nil {
+			t.Fatalf("other.Validate = %v", err)
+		}
+	})
+
+	t.Run("校验失败时整棵都不封（补上缺的那块再校验正是要支持的用法）", func(t *testing.T) {
+		ghost := NewKey[string]("sealfail.ghost")
+		in := NewKey[string]("sealfail.in")
+		out := NewKey[string]("sealfail.out")
+		rootIn := NewKey[string]("sealfail.root_in")
+
+		child := mustNew(t, context.Background(), "sealfail.child")
+		if err := child.DeclareInput(NewPort(in)); err != nil {
+			t.Fatalf("DeclareInput = %v", err)
+		}
+		if err := child.DeclareOutput(NewPort(out)); err != nil {
+			t.Fatalf("DeclareOutput = %v", err)
+		}
+		mustAdd(t, child, NewNode("hungry", "", Requires(ghost), Provides(out), func(rc *RunCtx) error {
+			return Set(rc, out, "v")
+		}))
+
+		root := mustNew(t, context.Background(), "sealfail.root")
+		if err := root.DeclareInput(NewPort(rootIn)); err != nil {
+			t.Fatalf("DeclareInput = %v", err)
+		}
+		if err := Sub(root, "mount", "", []SubBind{In(rootIn, in), Out(out, out)}, child); err != nil {
+			t.Fatalf("Sub = %v", err)
+		}
+
+		err := root.Validate()
+		if err == nil || !strings.Contains(err.Error(), "sealfail.ghost") {
+			t.Fatalf("子图里那条缺来源该从根图报出来，got %v", err)
+		}
+		// 失败的校验**不留封口**——两层都还该能接着装（子图被顺手封住是这里最容易犯的错）
+		for _, g := range []*Graph{root, child} {
+			if err := g.Add(NewNode("after", "", nil, nil, func(rc *RunCtx) error { return nil })); err != nil {
+				t.Fatalf("%s：校验失败不该封口，got %v", g.ID(), err)
+			}
+		}
+		// 补上病根，再校验一次：这次整棵一起封
+		if err := Seed(child, ghost, "v"); err != nil {
+			t.Fatalf("Seed = %v", err)
+		}
+		if err := root.Validate(); err != nil {
+			t.Fatalf("补上来源之后该通过：%v", err)
+		}
+		for _, g := range []*Graph{root, child} {
+			err := g.Add(NewNode("late", "", nil, nil, func(rc *RunCtx) error { return nil }))
+			if !errors.Is(err, ErrGraphStarted) {
+				t.Fatalf("%s：通过之后该封住，got %v", g.ID(), err)
+			}
+		}
+	})
 }

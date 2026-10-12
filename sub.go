@@ -4,7 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 )
+
+// subMountMu 是 `Sub` 那把**全局**装配锁，包住「查一遍子树 + 真的挂上」这整段。
+//
+// 为什么必须是全局的：组合环是两张图各自动作的**合成**结果——A 里挂 B 与 B 里挂 A 各看各的
+// 都对，只有放在一起才成环。单看任何一张图的锁都拦不住（两个 goroutine 各自先查过「没有环」
+// 再各挂一步，环就进去了；此后递归展开是爆栈 / 互等锁）。装配是一次性动作、临界区里没有用户
+// 代码，代价是零；运行期不碰它。
+var subMountMu sync.Mutex
 
 // Sub 把一张**现成的**子图挂成 `g` 上的一个节点（「图即节点」）——这是子图组合的**唯一**
 // 公共入口。
@@ -16,12 +25,17 @@ import (
 // 入口，`Out(子, 父)` 的 child 端必须是 `DeclareOutput` 声明过的出口。接到子图内部的中间
 // Key 是**静态错**——想让父图用那条 Key 就把它声明成出口，意图明确；不声明等于「这是我的
 // 实现细节，不承诺」。父侧那两端由 binds 推出来（`In` 的父侧端进 Requires、`Out` 的父侧端
-// 进 Provides），所以父图自己的静态校验（来源 / 环 / 名额）照常生效。
+// 进 Provides），所以父图自己的静态校验（来源 / 出口 / 环 / 名额）照常生效。
 //
 // **组合环在装配期就拒**：`Sub(A, …, B)` 之后再 `Sub(B, …, A)`（或直接自挂）会让静态递归
 // 永远展开不完，所以这里沿子图子树查一遍「父图是不是已经在它的子树里」，是就报
 // `pulse: subgraph cycle: A -> B -> A`。判据只看**当前这条路径**（见 hasAncestor）——同一张
 // 子图在**不同挂载位置**重复出现是合法的，不能用全局 visited 误拒。
+//
+// 「查一遍」与「真的挂上」在**同一个全局临界区**里（subMountMu）：对向挂载（A 里挂 B、同时
+// B 里挂 A）是两张图各自动作的结果，单看任何一张图的锁都拦不住——两边都可能先看过「没有环」
+// 再各挂一步，环就进去了，此后递归展开是爆栈或互等锁。装配是一次性动作、临界区里没有用户
+// 代码，这把全局锁的代价是零。递归本身还有一道兜底判环（见 problemsSubAtLocked）。
 //
 // 运行语义与手写嵌套逐条一致（糖不改语义）：别名额（这一步不吃名额，见 WithMaxRunning）、
 // 子图失败即本节点失败且首错原样冒泡、输出按槽位桥回（就绪 → `Set`、跳过 → `Skip`，全部跳过
@@ -53,8 +67,11 @@ func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspect
 		return fmt.Errorf("pulse: Sub %q: no binds: a step that exchanges nothing "+
 			"with its parent cannot be ordered by it either", id)
 	}
+	// 组合环那条判据是**全局**不变式：「查一遍子树」与「挂上」必须一起做完（见上面那段）。
+	subMountMu.Lock()
+	defer subMountMu.Unlock()
 	// 组合环：装配期能判的，别留到递归展开时才炸（那时是栈溢出）。
-	if err := g.checkMountCycle(id, child); err != nil {
+	if err := g.checkMountCycle(child); err != nil {
 		return err
 	}
 	// 接线只能接端口：子侧两端都要是声明过的对应方向端口。
@@ -181,8 +198,8 @@ func portDeclMethod(in bool) string {
 }
 
 // checkMountCycle 是组合环的判据：把 child 挂进 g 之前，先看 g 是不是已经在 child 的子树里
-// （自挂也算）。调用方只是在装配，所以这里逐个图加锁读一次，不跨图持锁。
-func (g *Graph) checkMountCycle(stepID string, child *Graph) error {
+// （自挂也算）。调用方只是在装配（且持着 subMountMu），所以这里逐个图加锁读一次，不跨图持锁。
+func (g *Graph) checkMountCycle(child *Graph) error {
 	if g == child {
 		return fmt.Errorf("pulse: subgraph cycle: %s -> %s (a graph cannot be mounted inside itself)",
 			g.id, g.id)
@@ -191,7 +208,6 @@ func (g *Graph) checkMountCycle(stepID string, child *Graph) error {
 		return fmt.Errorf("pulse: subgraph cycle: %s -> %s (mounting %q here would put %q inside its own subtree)",
 			strings.Join(append([]string{g.id}, path...), " -> "), g.id, child.id, g.id)
 	}
-	_ = stepID
 	return nil
 }
 

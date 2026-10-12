@@ -3,6 +3,7 @@ package pulse
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -195,4 +196,59 @@ func TestStaticSub(t *testing.T) {
 			t.Fatal("子图没看见父图的取消：转发那一步没生效")
 		}
 	})
+}
+
+// TestSubConcurrentOppositeMountsDoNotMakeCycle 钉的是装配期那条判据的**原子性**。
+//
+// 「沿子树查一遍（没有环）→ 把子图挂上」是两步，而两个 goroutine 对向挂载
+// （A 里挂 B、同时 B 里挂 A）时，两边都可能先看过「没有环」再各挂一步——环就进去了。
+// 环一旦进去，之后 `Topology()` / `Validate()` 沿挂载边递归不是报错而是**爆栈**（单线程）
+// 或**互等对方的锁**（并发）。
+//
+// 组合环是**全局**不变式：A 挂 B 与 B 挂 A 是两个图各自动作的结果，单看任何一张图的锁都
+// 拦不住，所以「查 + 挂」放在同一个全局临界区里（`Sub` 的 subMountMu）。
+//
+// 变异对照：去掉那把全局锁 → 本用例在头几十轮内必红（两个方向都挂上了）。
+func TestSubConcurrentOppositeMountsDoNotMakeCycle(t *testing.T) {
+	ctx := context.Background()
+	// 一张最小可挂的子图：入口 → 出口，两端都是声明过的端口，所以 binds 一定核得过。
+	mk := func(id string) (*Graph, Key[string], Key[string]) {
+		t.Helper()
+		in := NewKey[string](id + ".in")
+		out := NewKey[string](id + ".out")
+		g := mustNew(t, ctx, id)
+		if err := g.DeclareInput(NewPort(in)); err != nil {
+			t.Fatalf("DeclareInput = %v", err)
+		}
+		if err := g.DeclareOutput(NewPort(out)); err != nil {
+			t.Fatalf("DeclareOutput = %v", err)
+		}
+		mustAdd(t, g, NewNode("mk", "", Requires(in), Provides(out), func(rc *RunCtx) error { return nil }))
+		return g, in, out
+	}
+
+	for iter := 0; iter < 200; iter++ {
+		a, ain, aout := mk(fmt.Sprintf("opp.a%d", iter))
+		b, bin, bout := mk(fmt.Sprintf("opp.b%d", iter))
+		// 挂载点的父侧那两端用**新**键：它们会进这一层节点的 Provides，撞上这一层已有的
+		// 来源会被 Add 拒掉——那是另一条判据，与本用例要测的东西无关。
+		ax := NewKey[string](fmt.Sprintf("opp.ax%d", iter))
+		ay := NewKey[string](fmt.Sprintf("opp.ay%d", iter))
+		bx := NewKey[string](fmt.Sprintf("opp.bx%d", iter))
+		by := NewKey[string](fmt.Sprintf("opp.by%d", iter))
+
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() { <-start; errs <- Sub(a, "toB", "", []SubBind{In(ax, bin), Out(bout, ay)}, b) }()
+		go func() { <-start; errs <- Sub(b, "toA", "", []SubBind{In(bx, ain), Out(aout, by)}, a) }()
+		close(start)
+		e1, e2 := <-errs, <-errs
+
+		switch {
+		case e1 == nil && e2 == nil:
+			t.Fatalf("第 %d 轮两个方向都挂上了：环进去了（A 的子树里有 B，B 的子树里有 A）", iter)
+		case e1 != nil && e2 != nil:
+			t.Fatalf("第 %d 轮两个方向都失败：%v / %v", iter, e1, e2)
+		}
+	}
 }

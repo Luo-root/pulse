@@ -235,3 +235,82 @@ func TestStaticSubtreeVisibility(t *testing.T) {
 		}
 	})
 }
+
+// TestTopologyReportsForgedSubgraphCycle 钉的是递归的**兜底判环**。
+//
+// 组合环在装配期就被 `Sub` 拒了，但递归展开碰上环的代价不是一句错话：单线程里是**爆栈**，
+// 并发里是**两层互等对方的锁**（父锁着自己再要子图、子锁着自己再要父图）。所以沿挂载边
+// 每往下走一层，都要自己数一遍「这张子图是不是已经在这条链上」——不能只靠装配期那一次检查。
+//
+// 这条兜底判据没有别的路进得去（`Sub` 那条路进不去环），所以这里包内直接把环焊上：
+// 先让 c 正常挂 a（这一刻装配期检查合法），再给 a 手造一个挂着 c 的节点——于是
+// a 的子树里有 c、c 的子树里有 a。
+func TestTopologyReportsForgedSubgraphCycle(t *testing.T) {
+	ctx := context.Background()
+	ain := NewKey[string]("fc.a_in")
+	aout := NewKey[string]("fc.a_out")
+	cin := NewKey[string]("fc.c_in")
+	cout := NewKey[string]("fc.c_out")
+
+	// a 是一张正常子图：入口 → 出口
+	a := mustNew(t, ctx, "fc.a")
+	if err := a.DeclareInput(NewPort(ain)); err != nil {
+		t.Fatalf("DeclareInput = %v", err)
+	}
+	if err := a.DeclareOutput(NewPort(aout)); err != nil {
+		t.Fatalf("DeclareOutput = %v", err)
+	}
+	mustAdd(t, a, NewNode("ax", "", Requires(ain), Provides(aout), func(rc *RunCtx) error {
+		return Set(rc, aout, "v")
+	}))
+
+	// c 正常挂 a（这一刻 a 的子树里没有 c，装配期检查当然过）
+	c := mustNew(t, ctx, "fc.c")
+	if err := c.DeclareInput(NewPort(cin)); err != nil {
+		t.Fatalf("DeclareInput = %v", err)
+	}
+	if err := c.DeclareOutput(NewPort(cout)); err != nil {
+		t.Fatalf("DeclareOutput = %v", err)
+	}
+	if err := Sub(c, "toA", "", []SubBind{In(cin, ain), Out(aout, cout)}, a); err != nil {
+		t.Fatalf("Sub = %v", err)
+	}
+
+	// 把 c 焊回 a：包内直接造那个挂载节点，绕开 Sub 的装配期检查
+	back := NewNode("back", "", nil, nil, func(rc *RunCtx) error { return nil })
+	back.child = c
+	mustAdd(t, a, back)
+
+	// 递归展开要**报环**，不是爆栈
+	top := a.Topology()
+	var sawCycle bool
+	for _, p := range top.Problems {
+		if strings.Contains(p.Error(), "subgraph cycle") {
+			sawCycle = true
+		}
+	}
+	if !sawCycle {
+		t.Fatalf("环要报进 Problems（它的代价是爆栈 / 互等锁，不能就这么走下去）：%v", top.Problems)
+	}
+	if err := a.Validate(); err == nil || !strings.Contains(err.Error(), "subgraph cycle") {
+		t.Fatalf("Validate 该报同一句，got %v", err)
+	}
+	// 环那一处**就地收住**：这一层的其它形状照旧（a 的两个节点都在，挂到 c 的那一步照样展开），
+	// 但不往回绕——绕回去就是无限递归。
+	if top.Nodes[1].ID != "back" || top.Nodes[1].Sub == nil {
+		t.Fatalf("非环的那一层该照常展开：%+v", top.Nodes)
+	}
+	if got := top.Nodes[1].Sub; len(got.Nodes) != 1 || got.Nodes[0].Sub != nil {
+		t.Fatalf("环上的边该就地收住（不再往下展开），got %+v", got.Nodes)
+	}
+	// 环从链上任何一张图看都是环：c 自己那份视图同样报得出来（而不是走到一半就卡住）
+	var fromC bool
+	for _, p := range c.Topology().Problems {
+		if strings.Contains(p.Error(), "subgraph cycle") {
+			fromC = true
+		}
+	}
+	if !fromC {
+		t.Fatalf("从环上另一张图看也该报环：%v", c.Topology().Problems)
+	}
+}

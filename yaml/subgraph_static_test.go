@@ -405,3 +405,88 @@ nodes:
 		t.Fatalf("启动那一刻该报出来，got %v", err)
 	}
 }
+
+// 谁也引用不到的 spec **没有挂载点**，所以**没有接口面**：它里面那些「没人提供」的键，
+// 究竟是「等将来挂上去时由那一处的 `in:` 喂」还是「名字写错了」，装图期判不了——按闭合图
+// 去校验会把前者一律报成后者，于是「模板库里有一张暂时还没接上」连 `Load` 都过不去。
+//
+// 所以未引用的 spec 只留**真判得了**的那几条：工厂名 / 空 nodes / 重复 id / 来源冲突 /
+// 依赖成环 / 流式那批照旧，**来源那条不作数**（它读的键一律当入口声明进那张只装不跑的
+// 校验图）。等它被引用时，接口面由**那一处**的 `in:` / `out:` 定，来源判据在那时按引用点
+// 生效（见 TestLoadChecksEveryReferenceSite）。
+func TestLoadUnreferencedSpecSkipsSourceCheck(t *testing.T) {
+	reg := pulse.NewRegistry()
+	for _, k := range []string{"ur.cin", "ur.cout", "ur.root", "cy.a_in", "cy.a_out"} {
+		pulse.MustRegisterKey(reg, pulse.NewKey[string](k))
+	}
+	reg.MustRegister("ur.f", func(*pulse.RunCtx) error { return nil })
+
+	// 1) 未引用的 spec 里那条「没人喂」的键 = 这张 spec 的入口，装图期不该报
+	const unused = `
+version: 1
+graphs:
+  template:
+    nodes:
+      - id: leaf
+        uses: ur.f
+        requires: [{name: ur.cin, type: string}]
+        provides: [{name: ur.cout, type: string}]
+nodes:
+  - id: root
+    uses: ur.f
+    provides: [{name: ur.root, type: string}]
+`
+	if _, _, err := pulseyaml.Load([]byte(unused), reg, pulseyaml.LoadOptions{GraphID: "UR"}); err != nil {
+		t.Fatalf("未引用的 spec 没有挂载点、就没有接口面，那条键是它的入口而不是「忘了接线」：%v", err)
+	}
+
+	// 2) 真的被引用、而那一处没喂 → 照旧报（按引用点，报文点明挂载路径）
+	const referenced = `
+version: 1
+graphs:
+  template:
+    nodes:
+      - id: leaf
+        uses: ur.f
+        requires: [{name: ur.cin, type: string}]
+        provides: [{name: ur.cout, type: string}]
+nodes:
+  - id: step
+    graph: template
+    out: {ur.cout: ur.root}
+`
+	_, _, err := pulseyaml.Load([]byte(referenced), reg, pulseyaml.LoadOptions{GraphID: "UR"})
+	if err == nil || !strings.Contains(err.Error(), `requires "ur.cin" but nothing provides or seeds it`) {
+		t.Fatalf("被引用时来源判据照旧按引用点生效，got %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), `(mounted at "step")`) {
+		t.Fatalf("报文要点明是哪一处引用看到的：%v", err)
+	}
+
+	// 3) 未引用的 spec 里**真判得了**的那几条照旧：依赖成环不因为「没人用」就不报
+	const loop = `
+version: 1
+graphs:
+  loop:
+    nodes:
+      - id: c1
+        uses: ur.f
+        requires: [{name: cy.a_in, type: string}]
+        provides: [{name: cy.a_out, type: string}]
+      - id: c2
+        uses: ur.f
+        requires: [{name: cy.a_out, type: string}]
+        provides: [{name: cy.a_in, type: string}]
+nodes:
+  - id: root
+    uses: ur.f
+    provides: [{name: ur.root, type: string}]
+`
+	_, _, err = pulseyaml.Load([]byte(loop), reg, pulseyaml.LoadOptions{GraphID: "UR"})
+	if err == nil || !strings.Contains(err.Error(), "dependency cycle") {
+		t.Fatalf("未引用的 spec 里依赖成环照样要报，got %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), `graph "loop"`) {
+		t.Fatalf("报文要点明是哪张 spec：%v", err)
+	}
+}
