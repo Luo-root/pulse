@@ -38,6 +38,9 @@ type Graph struct {
 	// 允许绑定的那批（见 DeclareOutput）。两张表都由声明写入，**封口后不再变**。
 	inPorts  map[string]keyRef
 	outPorts map[string]keyRef
+	// order 只记首次成功声明的顺序：端口视图不从 map 迭序或节点使用情况反推。
+	inPortOrder  []keyRef
+	outPortOrder []keyRef
 
 	nodes []*Node
 

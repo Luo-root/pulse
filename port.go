@@ -96,8 +96,10 @@ func (g *Graph) declarePorts(ports []Port, input bool) error {
 
 	table := &g.outPorts
 	other := &g.inPorts
+	order := &g.outPortOrder
 	if input {
 		table, other = &g.inPorts, &g.outPorts
+		order = &g.inPortOrder
 	}
 
 	// 校验段：只读。零值端口、键登记表冲突、**本批次内同名跨型**、与既有声明冲突，都在这段报完。
@@ -141,6 +143,9 @@ func (g *Graph) declarePorts(ports []Port, input bool) error {
 	for _, p := range ports {
 		if err := g.keys.register(p.ref); err != nil {
 			return err
+		}
+		if _, exists := (*table)[p.ref.name]; !exists {
+			*order = append(*order, p.ref)
 		}
 		(*table)[p.ref.name] = p.ref
 	}

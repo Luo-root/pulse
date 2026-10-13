@@ -50,7 +50,9 @@ type Execution struct {
 	started bool
 	done    bool // Wait 返回过：此后 cancel 只是收尾，不再算运行结果
 	err     error
-	wg      sync.WaitGroup
+	// states 是本次运行的节点读数，受 mu 保护；输出顺序由 graph.nodes 决定。
+	states map[*Node]nodeRuntime
+	wg     sync.WaitGroup
 	// finishOnce 让「发一次 OnGraphFinished」与「所有 Wait 都等到它落地」同时
 	// 成立：sync.Once 会阻塞后来的调用者直到第一个调用返回（比自己的 done
 	// 门闩强——那个只保证不重发，先返回的 Wait 会把出口先关掉）。
@@ -493,11 +495,13 @@ func (e *Execution) runNode(n *Node) {
 	var waited, ran atomic.Bool
 	emitWaiting := func() {
 		if waited.CompareAndSwap(false, true) {
+			e.recordNodeState(n, NodeStatusWaiting, nil)
 			e.notify(func(o Observer) { o.OnNodeWaiting(e.site, n.id) })
 		}
 	}
 	emitRunning := func() {
 		if ran.CompareAndSwap(false, true) {
+			e.recordNodeState(n, NodeStatusRunning, nil)
 			e.notify(func(o Observer) { o.OnNodeRunning(e.site, n.id) })
 		}
 	}
@@ -554,17 +558,17 @@ func (e *Execution) runNode(n *Node) {
 	err := chain(rc)
 	if isSkipped(err) {
 		e.settleUnwritten(n, rc)
-		e.notify(func(o Observer) { o.OnNodeFinished(e.site, n.id, NodeSkipped, err) })
+		e.finishNode(n, NodeSkipped, err)
 		return
 	}
 	if err != nil {
 		e.fail(err)
 		e.settleUnwritten(n, rc)
-		e.notify(func(o Observer) { o.OnNodeFinished(e.site, n.id, finishReason(err), err) })
+		e.finishNode(n, finishReason(err), err)
 		return
 	}
 	e.settleUnwritten(n, rc)
-	e.notify(func(o Observer) { o.OnNodeFinished(e.site, n.id, NodeCompleted, nil) })
+	e.finishNode(n, NodeCompleted, nil)
 }
 
 // settleUnwritten 把这次运行里**还没有落地**的 Provide 收成跳过（隐式跳过）。
