@@ -25,6 +25,12 @@ Topology 包含完整声明端口、绑定与静态子树；Mermaid 只从它派
 
 尚未收尾或真实失败/取消不返回部分业务值；错误时 value/state 无效。Wait 的正常 ctx 释放不污染成功结果，GraphFinished 回调也能读已确定结果。返回的可变业务对象不深拷贝，宿主仍负责同步。完整调用示例见[根 README](https://github.com/Luo-root/pulse/blob/main/README.md#取得本轮结果)。
 
+## 恢复成果的观测
+
+检查点恢复创建新的 Execution。已确认节点不重跑切面或业务体，只在 GraphStarted 之后迁移终态并发一次 Finished；不伪造 Waiting/Running、未创建的 Child 或子图事件。Snapshot 展示本轮实际创建的对象，仍不包含业务值。
+
+现有 RecordObserver 不把单独 Finished 伪装成耗时为零的业务运行；恢复事实由独立 Durable 的 `EventRestored` 与持久记录提供。可靠的检查点钩子属于执行控制，错误会阻止发布，与 Observer 的只读异常隔离分开。方案 A 的子图作用域、重试预算和提交边界见[桥接契约](https://github.com/Luo-root/pulse/blob/main/docs/design/checkpoint.md)。
+
 ## 引擎的 seam
 
 ```go

@@ -22,7 +22,7 @@
 
 **Pulse** 是可嵌入 Go 程序的 workflow 执行内核，以数据到达驱动图中的步骤，并提供图观测。节点只声明读哪些 Key、写哪些 Key，拓扑由数据的生产与消费隐式形成——没有边对象、没有「先排序再执行」的调度阶段、没有本地调度循环。
 
-当前支持单进程中的执行与静态子图组合。独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable) 按节点检查点恢复路线扩展能力，**目前处于设计阶段、尚无实现**；持久化等待与分布式运行管理是后续设计方向。两仓的定位、职责与开发顺序见 [workflow-engine 开发总纲](docs/design/workflow-foundation.md)。已确认的首次桥接发布目标是 **Pulse v0.5.0 / Durable v0.1.0**，以能力补齐、桥接契约定稿和整套联调通过为闸门；之后继续 0.x 迭代，达到项目目标且无可预见的系统性重大变更后，再完善详细文档并发布 v1.0.0、基本固定 API 与实现。
+当前支持单进程中的执行、静态子图组合和显式检查点桥接。独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable) 首期方案 A 已完成本地实现与联调，尚未合并或发布：重启认回原父尝试并保留已确认子进度，失败后的新 Retry 使用新作用域；持久化等待与分布式运行管理是后续设计方向。两仓的定位、职责与开发顺序见 [workflow-engine 开发总纲](docs/design/workflow-foundation.md)。已确认的首次桥接发布目标是 **Pulse v0.5.0 / Durable v0.1.0**，以能力补齐、桥接契约定稿和整套联调通过为闸门；之后继续 0.x 迭代，达到项目目标且无可预见的系统性重大变更后，再完善详细文档并发布 v1.0.0、基本固定 API 与实现。
 
 Pulse 只有三样东西：
 
@@ -147,6 +147,14 @@ case pulse.SlotStatePending:
 `ReadOutput` 立即返回，只接受本执行所属图声明过的同名同类型出口。同名同类型的 `Key[T]` 等价；内部 Key 与类型不符的键返回 `ErrUndeclared`。正常 `skipped` 和未喂的可选透传 `pending` 都返回 nil error，不把缺值当失败，也不把 pending 改写成 skipped。
 
 结果在 Wait 收尾确定之后可读（GraphFinished 回调里也可读）。尚未收尾时不返回部分值；真实失败或取消返回执行原因，`errors.Is` 可判断。任何 error 非 nil 时，value 和 state 均无效；正常收尾的 ctx 释放不影响结果。slice、map、指针等仍是原业务值，不深拷贝；宿主负责共享对象的并发安全。读取不改变槽位、不发事件，也不把业务值加入 Snapshot 或默认记录。可运行示例见 [ExampleReadOutput](read_output_example_test.go)。
+
+## 检查点执行与恢复
+
+需要跨进程恢复时，使用独立的 `pulse-durable` Run/Resume；同一份 Graph/Node/Key 定义继续复用。Core 的 `WithExecCheckpoint` 在完整节点及切面链外暂存输出，Store 同步确认完整检查点之后才发布，`RestoreNodes` 在启动前整批校验并恢复已确认节点。
+
+方案 A 保留子图进度：下载和提取已确认、摘要时退出，恢复仅重做未确认的摘要；三个子节点已完成而父步骤未确认，恢复也不重做三个子业务。父 Retry 明确失败后，新尝试使用新持久作用域，旧子成果不会混入。最终真实失败的运行不会通过 Resume 重新获得 Retry 预算；进程中断或宿主取消则认回活跃尝试。
+
+首期支持注册 Codec 的非流式值，包含合法零值、nil interface 与 typed nil；不支持 channel、持久等待或分布式派发。MemoryStore 验证协议，文件后端和真实退出/重启用例验证本机进程恢复。副作用仍由业务提供幂等或事务。完整机制与边界见 [检查点桥接与子图恢复](docs/design/checkpoint.md)。
 
 ## 设计理念
 

@@ -574,6 +574,14 @@ _, _ = structure, progress
 
 没有快照就只出结构，不猜状态、不着色。给 WithMermaidSnapshot 时，只按图 ID + Path + Node ID 匹配当前结构；未知状态和错图 / 错路径快照忽略。子状态从活 Child 逐层再采样，不能称为整树同一瞬间的快照；错误正文和业务值不进入图。nil Topology 返回 flowchart 声明，nil Snapshot 与未提供选项一致。渲染时调用方不能并发改传入的 Topology / Snapshot 副本。
 
+## 6.4 可靠检查点桥接
+
+`WithExecCheckpoint` 显式启用整棵执行树的检查点模式：完整 Aspect 链外开节点写集，Retry 成功仅交外层暂存，最终完整输出经同步 Commit 确认之后才逐键发布。可靠钩子失败锁存到整棵执行树，即使含 ErrSkipped 或被祖先切面吞错也不能成为正常成功。
+
+`CheckpointNodes` / `CheckpointPorts` 提供真实类型声明副本，`CheckpointInputs` 只复制已接收外部输入；内部值仅通过受校验完整节点包交付。`RestoreNodes` 登记整批计划，Start 在封口同一临界区复验并全部恢复，合法恢复节点不重跑体、切面或提交。
+
+子图采用已确认方案 A：持久根尝试与嵌套 Retry 游标先认回，再打开对应子作用域；进程中断复用已确认子成果，明确失败的新尝试不能复用旧成果。最终失败不靠反复 Resume 刷新预算。声明和动态容器中的 channel 均拒绝，普通模式不受影响。完整机制、取消/失败边界、Store/Codec 责任与真实进程验收见 [检查点桥接与子图恢复](checkpoint.md)。
+
 ## 7. 分层
 
 ```

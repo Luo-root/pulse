@@ -25,6 +25,12 @@ Snapshots never contain business values. Use `pulse.ReadOutput(e, result)` for a
 
 An unfinished, failed or canceled run returns no partial business value; value/state are invalid on error. Normal context cleanup after Wait does not pollute successful results, and GraphFinished can read the finalized result. Mutable business objects are not deep-copied, so hosts still own synchronization. See the [root README](https://github.com/Luo-root/pulse/blob/main/README_en.md#read-this-runs-results) for a complete usage example.
 
+## Observing restored results
+
+Checkpoint recovery creates a new Execution. A confirmed node skips its Aspect chain and body, changes to its terminal state and emits one Finished after GraphStarted. It does not invent Waiting/Running, an uncreated Child or child lifecycle events. Snapshot describes the objects actually created in this run and still contains no business values.
+
+The existing RecordObserver does not turn a lone Finished into a fictitious business run of zero duration. The separate Durable layer reports restoration through `EventRestored` and persistent records. Reliable checkpoint hooks control execution and can prevent publication; this is distinct from read-only Observer panic isolation. See the [bridge contract](https://github.com/Luo-root/pulse/blob/main/docs/design/checkpoint.md) (Chinese) for plan A scopes, retry budgets and commit boundaries.
+
 ## The engine's seam
 
 ```go

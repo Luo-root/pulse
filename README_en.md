@@ -22,7 +22,7 @@
 
 **Pulse** is an embeddable workflow execution engine for Go, with data-arrival-driven graph execution and graph observation. Nodes declare which keys they read and write; the topology is implied by data production and consumption. There are no edge objects, no "sort first, then run" scheduling phase, no local scheduler loop.
 
-Today it supports execution and static graph composition within a single process. The separate [pulse-durable](https://github.com/Luo-root/pulse-durable) project is designed to add node checkpoint recovery; **it is still in the design stage, with no implementation**. Durable waits and distributed run management are future designs. See the [workflow-engine development direction](docs/design/workflow-foundation.md) (Chinese) for the responsibilities and roadmap across both repositories. The agreed first integration releases are **Pulse v0.5.0 / Durable v0.1.0**, gated by completed core capabilities, settled bridge contracts and passing end-to-end integration. Further 0.x iterations follow; v1.0.0 brings detailed documentation and largely fixed APIs and implementation once the project goals are met and no foreseeable major structural changes remain.
+Today it supports execution, static graph composition and an explicit checkpoint bridge within a single process. The separate [pulse-durable](https://github.com/Luo-root/pulse-durable) initial implementation has passed local integration, but has not been merged or released. Its plan A resumes the original parent attempt and confirmed child progress; a new Retry after confirmed failure uses a new scope. Durable waits and distributed run management are future designs. See the [workflow-engine development direction](docs/design/workflow-foundation.md) (Chinese) for the responsibilities and roadmap across both repositories. The agreed first integration releases are **Pulse v0.5.0 / Durable v0.1.0**, gated by completed core capabilities, settled bridge contracts and passing end-to-end integration. Further 0.x iterations follow; v1.0.0 brings detailed documentation and largely fixed APIs and implementation once the project goals are met and no foreseeable major structural changes remain.
 
 Pulse contains three packages:
 
@@ -147,6 +147,14 @@ case pulse.SlotStatePending:
 `ReadOutput` returns immediately and accepts only outputs declared by this execution's graph with the same name and type. Same-name, same-type keys are equivalent. Internal keys and type mismatches return `ErrUndeclared`. Both a normal skipped result and an unfed optional pass-through pending result return a nil error; absence is not failure, and pending is never rewritten as skipped.
 
 Results are readable once Wait finalizes the run, including inside GraphFinished. Before finalization no partial value is returned; actual failure or cancellation returns the execution cause, preserving `errors.Is`. With a non-nil error both value and state are invalid. Normal context cleanup after Wait does not affect results. Slices, maps and pointers remain the original business values, without deep copies; hosts own synchronization of shared objects. Reading neither changes slots nor emits events, and never adds business values to Snapshot or default records. See the runnable [ExampleReadOutput](read_output_example_test.go).
+
+## Checkpoint execution and recovery
+
+Use the separate `pulse-durable` Run/Resume entry points for recovery across process restarts, retaining the same Graph/Node/Key definitions. Core's `WithExecCheckpoint` stages writes outside the complete node and Aspect chain, publishing only after Store confirms the complete checkpoint. `RestoreNodes` validates and installs a whole recovery plan before starting work.
+
+Plan A preserves child progress: if download and extraction are confirmed before interruption during summarization, only the unconfirmed summary reruns. If all children are confirmed but the parent is not, none of those child bodies rerun. A new parent Retry after confirmed failure uses a new persistent scope and cannot reuse failed-attempt child results. Resume does not replenish the retry budget of a terminal business failure; process interruption or host cancellation recognizes the active attempt instead.
+
+The initial scope covers registered Codec values without streams, including valid zero values, nil interfaces and typed nils. It excludes channels, durable waits and distributed dispatch. MemoryStore checks the protocol; the file backend and actual exit/restart tests verify recovery on one host. Business side effects still require idempotency or transactions. See [checkpoint bridge and child recovery](docs/design/checkpoint.md) (Chinese) for the complete contract.
 
 ## Design philosophy
 
