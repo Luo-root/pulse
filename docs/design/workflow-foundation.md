@@ -152,9 +152,9 @@ flowchart TB
 
 ### 结果读取要守住端口边界
 
-近期应给宿主提供类型化的声明出口读取。它与只含状态的 Snapshot 分开：出口是用户声明的公共结果，内部 Key 仍是实现细节。
+宿主类型化声明出口读取已按 [#321](https://github.com/Luo-root/pulse/issues/321) 实现为 `ReadOutput(e, key)`（主干合入 / 发布状态以对应 PR 与 release 为准）。它与只含状态的 Snapshot 分开：出口是用户声明的公共结果，内部 Key 仍是实现细节。
 
-具体 API 需另票定稿，并覆盖尚未启动/运行中/完成/失败/取消、正常 skipped、零值、类型错误、未声明出口及未喂的可选透传端口。读取不能靠等待一个永远不会到达的槽位，也不能把 pending 偷换成 skipped。Wait 收尾会取消执行 ctx，完成后读数不能误把这次资源释放解释成业务失败。
+主路径成功 Wait 后立即读取：返回业务值、既有 SlotState 与 error；ready 包含零值和 nil，正常 skipped 与未喂的可选透传 pending 都不报失败。不等待、不造槽、不把 pending 偷换成 skipped；未收尾和真实失败/取消不返回部分值，同名同类型键等价且必须是本图声明出口。Wait 先锁存终态再释放 ctx（#327），正常资源释放不污染结果；可变业务值不深拷贝。完整契约见 [pulse.md 的结果读取](pulse.md#62-宿主结果读取readoutput)。
 
 ## 7. 分布式分两步，长等待也有自己的边界
 

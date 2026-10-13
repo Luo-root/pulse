@@ -124,6 +124,30 @@ if err := e.Wait(); err != nil {
 
 仅查看 YAML 时，用 `pulse/yaml.Analyze(data, LoadOptions{GraphID: "demo"})`，无需登记工厂。它共用 Load 的装配与结构判据；类型是文档标签，无法推断时留空，真实 Go 类型与值仍由 Load / SeedPlan.Inputs 对账。详见 [YAML 包说明](yaml/README.md)。这些读取不推进执行，也不增加 Observer 事件。
 
+## 取得本轮结果
+
+需要业务值时，先用 `g.DeclareOutput(pulse.NewPort(result))` 声明公共出口，再从这一轮执行读取；不必增加一个仅为取值的输出节点，也不必用共享闭包保存结果。
+
+```go
+// e 已成功 Start / Wait，result 是本图声明过的 Key[T] 出口。
+value, state, err := pulse.ReadOutput(e, result)
+if err != nil {
+    panic(err)
+}
+switch state {
+case pulse.SlotStateReady:
+    fmt.Println(value) // 0、空串或 nil 也可以是真正的 ready 值。
+case pulse.SlotStateSkipped:
+    fmt.Println("这轮没有这个结果")
+case pulse.SlotStatePending:
+    fmt.Println("可选透传出口未提供")
+}
+```
+
+`ReadOutput` 立即返回，只接受本执行所属图声明过的同名同类型出口。同名同类型的 `Key[T]` 等价；内部 Key 与类型不符的键返回 `ErrUndeclared`。正常 `skipped` 和未喂的可选透传 `pending` 都返回 nil error，不把缺值当失败，也不把 pending 改写成 skipped。
+
+结果在 Wait 收尾确定之后可读（GraphFinished 回调里也可读）。尚未收尾时不返回部分值；真实失败或取消返回执行原因，`errors.Is` 可判断。任何 error 非 nil 时，value 和 state 均无效；正常收尾的 ctx 释放不影响结果。slice、map、指针等仍是原业务值，不深拷贝；宿主负责共享对象的并发安全。读取不改变槽位、不发事件，也不把业务值加入 Snapshot 或默认记录。可运行示例见 [ExampleReadOutput](read_output_example_test.go)。
+
 ## 设计理念
 
 上一条「一屏看懂设计」讲的是**形状**，这里讲**为什么**——完整版见 [`docs/design/philosophy.md`](docs/design/philosophy.md)，站点上也有[设计理念](https://luo-root.github.io/pulse/guide/philosophy)一页。

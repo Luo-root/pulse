@@ -124,6 +124,30 @@ A snapshot contains states, types, sources and errors, **without business values
 
 To inspect YAML without registered factories, call `pulse/yaml.Analyze(data, LoadOptions{GraphID: "demo"})`. It shares Load's assembly and structural checks. Types are document labels, left empty when they cannot be inferred; actual Go types and values remain checked by Load / SeedPlan.Inputs. See the [YAML package guide](yaml/README_en.md). These reads neither advance execution nor add Observer events.
 
+## Read this run's results
+
+Declare public outputs with `g.DeclareOutput(pulse.NewPort(result))`, then read from this execution. No extra output node or shared closure is needed to carry a value out of the workflow.
+
+```go
+// e has successfully completed Start / Wait; result is a declared Key[T] output.
+value, state, err := pulse.ReadOutput(e, result)
+if err != nil {
+    panic(err)
+}
+switch state {
+case pulse.SlotStateReady:
+    fmt.Println(value) // Zero, an empty string or nil may still be a ready value.
+case pulse.SlotStateSkipped:
+    fmt.Println("no result this run")
+case pulse.SlotStatePending:
+    fmt.Println("optional pass-through output was not supplied")
+}
+```
+
+`ReadOutput` returns immediately and accepts only outputs declared by this execution's graph with the same name and type. Same-name, same-type keys are equivalent. Internal keys and type mismatches return `ErrUndeclared`. Both a normal skipped result and an unfed optional pass-through pending result return a nil error; absence is not failure, and pending is never rewritten as skipped.
+
+Results are readable once Wait finalizes the run, including inside GraphFinished. Before finalization no partial value is returned; actual failure or cancellation returns the execution cause, preserving `errors.Is`. With a non-nil error both value and state are invalid. Normal context cleanup after Wait does not affect results. Slices, maps and pointers remain the original business values, without deep copies; hosts own synchronization of shared objects. Reading neither changes slots nor emits events, and never adds business values to Snapshot or default records. See the runnable [ExampleReadOutput](read_output_example_test.go).
+
 ## Design philosophy
 
 The section above is about **shape**; this one is about **why** — the full version is [`docs/design/philosophy.md`](docs/design/philosophy.md), and the site has a [Design philosophy](https://luo-root.github.io/pulse/en/guide/philosophy) page.

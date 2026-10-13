@@ -19,6 +19,12 @@ _, _ = staticDiagram, statusDiagram
 
 Topology 包含完整声明端口、绑定与静态子树；Mermaid 只从它派生结构，没有快照就不着色。给快照后按图 ID + Path + Node ID 叠状态，子执行逐层采样，固定值和错误正文不进入图。只查看 YAML 可用无需 Registry 的 Analyze，详见 [YAML 装配](/packages/yaml/)。
 
+## 业务结果与进度分开
+
+快照始终不带业务值。宿主需要结果时，用 `pulse.ReadOutput(e, result)` 读取已声明的同名同类型出口；主路径先成功 Start / Wait，再处理返回的 `value, state, err`。有值（含零值）是 ready，正常缺值是 skipped，可选透传未提供仍为 pending；后两者不报执行失败，也不等待或修改槽位。
+
+尚未收尾或真实失败/取消不返回部分业务值；错误时 value/state 无效。Wait 的正常 ctx 释放不污染成功结果，GraphFinished 回调也能读已确定结果。返回的可变业务对象不深拷贝，宿主仍负责同步。完整调用示例见[根 README](https://github.com/Luo-root/pulse/blob/main/README.md#取得本轮结果)。
+
 ## 引擎的 seam
 
 ```go

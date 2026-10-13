@@ -548,7 +548,21 @@ Child 是挂载点最新已创建尝试的活 `*Execution`，创建后、Start �
 
 Snapshot **不携带业务值，没有带值开关**。除 Child 与 error 引用外，结构与切片都隔离；读取不建槽、不推进运行、不发新事件。定义、执行状态与各槽位分别在自己的锁里采样，**不是原子切面**：running 节点已有 ready / skipped 输出、其他输出仍 pending 都合法。Retry 暂存中的写尚未发布，不出现在执行槽位读数中；它不是 checkpoint、恢复或结果读取协议。
 
-## 6.2 Mermaid：从静态结构生成图
+## 6.2 宿主结果读取：`ReadOutput`
+
+```go
+value, state, err := pulse.ReadOutput(e, result)
+```
+
+这是泛型包函数，签名为 `ReadOutput[T any](e *Execution, k Key[T]) (T, SlotState, error)`。它只读本轮执行所属图 `DeclareOutput` 声明过的同名同类型键；Key 没有图来源身份，同名同类型等价。内部 Key、未声明出口、零 Key 与错误类型拒绝，包装 ErrUndeclared；nil / 零 Execution 直接报错。它不复用节点 Get 的权限，不开放字符串 any 黑板。
+
+成功 Wait 收尾后，ready 返回业务值（包括零值、nil interface 与 typed nil），skipped 返回零值与 skipped，未喂且无人 Requires 的可选透传返回零值与真实 pending；三者均为 nil error。尚未收尾立即报错，不等待、不返回部分值；失败或取消返回执行原因。错误非 nil 时值与状态无效，状态为空串；不把正常缺值编码成失败。GraphFinished 回调前终态已确定，所以回调内可读；Wait 正常释放 ctx 不改变结果。
+
+Wait 在同一执行锁内先锁存首错或当前真实取消，再置 done，后续重复 / 并发 Wait 只读终态；这样既保留“所有节点已退出、收尾前才取消”的真实原因，也不会把自己收尾的 cancel 反抓成失败（#327）。
+
+读取只在定义、执行与槽位各自的锁内取已有数据，不造槽、不推进、不发事件。业务值不深拷贝；slice/map/指针等仍引用宿主对象，宿主负责同步和所有权。Snapshot 与 Observer 仍不带业务值；Durable 全节点提交/恢复另走 #307 的受校验契约，不借用结果读取绕开内部键权限。
+
+## 6.3 Mermaid：从静态结构生成图
 
 ```go
 structure := g.Topology().Mermaid()

@@ -19,6 +19,12 @@ Snapshots contain no business values. Nodes and slots are sampled separately, so
 
 Topology includes the complete declared interface, binds and static child tree. Mermaid derives structure only from that view and adds no colors without a snapshot. With a snapshot, it matches states by graph ID + Path + Node ID and samples children separately; fixed values and error text stay out of the diagram. Registry-free Analyze can inspect YAML without factories; see [YAML assembly](/en/packages/yaml/).
 
+## Business results and progress
+
+Snapshots never contain business values. Use `pulse.ReadOutput(e, result)` for a declared output with the matching name and type; the main path is successful Start / Wait followed by `value, state, err`. Ready includes zero values, skipped means normal absence, and an unfed optional pass-through stays pending. The latter two are not execution failures; reading neither waits nor changes slots.
+
+An unfinished, failed or canceled run returns no partial business value; value/state are invalid on error. Normal context cleanup after Wait does not pollute successful results, and GraphFinished can read the finalized result. Mutable business objects are not deep-copied, so hosts still own synchronization. See the [root README](https://github.com/Luo-root/pulse/blob/main/README_en.md#read-this-runs-results) for a complete usage example.
+
 ## The engine's seam
 
 ```go
