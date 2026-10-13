@@ -197,29 +197,43 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	if reg == nil {
 		return nil, nil, fmt.Errorf("pulse/yaml: nil registry")
 	}
+	doc, err := decodeDocument(data, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return loadDocument(doc, reg, opts)
+}
+
+// decodeDocument 是 Load / Analyze 共用的解码与文档级检查，顺序与 Load 一致。
+func decodeDocument(data []byte, opts LoadOptions) (Document, error) {
 	var doc Document
 	if err := goyaml.Unmarshal(data, &doc); err != nil {
-		return nil, nil, fmt.Errorf("pulse/yaml: decode: %w", err)
+		return Document{}, fmt.Errorf("pulse/yaml: decode: %w", err)
 	}
 	if doc.Version != 0 && doc.Version != 1 {
-		return nil, nil, fmt.Errorf("pulse/yaml: unsupported version %d (want 0 or 1)", doc.Version)
+		return Document{}, fmt.Errorf("pulse/yaml: unsupported version %d (want 0 or 1)", doc.Version)
 	}
 	if len(doc.Nodes) == 0 {
-		return nil, nil, fmt.Errorf("pulse/yaml: document has no nodes")
+		return Document{}, fmt.Errorf("pulse/yaml: document has no nodes")
 	}
 	if opts.GraphID == "" {
-		return nil, nil, fmt.Errorf("pulse/yaml: graph id is required (LoadOptions.GraphID, observe instance identity)")
+		return Document{}, fmt.Errorf("pulse/yaml: graph id is required (LoadOptions.GraphID, observe instance identity)")
 	}
 	_ = doc.Observer // 明确忽略；宿主用 LoadOptions.Graph / ObserverFor 挂 Observer
 
 	// 子图先做静态校验：引用、环、seed 取值方式三类都是「装不出图」或
 	// 「跑到一半才炸」的病，而都能在这一刻判定（C4 / C5）。
 	if err := checkGraphRefs(doc.Graphs); err != nil {
-		return nil, nil, err
+		return Document{}, err
 	}
 	if err := checkSubSeeds(doc.Graphs); err != nil {
-		return nil, nil, err
+		return Document{}, err
 	}
+	return doc, nil
+}
+
+// loadDocument 共用装配器，不把已解码的声明再编码成 YAML。
+func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *SeedPlan, error) {
 	referenced := referencedGraphs(doc)
 
 	// 装图分两遍，判据只写一份：先装一棵**只装不跑的校验树**（子图一律静态挂、不建出口），
