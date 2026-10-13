@@ -6,7 +6,9 @@ Pulse 的每条设计取舍都有理由。这一页讲**为什么**——好让�
 
 ## 一句话定位
 
-Pulse 是 Go 的**数据到达驱动**执行引擎，外加一层**图观测**。它只做三件事：
+Pulse 的产品方向是**数据驱动、可观测、可组合的 Go workflow-engine 基座**。当前 `pulse` 提供可嵌入的单进程执行内核和图观测；独立的 `pulse-durable` 按节点检查点恢复路线扩展长期运行能力，持久化等待与分布式运行管理仍是后续设计方向，尚未实现。两仓职责与路线见 [开发总纲 #320](https://github.com/Luo-root/pulse/issues/320)。
+
+下面讲的是**执行内核**的三件事；durable 的任务领取、唤醒与接管属于运行管理，两层职责分开：
 
 1. **声明**：谁读什么、谁写什么；
 2. **推进**：一条 Key 到达（有值或显式跳过）就让等它的节点具备就绪条件——没有边对象、没有「先排序再执行」的调度阶段、没有调度循环；
@@ -58,6 +60,8 @@ Pulse 是 Go 的**数据到达驱动**执行引擎，外加一层**图观测**�
 
 ## 刻意不做
 
+下列边界针对执行内核。durable 后续的检查点、等待、任务领取与接管属于运行管理；核心没有中心调度循环，不妨碍那一层有自己的持久调度协议。
+
 | 不做 | 因为 |
 |---|---|
 | 中心调度器与「先拓扑排序再执行」 | 数据到达就推进；执行顺序是声明的**结果**，不是前提；拓扑视图是只读出口，不参与推进 |
@@ -73,4 +77,4 @@ Pulse 是 Go 的**数据到达驱动**执行引擎，外加一层**图观测**�
 
 **执行**：`Graph` 是**可复用的静态定义**，一次运行的 ctx / 输入值 / 槽位 / 节点状态 / 首错 / 取消域全在新的 `Execution` 里——同一张图可以顺序跑很多次、并发跑很多次，也可以挂在多处当子图（每个挂载位置一份自己的子执行），一次运行的取消 / 失败 / 完成不污染定义，也不污染别的运行。输入（`Inputs` + `Seed` / `SkipSeed`）属于**这一次运行**，定义只声明「这条键从外面来」（`DeclareInput`）。
 
-还在路上的：阶段 4（快照 / 观测 / YAML 对齐）与阶段 5（迁移与发布）按 [#311](https://github.com/Luo-root/pulse/issues/311) 推进；**阶段 1（静态组合）/ 2（`Execution` 拆分）/ 3（事务性 `Retry`）都已落地**，契约与逐阶段落地情况见 [`docs/design/object-model.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/object-model.md)。
+阶段 4（快照 / 观测 / YAML 对齐）已实现（#319，主干合入与发布状态以 PR / release 为准）：Topology 看完整静态接口，Execution 快照看本轮进度，Mermaid 可叠状态，YAML Analyze 无需注册表。阶段 5（迁移与发布）继续按 [#311](https://github.com/Luo-root/pulse/issues/311) 收口；**阶段 1（静态组合）/ 2（`Execution` 拆分）/ 3（事务性 `Retry`）都已落地**，契约与逐阶段落地情况见 [`docs/design/object-model.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/object-model.md)。

@@ -5,7 +5,7 @@
 > 本篇写**当前实现**的编排与观测：类型、时序、冻结面。理念（为什么这样取舍）见
 > [`philosophy.md`](philosophy.md)；**目标对象模型**（`Graph` 定义 / `Execution` 运行，含现状差距与
 > 迁移策略）见 [`object-model.md`](object-model.md)——两者冲突时以 object-model 为准，**已经落地的阶段
-> 本文已经跟着改过**（剩下的阶段是阶段 4 快照 / 观测 / YAML 对齐）。
+> 本文已经跟着改过**；阶段 4 快照 / 观测 / YAML 对齐已实现（#319），主干合入与发布状态以对应 PR / release 为准；以下视图章节描述本次实现。
 
 ## 0. 定位
 
@@ -211,6 +211,23 @@ nodes:
 `literal` 的取值由 YAML 解码器给出（泛型容器 `[]any` / `map[string]any`），`SeedByName` 会按登记类型做**形状对齐**：容器递归、标量同族（数值之间、命名类型、字符串之间）。**不做** map→struct 的字段猜测，也不做字符串↔数字互转、浮点截断成整数——这三类直接报错，由 `resolve` 给出类型正确的值。判据一句话：**形状可以机器对齐，语义只有调用方知道。**
 
 时间字段用 Go 的 `ParseDuration` 形式（`30s` / `100ms`），不写裸数字。
+
+### 不用注册表的静态分析：`Analyze`
+
+```go
+top, err := yaml.Analyze(data, yaml.LoadOptions{GraphID: "demo", MaxRunning: 4})
+if err != nil {
+    return err
+}
+text := top.Mermaid()
+_ = text
+```
+
+Analyze 共用 Load 的解码、assembler、核心静态校验，返回同一种 `*pulse.Topology`。它不接收 Registry，但仍要求 GraphID，静态选项与 Load 相同。根层诊断保留在 Topology.Problems；子图与装配错误返回 error。不创建 Execution、不执行工厂或切面、不解析外部 seed、不调用 ObserverFor。
+
+Type 是 YAML 标签，可沿 in/out 传播；显式 KeySpec 必须有 type，同名键及绑定两端的已知标签冲突会报错。纯接线中没有已知标签可推导的键，Type 为空串。任意标签原样保留，不能由此证明真实 Go 类型、宿主登记或 literal 可赋值性；这些仍由 Load / SeedPlan.Inputs 检查。不从 literal 猜类型，也不能推测普通工厂内部的 Go 流糖行为。标签预检查早于装配，多处同时出错时不承诺两个入口的首条诊断完全相同。
+
+`SeedPlan.Inputs(resolve)` 每次提供一份独立运行输入，同一图可接不同输入创建多份执行；它复制输入表，不深拷贝宿主值里的指针 / map。
 
 ### YAML 里的子图：`graphs` / `graph`
 
@@ -511,6 +528,38 @@ pulse: subgraph "inner" (mounted at "step1/toInner"): pulse: node "leaf" require
 
 # 第二部分 · 观测
 
+## 6.1 静态形状与运行读数
+
+`g.Topology()` 回答「图长什么样」：Nodes 按 Add 声明序，完整子树在 Sub，Binds 保存父子接线，Graph.Path 按挂载位置推导。Graph.InPorts / OutPorts 保留完整声明接口，按首次成功声明序；unused 进口和透传两侧都在，普通内部键不自动成为出口。进口 From 为 SourceInput，出口 From 为 SourceNone，来源从节点或透传入口推导。副本中的结构与切片不影响定义。
+
+`e.Snapshot()` 回答「本轮跑到哪」，无需订阅 Observer：
+
+| 结构 | 字段与含义 |
+|---|---|
+| GraphState | ID / Description 是定义；Execution 是本次运行；Path 是挂载位置；Status / Err 是进度与已捕获首错 |
+| NodeState | ID / Description / Status / Inputs / Outputs / Child / Err；节点与 Topology 同声明序同 ID |
+| KeyState | Name / Type / From / State；只给类型、来源与到达状态，输入上的 From 与 Requires 共用词表 |
+
+GraphStatus 是 pending / running / completed / failed / canceled；NodeStatus 还含 waiting / skipped；SlotState 是 pending / ready / skipped。节点四个终态与 NodeFinishReason 逐字相同，ready 与 skipped 都是到达。waiting 若仍有 pending 输入，就是在等这些输入；输入全到达（或没有输入）则在等进入 Run 的机会，切面可能延长这段等待，不能保证它正在阻塞于名额。
+
+状态在 Observer 回调前迁移，回调内读得到这次迁移。Retry 不重复 waiting / running，也不倒退状态。图创建后 pending，成功 Start 后 running，在 Wait 收尾时确定终态；只 Start 不 Wait 时，即使所有节点已结束仍为 running。正常收尾的 cancel 不污染 completed；尚未被节点观察到的 ctx 取消不提前当作终态错误。
+
+Child 是挂载点最新已创建尝试的活 `*Execution`，创建后、Start 前就记录，失败或取消仍保留；未建出时为 nil。继续查看它时再调 Child.Snapshot，取得另一个时刻的读数。运行态按节点定义指针记录在 Execution 上，不挂 Node 或 Graph；Start 前新增的节点可见为 pending，成功启动封口后节点集合固定。
+
+Snapshot **不携带业务值，没有带值开关**。除 Child 与 error 引用外，结构与切片都隔离；读取不建槽、不推进运行、不发新事件。定义、执行状态与各槽位分别在自己的锁里采样，**不是原子切面**：running 节点已有 ready / skipped 输出、其他输出仍 pending 都合法。Retry 暂存中的写尚未发布，不出现在执行槽位读数中；它不是 checkpoint、恢复或结果读取协议。
+
+## 6.2 Mermaid：从静态结构生成图
+
+```go
+structure := g.Topology().Mermaid()
+progress := g.Topology().Mermaid(pulse.WithMermaidSnapshot(e.Snapshot()))
+_, _ = structure, progress
+```
+
+序列化归根包，不让手写 Go 图为了出图依赖 YAML 或 observe。图、节点、端口与接线沿视图声明序展开，内部 ID 由遍历序数生成；map 只查找，不决定输出顺序。用户名字、描述、类型与 Key 名均作显示文本编码，不进入 Mermaid 指令位置。未使用口、透传、固定输入与同一子图多处挂载均有独立端点；Fix / FixSkip 只显示 fixed，不显示值。
+
+没有快照就只出结构，不猜状态、不着色。给 WithMermaidSnapshot 时，只按图 ID + Path + Node ID 匹配当前结构；未知状态和错图 / 错路径快照忽略。子状态从活 Child 逐层再采样，不能称为整树同一瞬间的快照；错误正文和业务值不进入图。nil Topology 返回 flowchart 声明，nil Snapshot 与未提供选项一致。渲染时调用方不能并发改传入的 Topology / Snapshot 副本。
+
 ## 7. 分层
 
 ```
@@ -604,13 +653,13 @@ type Sink interface{ Write(r Record) }
 
 跳过节点**只有一条 skipped 等待记录，无运行记录**——这与「跳过是到达」一致：它确实到达了，只是没执行。
 
-归因维度走 Attrs：`pulse.graph`（图 ID）+ `pulse.node`（节点 ID）。**key 契约由引擎定义**（事实归属包），`observe` 只消费不定义。节点记录两个都带，运行级两条只带 `pulse.graph`。
+归因维度走 Attrs：`pulse.graph`（定义 ID）+ `pulse.node`（节点 ID）+ `pulse.execution`（本次执行 ID）。**key 契约由引擎定义**（事实归属包），`observe` 只消费不定义。节点记录带图与节点，运行级两条不带节点；每条记录都带 execution，同一张定义在同一位置跑两次也分得开。
 
-嵌套时再加第三个维度 `pulse.path`：不透明字符串、`/` 连接各层，**段是子图在它父图里的那个节点 id**（不是图 id）。两者分工是硬的——`pulse.graph` 是**你起的图 id**，`pulse.path` 是**引擎记的层级**：同一张子图模板跑两遍就是两个图实例、两条 path，靠它分得开；反过来，id 里带不带斜杠都影响不到 path。段是节点 id 还有一条硬理由：**子图的记录正好挂在父图那个节点的记录下面**——父图 `step1` 那条记录没有 path、节点 id 就是 `step1`，子图记录的 path 也是 `step1`，拼树时不用去解析任何图 id。规则三条：
+嵌套时再加第三个维度 `pulse.path`：不透明字符串、`/` 连接各层，**段是子图在它父图里的那个节点 id**（不是图 id）。两者分工是硬的——`pulse.graph` 是**你起的图 id**，`pulse.path` 是**引擎记的层级**：同一份子图定义挂在两处，path 不同；同一挂载位置跑两轮则 path 相同、execution 不同，靠执行身份分得开；反过来，id 里带不带斜杠都影响不到 path。段是节点 id 还有一条硬理由：**子图的记录正好挂在父图那个节点的记录下面**——父图 `step1` 那条记录没有 path、节点 id 就是 `step1`，子图记录的 path 也是 `step1`，拼树时不用去解析任何图 id。规则三条：
 
 - **取值面在引擎手里**：这一层的**挂载路径**（根执行 `""`；一层子图 `"step1"`；两层 `"outer/inner"`）随每条回调由引擎发出来（`Site.Path`，装配时就定得下来），出口直接读它，**不必再按层各建一个出口**；`ObserveConfig.Path` 只在 site 给不出位置时兜底（旧装配的用法）；
 - **出口写记录**：非空时**每一条**记录（含运行级两条）都带 `pulse.AttrPath`；**为空不写**这个 key——空串会让「根」与「忘了传」长得一样；
-- **层级自己拆**：引擎不提供结构化树、不定义「第几段」的语义，按 `/` 分即可。
+- **记录层级自己拆**：按 `/` 分出挂载路径；Record 保持平面信封，静态树与活子执行分别从 Topology / Execution 快照查看。
 
 这条维度以前只能靠「按层各建一个出口」拿到（出口实例上带一个固定 path），阶段 2 之后引擎把位置随回调发出来，宿主少一层装配负担——`observe` 不认识图结构，它只是把回调里的 `Site.Path` 抄进记录。
 
