@@ -65,13 +65,12 @@ func publicSource(s source) Source {
 
 // KeyShape 是键的形状：名字、类型记号、来源。
 //
-// `Type` 用的是 `reflect.Type.String()`，与声明式装配（`pulse/yaml`）的 type
-// 记号是同一套字面量。
+// Go 定义的 Type 用 reflect.Type.String()，与声明式装配的 type 记号逐字对照。
 type KeyShape struct {
 	Name string
 	Type string
-	// From 只有 `Requires` 有意义（那是「谁喂了它」）；`Provides` 上恒为
-	// `SourceNone`。
+	// From 在 Requires 上表示「谁喂了它」，在 InPorts 上表示 SourceInput；
+	// Provides / OutPorts 上恒为 SourceNone，出口的来源从图的节点或透传入口推导。
 	From Source
 }
 
@@ -83,6 +82,10 @@ type GraphShape struct {
 	// 一层是 `outer/inner`），由**挂载位置**推导——不需要运行、也不会被运行改写，所以
 	// 同一张定义被两处挂载时，两处各看得到自己那份。
 	Path string
+	// InPorts / OutPorts 是完整声明接口，按首次成功声明序，不受节点是否使用影响。
+	// 同一条键可在两侧同时出现（透传）。只有 InPorts 的 From 表示 SourceInput。
+	InPorts  []KeyShape
+	OutPorts []KeyShape
 }
 
 // NodeShape 是一个节点的形状。
@@ -271,7 +274,10 @@ func (g *Graph) topologyAtLocked(at string, chain mountChain, capacity int) *Top
 	}
 
 	t := &Topology{
-		Graph: GraphShape{ID: g.id, Description: g.desc, Path: at},
+		Graph: GraphShape{
+			ID: g.id, Description: g.desc, Path: at,
+			InPorts: g.keyShapes(g.inPortOrder, true), OutPorts: g.keyShapes(g.outPortOrder, false),
+		},
 		Nodes: make([]NodeShape, 0, len(g.nodes)),
 		Edges: make([]EdgeShape, 0),
 		Order: d.order(g.nodes),
@@ -309,8 +315,8 @@ func (g *Graph) topologyAtLocked(at string, chain mountChain, capacity int) *Top
 	return t
 }
 
-// keyShapes 把一组键指纹翻成公开形状。sourced 为真时填来源（只有 `Requires`
-// 需要）——表里没有这条 Key 就是「没有来源」，不是零值落表。
+// keyShapes 把一组键指纹翻成公开形状。sourced 为真时填来源（Requires / InPorts
+// 需要，快照 Inputs 同样复用）——表里没有这条 Key 就是「没有来源」，不是零值落表。
 //
 // 来源两条路：**谁会写它**（外部 `Seed` / 某个节点 `Provides`）优先；没人写就看它是不是
 // 声明过的入口（`DeclareInput`）→ `SourceInput`。端口**不落** producer 表（那张表回答
