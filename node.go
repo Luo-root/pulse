@@ -127,6 +127,10 @@ type RunCtx struct {
 	// ——「这一步推进过没有」是那一次运行的事实。`Fork` 浅拷贝，所以 `Timeout` 里面
 	// 那层看到的是同一份账。
 	advance *advanceLedger
+	// checkpointAttempt 是当前持久尝试，Fork 复制其视图；Retry 只在自己的层次换它。
+	checkpointAttempt CheckpointAttempt
+	aspectIndex       int
+	checkpointEntries *checkpointEntryLedger
 }
 
 // advanceLedger 是**一次运行里一个节点**的推进账：体推进过没有、上一次推进挂在哪条

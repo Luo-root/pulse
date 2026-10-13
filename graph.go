@@ -448,7 +448,7 @@ func (g *Graph) effectiveCapacity(inherited int) int {
 }
 
 func isSkipped(err error) bool {
-	return errors.Is(err, ErrSkipped)
+	return !isCheckpointFailure(err) && errors.Is(err, ErrSkipped)
 }
 
 // isCanceled 判「这一轮被从外面拆了」：主动取消与父 ctx 的截止时间到期同属

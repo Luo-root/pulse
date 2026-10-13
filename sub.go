@@ -398,6 +398,10 @@ func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 		return fmt.Errorf("pulse: Sub %q: %w", id, err)
 	}
 	rc.exec.recordChild(rc.node, sub)
+	if err := rc.prepareChildCheckpoint(sub); err != nil {
+		sub.Cancel()
+		return err
+	}
 
 	// 3) 跑子执行：Start + Wait。失败原样冒泡（首错就是子图的首错）。
 	if err := sub.Start(); err != nil {

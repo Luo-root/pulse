@@ -16,6 +16,7 @@ type execConfig struct {
 	maxRunning  int
 	quotaSet    bool
 	aspects     []Aspect
+	checkpoint  *checkpointConfig
 }
 
 // WithExecObserver 让**这一次运行**用这个观察者，压过定义上 `WithObserver` 声明的那一个。
