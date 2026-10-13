@@ -86,6 +86,16 @@ func main() {
 }
 ```
 
+## 可运行示例
+
+[ExampleSub](sub_example_test.go) 演示父图通过 `In` / `Out` 接入“下载 → 提取 → 摘要”子图，同一份父子图定义用不同输入运行两次，再从每次 Execution 读取声明出口。[ExampleReadOutput](read_output_example_test.go) 同时展示正常结果与正常跳过。
+
+```bash
+go test -count=1 -run 'ExampleSub|ExampleReadOutput' -v .
+```
+
+普通执行的两轮都会运行全部业务节点。需要复用已经确认的历史成果时，保持图定义与端口接线方式，通过独立 `pulse-durable` 的 Run/Resume 接入存储；它的子图恢复示例使用文件后端演示中断后只重进未确认步骤。
+
 ## 一屏看懂设计
 
 - **数据到达即调度。** `Requires` 是 AND 前置：全部输入到达（就绪或跳过）才判门；**到几个收几个**——只要有一条输入真的到了值就执行 `Run`，一条值都没到才跳过自己。

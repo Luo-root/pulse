@@ -86,6 +86,16 @@ func main() {
 }
 ```
 
+## Runnable examples
+
+[ExampleSub](sub_example_test.go) mounts a “download → extract → summarize” child graph through `In` / `Out`, reuses the same parent and child definitions for two different inputs, and reads declared outputs from each Execution. [ExampleReadOutput](read_output_example_test.go) covers both a normal result and a normal skip.
+
+```bash
+go test -count=1 -run 'ExampleSub|ExampleReadOutput' -v .
+```
+
+Ordinary execution runs every business node again on each run. To reuse confirmed historical work, retain the graph definitions and port bindings and use the separate `pulse-durable` Run/Resume entry points with a Store. Its file-backed child-recovery example shows an interrupted run re-entering only its unconfirmed step.
+
 ## Design in one screen
 
 - **Data arrival is scheduling.** `Requires` is an AND precondition: the gate is judged once all inputs have arrived (ready or skipped); **collect whatever arrives** — as soon as one input arrived with a value the node enters `Run`, and only when no input brought a value does it skip itself.
