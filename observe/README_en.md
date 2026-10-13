@@ -21,6 +21,14 @@ g, err := pulse.New("demo", "demo graph", pulse.WithObserver(obs))
 // … add nodes, seed, run
 ```
 
+## Current progress and event history
+
+`observe` stores facts already emitted by the engine. To ask where a run is waiting at any time, use the root package's `e.Snapshot()`. It works independently of Observer subscriptions and emits no events. State changes happen before callbacks, so callbacks can safely read the corresponding snapshot. Its `Graph.Execution` / `Graph.Path` match `Site`, and therefore the records' `pulse.execution` / `pulse.path` attributes.
+
+Snapshots contain nodes, key types, sources and arrival states, without business values. A waiting node with pending inputs is waiting for those inputs; when all inputs have arrived, it is waiting for a chance to enter Run. `Child` is the live child execution from the latest created attempt, retained after failure or cancellation. Nodes, slots and further child reads are sampled separately rather than atomically. Graph status becomes terminal when Wait finalizes the run; Start alone leaves it running.
+
+Read static structure with `g.Topology()`, including the full declared interface and child tree. `g.Topology().Mermaid(pulse.WithMermaidSnapshot(e.Snapshot()))` overlays this run's states; without a snapshot it renders structure only, never fixed values or error text. `MemorySink.Snapshot()` is instead a copy of collected records, with a different purpose.
+
 ## Record shape
 
 **Two run-level records per run**, plus **two segmented-timing records per node**:
@@ -36,7 +44,7 @@ The two run-level records **bracket** the run's node records (`started` precedes
 
 Attribution rides `Attrs` (`pulse.AttrGraph` / `pulse.AttrNode` / `pulse.AttrExecution`; the key contract is defined by the engine, this package only consumes it): node records carry both, the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run"; `pulse.AttrExecution` is on every record (it is what keeps two runs of one graph apart).
 
-**Nesting depth** is the third dimension, `pulse.AttrPath`: the engine emits the **mounting position** with every callback (`Site.Path`), and this package writes it onto **every** record of that layer — the root graph gets none, since an empty string would make "root" and "forgot to pass it" look alike, leaving an egress unable to use it for layering. One egress attached at the root is enough: a child's records carry their layer by themselves, so there is no need for one egress per level; `ObserveConfig.Path` is only a fallback for when the `Site` brings no position (records written by hand, say, outside the engine). How to split the layers is the egress's business (`/` works); neither the engine nor this package offers a structured tree.
+**Nesting depth** is the third dimension, `pulse.AttrPath`: the engine emits the **mounting position** with every callback (`Site.Path`), and this package writes it onto **every** record of that layer — the root graph gets none, since an empty string would make "root" and "forgot to pass it" look alike, leaving an egress unable to use it for layering. One egress attached at the root is enough: a child's records carry their layer by themselves, so there is no need for one egress per level; `ObserveConfig.Path` is only a fallback for when the `Site` brings no position (records written by hand, say, outside the engine). Splitting record paths is the egress's business (`/` works). This package keeps flat Record envelopes; the structural tree and live child executions are available through Topology / Execution snapshots.
 
 **Duration accounting**: everything is **wall clock**, and callbacks run synchronously on the caller's goroutine — however slow the egress is, that is how long the segment is (the `pulse.graph_finished` window covers the whole run, egress writes included). `AsyncSink` only defers **landing**, it does not take the `Write` call out of the window. A segment rounded to `0` (rendered `-` by the built-in layout) means "too small to measure", not "there was no such segment".
 

@@ -2,6 +2,23 @@
 
 观测是**独立的一层**：引擎不认识任何观测包，只暴露一个 `Observer` seam；`pulse/observe` 实现这个 seam，把回调折成结构化记录写进出口。不需要观测的宿主只 import 根包。
 
+## 随时看进度：执行快照
+
+`e.Snapshot()` 是一次运行的当前读数；Observer 是事件历史，两者互补。快照不用订阅回调，读取不会推进运行或新增事件。每次执行有不同的 `Graph.Execution`，对应记录里的 `pulse.execution`；`Graph.Path`、`Site.Path` 和静态子树的 `Graph.Path` 使用同一套挂载路径。
+
+```go
+progress := e.Snapshot()
+staticDiagram := g.Topology().Mermaid()
+statusDiagram := g.Topology().Mermaid(pulse.WithMermaidSnapshot(progress))
+_, _ = staticDiagram, statusDiagram
+```
+
+快照节点按定义声明序。输入 `ready` / `skipped` 都是到达：还有 `pending` 输入的 waiting 节点在等输入，输入全到达时在等进入 Run 的机会。切面也能扩展等待，不能单凭这条读数保证它正在排名额。状态先迁移再发回调，所以回调里能读到这次迁移；Retry 不倒退也不重复事件。
+
+快照不携带业务值；节点与槽位分别采样，running 节点已有 ready / skipped 输出是合法的。图创建后 pending，成功 Start 后 running，Wait 收尾时才写终态。Child 是最新已创建尝试的活 `*Execution`，失败与取消仍保留，未建出才为 nil；再调用 `progress.Nodes[i].Child.Snapshot()` 取得的是另一时刻的子读数。
+
+Topology 包含完整声明端口、绑定与静态子树；Mermaid 只从它派生结构，没有快照就不着色。给快照后按图 ID + Path + Node ID 叠状态，子执行逐层采样，固定值和错误正文不进入图。只查看 YAML 可用无需 Registry 的 Analyze，详见 [YAML 装配](/packages/yaml/)。
+
 ## 引擎的 seam
 
 ```go
@@ -22,7 +39,7 @@ type Observer interface {
 4. **时序是夹住**：`GraphStarted` 先于本轮的**任何**节点回调（启动校验失败的图没有启动，不发），`GraphFinished` 晚于**全部**节点回调；只 `Start` 不 `Wait` 的宿主拿不到 `finished`，而并发 / 重复 `Wait` 都在这一发返回之后才返回（任何一个 `Wait` 返回时，本轮的收尾都已在出口落地）；
 5. **位置由引擎给出**：每条回调都带一个 `Site`——定义身份（`Site.Graph`）+ 本次运行的身份（`Site.Execution`）+ 挂载位置（`Site.Path`），实现侧不必从构造参数自行携带；同一张图跑两次的记录靠 `Site.Execution` 分得开。
 
-图默认 no-op（不挂就没有任何开销），`pulse.WithObserver(...)` 挂载（它有 `WithExecObserver(...)` 的**本次运行覆盖**：本次运行 > 定义声明 > 父执行环境）；要多个观察者用 `pulse.MultiObserver` 组合（后写覆盖前写，所以组合要在传参前做完）。
+观察者默认 no-op（不挂就不执行观察回调；快照的状态记账仍然存在），`pulse.WithObserver(...)` 挂载（它有 `WithExecObserver(...)` 的**本次运行覆盖**：本次运行 > 定义声明 > 父执行环境）；要多个观察者用 `pulse.MultiObserver` 组合（后写覆盖前写，所以组合要在传参前做完）。
 
 ## observe 折成运行级两条 + 节点级两条
 
@@ -37,7 +54,7 @@ type Observer interface {
 
 归因维度走 `Attrs`：`pulse.AttrGraph` + `pulse.AttrNode` + `pulse.AttrExecution`（key 契约由**引擎**定义，`observe` 只消费不定义）。节点记录带图 + 节点两个，运行级两条只带 `pulse.AttrGraph`——节点维度对「一次运行」没有意义；`pulse.AttrExecution` 每条都带，同一张图跑两次的记录靠它分得开。
 
-**嵌套层级**是第三个维度 `pulse.AttrPath`（不透明字符串、`/` 连接各层）：**挂载位置随每条回调由引擎发出来**（`Site.Path`），那一层的**每一条**记录就都带它；为空**不写**这个 key——空串会让「根」与「忘了传」长得一样。分工是清楚的：`pulse.graph` 是**你起的图 id**，`pulse.path` 是**引擎记的层级**——同一棵子树装在两处，两处各有各的 `path`，靠它分得开（见[编排](/guide/orchestration)的「图即节点」）。**一个出口从根挂下去就够**：子图的记录自带层级，继承的出口也带 `pulse.path`；`ObserveConfig.Path` 只在 `Site` 没给位置时兜底（自己直写记录之类不经过引擎的场景）。层级怎么拆是出口的事（按 `/` 分即可），引擎不提供结构化树。
+**嵌套层级**是第三个维度 `pulse.AttrPath`（不透明字符串、`/` 连接各层）：**挂载位置随每条回调由引擎发出来**（`Site.Path`），那一层的**每一条**记录就都带它；为空**不写**这个 key——空串会让「根」与「忘了传」长得一样。分工是清楚的：`pulse.graph` 是**你起的图 id**，`pulse.path` 是**引擎记的层级**——同一棵子树装在两处，两处各有各的 `path`，靠它分得开（见[编排](/guide/orchestration)的「图即节点」）。**一个出口从根挂下去就够**：子图的记录自带层级，继承的出口也带 `pulse.path`；`ObserveConfig.Path` 只在 `Site` 没给位置时兜底（自己直写记录之类不经过引擎的场景）。记录中的层级怎么拆是出口的事（按 `/` 分即可）；静态树与活子执行分别从 Topology / Execution 快照查看。
 
 ## 最短接入
 

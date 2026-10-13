@@ -43,6 +43,28 @@ Notes:
 - Any `Seed.from.kind` other than `literal` requires the host to pass a `resolve` callback — **the engine does no IO**: reading files, env or request context is the host's job.
 - This package depends on `gopkg.in/yaml.v3`; the root `pulse` package does not depend on yaml.
 
+## Inspect without registered factories: Analyze
+
+```go
+top, err := yaml.Analyze(doc, yaml.LoadOptions{GraphID: "demo"})
+if err != nil {
+    return err
+}
+diagram := top.Mermaid()
+_ = diagram
+for _, problem := range top.Problems {
+    fmt.Println(problem)
+}
+```
+
+Analyze shares Load's decoding, assembler, ports, binds and core static checks, returning the same `*pulse.Topology` type. GraphID is required, and Graph / MaxRunning static options follow Load. Root-level static problems remain in `top.Problems`; child and assembly errors return an error. No Registry is required, no Execution is created, no factory or aspect runs, no external seed is resolved, and ObserverFor is never called.
+
+`Type` here is a **YAML type label**. Explicit KeySpec declarations still require type; known labels for one key and both ends of a bind must agree, and labels propagate along binds. A key appearing only in wiring with no inferable declaration has an empty Type. Labels such as `example.Item` are preserved verbatim. Analyze neither infers types from literals nor proves actual Go types or literal assignability. Unknown factory names pass Analyze and still fail Load; host types and values remain checked by Load / SeedPlan.Inputs.
+
+Views preserve each mount's full input, output and pass-through interface; ordinary internal keys do not automatically become outlets. Go ports follow first successful declaration order; YAML in/out maps are sorted by key; root seeds follow document declaration order, while child fixed inputs are declared after in ports in key-name order. With known labels and matching identities and wiring, Analyze / Load / hand-built Go topologies can be compared field by field. Label checks happen earlier, so the first diagnostic for a document with multiple errors need not match. YAML does not declare Go stream-sugar markers, so neither Analyze nor Load can statically infer a factory's internal streaming behavior.
+
+Each call to the same `SeedPlan.Inputs(resolve)` produces independent inputs for a run; multiple Executions of one graph can receive different values. Input tables are isolated, without deep-copying pointers or maps inside host values.
+
 ## Subgraphs: one step = one graph
 
 `graphs:` declares reusable subgraphs and `nodes[].graph` points a step at one — **a subgraph is the unit of topology reuse**, so reusing a flow does not force you to write a Go factory:

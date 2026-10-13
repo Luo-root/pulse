@@ -322,8 +322,8 @@ type assembler struct {
 }
 
 // addNodes 把一批节点声明装进 g。工厂节点与子图节点在这里分流：子图节点被翻成一个
-// **静态挂载**（`pulse.Sub`）。`retry` 落在子图节点上还不支持，由 `addSubNode` 当场拒
-// ——这一步的桥回是在第一次尝试里做完的（原因写在那里）。
+// **静态挂载**（`pulse.Sub`）。`retry` / `timeout` 都由 nodeAspects 交给引擎；Retry
+// 每次尝试的子执行与桥回写集彼此隔离（见 addSubNode）。
 //
 // 子图里的子图走的是同一个函数（`buildChild` 递归调它），所以嵌套不设深度上限；
 // 引用环已经在 `checkGraphRefs` 拦掉了，这里不会转圈。
@@ -399,10 +399,8 @@ func (a *assembler) addSubNode(g *pulse.Graph, n NodeSpec, m mount, aspects []pu
 	// 装配期就有一张现成的子图（`pulse.Sub`）：父图在运行之前递归看得见整个子树，
 	// 子图的静态毛病也在 `Load` 那一刻报出来。
 	cm := m.child(n)
-	// 子图定义不挂宿主的 ctx（`context.Background()`）：取消是从**挂载点**传下去的
-	// ——`Sub` 在运行期把父节点这一层的取消转发进子图（见 runStaticSub）。挂在宿主
-	// ctx 上只会让「每一次 Load 都在宿主 ctx 上多挂几层」（热重载反复装图 = 越攒越多），
-	// 而定义本身没有要取消的东西。
+	// 子图是定义，不创建 ctx；Sub 在每次运行 / 尝试时建子执行，ctx 从挂载点的
+	// 节点执行派生（见 runStaticSub），取消只影响这一次运行。
 	child, err := a.buildChild(n, cm)
 	if err != nil {
 		return err
@@ -438,10 +436,8 @@ func (a *assembler) addSubNode(g *pulse.Graph, n NodeSpec, m mount, aspects []pu
 //
 // 校验树与真图共用它（同一段代码、同一批判据）。三件事在这里定：
 //
-//   - 建在哪个 ctx 上：一律 `context.Background()`——取消是从**挂载点**转发下去的
-//     （见 runStaticSub），子图定义本身没有要取消的东西，也不需要一条通往宿主的链。
-//     挂在宿主 ctx 上只会让「每一次 Load 都在宿主 ctx 上多挂几层」（热重载反复装图
-//     = 越攒越多）；
+//   - 定义不持有 ctx：每个挂载点在运行 / 尝试时各建子执行，取消域从那个节点的 ctx
+//     派生（见 runStaticSub）；装配不创建执行、也不挂宿主的生命周期；
 //   - 出口：`ObserverFor` 按这一层的**挂载路径**建（声明式装配里每一层是另一张图，
 //     一个出口实例只能带一条 `pulse.path`，所以「按层各建一个」得由宿主决定）。
 //     校验树不调它：它只装不跑，一个记录也不会产生；

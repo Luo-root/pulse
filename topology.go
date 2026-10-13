@@ -65,7 +65,8 @@ func publicSource(s source) Source {
 
 // KeyShape 是键的形状：名字、类型记号、来源。
 //
-// Go 定义的 Type 用 reflect.Type.String()，与声明式装配的 type 记号逐字对照。
+// Go 定义的 Type 用 reflect.Type.String()；pulse/yaml.Analyze 返回文档里的类型标签，
+// 无法推导时为空串。标签能逐字对照，但无注册表的分析不能证明它是实际 Go 类型。
 type KeyShape struct {
 	Name string
 	Type string
