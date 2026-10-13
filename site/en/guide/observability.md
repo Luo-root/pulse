@@ -2,6 +2,23 @@
 
 Observation is an **independent layer**: the engine knows no observation package and only exposes one `Observer` seam; `pulse/observe` implements that seam, folding callbacks into structured records and writing them to an egress. A host that does not need observation imports the root package alone.
 
+## Read progress at any time: execution snapshots
+
+`e.Snapshot()` reads one run's current state; Observer records event history, so they complement each other. No subscription is needed, and reading neither advances execution nor emits events. Each run has a distinct `Graph.Execution`, matching the records' `pulse.execution`; `Graph.Path`, `Site.Path` and the static child tree's `Graph.Path` share the same mounting paths.
+
+```go
+progress := e.Snapshot()
+staticDiagram := g.Topology().Mermaid()
+statusDiagram := g.Topology().Mermaid(pulse.WithMermaidSnapshot(progress))
+_, _ = staticDiagram, statusDiagram
+```
+
+Snapshot nodes follow declaration order. Both ready and skipped inputs have arrived: a waiting node with pending inputs is waiting for them; once all inputs arrive it is waiting for a chance to enter Run. Aspects can extend this wait, so this alone does not prove it is queued for a quota. States change before callbacks, which can read that change; Retry neither regresses states nor repeats events.
+
+Snapshots contain no business values. Nodes and slots are sampled separately, so a running node may already have ready or skipped outputs. Graph status is pending after creation, running after a successful Start, and terminal when Wait finalizes the run. Child is the live `*Execution` from the latest created attempt, retained after failure or cancellation and nil only when none was created. Calling `progress.Nodes[i].Child.Snapshot()` reads that child at a different time.
+
+Topology includes the complete declared interface, binds and static child tree. Mermaid derives structure only from that view and adds no colors without a snapshot. With a snapshot, it matches states by graph ID + Path + Node ID and samples children separately; fixed values and error text stay out of the diagram. Registry-free Analyze can inspect YAML without factories; see [YAML assembly](/en/packages/yaml/).
+
 ## The engine's seam
 
 ```go
@@ -22,7 +39,7 @@ The contract has five clauses, all of them frozen surface:
 4. **The timing is a bracket**: `GraphStarted` precedes **every** node callback of the run (a graph that fails start validation never started, so nothing is emitted), and `GraphFinished` follows **all** of them; a host that calls `Start` without `Wait` never sees `finished`, while concurrent or repeated `Wait` calls all return only after that emission returned (by the time any `Wait` returns, the run's finish record has landed in the egress);
 5. **The position comes from the engine**: every callback carries a `Site` — the definition identity (`Site.Graph`) + this run's identity (`Site.Execution`) + the mounting position (`Site.Path`) — so an implementation never has to carry them in from constructor arguments of its own; two runs of one graph are told apart by `Site.Execution`.
 
-A graph defaults to no-op (attach nothing, pay nothing); `pulse.WithObserver(...)` attaches one (a run can override it with `WithExecObserver(...)`: this run > the definition's declaration > the parent execution environment); for several observers, combine them with `pulse.MultiObserver` (a later write overwrites an earlier one, so do the combining before passing it in).
+The observer defaults to no-op (no callbacks when none is attached; snapshot state bookkeeping still exists); `pulse.WithObserver(...)` attaches one (a run can override it with `WithExecObserver(...)`: this run > the definition's declaration > the parent execution environment); for several observers, combine them with `pulse.MultiObserver` (a later write overwrites an earlier one, so do the combining before passing it in).
 
 ## observe folds it into two run-level + two per-node records
 
@@ -37,7 +54,7 @@ The two run-level records **bracket** the run's node records: a host no longer h
 
 The attribution dimensions ride `Attrs`: `pulse.AttrGraph` + `pulse.AttrNode` + `pulse.AttrExecution` (the key contract is defined by the **engine**; `observe` only consumes it, never defines it). Node records carry the graph + node pair; the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run"; `pulse.AttrExecution` is on every record, and it is what keeps two runs of one graph apart.
 
-**Nesting depth** is the third dimension, `pulse.AttrPath` (an opaque string, layers joined by `/`): the **mounting position arrives with every callback** (`Site.Path`), so **every** record of that layer carries it; when it is empty the key is **not written** — an empty string would make "root" and "forgot to pass it" look alike. The split of duties is clear: `pulse.graph` is the **graph id you chose** — a child's id is whatever its mounting step passed to `pulse.New` (`<parent id>/<node id>` reads best, and is what declarative assembly uses) — and `pulse.path` is the **layering the engine recorded**; the two together are what makes the layers of a nested run separable (see "A graph as a node" in [Orchestration](/en/guide/orchestration)). **One egress attached at the root is enough**: a child's records carry their layer by themselves, inherited egresses included; `ObserveConfig.Path` is only a fallback for when the `Site` brings no position (records written by hand, say, outside the engine). How to split the layers is the egress's business (`/` works); the engine offers no structured tree.
+**Nesting depth** is the third dimension, `pulse.AttrPath` (an opaque string, layers joined by `/`): the **mounting position arrives with every callback** (`Site.Path`), so **every** record of that layer carries it; when it is empty the key is **not written** — an empty string would make "root" and "forgot to pass it" look alike. The split of duties is clear: `pulse.graph` is the **graph id you chose** — a child's id is whatever its mounting step passed to `pulse.New` (`<parent id>/<node id>` reads best, and is what declarative assembly uses) — and `pulse.path` is the **layering the engine recorded**; the two together are what makes the layers of a nested run separable (see "A graph as a node" in [Orchestration](/en/guide/orchestration)). **One egress attached at the root is enough**: a child's records carry their layer by themselves, inherited egresses included; `ObserveConfig.Path` is only a fallback for when the `Site` brings no position (records written by hand, say, outside the engine). Splitting record paths is the egress's business (`/` works); the static tree and live child executions are available through Topology / Execution snapshots.
 
 ## Shortest wiring
 

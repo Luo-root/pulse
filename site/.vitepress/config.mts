@@ -67,7 +67,7 @@ const en = {
   label: 'English',
   lang: 'en-US',
   link: '/en/',
-  description: `A one-shot graph engine for Go — data-arrival scheduling, explicit failure, graph observation.`,
+  description: `An embeddable workflow execution engine for Go — data driven, composable, observable.`,
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/en/guide/quickstart', activeMatch: '^/en/guide/' },
@@ -100,7 +100,7 @@ export default defineConfig({
   base: '/pulse/',
   lang: 'zh-CN',
   title: 'Pulse',
-  description: `Go 的一次性图引擎——数据到达即调度，失败显式；外加一层图观测。`,
+  description: `Go 的可嵌入 workflow 执行内核——数据驱动、可组合、可观测。`,
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/pulse/favicon.svg' }]], // head 里的自定义 link 不吃 base 自动前缀，硬编码（与 base 同步）
   locales: { root: zh, en },
   // v1.x dead-link checker 会把「目录尾斜杠链接」(/dir/) 规范化为 /dir/index 后查路由表，

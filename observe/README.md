@@ -21,6 +21,14 @@ g, err := pulse.New("demo", "演示图", pulse.WithObserver(obs))
 // …装图、Seed、Run
 ```
 
+## 当前进度与事件历史
+
+`observe` 保存引擎已经发出的事实；需要随时问「本轮卡在哪」时，用根包的 `e.Snapshot()`。它不依赖是否订阅 Observer，不发新事件，状态先迁移再进入回调，所以回调里也能拍快照。快照的 `Graph.Execution` / `Graph.Path` 与 `Site` 一致，能和记录中的 `pulse.execution` / `pulse.path` 对上。
+
+快照只有节点、键类型、来源与到达状态，不带业务值。`waiting` 节点若还有 `pending` 输入，就是在等这些输入；输入全到达则在等进入 Run 的机会。`Child` 是最后一次已创建尝试的活子执行，失败与取消也保留。读取节点与槽位、继续读子执行都不是同一时刻的原子切面；图在 Wait 收尾时才转终态，只 Start 不 Wait 仍为 running。
+
+静态结构用 `g.Topology()`，包括完整声明端口与子树；`g.Topology().Mermaid(pulse.WithMermaidSnapshot(e.Snapshot()))` 可把本轮状态叠上去。无快照时只画结构，固定值与错误正文不进入图。`MemorySink.Snapshot()` 则是已收记录的副本，和执行快照各有用途。
+
 ## 记录形状
 
 **一次运行两条运行级记录**，加**每个节点两条分段计时记录**：
@@ -36,7 +44,7 @@ g, err := pulse.New("demo", "演示图", pulse.WithObserver(obs))
 
 归因维度走 `Attrs`（`pulse.AttrGraph` / `pulse.AttrNode` / `pulse.AttrExecution`，key 契约由引擎定义，本包只消费）：节点记录两个都带，运行级两条只带 `pulse.AttrGraph`——节点维度对「一次运行」没有意义；`pulse.AttrExecution` 每条都带（同一张图跑两次的记录靠它分得开）。
 
-**嵌套层级**是第三个维度 `pulse.AttrPath`：引擎把**挂载位置**随每条回调发出来（`Site.Path`），本包由此给那一层的**每一条**记录都写上它——根图不写，空串会让「根」与「忘了传」长得一样，出口就没法用它判层级。一个出口从根挂下去就够：子图的记录自带层级，不必按层各建一个出口；`ObserveConfig.Path` 只在 `Site` 没给位置时兜底（自己直写记录之类不经过引擎的场景）。分层怎么拆是出口的事（按 `/` 分即可），引擎与本包都不提供结构化树。
+**嵌套层级**是第三个维度 `pulse.AttrPath`：引擎把**挂载位置**随每条回调发出来（`Site.Path`），本包由此给那一层的**每一条**记录都写上它——根图不写，空串会让「根」与「忘了传」长得一样，出口就没法用它判层级。一个出口从根挂下去就够：子图的记录自带层级，不必按层各建一个出口；`ObserveConfig.Path` 只在 `Site` 没给位置时兜底（自己直写记录之类不经过引擎的场景）。记录里的分层怎么拆是出口的事（按 `/` 分即可）；本包保留平面 Record 信封，结构树与活子执行分别从 Topology / Execution 快照查看。
 
 **耗时口径**：都是**墙钟**，且回调在调用方 goroutine 上同步执行——出口有多慢，段就有多长（`pulse.graph_finished` 的窗口覆盖整轮，其中包含出口写出的开销）。`AsyncSink` 只把**落盘**推后，不把 `Write` 调用从窗口里摘掉。段耗时被计时精度取整成 `0`（内置版式渲染 `-`）表示「量不出来」，不是「没有这一段」。
 

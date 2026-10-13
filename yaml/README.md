@@ -43,6 +43,28 @@ nodes:
 - `Seed.from.kind` 除 `literal` 外需要宿主传 `resolve` 回调——**引擎不做 IO**：读文件、读 env、从请求取 context 都是宿主的事。
 - 本包依赖 `gopkg.in/yaml.v3`；根包 `pulse` 不依赖 yaml。
 
+## 不注册工厂也能看图：Analyze
+
+```go
+top, err := yaml.Analyze(doc, yaml.LoadOptions{GraphID: "demo"})
+if err != nil {
+    return err
+}
+diagram := top.Mermaid()
+_ = diagram
+for _, problem := range top.Problems {
+    fmt.Println(problem)
+}
+```
+
+Analyze 与 Load 共用解码、装配器、端口、绑定及核心静态判据，返回同一个 `*pulse.Topology`；GraphID 必填，Graph / MaxRunning 静态选项与 Load 一致。根层静态问题保留在 `top.Problems`，子图与装配错误直接返回 error。它无需 Registry，不创建 Execution、不运行工厂或切面、不解析外部 seed，也不调用 ObserverFor。
+
+`Type` 在这里是 **YAML 类型标签**：显式 KeySpec 仍须写 type，同名键与绑定两端的已知标签必须一致，标签能沿接线传播。只出现在接线里、且无任何已知声明可推导的键，Type 为空串；`example.Item` 这类标签原样保留。Analyze 不从 literal 猜类型，也不能证明标签是实际 Go 类型或 literal 可赋值。工厂名写错在 Analyze 下不报，在 Load 下照报；宿主登记类型与值仍由 Load / SeedPlan.Inputs 对账。
+
+视图完整保留各处挂载的输入、输出与透传端口；普通内部键不会自动成为出口。Go 端口按首次成功声明序，YAML 的 in/out 映射按键名排序；根层 seeds 按文档声明序，子层则在 in 之后按键名声明固定输入。类型标签可知且身份与接线相同时，Analyze / Load / 手写 Go 的拓扑可逐字段对照；标签预检查发生更早，混合多个错误时不承诺首条诊断相同。YAML 没有声明 Go 流糖的标记，因此 Analyze 和 Load 都不能静态推断工厂内部的流式行为。
+
+同一份 `SeedPlan` 每次调用 `Inputs(resolve)` 都产出一份独立运行输入，可为同一图的多份 Execution 提供不同值。它隔离输入表，不深拷贝宿主值里的指针或 map。
+
 ## 子图：一步 = 一张图
 
 `graphs:` 声明可复用的子图，`nodes[].graph` 把某一步指向它——**子图是拓扑的复用单元**，不用为了复用一段流程去写 Go 工厂：

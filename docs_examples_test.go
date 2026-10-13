@@ -56,10 +56,10 @@ import (
 //     里的任何写法；散文里提一句「不再是 `SourceSeed`」是历史说明（仓库里记 `SubFunc`
 //     已删除也是这个写法），照抄不了，放过。
 func TestDocsExamplesUseCurrentSignatures(t *testing.T) {
-	// scanFloor 是自检下限：当前全仓实际扫到 91 处判据站点（阶段 2 扩完判据之后），
-	// 60 留出「文档瘦身」的余量，同时能拦住「扫描面塌了」——比如某个目录被新加的跳过
+	// scanFloor 是自检下限：阶段 4 扩到快照 / Mermaid / Analyze 后提高到 80，
+	// 仍留「文档瘦身」余量，同时拦住「扫描面塌了」——比如某个目录被新加的跳过
 	// 规则排除掉、或多条判据一起失效（那种情况下这条用例会退化成仪式，比没有还糟）。
-	const scanFloor = 60
+	const scanFloor = 80
 
 	checked, elided, ignored := 0, 0, 0
 	// 包目录就是仓库根（所有文档都在它下面）。
@@ -97,6 +97,7 @@ func TestDocsExamplesUseCurrentSignatures(t *testing.T) {
 		t.Fatalf("只扫到 %d 处调用（跳过 %d 处省略写法、%d 处散文提及）——扫描面太窄，这条用例没在干活",
 			checked, elided, ignored)
 	}
+	t.Logf("文档签名站点 %d；省略 %d；散文提及 %d（下限 %d）", checked, elided, ignored, scanFloor)
 }
 
 // TestDocsExampleGateNegativeControls 给上面那条闸门自己上保险：**反例必须判红、正例必须
@@ -106,9 +107,10 @@ func TestDocsExamplesUseCurrentSignatures(t *testing.T) {
 // 反例只活在这里：写进仓库文档的话，闸门当场就红了（这正是它要拦的东西）。
 func TestDocsExampleGateNegativeControls(t *testing.T) {
 	cases := []struct {
-		name string
-		doc  string // 合成的示例片段
-		want string // 期望命中的判据片段；空串表示这段合规、不许报
+		name  string
+		doc   string // 合成的示例片段
+		want  string // 期望命中的判据片段；空串表示这段合规、不许报
+		count int    // 默认一处；嵌套的视图调用各自计数
 	}{
 		// —— 正例：描述位确实给得出 string ——
 		{name: "字符串字面量", doc: `pulse.New("demo", "演示图")`},
@@ -171,13 +173,40 @@ func TestDocsExampleGateNegativeControls(t *testing.T) {
 		{name: "代码块里的 SourceSeed", doc: "```go\nkind := SourceSeed\n```", want: "SourceSeed 已经删除"},
 		{name: "带包名的 SourceSeed", doc: "`pulse.SourceSeed`", want: "SourceSeed 已经删除"},
 		{name: "散文里的历史说明", doc: "静态来源只有 `SourceInput`，不再是 `SourceSeed`"},
+
+		// —— 阶段 4：快照、Mermaid 与 registry-free Analyze ——
+		{name: "执行快照", doc: `e.Snapshot()`},
+		{name: "活子句柄快照", doc: `state.Child.Snapshot()`},
+		{name: "记录副本同名方法", doc: `sink.Snapshot()`},
+		{name: "类型写出来的执行快照", doc: "`(*Execution).Snapshot()`"},
+		{name: "历史图快照说明", doc: "旧的 `Graph.Snapshot()` 已被替换"},
+		{name: "历史指针类型快照", doc: "旧的 `(*Graph).Snapshot()` 已被替换"},
+		{name: "旧图快照代码", doc: "```go\ng.Snapshot()\n```", want: "Graph 不持有运行快照"},
+		{name: "旧类型快照代码", doc: "```go\n(*Graph).Snapshot()\n```", want: "Graph 不持有运行快照"},
+		{name: "带值快照", doc: `e.Snapshot(true)`, want: "Snapshot 不收实参"},
+		{name: "静态形状不能拍运行快照", doc: `topology.Snapshot()`, want: "Snapshot 挂在 Execution 上"},
+		{name: "静态 Mermaid", doc: `g.Topology().Mermaid()`},
+		{name: "叠加快照选项", doc: `top.Mermaid(pulse.WithMermaidSnapshot(e.Snapshot()))`, count: 2},
+		{name: "不能给执行渲染结构", doc: `exec.Mermaid()`, want: "Mermaid 挂在 Topology 上"},
+		{name: "不能给图定义渲染结构", doc: `g.Mermaid()`, want: "Mermaid 也应从 Topology 生成"},
+		{name: "裸传快照", doc: `top.Mermaid(e.Snapshot())`, count: 2, want: "WithMermaidSnapshot 选项"},
+		{name: "裸传快照字面量", doc: `top.Mermaid(&pulse.Snapshot{})`, want: "WithMermaidSnapshot 选项"},
+		{name: "分析选项", doc: `pulseyaml.Analyze(data, pulseyaml.LoadOptions{GraphID: "demo"})`},
+		{name: "分析选项变量", doc: `pulseyaml.Analyze(data, opts)`},
+		{name: "分析缺少身份选项", doc: `pulseyaml.Analyze(data)`, want: "Analyze 要 data 与 LoadOptions"},
+		{name: "分析错传注册表", doc: `pulseyaml.Analyze(data, reg)`, want: "不吃 Registry"},
+		{name: "分析沿用 Load 参数表", doc: `pulseyaml.Analyze(data, reg, opts)`, want: "不吃 Registry"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			found, checked, _, _ := docExampleFindings("synthetic.md", tc.doc)
-			if checked != 1 {
-				t.Fatalf("合成片段里应当恰好扫到 1 处调用，实扫到 %d 处：%s", checked, tc.doc)
+			wantCount := tc.count
+			if wantCount == 0 {
+				wantCount = 1
+			}
+			if checked != wantCount {
+				t.Fatalf("合成片段里应当扫到 %d 处调用，实扫到 %d 处：%s", wantCount, checked, tc.doc)
 			}
 			switch {
 			case tc.want == "" && len(found) != 0:
@@ -212,6 +241,9 @@ var (
 	seedCall = regexp.MustCompile(`(pulse\.)?(SeedByName|SkipSeedByName|SkipSeed|Seed)\(`)
 	// staleSourceSeed 认已删除的 `SourceSeed`（带不带包名都算同一处）。
 	staleSourceSeed = regexp.MustCompile(`(pulse\.)?SourceSeed`)
+	// 阶段 4：括号接收者覆盖 g.Topology().Mermaid() / Child.Snapshot() 等表达式。
+	viewCall    = regexp.MustCompile(`(\(\*[A-Za-z_][A-Za-z0-9_]*\)|[A-Za-z_][A-Za-z0-9_]*|\))\.(Snapshot|Mermaid)\(`)
+	analyzeCall = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*\.)?Analyze\(`)
 )
 
 // execSideNames 是「接收者写出来就是执行侧」的那些名字：执行句柄（`e` / `exec` …）、
@@ -349,6 +381,60 @@ func docExampleFindings(path, text string) (findings []string, checked, elided, 
 			"%s:%d：SourceSeed 已经删除——外部来源不再是定义的一部分（进口由 DeclareInput 声明、"+
 				"值由 Seed(&in, k, v) 给，定义层的来源只有 SourceInput）——照抄这段会编译不过：%s",
 			path, lineAt(text, loc[0]), text[loc[0]:loc[1]]))
+	}
+	// —— 六、视图：Snapshot 是执行侧，Mermaid 是 Topology 的序列化 ——
+	for _, loc := range viewCall.FindAllStringSubmatchIndex(text, -1) {
+		if loc[0] > 0 && isIdentByte(text[loc[0]-1]) {
+			continue
+		}
+		recv, method := text[loc[2]:loc[3]], text[loc[4]:loc[5]]
+		args, frag, why := parseCall(text, loc[0], loc[1]-1)
+		if why != "" {
+			count(why)
+			continue
+		}
+		checked++
+		recv = strings.TrimSuffix(strings.TrimPrefix(recv, "(*"), ")")
+		if recv == "Graph" && !insideFence(text, loc[0]) {
+			continue // 阶段史的类型写法可作历史说明，代码块里的旧调用仍拒。
+		}
+		bad := ""
+		if recv == "g" || recv == "graph" || recv == "Graph" {
+			bad = "Graph 不持有运行快照，Mermaid 也应从 Topology 生成"
+		} else if method == "Snapshot" && (recv == "Topology" || recv == "topology" || recv == "top") {
+			bad = "Snapshot 挂在 Execution 上，不挂在 Topology 上"
+		} else if method == "Snapshot" && len(args) != 0 {
+			bad = "Snapshot 不收实参，也不提供带值快照开关"
+		} else if method == "Mermaid" {
+			if execSideNames[recv] && recv != "wg" {
+				bad = "Mermaid 挂在 Topology 上，不挂在 Execution 上"
+			}
+			for _, arg := range args {
+				if strings.Contains(arg, ".Snapshot(") || strings.HasPrefix(strings.TrimSpace(arg), "&Snapshot{") || strings.HasPrefix(strings.TrimSpace(arg), "&pulse.Snapshot{") {
+					if !strings.HasPrefix(strings.TrimSpace(arg), "pulse.WithMermaidSnapshot(") && !strings.HasPrefix(strings.TrimSpace(arg), "WithMermaidSnapshot(") {
+						bad = "Mermaid 叠加快照要用 WithMermaidSnapshot 选项"
+					}
+				}
+			}
+		}
+		if bad != "" {
+			findings = append(findings, fmt.Sprintf("%s:%d：%s——照抄会违反当前视图契约：%s", path, lineAt(text, loc[0]), bad, oneLine(frag)))
+		}
+	}
+	// —— 七、Analyze 不吃注册表，但需要 LoadOptions 的身份 / 静态参数 ——
+	for _, loc := range analyzeCall.FindAllStringSubmatchIndex(text, -1) {
+		if loc[0] > 0 && isIdentByte(text[loc[0]-1]) {
+			continue
+		}
+		args, frag, why := parseCall(text, loc[0], loc[1]-1)
+		if why != "" {
+			count(why)
+			continue
+		}
+		checked++
+		if len(args) != 2 || args[1] == "nil" || args[1] == "reg" || args[1] == "registry" {
+			findings = append(findings, fmt.Sprintf("%s:%d：Analyze 要 data 与 LoadOptions 两件实参，不吃 Registry——照抄会编译不过：%s", path, lineAt(text, loc[0]), oneLine(frag)))
+		}
 	}
 	return findings, checked, elided, ignored
 }
