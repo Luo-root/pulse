@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// TestDocsExamplesUseCurrentSignatures 扫全仓 `*.md` 里 `New(` / `NewNode(` / `Sub(` 的
+// TestDocsExamplesUseCurrentSignatures 扫全仓 Markdown 与站点 Vue 里 `New(` / `NewNode(` / `Sub(` 的
 // 调用，对照当前签名看两件事：**实参够不够**、**描述位上放的是不是描述**。
 //
 // 为什么需要它：**文档里的代码块不参与编译**，所以签名一变，漏迁移的示例不会被
@@ -56,48 +56,91 @@ import (
 //     里的任何写法；散文里提一句「不再是 `SourceSeed`」是历史说明（仓库里记 `SubFunc`
 //     已删除也是这个写法），照抄不了，放过。
 func TestDocsExamplesUseCurrentSignatures(t *testing.T) {
-	// scanFloor 是自检下限：阶段 4 扩到快照 / Mermaid / Analyze 后提高到 80，
-	// 仍留「文档瘦身」余量，同时拦住「扫描面塌了」——比如某个目录被新加的跳过
-	// 规则排除掉、或多条判据一起失效（那种情况下这条用例会退化成仪式，比没有还糟）。
+	// 文档瘦身仍须保留足够扫描面；首页 Vue 示例与 Markdown 共用签名判据。
 	const scanFloor = 80
+	findings, checked, elided, ignored, err := scanDocExamples(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range findings {
+		t.Error(finding)
+	}
+	if checked < scanFloor {
+		t.Fatalf("只扫到 %d 处调用（跳过 %d 处省略写法、%d 处散文提及）——扫描面太窄，这条用例没在干活", checked, elided, ignored)
+	}
+	t.Logf("文档签名站点 %d；省略 %d；散文提及 %d（下限 %d）", checked, elided, ignored, scanFloor)
+}
 
-	checked, elided, ignored := 0, 0, 0
-	// 包目录就是仓库根（所有文档都在它下面）。
-	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+// scanDocExamples 同时覆盖 Markdown 与站点 Vue 中能照抄的调用。
+// .vitepress 的源码必须进入扫描，构建产物、依赖与已同步包文档仍排除。
+func scanDocExamples(root string) (findings []string, checked, elided, ignored int, err error) {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if path != "." && (name == "node_modules" || name == "dist" || name == "testdata" ||
-				isSyncedPkgDir(path) ||
-				(strings.HasPrefix(name, ".") && name != ".github")) {
+			if relative != "." && (name == "node_modules" || name == "dist" || name == "testdata" ||
+				isSyncedPkgDir(relative) ||
+				(strings.HasPrefix(name, ".") && name != ".github" && name != ".vitepress")) {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		if !strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
+		extension := strings.ToLower(filepath.Ext(d.Name()))
+		if extension != ".md" && extension != ".vue" {
 			return nil
 		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return err
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
 		}
-		found, c, e, ig := docExampleFindings(path, string(raw))
+		found, c, e, ig := docExampleFindings(relative, string(raw))
+		findings = append(findings, found...)
 		checked, elided, ignored = checked+c, elided+e, ignored+ig
-		for _, f := range found {
-			t.Error(f)
-		}
 		return nil
 	})
-	if err != nil {
+	return
+}
+
+func TestDocsExampleScanIncludesHomepage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte(`pulse.New("demo", "演示图")`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if checked < scanFloor {
-		t.Fatalf("只扫到 %d 处调用（跳过 %d 处省略写法、%d 处散文提及）——扫描面太窄，这条用例没在干活",
-			checked, elided, ignored)
+	directory := filepath.Join(root, "site", ".vitepress", "theme", "components")
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		t.Fatal(err)
 	}
-	t.Logf("文档签名站点 %d；省略 %d；散文提及 %d（下限 %d）", checked, elided, ignored, scanFloor)
+	home := filepath.Join(directory, "Home.vue")
+	for _, tc := range []struct {
+		name string
+		call string
+		want int
+	}{
+		{name: "首页旧调用必须拒绝", call: `pulse.New(ctx, "demo")`, want: 1},
+		{name: "首页当前调用必须放行", call: `pulse.New("demo", "演示图")`, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(home, []byte("<template><code>"+tc.call+"</code></template>"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			findings, checked, _, _, err := scanDocExamples(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if checked != 2 || len(findings) != tc.want {
+				t.Fatalf("首页与 README 扫描：checked=%d findings=%v，期望 2 处、%d 个错误", checked, findings, tc.want)
+			}
+			if tc.want != 0 && (!strings.Contains(findings[0], "Home.vue") || !strings.Contains(findings[0], "ctx")) {
+				t.Fatalf("没有定位首页的旧调用：%v", findings)
+			}
+		})
+	}
 }
 
 // TestDocsExampleGateNegativeControls 给上面那条闸门自己上保险：**反例必须判红、正例必须
@@ -266,7 +309,7 @@ var execSideNames = map[string]bool{
 	"Execution": true, "wg": true,
 }
 
-// docExampleFindings 扫一段 Markdown 文本，返回里面**不合当前签名 / 已删除**的示例
+// docExampleFindings 扫一段文档或站点示例文本，返回里面**不合当前签名 / 已删除**的示例
 // （空切片即合规），外带「判据站点 / 省略写法 / 散文提及」三个计数。
 //
 // 抽成纯函数是为了能给闸门自己上保险：反例不能写进仓库文档（写进去闸门当场就红了），

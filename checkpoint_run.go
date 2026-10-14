@@ -3,7 +3,9 @@ package pulse
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
+	"time"
 )
 
 // CheckpointError 是可靠钩子或恢复协议的失败，不是正常业务跳过。
@@ -16,6 +18,7 @@ type CheckpointError struct {
 func (e *CheckpointError) Error() string {
 	return fmt.Sprintf("pulse: checkpoint %s: %v", e.Operation, e.Err)
 }
+
 func (e *CheckpointError) Unwrap() error { return e.Err }
 
 func isCheckpointFailure(err error) bool {
@@ -290,4 +293,126 @@ func (rc *RunCtx) prepareChildCheckpoint(sub *Execution) error {
 		return rc.exec.stopCheckpoint("restore child", err)
 	}
 	return nil
+}
+
+// retryCheckpoint 使用 Store 的活跃游标，不按本次调用循环的次数重建历史身份。
+// 成功的内层尝试保持可认回，直到完整节点检查点确认；写集仍只交给外层写集。
+func retryCheckpoint(rc *RunCtx, next func(*RunCtx) error, attempts int, delay time.Duration) error {
+	if err := rc.enterCheckpointRetry(); err != nil {
+		return err
+	}
+	parent := rc.checkpointAttempt
+	boundary := fmt.Sprintf("aspect/%d", rc.aspectIndex)
+	for {
+		attempt, err := rc.openCheckpointAttempt(parent.Scope, boundary, attempts)
+		if err != nil {
+			return err
+		}
+		if attempt.Exhausted {
+			return fmt.Errorf("pulse: checkpoint Retry on node %q exhausted after %d confirmed attempts", rc.NodeID(), attempts)
+		}
+		previous := rc.writes
+		ws := &writeSet{outer: previous}
+		rc.writes, rc.checkpointAttempt = ws, attempt
+		err = invokeCheckpointChain(next, rc)
+		rc.writes, rc.checkpointAttempt = previous, parent
+		if failure := rc.exec.checkpointErr(); failure != nil {
+			return failure
+		}
+		if (err == nil || isSkipped(err)) && rc.ctx.Err() != nil {
+			err = rc.ctx.Err()
+		}
+		if err == nil || isSkipped(err) {
+			if cerr := ws.commit(rc.exec); cerr != nil {
+				return cerr
+			}
+			return err
+		}
+		if isCheckpointFailure(err) || rc.ctx.Err() != nil {
+			return err
+		}
+		// 确认失败先于下一轮；退出发生在两者之间也不能把次数从 1 重来。
+		if ferr := rc.failCheckpointAttempt(attempt.Scope); ferr != nil {
+			return ferr
+		}
+		if attempt.Index == attempts {
+			return err
+		}
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-rc.ctx.Done():
+				timer.Stop()
+				return rc.ctx.Err()
+			}
+		}
+	}
+}
+
+// 类型检查管声明，实际值检查穿透 interface。沿引用记身份，避免自指 map/slice/指针无限递归。
+// 不调用 Interface、用户方法或 Codec，也不复制业务对象；与 Set 的值一样，遍历期间不能并发改值。
+type checkpointValueVisit struct {
+	typ    reflect.Type
+	ptr    uintptr
+	length int
+}
+
+func checkpointChannelValue(v reflect.Value, seen map[checkpointValueVisit]bool) bool {
+	if !v.IsValid() {
+		return false
+	}
+	if v.Kind() == reflect.Chan {
+		return true
+	}
+	if v.Kind() == reflect.Interface {
+		return !v.IsNil() && checkpointChannelValue(v.Elem(), seen)
+	}
+	var visit checkpointValueVisit
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map:
+		if v.IsNil() {
+			return false
+		}
+		visit.typ = v.Type()
+		if v.Kind() == reflect.Map {
+			visit.ptr = uintptr(v.UnsafePointer())
+		} else {
+			visit.ptr = v.Pointer()
+		}
+		if v.Kind() == reflect.Slice {
+			visit.length = v.Len() // 同一底层数组的不同长度视图不能互相遮住后半段。
+		}
+		if seen[visit] {
+			return false
+		}
+		if seen == nil {
+			seen = make(map[checkpointValueVisit]bool)
+		}
+		seen[visit] = true
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		return checkpointChannelValue(v.Elem(), seen)
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			if checkpointChannelValue(v.Index(i), seen) {
+				return true
+			}
+		}
+	case reflect.Map:
+		iter := v.MapRange()
+		for iter.Next() {
+			if checkpointChannelValue(iter.Key(), seen) || checkpointChannelValue(iter.Value(), seen) {
+				return true
+			}
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if checkpointChannelValue(v.Field(i), seen) {
+				return true
+			}
+		}
+	}
+	return false
 }

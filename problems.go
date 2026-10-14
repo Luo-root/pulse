@@ -22,19 +22,6 @@ func (g *Graph) problemsLocked(capacity int) []error {
 	return g.problemsAtLocked("", mountChain{g}, capacity)
 }
 
-// problemsAt 是递归的**入口**：自己加锁，再交给递归体。`capacity` 是**这一层继承下来的**
-// 有效名额上限（0 = 不限），由调用方按优先级解析好（见 Graph.effectiveCapacity）。
-//
-// 递归读子图必须走这里：父图持着自己的锁，子图那把锁由子图自己取（`topologyAt` 同理）。
-// 沿挂载边一层层往下取，锁序恒为「父 → 子」；挂载边不可能成环（`Sub` 装配期就拒，且装配
-// 那一步是全局串行的），所以不会两层互等对方的锁。万一真成了环，`chain` 会在那一层当场
-// 报出来而不是一路递归下去（见 problemsSubAtLocked）。
-func (g *Graph) problemsAt(at string, chain mountChain, capacity int) []error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.problemsAtLocked(at, chain, capacity)
-}
-
 // problemsAtLocked 是递归体：`at` 是这张图**在本视图里**的位置（根为空串），`chain` 是从根
 // 一路挂到这张图的图链（判环用），`capacity` 是**这一层的有效名额上限**。调用方持 g.mu。
 //
@@ -57,6 +44,9 @@ func (g *Graph) validateRunLocked(capacity int, known streamKnownInputs) error {
 	return nil
 }
 
+// problemsWithStreamsAt 是递归子图的加锁入口：父图持有自己的锁，子图自己取锁。
+// streams 复用根检查已算好的整树流事实，不在每一层重新计算；capacity 已按该层优先级解析。
+// 锁序沿挂载边由父到子；装配期拒绝组合环，递归时 chain 再兜底判环。
 func (g *Graph) problemsWithStreamsAt(at string, chain mountChain, capacity int, streams map[string][]error) []error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -85,7 +75,7 @@ func (g *Graph) problemsWithStreamsAtLocked(at string, chain mountChain, capacit
 // 顺带把接线**重新核一遍**：子图的端口可能在挂载之后、它自己封口之前改过（挂载那一刻核过
 // 一次，但那是当时的事实）。判据与 `Sub` 共用同一份 checkBinds，报文逐字相同。
 //
-// 往下一层是 `n.child.problemsAt`（**它自己加锁**），不是直接读字段：父图那把锁管不到子图，
+// 往下一层是 `n.child.problemsWithStreamsAt`（**它自己加锁**），不是直接读字段：父图那把锁管不到子图，
 // 而子图在装配期一直躺在宿主手里——那头一边 `Add`、这头一边读，就是一处竞态（用例
 // TestSubChildAssemblyVsParentReadOnly）。
 //

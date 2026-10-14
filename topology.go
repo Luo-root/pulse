@@ -51,7 +51,7 @@ func (s Source) String() string {
 }
 
 // publicSource 把引擎内部的来源记录翻成公开形状，**只此一处**——两处各写一遍
-// 就会漂（节点 id 恰好叫 `seed` 那条路径就是这么错的，见 source.go）。
+// 就会漂（节点 id 恰好叫 `seed` 那条路径就是这么错的，见 graph.go 的 source 定义）。
 func publicSource(s source) Source {
 	switch s.kind {
 	case sourceInput:
@@ -250,7 +250,7 @@ func (g *Graph) Topology() *Topology {
 	return g.topologyAtLocked("", chain, capacity, streams)
 }
 
-// topologyAt 是递归的**入口**：自己加锁，再交给递归体（与 problemsAt 同一形状、同一理由：
+// topologyAt 是递归的**入口**：自己加锁，再交给递归体（与 problemsWithStreamsAt 同一形状、同一理由：
 // 父图持着自己的锁，子图那把锁由子图自己取）。`capacity` 是这一层继承下来的有效名额上限。
 func (g *Graph) topologyAt(at string, chain mountChain, capacity int, streams map[string][]error) *Topology {
 	g.mu.Lock()

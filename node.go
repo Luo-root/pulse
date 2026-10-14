@@ -27,7 +27,7 @@ type Node struct {
 	compete string
 	// sub 表示这个节点是挂子图的一步（「图即节点」，`Sub` 置它）。
 	// 它整段都在等子图跑完，所以**不吃运行名额**——占着就等于把父侧额度锁在「等」上，
-	// 名额跨图共享之后那是死锁（见 WithMaxRunning / Graph.runNode）。
+	// 名额跨图共享之后那是死锁（见 WithMaxRunning / Execution.runNode）。
 	sub bool
 	// child 是这一步挂的子图**定义**（`Sub` 装的节点才有它）。静态拓扑靠它递归展开
 	// 整棵树，组合环也靠它判（见 Sub 与 findInSubtree）。
@@ -76,7 +76,7 @@ func Deps(groups ...[]keyRef) []keyRef {
 //
 // 注意 `Get` 是**阻塞等待**：等一个永远不会被写入的槽会一直等到本层 ctx
 // 被取消（`Timeout` 切面能打断它）。想知道「现在到了没有」用 `TryGet`。
-// 静止的图（所有 `Requires` 都没有来源）与含依赖环的图都会在 `Graph.Start`
+// 静止的图（所有 `Requires` 都没有来源）与含依赖环的图都会在 `Execution.Start`
 // 就被拒掉——两者都不可能跑完，且都是启动那一刻能静态判定的。
 //
 // `description` 是人可读的说明（`""` = 没写，合法）：不参与节点唯一性、Key 匹配、

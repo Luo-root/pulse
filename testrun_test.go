@@ -149,3 +149,51 @@ func mustExec(t *testing.T, g *Graph, ctx context.Context, in Inputs) *Execution
 
 // runWith 是「显式给 ctx 与输入、跑一遍」的薄封装，给不使用暂存的那批用例用。
 func runWith(g *Graph, ctx context.Context, in Inputs) error { return g.Run(ctx, in) }
+
+var (
+	kA = NewKey[string]("a")
+	kB = NewKey[string]("b")
+	kC = NewKey[string]("c")
+	kL = NewKey[string]("left")
+	kR = NewKey[string]("right")
+)
+
+// mustNew 构造测试图：graphID 必填校验通过后返回图实例。
+func mustNew(t *testing.T, ctx context.Context, graphID string, opts ...Option) *Graph {
+	t.Helper()
+	g, err := New(graphID, "", opts...)
+	if err != nil {
+		t.Fatalf("New(%q): %v", graphID, err)
+	}
+	// 这一次运行的 ctx 由调用方给（引擎侧是 g.Run(ctx, in)）；测试脚手架把它连同输入
+	// 一起暂存，见 testrun_test.go。
+	pendingOf(g).ctx = ctx
+	return g
+}
+
+func mustAdd(t *testing.T, g *Graph, n *Node) {
+	t.Helper()
+	if err := g.Add(n); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// inspect 构造一个能读这张图**这一次运行**里任意已登记 Key 的 RunCtx（仅测试用）：
+// 读起来还是「一个声明了全部 Key 的节点」，只是槽位在 `Execution` 上。
+func inspect(g *Graph) *RunCtx {
+	e := execOn(g)
+	n := &Node{id: "inspect"}
+	g.mu.Lock()
+	for _, node := range g.nodes {
+		n.requires = append(n.requires, node.requires...)
+		n.requires = append(n.requires, node.provides...)
+	}
+	for _, k := range g.inPorts {
+		n.requires = append(n.requires, k)
+	}
+	for _, k := range g.outPorts {
+		n.requires = append(n.requires, k)
+	}
+	g.mu.Unlock()
+	return newRunCtx(e, n, context.Background())
+}

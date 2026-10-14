@@ -578,3 +578,358 @@ func TestCheckpointDeclarationsAndChannelBoundaries(t *testing.T) {
 		}
 	})
 }
+
+// 本文件独立于 checkpointProbe，失败确认与根预算的回归可随桥接实现一起落地。
+func TestCheckpointFailureUsesExecutionContext(t *testing.T) {
+	businessErr := errors.New("business failed")
+	cases := []struct {
+		name        string
+		cause       error
+		localCancel bool
+		hostCancel  bool
+	}{
+		{name: "business", cause: businessErr},
+		{name: "defer-cancel", cause: businessErr, localCancel: true},
+		{name: "rpc-canceled", cause: fmt.Errorf("RPC: %w", context.Canceled)},
+		{name: "rpc-deadline", cause: fmt.Errorf("RPC: %w", context.DeadlineExceeded)},
+		{name: "host-cancel", hostCancel: true},
+	}
+	for _, tc := range cases {
+		for _, retry := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/retry=%t", tc.name, retry), func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				host, cancelHost := context.WithCancel(ctx)
+				defer cancelHost()
+				g := mustNew(t, ctx, "failure-context")
+				var calls atomic.Int32
+				var aspects []Aspect
+				if retry {
+					aspects = []Aspect{Retry(2, 0)}
+				}
+				mustAdd(t, g, NewNode("leaf", "业务清理与宿主取消分别判断", nil, nil, func(rc *RunCtx) error {
+					call := calls.Add(1)
+					if tc.localCancel {
+						defer rc.Cancel()
+					}
+					if tc.hostCancel {
+						if call == 1 {
+							cancelHost()
+							return rc.Context().Err()
+						}
+						return businessErr
+					}
+					return tc.cause
+				}, aspects...))
+
+				// 只模拟权威尝试游标；确认失败后才能推进，活跃游标跨 Execution 认回。
+				var mu sync.Mutex
+				var seq, failCalls, commits int
+				latest := make(map[CheckpointAttemptRequest]CheckpointAttempt)
+				failed := make(map[string]bool)
+				var requests []CheckpointAttemptRequest
+				var opened []CheckpointAttempt
+				hooks := CheckpointHooks{
+					OpenAttempt: func(ctx context.Context, req CheckpointAttemptRequest) (result CheckpointAttempt, err error) {
+						if err := ctx.Err(); err != nil {
+							return result, err
+						}
+						mu.Lock()
+						defer mu.Unlock()
+						req.Site.Execution = ""
+						requests = append(requests, req)
+						defer func() { opened = append(opened, result) }()
+						result = latest[req]
+						if result.Scope != "" && !failed[result.Scope] {
+							return result, nil
+						}
+						if result.Index == req.Limit {
+							result.Exhausted = true
+							return result, nil
+						}
+						seq++
+						result = CheckpointAttempt{Scope: fmt.Sprintf("attempt-%d", seq), Index: result.Index + 1}
+						latest[req] = result
+						return result, nil
+					},
+					FailAttempt: func(ctx context.Context, scope string) error {
+						mu.Lock()
+						defer mu.Unlock()
+						failCalls++
+						// 后端必须能遵守传入 ctx；不能靠一个忽略取消的钩子掩盖缺陷。
+						if err := ctx.Err(); err != nil {
+							return err
+						}
+						failed[scope] = true
+						return nil
+					},
+					OpenChild: func(context.Context, CheckpointChild) ([]NodeCheckpoint, error) { return nil, nil },
+					Commit: func(context.Context, CheckpointCommit) error {
+						mu.Lock()
+						defer mu.Unlock()
+						commits++
+						return nil
+					},
+				}
+				firstErr := g.Run(host, Inputs{}, WithExecCheckpoint("root", hooks))
+				var reliable *CheckpointError
+				wantCause := tc.cause
+				if tc.hostCancel {
+					wantCause = context.Canceled
+				}
+				if !errors.Is(firstErr, wantCause) || errors.As(firstErr, &reliable) {
+					t.Fatalf("business/interruption cause replaced by checkpoint failure: %v", firstErr)
+				}
+				if (host.Err() != nil) != tc.hostCancel {
+					t.Fatalf("host context = %v, hostCancel = %t", host.Err(), tc.hostCancel)
+				}
+				wantCalls, wantFailures := int32(1), 1
+				if retry && !tc.localCancel && !tc.hostCancel {
+					wantCalls, wantFailures = 2, 3 // 两次 Retry 失败，加完整链根失败。
+				}
+				if tc.hostCancel {
+					wantFailures = 0
+				}
+				if calls.Load() != wantCalls || failCalls != wantFailures || len(failed) != wantFailures || commits != 0 {
+					t.Fatalf("calls=%d fail hooks=%d confirmed=%d commits=%d; want calls=%d failures=%d", calls.Load(), failCalls, len(failed), commits, wantCalls, wantFailures)
+				}
+				root := opened[0]
+				if requests[0].Boundary != "" || requests[0].Limit != 1 || root.Index != 1 || failed[root.Scope] == tc.hostCancel {
+					t.Fatalf("incorrect root budget/state: request=%+v cursor=%+v failed=%t", requests[0], root, failed[root.Scope])
+				}
+
+				resumeStart := len(opened)
+				resumeErr := g.Run(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+				if resumeErr == nil || errors.As(resumeErr, &reliable) {
+					t.Fatalf("unexpected resume result: %v", resumeErr)
+				}
+				resumed := opened[resumeStart]
+				if resumed.Scope != root.Scope || resumed.Index != root.Index {
+					t.Fatalf("resume replaced root cursor: before=%+v after=%+v", root, resumed)
+				}
+				if tc.hostCancel {
+					wantCalls++
+					wantFailures = 1
+					if retry {
+						wantCalls++
+						wantFailures = 3
+						if opened[resumeStart+1] != opened[1] {
+							t.Fatalf("resume did not recover active Retry cursor: before=%+v after=%+v", opened[1], opened[resumeStart+1])
+						}
+					}
+					if !errors.Is(resumeErr, businessErr) || resumed.Exhausted {
+						t.Fatalf("host interruption was made terminal: %v cursor=%+v", resumeErr, resumed)
+					}
+				} else if !resumed.Exhausted {
+					t.Fatalf("confirmed business failure replenished root budget: %+v", resumed)
+				}
+				if calls.Load() != wantCalls || failCalls != wantFailures || len(failed) != wantFailures || commits != 0 {
+					t.Fatalf("resume calls=%d fail hooks=%d confirmed=%d commits=%d; want calls=%d failures=%d", calls.Load(), failCalls, len(failed), commits, wantCalls, wantFailures)
+				}
+			})
+		}
+	}
+}
+
+func TestCheckpointBusinessContextErrorConfirmsRootFailure(t *testing.T) {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			g := mustNew(t, ctx, "business-context-error")
+			var calls int
+			mustAdd(t, g, NewNode("n", "独立RPC失败不是宿主中断", nil, nil, func(*RunCtx) error {
+				calls++
+				return fmt.Errorf("independent RPC failed: %w", cause)
+			}))
+			p := &checkpointProbe{}
+			if err := g.Run(ctx, Inputs{}, WithExecCheckpoint("root", p.hooks())); err == nil {
+				t.Fatal("first failure lost")
+			}
+			if ctx.Err() != nil || len(p.failures) != 1 {
+				t.Fatalf("live host did not confirm failure: ctx=%v failures=%v", ctx.Err(), p.failures)
+			}
+			if err := g.Run(ctx, Inputs{}, WithExecCheckpoint("root", p.hooks())); err == nil {
+				t.Fatal("exhausted root succeeded")
+			}
+			if calls != 1 {
+				t.Fatalf("final failed body reran %d times", calls)
+			}
+		})
+	}
+}
+
+func TestCheckpointNestedDynamicChannelsFailClosed(t *testing.T) {
+	ch := make(chan int)
+	cyclic := map[string]any{}
+	cyclic["self"], cyclic["channel"] = cyclic, ch
+	values := []any{[]any{ch}, map[string]any{"channel": ch}, struct{ Payload any }{ch}, cyclic}
+	for i, value := range values {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			g := mustNew(t, ctx, "nested-dynamic-channel")
+			k := NewKey[any]("k")
+			mustAdd(t, g, NewNode("n", "接口藏在容器里面", nil, Provides(k), func(rc *RunCtx) error { return Set[any](rc, k, value) }))
+			p := &checkpointProbe{}
+			e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", p.hooks()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			bad := []NodeCheckpoint{{NodeID: "n", Reason: NodeCompleted, Outputs: []CheckpointOutput{{Key: CheckpointKey{Name: "k", Type: reflect.TypeFor[any]()}, State: SlotStateReady, Value: value}}}}
+			if err := e.RestoreNodes(bad); err == nil {
+				t.Fatal("channel entered a restore plan")
+			}
+			if err := e.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Wait(); err == nil || len(p.commits) != 0 {
+				t.Fatalf("channel reached commit: %v", err)
+			}
+		})
+	}
+}
+
+func TestCheckpointValueCyclesWithoutChannelsRemainLegal(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "normal-cycle")
+	k := NewKey[any]("k")
+	m := map[string]any{}
+	m["self"] = m
+	var slice []any
+	slice = make([]any, 1)
+	slice[0] = slice
+	value := []any{m, slice}
+	mustAdd(t, g, NewNode("n", "业务对象可以自指", nil, Provides(k), func(rc *RunCtx) error { return Set[any](rc, k, value) }))
+	p := &checkpointProbe{}
+	if err := g.Run(ctx, Inputs{}, WithExecCheckpoint("root", p.hooks())); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.commits) != 1 {
+		t.Fatal("non-channel cycles were over-rejected")
+	}
+}
+
+func TestCheckpointDeclarationViewsAndInputAuthority(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	child, parent := mustNew(t, ctx, "view-child"), mustNew(t, ctx, "view-parent")
+	in, out := NewKey[int]("in"), NewKey[string]("out")
+	declareIn(t, child, NewPort(in))
+	declareOut(t, child, NewPort(out))
+	mustAdd(t, child, NewNode("convert", "真实类型", Requires(in), Provides(out), nil))
+	a, b := NewKey[string]("a"), NewKey[string]("b")
+	if err := Sub(parent, "first", "第一次挂载", []SubBind{Fix(in, 1), Out(out, a)}, child); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sub(parent, "second", "第二次挂载", []SubBind{Fix(in, 2), Out(out, b)}, child); err != nil {
+		t.Fatal(err)
+	}
+	nodes := parent.CheckpointNodes()
+	if len(nodes) != 4 || nodes[1].Path != "first" || nodes[3].Path != "second" || nodes[1].Requires[0].Type != reflect.TypeFor[int]() || nodes[1].Provides[0].Type != reflect.TypeFor[string]() {
+		t.Fatalf("node view: %+v", nodes)
+	}
+	nodes[1].Provides[0].Name = "changed"
+	if parent.CheckpointNodes()[1].Provides[0].Name != "out" {
+		t.Fatal("node declaration aliases definition")
+	}
+	g := mustNew(t, ctx, "input-view")
+	x, y := NewKey[int]("external"), NewKey[int]("internal")
+	declareIn(t, g, NewPort(x))
+	mustAdd(t, g, NewNode("n", "内部值不出现在输入视图", Requires(x), Provides(y), func(rc *RunCtx) error { return Set(rc, y, 8) }))
+	var values Inputs
+	if err := Seed(&values, x, 3); err != nil {
+		t.Fatal(err)
+	}
+	var events atomic.Int32
+	e, err := g.NewExecution(ctx, values, WithExecObserver(ObserverFunc{GraphStarted: func(Site) { events.Add(1) }}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Cancel()
+	before := len(e.slots)
+	inputs := e.CheckpointInputs()
+	if len(inputs) != 1 || inputs[0].Key.Name != "external" || inputs[0].Key.Type != reflect.TypeFor[int]() || inputs[0].State != SlotStateReady || inputs[0].Value != 3 {
+		t.Fatal(inputs)
+	}
+	inputs[0].Key.Name = "internal"
+	if e.CheckpointInputs()[0].Key.Name != "external" || len(e.slots) != before || events.Load() != 0 {
+		t.Fatal("input inspection mutated runtime")
+	}
+}
+
+func TestCheckpointRejectsKnownDynamicInputBeforeBusiness(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "dynamic-input")
+	input := NewKey[any]("input")
+	declareIn(t, g, NewPort(input))
+	mustAdd(t, g, NewNode("n", "业务前拒动态channel", Requires(input), nil, func(*RunCtx) error { t.Error("business ran"); return nil }))
+	var in Inputs
+	if err := Seed[any](&in, input, make(chan int)); err != nil {
+		t.Fatal(err)
+	}
+	p := &checkpointProbe{}
+	e, err := g.NewExecution(ctx, in, WithExecCheckpoint("root", p.hooks()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Cancel()
+	if err := e.Start(); err == nil {
+		t.Fatal("dynamic input channel accepted")
+	}
+	if g.sealed || e.started || len(p.opens) != 0 {
+		t.Fatal("rejected input had startup effects")
+	}
+}
+
+func TestCheckpointAllowsOrdinaryAspectsAndShortCircuit(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "short-circuit")
+	k := NewKey[int]("k")
+	short := func(rc *RunCtx, _ func(*RunCtx) error) error { return Set(rc, k, 9) }
+	mustAdd(t, g, NewNode("n", "正常短路仍提交", nil, Provides(k), func(*RunCtx) error { t.Error("short-circuited body ran"); return nil }, short))
+	p := &checkpointProbe{}
+	if err := g.Run(ctx, Inputs{}, WithExecCheckpoint("root", p.hooks())); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.commits) != 1 || p.commits[0].Node.Outputs[0].Value != 9 {
+		t.Fatal("ordinary aspect was rejected or lost output")
+	}
+}
+
+func TestCheckpointRetryCannotReenterSameBoundary(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "duplicate-boundary")
+	var ran int
+	retry := Retry(2, 0)
+	composite := func(rc *RunCtx, next func(*RunCtx) error) error {
+		if err := retry(rc, next); err != nil {
+			return err
+		}
+		return retry(rc, next)
+	}
+	mustAdd(t, g, NewNode("n", "无新父边界不能重入", nil, nil, func(*RunCtx) error { ran++; return nil }, composite))
+	p := &checkpointProbe{}
+	if err := g.Run(ctx, Inputs{}, WithExecCheckpoint("root", p.hooks())); err == nil {
+		t.Fatal("same persistent Retry entry was reopened")
+	}
+	if ran != 1 || len(p.commits) != 0 {
+		t.Fatalf("body=%d commits=%d", ran, len(p.commits))
+	}
+}
+
+func TestCheckpointHookCancellationIsFailure(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "hook-context-error")
+	mustAdd(t, g, NewNode("n", "后端取消不是宿主中断", nil, nil, nil))
+	p := &checkpointProbe{}
+	hooks := p.hooks()
+	hooks.Commit = func(context.Context, CheckpointCommit) error { return context.Canceled }
+	e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Wait(); err == nil || e.Snapshot().Graph.Status != GraphStatusFailed {
+		t.Fatalf("backend failure misclassified: %v", err)
+	}
+}

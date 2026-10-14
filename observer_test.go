@@ -75,11 +75,13 @@ func (r *recordingObserver) OnNodeWaiting(site Site, id string) {
 	r.log = append(r.log, "W:"+id)
 	r.mu.Unlock()
 }
+
 func (r *recordingObserver) OnNodeRunning(site Site, id string) {
 	r.mu.Lock()
 	r.log = append(r.log, "R:"+id)
 	r.mu.Unlock()
 }
+
 func (r *recordingObserver) OnNodeFinished(site Site, id string, reason NodeFinishReason, err error) {
 	r.mu.Lock()
 	r.log = append(r.log, "F:"+id+":"+string(reason))
@@ -680,5 +682,32 @@ func TestObserverFuncGraphFieldsFire(t *testing.T) {
 	}
 	if reason != NodeCompleted || gerr != nil {
 		t.Fatalf("reason = %q err = %v", reason, gerr)
+	}
+}
+
+// TestWaitReasonStableAfterFailure 首错取消后，下游的终态必须是 canceled：
+// 它没有执行是因为整图被取消，而不是因为恰好先看见了那条「解阻塞用的跳过」。
+func TestWaitReasonStableAfterFailure(t *testing.T) {
+	const rounds = 50
+	for i := 0; i < rounds; i++ {
+		k := NewKey[string]("wait.k")
+		var reason NodeFinishReason
+		obs := ObserverFunc{Finished: func(_ Site, nodeID string, r NodeFinishReason, _ error) {
+			if nodeID == "waiter" {
+				reason = r
+			}
+		}}
+		g := mustNew(t, context.Background(), "test", WithObserver(obs))
+		mustAdd(t, g, NewNode("boom", "", nil, Provides(k), func(rc *RunCtx) error { return errors.New("boom") }))
+		mustAdd(t, g, NewNode("waiter", "", Requires(k), nil, func(rc *RunCtx) error {
+			t.Fatal("waiter 不该进入 Run")
+			return nil
+		}))
+		if err := runOn(g); err == nil {
+			t.Fatal("want boom")
+		}
+		if reason != NodeCanceled {
+			t.Fatalf("第 %d 轮：waiter 终态 = %q, want canceled", i, reason)
+		}
 	}
 }

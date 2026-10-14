@@ -1,7 +1,6 @@
 package pulse
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -30,7 +29,7 @@ import (
 //     这一处绑出去的进口是**可选**的，不逼调用方编个值出来；
 //   - **一条 `In` 绑的进口，在子图里不可能已经有来源**：这个状态已经建不出来了——
 //     「一条键既是声明过的进口、又有节点产出它」在**声明那一刻**就被拒（`DeclareInput` 与
-//     `Add` 两个方向同一句判据，都撞 `ErrDuplicateSource`，见 port.go / graph.go）；
+//     `Add` 两个方向同一句判据，都撞 `ErrDuplicateSource`，见 key.go / graph.go）；
 //   - **透传**（同一条键既是入口又是出口）是合法的：`In(父, k)` + `Out(k, 父)` 两条都写，
 //     父侧喂进去的值就是子图产出的那条值。出口**不去重**——同一条出口推给两个父侧键没有
 //     静默丢值的问题（推给同一个父侧键早在 `Add` 那层就被「declares ... twice in Provides」拒了）。
@@ -356,76 +355,6 @@ func (g *Graph) findInSubtree(target *Graph, path []string) ([]string, bool) {
 	return nil, false
 }
 
-// runStaticSub 是挂子图那一步的运行体：取值 → 建一份子执行 → 跑 → 桥回。
-//
-// **每个挂载位置一份子执行**：子图是**定义**，挂在这里的这一次运行要一份自己的
-// ctx / 槽位 / 状态（`newChildExecution`）。于是同一张子图挂在两处时两处都能跑，
-// 各自的输入输出互不干扰——旧版本是「一次性认领 + 运行期回写子图字段」，同一张图
-// 只能跑一处、而且两处会互相踩配置。
-//
-// 三样东西跟着消失：
-//
-//   - **认领**：不再有「这张图用过没有」这回事，定义可以跑很多次；
-//   - **回写子图字段**（旧 `adopt`）：有效观察者 / 名额 / 图级切面在**创建子执行**时
-//     按「父执行环境 + 子图自己的声明」算出来，定义保持只读；
-//   - **转发取消的那条 goroutine**：子执行的 ctx 从父节点这一层的 ctx 派生，
-//     父侧取消天然传下去（实测过旧版本不转发时父图会跑满整段并报成功）。
-func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
-	// 1) 先取父侧的全部输入：跳过是**到达**，照跳（用 SkipSeed 表达）；其它错误
-	//    （取消、未声明）直接返回。`Fix` / `FixSkip` 那条不读父侧，直接写进这一次的输入。
-	var in Inputs
-	for _, b := range binds {
-		if b.fix != nil {
-			if b.fix.bad != nil {
-				return fmt.Errorf("pulse: Sub %q: %w", id, b.fix.bad)
-			}
-			for _, ref := range b.fixKeys() {
-				en := b.fix.in.entries[ref.name]
-				if err := in.set(en.ref, en.value, en.skip); err != nil {
-					return fmt.Errorf("pulse: Sub %q: %w", id, err)
-				}
-			}
-			continue
-		}
-		if !b.in {
-			continue
-		}
-		v, skip, err := readParentInput(rc, b)
-		if err != nil {
-			return err
-		}
-		if err := in.setArrived(b.child, v, skip); err != nil {
-			return fmt.Errorf("pulse: Sub %q: %w", id, err)
-		}
-	}
-
-	// 2) 为这个挂载位置建一份子执行。父节点这一层的 ctx 是它的取消域：父侧被取消
-	//    （含这一步上的 `Timeout` 切面）子图当场停。
-	//
-	//    这一步还会判子图那侧的启动条件（每条被 `Requires` 的进口都要有交代）：
-	//    父图没绑、子图里也没人产出的进口在这里报，而不是让子图跑起来之后挂死。
-	sub, err := child.newChildExecution(rc.exec, rc.Context(), rc.node.id, in)
-	if err != nil {
-		return fmt.Errorf("pulse: Sub %q: %w", id, err)
-	}
-	rc.exec.recordChild(rc.node, sub)
-	if err := rc.prepareChildCheckpoint(sub); err != nil {
-		sub.Cancel()
-		return err
-	}
-
-	// 3) 跑子执行：Start + Wait。失败原样冒泡（首错就是子图的首错）。
-	if err := sub.Start(); err != nil {
-		return err
-	}
-	if err := sub.Wait(); err != nil {
-		return err
-	}
-
-	// 4) 桥回父侧：就绪 → Set，跳过 → Skip；**全部**输出都跳 → 本节点以跳过收尾。
-	return bridgeOutputs(rc, id, binds, sub)
-}
-
 // SubBind 是一对「父侧键 ↔ 子侧键」——或者一条「固定值 ↔ 子侧键」。用 `In` / `Out` /
 // `Fix` / `FixSkip` 构造——**方向由构造器定**（写反了读不出来），`In` / `Out` 两端必须
 // 同一个 `T`，否则编译期就红。
@@ -566,60 +495,4 @@ func OutRef(child, parent keyRef) SubBind {
 		child:  child,
 		push:   func(rc *RunCtx, v any) error { return setRef(rc, parent, v) },
 	}
-}
-
-// readParentInput 取父侧一条绑定的输入：**跳过是到达**，照跳种（skip=true）；
-// 其它错误（取消、未声明）原样返回。
-func readParentInput(rc *RunCtx, b SubBind) (any, bool, error) {
-	v, err := b.pull(rc)
-	if err != nil {
-		if errors.Is(err, ErrSkipped) {
-			return nil, true, nil
-		}
-		return nil, false, err
-	}
-	return v, false, nil
-}
-
-// bridgeOutputs 把子执行跑完之后的结果桥回父侧：就绪 → `Set`，跳过 → `Skip`；
-// **全部**输出都以跳过收尾 → 这一步以节点级跳过收尾（`NoValue()`，未发布的输出由引擎自动跳过）。
-//
-// 读的是**子执行**的槽位（这一次挂载位置那一份），不是子图定义——同一张子图挂在两处时，
-// 两处各读各的那一份。
-func bridgeOutputs(rc *RunCtx, id string, binds []SubBind, sub *Execution) error {
-	hasOut, allSkipped := false, true
-	for _, b := range binds {
-		if b.intoChild() {
-			continue // `In` 与 `Fix` / `FixSkip` 都是「往子图送」，不是输出
-		}
-		hasOut = true
-		st, _ := sub.slotOf(b.child).snapshot()
-		switch st {
-		case slotReady:
-			allSkipped = false
-		case slotSkipped:
-		default:
-			return fmt.Errorf("pulse: Sub %q: the child finished but its output key %s "+
-				"never arrived (neither written nor skipped)", id, b.child)
-		}
-	}
-	if hasOut && allSkipped {
-		return NoValue() // 节点级跳过；未发布的输出由引擎自动跳过
-	}
-	for _, b := range binds {
-		if b.intoChild() {
-			continue
-		}
-		st, v := sub.slotOf(b.child).snapshot()
-		if st == slotSkipped {
-			if err := skipRef(rc, b.parent); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := b.push(rc, v); err != nil {
-			return err
-		}
-	}
-	return nil
 }
