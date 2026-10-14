@@ -147,7 +147,7 @@ pulse: subgraph "inner" (mounted at "step1/toInner"): pulse: node "leaf" require
 |---|---|---|
 | attach the observer to the child graph | the parent graph runs fine and `Run()` returns `nil`, while **not one child record appears** | a child with no observer of its own **inherits the parent's** (one of its own wins) |
 | hang the child execution off the parent node's layer | hand-wired, the child runs in a cancellation domain of its own: a parent cancel is invisible and it runs to completion anyway — measured: the parent reports **success** after 300ms | `Sub` derives the child execution's ctx from that parent-node layer, so cancellation travels down by construction |
-| hand-write both bridges | child → parent can only go through a **closure variable** (`Graph` has no public slot read API), and who is bound to whom lives in your head | declare `In` / `Out` once; the bridge happens when the child finishes |
+| hand-write both bridges | parent/child keys, types and outlet declarations must be aligned by hand, and a bridge can omit an output | declare `In` / `Out` once; outputs are bridged when the child finishes, and the host reads declared parent outlets with `ReadOutput` |
 
 **Run semantics are the same as hand-written nesting**: `In` / `Out` read as **arrows** (source first, destination second), and the parent-side node's `Requires` / `Provides` follow from them — the boundary is written where the wiring is, and both ends of one `T` are locked at compile time. Child succeeds → this node succeeds (ready outputs are `Set`, skipped ones `Skip`); **every output skipped** → this node finishes as `skipped` (not a failure); child fails → this node fails and the **first error propagates untouched** (`errors.Is` holds); cancellation → the child sees it. Two boundaries remain:
 
@@ -344,14 +344,38 @@ And make the consumer a **`select`, not `for range`**: in the same measured scen
 
 ## Where to read results
 
-`Graph` exposes no slot reads after `Run`. The products belong to the caller; two usual approaches:
+Declare public outlets with `DeclareOutput`, create this run's `Execution`, then read with `ReadOutput(e, key)` after a successful `Start` / `Wait`. Internal Keys remain implementation details. Results belong to this execution, so sequential or concurrent runs need no shared result closure.
 
 ```go
-var report string // 1) the node closure writes it out — use this for the terminal product
-// ...
-
-if err := g.Run(ctx, in); err != nil { return err } // 2) failures come back as the return value
+// result is a Key[T] with an existing source in g.
+if err := g.DeclareOutput(pulse.NewPort(result)); err != nil {
+	return err
+}
+e, err := g.NewExecution(ctx, in)
+if err != nil {
+	return err
+}
+if err := e.Start(); err != nil {
+	return err
+}
+if err := e.Wait(); err != nil {
+	return err
+}
+value, state, err := pulse.ReadOutput(e, result)
+if err != nil {
+	return err // Both value and state are invalid.
+}
+switch state {
+case pulse.SlotStateReady:
+	fmt.Println(value) // A zero value or nil can still be a normal ready value.
+case pulse.SlotStateSkipped:
+	fmt.Println("no result this run")
+case pulse.SlotStatePending:
+	fmt.Println("optional pass-through output was not supplied")
+}
 ```
+
+Reading returns immediately without waiting or creating slots. Normal skipped and an unfed optional pass-through pending both have a nil error. Before finalization, or on actual failure/cancellation, no partial value is returned; a non-nil error invalidates both value and state. Mutable business values are not deep-copied, so the host owns their synchronization. A `Sub` `Out` bridges a declared child outlet to a parent Key; declare that Key as a parent outlet and use the same reading path.
 
 `Run(ctx, in)` / `Execution.Err()` return the **first error**, and **never a plain skip**; an all-skipped graph is a legal outcome. Cancellation is cooperative: the body responds to ctx itself, and the engine waits for it to exit without forcibly stopping its goroutine. Wait then latches the terminal result: absent a first error, execution cancellation before finalization still becomes the result, even if no body returned it as an error. A completed node and a canceled run may coexist. Context cleanup after finalization does not change the result, and repeated Wait never recaptures that cleanup cancellation.
 

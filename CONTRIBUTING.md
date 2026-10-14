@@ -74,11 +74,27 @@ go test -race -count=1 ./...                    # the regression CI runs on ever
 reports the whole tree as unformatted. Its criterion is **non-empty output**, not the exit code —
 `gofmt -l` lists offending files and still exits 0.
 
-The module has **no network dependencies**: `go.mod` requires only `gopkg.in/yaml.v3`, so the
-whole suite runs offline and needs no credentials.
+The tests make **no live API calls** and need no credentials. `go.mod` requires only
+`gopkg.in/yaml.v3`; with the toolchain and modules cached, the whole suite runs offline.
+
+For documentation changes, also run the signature gate and its negative controls:
+
+```bash
+go test -count=1 -run '^TestDocs(ExamplesUseCurrentSignatures|ExampleGateNegativeControls)$' .
+```
+
+The gate checks copyable entries in tracked Markdown and Vue files, including the home-page
+Go example. Update both languages together; the gate does not replace compilation of complete
+examples or a site build.
 
 **Never commit credentials.** `.env`, `.env.*`, `*.pem` and `*.secrets` are gitignored, and
 secret scanning with push protection is enabled on this repository.
+
+The repository root contains the production `pulse` package and its package-internal white-box
+tests. Public-API regression tests live in `tests/`; runnable external examples stay in
+`examples_test.go` at the root so godoc discovers them. `observe/` and `yaml/` remain separate
+public packages, each with its own tests. The five design documents live in `docs/design/`, and
+bilingual guides live in `site/guide/` and `site/en/guide/`.
 
 ### Conventions a reviewer will check
 
@@ -174,11 +190,24 @@ go test -race -count=1 ./...                     # CI 每个 PR 跑的回归集
 可能挂着旧版二进制，解析不了新语法，会把整棵树报成未格式化。它的判据是**输出非空即失败**，
 不是退出码：`gofmt -l` 列完违规文件仍然退出 0。
 
-本 module **无任何网络依赖**：`go.mod` 只 require `gopkg.in/yaml.v3`，整套测试离线可跑、
-不需要凭据。
+测试**不调用在线 API**，不需要凭据。`go.mod` 只 require `gopkg.in/yaml.v3`；工具链与 module
+已缓存时，整套测试离线可跑。
+
+改文档时，还要跑签名门禁及其负向对照：
+
+```bash
+go test -count=1 -run '^TestDocs(ExamplesUseCurrentSignatures|ExampleGateNegativeControls)$' .
+```
+
+门禁检查已跟踪 Markdown 与 Vue 文件中可复制的入口，包括首页的 Go 示例。中英文一起更新；
+它不能代替完整示例的编译或站点构建。
 
 **绝不要提交凭据。** `.env`、`.env.*`、`*.pem`、`*.secrets` 都在 .gitignore 中，且本仓库已开启
 secret scanning 与 push protection。
+
+仓库根目录保留 `pulse` 生产包及包内白盒测试。公开 API 回归测试放在 `tests/`；可运行的外部示例
+保留在根目录 `examples_test.go`，便于 godoc 收录。`observe/` 和 `yaml/` 仍是独立的公开包，各有
+自己的测试。五份设计文档在 `docs/design/`，中英文指南在 `site/guide/` 和 `site/en/guide/`。
 
 ### Review 会检查的约定
 

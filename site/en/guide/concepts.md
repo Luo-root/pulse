@@ -46,7 +46,7 @@ This also yields a fact that is easy to state backwards — **a skip is a fact a
 | Case | Final state | Observation records |
 |---|---|---|
 | The node calls `Skip` on one `Provide` and then returns normally | `completed` | two: wait segment + run segment |
-| The node did not execute because **no input brought a value** | `skipped` | **only one** wait record (`err="pulse: skipped [key]"`), no run segment |
+| The node did not execute because **no input brought a value** | `skipped` | **only one** wait record (`Record.Err = nil`, no error field), no run segment |
 
 See the real output (two nodes: `translate` calls `Skip` on `translated`, and `publish` requires `translated`):
 
@@ -54,7 +54,7 @@ See the real output (two nodes: `translate` calls `Skip` on `translated`, and `p
 PULSE | 2026/10/09 - 10:42:50.550 | running    |         - | pulse.graph_started | source=observe | pulse.graph=branch-demo | host=quickstart | trace=branch-demo
 PULSE | 2026/10/09 - 10:42:50.550 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
 PULSE | 2026/10/09 - 10:42:50.550 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
-PULSE | 2026/10/09 - 10:42:50.550 | skipped    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=publish | host=quickstart | err="pulse: skipped [translated]" | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | skipped    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=publish | host=quickstart | trace=branch-demo
 PULSE | 2026/10/09 - 10:42:50.550 | completed  |   524.5µs | pulse.graph_finished | source=observe | pulse.graph=branch-demo | host=quickstart | trace=branch-demo
 ```
 

@@ -1,6 +1,6 @@
 # 检查点桥接与子图恢复（方案 A）
 
-服务 [Pulse #307](https://github.com/Luo-root/pulse/issues/307) 与 [Durable #2](https://github.com/Luo-root/pulse-durable/issues/2)。本文描述本工作树的实现契约；桥接与 Durable 首期已完成本地实现，合并及 Pulse v0.5.0 / Durable v0.1.0 发布由维护者决定。持久等待和分布式运行管理不在本次实现内。
+服务 [Pulse #307](https://github.com/Luo-root/pulse/issues/307) 与 [Durable #2](https://github.com/Luo-root/pulse-durable/issues/2)。本文描述当前代码的实现契约：Core 已有完整节点链的检查点桥接，Durable 已有 Store/Codec、Run/Resume、方案 A 子图恢复与本机文件后端。首次桥接发布目标仍是 Pulse v0.5.0 / Durable v0.1.0，发版由维护者决定。持久等待和分布式运行管理不在本次实现内。
 
 ## 谁使用这个入口
 

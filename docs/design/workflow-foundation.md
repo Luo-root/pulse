@@ -27,17 +27,17 @@
 
 ## 2. 现状与目标分开
 
-2026-10-13 核对：Pulse main 为 `7f99625`，阶段 4 已经整合 PR #326 合入；最后已核实 release 仍是 `v0.4.1`。以下区分主干能力与本地待提交成果；票关闭、实现完成、合并和发布是不同状态。
+本节描述当前代码具备的能力；实现范围与发布目标分开，首次桥接版本与发布闸门见第 8 节。
 
-| 范围 | 已核实的现状 | 接续工作 |
+| 范围 | 当前能力 | 接续方向与边界 |
 |---|---|---|
-| 定义与执行 | `Graph` 可复用；每份 `Execution` 有自己的输入、槽位、错误与取消域 | 保留这个边界，恢复也创建新 Execution |
-| 静态组合 | `Sub` 挂现成子图，端口接线，运行前递归校验；完整声明端口已在阶段 4 合入 | 检查点恢复保持组合前后的子进度能力 |
-| 重试 | attempt 写集已合入；本地桥接增加完整链暂存与持久 Retry 游标 | 评审本地可靠桥接与预算/作用域隔离 |
-| 观测与分析 | Site、结构化记录、Execution Snapshot、Mermaid、无注册表 YAML Analyze 均已合入 | 恢复事实由 Durable 自身事件提供，不伪造业务耗时 |
-| 调用方取得结果 | `ReadOutput` 与 Wait 真实取消收尾修复已本地实现并验证 | 按 #321/#327 提交评审，不将未发布 API 说成已发布 |
-| Durable 首期 | Store/Codec/MemoryStore、Run/Resume、方案 A、文件后端与七个真实退出/重启场景已本地实现和联调；远端仓库仍未提交本组代码 | 按 #2–#5 拆分可评审提交，维护者决定合并与发布 |
-| 分布式 | 没有跨机器任务派发、worker 租约/fencing 或故障接管实现 | 单独定义持久身份、领取、续约、接管与旧写拒绝 |
+| 定义与执行 | `Graph` 可复用；每份 `Execution` 有自己的输入、槽位、错误与取消域 | 恢复也创建新 Execution，不复用旧运行状态 |
+| 静态组合 | `Sub` 挂现成子图，端口接线，运行前递归校验；Topology 保留完整声明端口 | 检查点恢复沿用相同定义与接线，保留已确认子进度 |
+| 重试 | attempt 写集隔离；检查点模式增加完整链暂存与持久 Retry 游标 | 中断认回原尝试，明确失败的新尝试隔离旧成果，不刷新预算 |
+| 观测与分析 | Site、结构化记录、Execution Snapshot、Mermaid、无注册表 YAML Analyze | 恢复事实由 Durable 自身事件提供，不伪造业务耗时 |
+| 调用方取得结果 | 声明出口后用 `ReadOutput` 读取本轮结果；Wait 锁存首错或真实取消 | 缺值与失败分开，不读取尚未收尾的部分值 |
+| Durable 首期 | Store/Codec/MemoryStore、Run/Resume、方案 A 子图恢复、本机文件后端与真实退出/重启集成用例 | 本机恢复不代表断电持久性或跨机器所有权；发布由维护者决定 |
+| 持久等待与分布式 | 尚无持久挂起/唤醒、跨机器任务派发、worker 租约/fencing 或故障接管 | 单独定义等待、持久身份、领取、续约、接管与旧写拒绝 |
 
 Core 依赖仍为标准库；桥接行为通过跨仓实际组合验证，MemoryStore 不冒充进程恢复。完整机制和验收场景见 [检查点桥接与子图恢复（方案 A）](checkpoint.md)。
 
@@ -66,7 +66,7 @@ flowchart TB
     Facts --> Obs[观测记录与呈现]
 ```
 
-图是职责示意。Durable、Store 与跨仓桥接已本地实现和联调，尚未合并或发布；Facts 的按需执行快照已随阶段 4（#319、#326）合入主干。
+图是职责示意。当前 Core 提供可靠提交与恢复原语，Durable 提供 Store/Codec 与 Run/Resume，本机文件后端支持进程重启恢复；Facts 包含 Topology、按需执行快照与 Observer 回调。持久等待与分布式运行管理仍是后续方向。
 
 ### “没有中心调度循环”约束哪一层
 
@@ -97,7 +97,7 @@ flowchart TB
 
 **Durable 管的是“这一道工序的最终结果是否已经可靠记录”。** 业务体返回后，外层切面仍可能失败；即使 Retry 成功，也不能提前认定整个节点成功。显式启用 Durable 后，完整节点链的写入都须在节点暂存范围内，Retry 成功只合并到这个范围。
 
-目标顺序沿用 [Pulse #307](https://github.com/Luo-root/pulse/issues/307) 与 [durable #1](https://github.com/Luo-root/pulse-durable/issues/1)：
+实现顺序沿用 [Pulse #307](https://github.com/Luo-root/pulse/issues/307) 与 [durable #1](https://github.com/Luo-root/pulse-durable/issues/1)：
 
 1. 执行完整节点链，包括所有内外层切面；每个 Retry attempt 保持自己的隔离。
 2. 引擎确定节点最终结果，补齐所有未写出口的正常 skipped 状态；失败路径按独立契约处理。
@@ -119,7 +119,7 @@ flowchart TB
 
 副作用方案也有前提：**单独包一个业务事务，仍关不住“业务已提交、检查点没提交”的重做窗口**。要防重，应把业务变更与稳定防重记录纳入同一原子边界，或在能够共同提交的前提下与检查点协调。outbox 需要业务变更与消息记录可靠地一起提交，事件身份稳定、投递可重试，消费端按身份去重或幂等；只增加一个 outbox 表并不自动保证外部动作只发生一次。
 
-### 已落成本地实现的恢复契约
+### 已实现的恢复契约
 
 [durable #2](https://github.com/Luo-root/pulse-durable/issues/2) 与 [Pulse #307](https://github.com/Luo-root/pulse/issues/307) 已统一采用方案 A，详见 [桥接契约](checkpoint.md)：
 
@@ -144,11 +144,11 @@ flowchart TB
 
 强观测至少应能回答：在跑哪份定义、哪一次运行、哪处挂载、为什么还没推进、真实失败是什么、哪份结果是恢复出来的。
 
-当前生命周期回调不是完整 attempt 历史；#319 先补按需快照。后续要回答“重试到第几次”“等检查点还是等事件”“从哪个 checkpoint 恢复”，应由掌握事实的层补记录/只读出口，不重复发送冻结的节点生命周期三连。durable 事实通过它拥有的 Attrs 键和查询记录提供，真实业务值默认不进入观测。
+当前生命周期回调不是完整 attempt 历史；#319 已提供按需快照。后续要回答“重试到第几次”“等检查点还是等事件”“从哪个 checkpoint 恢复”，应由掌握事实的层补记录/只读出口，不重复发送冻结的节点生命周期三连。durable 事实通过它拥有的 Attrs 键和查询记录提供，真实业务值默认不进入观测。
 
 ### 结果读取要守住端口边界
 
-宿主类型化声明出口读取已按 [#321](https://github.com/Luo-root/pulse/issues/321) 实现为 `ReadOutput(e, key)`（主干合入 / 发布状态以对应 PR 与 release 为准）。它与只含状态的 Snapshot 分开：出口是用户声明的公共结果，内部 Key 仍是实现细节。
+宿主类型化声明出口读取已按 [#321](https://github.com/Luo-root/pulse/issues/321) 实现为 `ReadOutput(e, key)`。它与只含状态的 Snapshot 分开：出口是用户声明的公共结果，内部 Key 仍是实现细节。
 
 主路径成功 Wait 后立即读取：返回业务值、既有 SlotState 与 error；ready 包含零值和 nil，正常 skipped 与未喂的可选透传 pending 都不报失败。不等待、不造槽、不把 pending 偷换成 skipped；未收尾和真实失败/取消不返回部分值，同名同类型键等价且必须是本图声明出口。Wait 先锁存终态再释放 ctx（#327），正常资源释放不污染结果；可变业务值不深拷贝。完整契约见 [pulse.md 的结果读取](pulse.md#62-宿主结果读取readoutput)。
 
@@ -194,7 +194,7 @@ flowchart TB
 | 5 分布式运行 | 多 worker 工作流领取、租约、接管、旧写拒绝与统一观测 | [durable #6](https://github.com/Luo-root/pulse-durable/issues/6) 先定运行所有权协议，不与节点跨机器混在同一票 |
 | 6 受场景驱动的扩展 | 跨机器节点、动态子任务、迭代、显式补偿等 | 按实际需求各自定契约，不预先铺通用插件框架 |
 
-实现按小组能力切可评审 PR；阶段交付边界与发布边界分开。阶段 1/2/3 的成果尚未随新版本发布；阶段 4 已实现（#319），主干合入 / 发布状态以对应 PR 与 release 为准。发版不由阶段编号自动触发。
+实现按小组能力切可评审 PR；阶段交付边界与发布边界分开。当前已具备静态组合、独立 Execution、事务性 Retry、执行视图、声明出口读取与可靠检查点桥接，Durable 首期覆盖 Store/Codec、Run/Resume、方案 A 与本机文件后端。具体版本由维护者决定，发版不由阶段编号自动触发。
 
 ### 已确认的发布路线与闸门
 
@@ -203,7 +203,7 @@ flowchart TB
 3. **最终 `v1.0.0` 冻结。** 等项目目标达到，并确认后续不再有系统性重大变更，再补齐详细文档体系，发布两仓各自的 `v1.0.0`；届时基本固定公开 API 与实现。在此之前，任何 0.x 版本都不代表最终冻结。
 4. **恢复能力的证据口径。** MemoryStore 只证明 Store/Codec/Run/Resume 契约。只有真实持久后端完成真实进程退出并重启后的恢复验证，才可以声称能够抵御进程退出；发布说明和验收记录都必须守住这条边界。
 
-近期首先接续 #319；#307 与 durable #2 的契约可并行评审，但需核心恢复/提交原语验证后再完成 durable Run/Resume 接线。Durable 桥接尚未实现，MemoryStore 的里程碑只叫契约实现；有真实持久后端和重启验证之后，才声称可以抵御进程退出。
+当前 Core 与 Durable 已按 #307 / durable #2 完成接线，覆盖完整链提交、方案 A 子进度恢复与持久 Retry 预算。本机文件后端及真实退出/重启用例提供进程恢复证据；MemoryStore 仍只验证契约，不能单独支撑持久性声明。后续持久等待与分布式所有权需分别定稿协议和验收。
 
 ## 9. 选型对照与可推翻条件
 
@@ -220,11 +220,11 @@ Pulse 已有显式静态图、声明 Key 和独立 Execution，先做节点检�
 
 ## 10. 证据与文档分工
 
-- 实现定位：[graph.go](../../graph.go)、[execution.go](../../execution.go)、[node.go](../../node.go)、[writeset.go](../../writeset.go)、[observer.go](../../observer.go)、[topology.go](../../topology.go)。
+- 实现定位：[graph.go](../../graph.go)（定义与来源）、[execution.go](../../execution.go)（类型、创建、Start/Wait、生命周期与 ExecOption）、[execution_run.go](../../execution_run.go)（节点运行、收尾、limiter 与子图运行桥）、[sub.go](../../sub.go)（静态装配与绑定）、[slot.go](../../slot.go)（槽位与写集）、[snapshot.go](../../snapshot.go)（视图与结果读取）、[observer.go](../../observer.go)、[topology.go](../../topology.go)。
 - 对象模型与已合阶段：[Pulse #311](https://github.com/Luo-root/pulse/issues/311)、[PR #318](https://github.com/Luo-root/pulse/pull/318)、[object-model.md](object-model.md)。
 - 快照与静态分析：[Pulse #319](https://github.com/Luo-root/pulse/issues/319)。
 - 核心持久模式：[Pulse #307](https://github.com/Luo-root/pulse/issues/307)。
 - Durable 设计链：[#1](https://github.com/Luo-root/pulse-durable/issues/1)、[#2](https://github.com/Luo-root/pulse-durable/issues/2)、[#3](https://github.com/Luo-root/pulse-durable/issues/3)、[#4](https://github.com/Luo-root/pulse-durable/issues/4)、[#5](https://github.com/Luo-root/pulse-durable/issues/5)。
-- 远端 durable 状态：[仓库](https://github.com/Luo-root/pulse-durable)、[contents API](https://api.github.com/repos/Luo-root/pulse-durable/contents)、[branches API](https://api.github.com/repos/Luo-root/pulse-durable/branches)，本轮返回空仓/空分支。
+- Durable 首期实现：Store/Codec、Run/Resume、方案 A 子图恢复、本机文件后端与集成用例见 [pulse-durable 仓库](https://github.com/Luo-root/pulse-durable)。
 
 本文负责**产品方向、职责与开发顺序**；philosophy.md 负责**已有设计公理及代价**；object-model.md 负责**Graph/Execution 迁移的阶段契约**；pulse.md 负责**今天实际可用的实现**。能力落地时先更新对应现状，再改路线状态，避免让用户把目标当成 API。

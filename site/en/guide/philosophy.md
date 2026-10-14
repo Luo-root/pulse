@@ -6,7 +6,7 @@ The full version (each axiom with its costs and boundaries) lives in the reposit
 
 ## What it is, in one line
 
-Pulse aims to be a **data-driven, observable, composable workflow-engine foundation for Go**. Today, `pulse` provides an embeddable execution core for a single process and graph observation. The separate `pulse-durable` project is planned to add node checkpoint recovery; durable waits and distributed run management remain future designs, not implemented capabilities. See the [development direction in #320](https://github.com/Luo-root/pulse/issues/320) for the responsibilities and roadmap.
+Pulse aims to be a **data-driven, observable, composable workflow-engine foundation for Go**. Today, `pulse` provides an embeddable execution core for a single process, graph observation and a checkpoint bridge around the complete node chain. The separate `pulse-durable` provides Store/Codec, Run/Resume, plan A child recovery and a local file backend. Durable waits and distributed run management remain future designs. See the [development direction in #320](https://github.com/Luo-root/pulse/issues/320) for the responsibilities and roadmap.
 
 The three responsibilities below describe the **execution core**. Task claiming, wake-ups and failover belong to durable run management:
 
@@ -60,7 +60,7 @@ A slot has exactly three states: `pending` (not there yet), `ready` (has a value
 
 ## Deliberately not provided
 
-These boundaries describe the execution core. Future checkpointing, durable waits, task claiming and failover belong to run management; the absence of a central scheduler in the local core does not prohibit a durable scheduling protocol in that layer.
+These boundaries describe the execution core. Durable's implemented checkpoint storage and recovery, as well as future durable waits, task claiming and failover, belong to run management; the absence of a central scheduler in the local core does not prohibit a durable scheduling protocol in that layer.
 
 | Not provided | Why |
 |---|---|
@@ -77,4 +77,4 @@ Both halves of the "definition vs. one run" split have landed. **Composition and
 
 **Execution**: a `Graph` is a **reusable static definition**, and one run's ctx / input values / slots / node state / first error / cancellation domain all live in a new `Execution` — one definition can run many times sequentially, many times concurrently, and be mounted as a child graph in several places (each mounting position gets a child execution of its own); one run's cancellation / failure / completion pollutes neither the definition nor any other run. The inputs (`Inputs` + `Seed` / `SkipSeed`) belong to **that one run**; the definition only declares "this key comes from outside" (`DeclareInput`).
 
-Stage 4 (snapshot / observation / YAML alignment) is implemented (#319; main-branch and release status follow the PRs and releases): Topology exposes the complete static interface, Execution snapshots read this run's progress, Mermaid can overlay states, and YAML Analyze needs no registry. Stage 5 (migration & release) continues under [#311](https://github.com/Luo-root/pulse/issues/311); **stages 1 (static composition), 2 (the `Execution` split) and 3 (transactional `Retry`) are landed**, and the contract plus per-stage landing status are in [`docs/design/object-model.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/object-model.md).
+Stage 4 (snapshot / observation / YAML alignment) is implemented (#319): Topology exposes the complete static interface, Execution snapshots read this run's progress, Mermaid can overlay states, and YAML Analyze needs no registry. Stage 5 (migration & release) continues under [#311](https://github.com/Luo-root/pulse/issues/311); **stages 1 (static composition), 2 (the `Execution` split) and 3 (transactional `Retry`) are landed**, and the contract plus per-stage landing status are in [`docs/design/object-model.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/object-model.md).
