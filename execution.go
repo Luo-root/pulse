@@ -419,9 +419,17 @@ func (e *Execution) Wait() error {
 	}
 	e.wg.Wait()
 	e.mu.Lock()
-	e.done = true // 先定结果，再 cancel：收尾不该被读成运行结果
+	if !e.done {
+		// 先锁存终态，再标记结束：没有节点捕获的真实取消也属于本轮结果。
+		// 先置 done 再问 Err 会把这次取消与后面的资源释放一起忽略。
+		if e.err == nil {
+			e.err = e.ctx.Err()
+		}
+		e.done = true
+	}
+	// 并发 / 重复 Wait 只读已锁存结果，不能重新捕获前一次的收尾 cancel。
+	err := e.err
 	e.mu.Unlock()
-	err := e.Err()
 	e.finishOnce.Do(func() {
 		// 图级终态只会是 completed / failed / canceled：跳过是节点级的事实
 		// （fail 不收跳过，Err 也不含它），升不到这一层。
@@ -431,9 +439,9 @@ func (e *Execution) Wait() error {
 	return err
 }
 
-// Err 返回首个节点错误或取消原因。不含单纯的跳过。运行结束后
-// （Wait 返回过）收尾的那次 cancel 不再算结果——否则干净跑完的图会
-// 报 context.Canceled。
+// Err 返回首个节点错误或取消原因。不含单纯的跳过。Wait 收尾时先锁存终态：
+// 节点没有捕获的真实取消也会保留；随后释放资源的 cancel 不再算结果，
+// 并发或重复 Wait 不改变已确定的结果。
 func (e *Execution) Err() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
