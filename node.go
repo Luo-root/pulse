@@ -117,11 +117,12 @@ type RunCtx struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	allowed map[string]keyRef // name → 声明过的 key
-	// writes 是**当前尝试的写暂存**：nil = 没有尝试边界，`Set` / `Skip` 直写执行槽位。
+	// writes 是**当前写暂存**：nil 时 `Set` / `Skip` 直写执行槽位。
 	//
-	// 它只由 `Retry` 开与关——**切面套在哪一层，事务边界就在哪一层**：`Retry` 包住的那一段
-	// （`next` 之内，含更内层的切面）属于 attempt；`Retry` 外面的切面写的值不属于任何
-	// attempt、也不参与回滚。`Fork` 浅拷贝，所以 `Timeout` 里面那层看到的是同一份暂存。
+	// `Retry` 为每次尝试开一层暂存，边界是它包住的 `next`（含更内层切面）；外层切面的
+	// 写不属于该 attempt，也不随该 attempt 回滚。启用检查点时，runCheckpointChain
+	// 先为完整节点链开外层暂存，Retry 的成功写交到这一层，存储确认 Commit 后才发布。
+	// 因此检查点模式下，即使不装 Retry，体和切面的写也先暂存；`Fork` 浅拷贝共享当前帧。
 	writes *writeSet
 	// advance 是**这一次运行里这个节点**的推进账（见 advanceLedger）。它长在这里而不是
 	// 节点上：节点属于**定义**、要跨运行复用，而 `newRunCtx` 是每个 (执行, 节点) 一份
@@ -385,8 +386,8 @@ func TryGet[T any](rc *RunCtx, k Key[T]) (v T, ok bool, skipped bool, err error)
 
 // Set 幂等首写为就绪。二次调用忽略。与已跳过冲突则报错。
 //
-// **有尝试边界时落暂存**：`Retry` 里面的 `Set` 写的是这一次尝试的写暂存，不是执行槽位
-// ——下游要等这次尝试成功（或以跳过收尾）提交之后才会被唤醒。没装 `Retry` 时照旧直写槽位。
+// **有写暂存时先暂存**：Retry 内的 Set 写入当前尝试，成功或正常跳过才交给外层写入目标。
+// 检查点模式还为完整节点链提供外层暂存，存储确认 Commit 后才发布；未开任何暂存时直写执行槽位。
 func Set[T any](rc *RunCtx, k Key[T], v T) error { return setRef(rc, k.asRef(), v) }
 
 // setRef 是 Set 的非泛型内核：只有 keyRef 可用的地方（糖、子图桥接）走这里。

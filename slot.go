@@ -114,13 +114,13 @@ func (s *slot) wait(ctx context.Context) (any, error) {
 	}
 }
 
-// 本文件是**一次尝试的写暂存**：`Retry` 用它把「这一试写了什么」跟执行槽位隔开——
-// 成功才交出去、失败整份丢掉（见 object-model 第 5 节）。
+// 以下 writeSet 把尝试或完整节点链的写入与执行槽位隔开：Retry 每次尝试各有一层，
+// 成功或正常跳过才交出去，失败整层丢弃（见 object-model 第 5 节）。
 //
-// 它同时是给 [#307]（Durable 的检查点提交）留的那条缝：一份暂存的提交目标是**父写入目标**
-// ——外层还有一层暂存就交给外层，没有就写进执行槽位。Durable 的节点暂存区将来作为
-// 「这个节点的写入目标」挂在链上，最外层什么时候发布仍然由引擎决定。这条缝是**包内**的，
-// 不公开成扩展点（见 Sub / Retry 的 godoc 与 docs/design/object-model.md）。
+// [#307] 的检查点模式已共用这份实现：runCheckpointChain 在完整节点链外开暂存，
+// 链内 Retry 的成功写先交给这一层；完整检查点经 Commit 确认后，引擎才发布执行槽位。
+// 一份暂存的提交目标始终是**父写入目标**：有外层暂存就交给外层，否则写进执行槽位。
+// 这份写入机制是**包内**实现，公开桥接面见 checkpoint.go 与 docs/design/checkpoint.md。
 //
 // [#307]: https://github.com/Luo-root/pulse/issues/307
 
@@ -130,8 +130,8 @@ func (s *slot) wait(ctx context.Context) (any, error) {
 // 语义因此逐条一致：写暂存换的是**落地位置**，不是语义。于是「attempt 内读回自己写的值」
 // 天然带上了与槽位一致的阻塞与跳过语义，不需要第二套规则。
 type writeSet struct {
-	// outer 是**外层尝试**的暂存：嵌套 `Retry` 时内层的结果属于外层那一次尝试。
-	// nil 表示这份暂存的提交目标就是执行槽位（最外层）。
+	// outer 是**外层写暂存**：可能属于外层 Retry 尝试，也可能属于检查点完整节点链。
+	// nil 表示提交目标是执行槽位；检查点节点帧由 runCheckpointChain 先确认存储再提交。
 	outer *writeSet
 
 	mu     sync.Mutex
