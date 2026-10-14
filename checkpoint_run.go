@@ -172,7 +172,8 @@ func (rc *RunCtx) openCheckpointAttempt(parent, boundary string, limit int) (Che
 
 func (rc *RunCtx) failCheckpointAttempt(scope string) error {
 	return rc.exec.callCheckpoint("fail attempt", func() error {
-		return rc.exec.checkpoint.hooks.FailAttempt(rc.ctx, scope)
+		// 与最终失败的执行域判据一致；业务清理取消节点 ctx 不应阻断失败确认。
+		return rc.exec.checkpoint.hooks.FailAttempt(rc.exec.ctx, scope)
 	})
 }
 
