@@ -320,7 +320,7 @@ v, err := b.Get(SourceA) // independent of declaration order; *SkipError if that
 
 **Long jobs watch `rc.Context()`; do not `Set` and return.** Two measurements:
 
-- **Nobody looks at ctx → cancellation is swallowed as success**: cancel externally while the node works, and if the node never looks at `rc.Context()` then `Run()` returns `nil` (no node ever saw the cancellation — see [Core concepts](/en/guide/concepts)).
+- **Ignoring ctx delays termination**: after external cancellation, a body that never checks `rc.Context()` may continue working, and the engine waits for it to return. If cancellation happens before finalization, even a nil body return can leave the node completed while the run is canceled; Run / Wait return the context error. Cooperative cancellation controls when the body exits, not whether cancellation counts as success.
 - **Handing the work to a background goroutine → the error has nowhere to land**: `Set` the channel and return, leaving the actual sending to an unobserved goroutine. Measured: the run reports success (`Run() = nil`) while that goroutine *fails* after finishing its work — not a trace of it on the graph. Forgetting the `defer close` is worse: a downstream `for range` waits for the close and `Run()` never returns (an external ctx timeout cannot save you — the node does not return, so the run does not return).
 
 So: `select` on `rc.Context().Done()` inside long loops, and use `Produce` / `Consume` / `Tee` for streams — they own the close responsibility.
@@ -347,6 +347,6 @@ var report string // 1) the node closure writes it out — use this for the term
 if err := g.Run(ctx, in); err != nil { return err } // 2) failures come back as the return value
 ```
 
-`Run(ctx, in)` / `Execution.Err()` semantics: they return the **first error**, and **never a plain skip** (an all-skipped graph is a legal outcome — `Err()` is `nil`). **Cancellation is cooperative**: the engine only promises that nodes still waiting for data or for a slot return immediately; whether a node already inside `Run` looks at the ctx is up to that node. So a cancellation **becomes the run result only when some node sees it and turns it into an error** — a run whose nodes never looked up and each returned normally counts as completed (`Err()` stays `nil`), even if the parent ctx was cancelled midway.
+`Run(ctx, in)` / `Execution.Err()` return the **first error**, and **never a plain skip**; an all-skipped graph is a legal outcome. Cancellation is cooperative: the body responds to ctx itself, and the engine waits for it to exit without forcibly stopping its goroutine. Wait then latches the terminal result: absent a first error, execution cancellation before finalization still becomes the result, even if no body returned it as an error. A completed node and a canceled run may coexist. Context cleanup after finalization does not change the result, and repeated Wait never recaptures that cleanup cancellation.
 
 Next: the topology does not have to live in Go either — see [Declarative assembly](/en/guide/assembly); to see how long each node spent waiting and how long executing, see [Graph observation](/en/guide/observability).

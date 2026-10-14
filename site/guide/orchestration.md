@@ -319,7 +319,7 @@ v, err := b.Get(SourceA) // 与声明顺序无关；这一路以跳过到达时�
 
 **长任务盯 `rc.Context()`；`Set` 完别就 `return`。** 两条实测：
 
-- **没人看 ctx = 取消被吞成成功**：外部中途取消、节点全程不看 `rc.Context()`，`Run()` 返回 `nil`（没有任何节点看见取消，口径见[核心概念](/guide/concepts)）。
+- **不看 ctx 会延迟退出**：外部取消后，业务体不检查 `rc.Context()` 就可能继续干活；引擎仍要等它返回。若取消发生在终态确定前，业务体即使返回 nil，节点也可以 completed 而整轮 canceled，`Run` / `Wait` 返回 context 错误。协作式取消约束的是退出时机，不是把取消视为成功。
 - **活留给后台 goroutine = 错误无处安放**：`Set` 出 channel 就 `return`，真正的发送留在无人观测的 goroutine 里。实测：图报成功（`Run() = nil`），而那个 goroutine 干完活之后**失败了**——图上一点痕迹都没有；忘了 `defer close` 更要命，下游 `for range` 等关闭，`Run()` 永远不返回（外部 ctx 超时也救不了：节点自己不返回，图就不返回）。
 
 写法：长循环里 `select` 一下 `rc.Context().Done()`；要传流就用 `Produce` / `Consume` / `Tee`，关闭责任交给它们。
@@ -346,6 +346,6 @@ var report string // 1) 节点闭包写出——终端产物用这个
 if err := g.Run(ctx, in); err != nil { return err } // 2) 失败看返回值
 ```
 
-`Run(ctx, in)` / `Execution.Err()` 的语义：返回**首错**，**不含单纯的跳过**（全图都跳过是合法结果，`Err()` 为 `nil`）。**取消是协作式的**——引擎只承诺「还在等数据 / 还在等名额」的节点立刻返回；已经在 `Run` 里的节点要不要看 ctx，由它自己决定。所以**取消只有在被某个节点看见、变成它的错误时，才成为运行结果**：节点都没抬头、各自正常返回的那一轮按完成算（`Err()` 仍为 `nil`），哪怕父 ctx 中途已经被取消。
+`Run(ctx, in)` / `Execution.Err()` 返回**首错**，**不含单纯的跳过**（全图都跳过是合法结果）。取消是协作式的：业务体自行响应 ctx，引擎等它退出，不强行停止 goroutine。`Wait` 随后锁存终态：没有首错时，终态确定前发生的执行取消仍成为运行结果，无需节点先将它返回为错误。节点正常 completed 与整轮 canceled 可以同时成立；终态确定后的资源释放 cancel 不影响结果，重复 Wait 也不会重新捕获它。
 
 下一步：拓扑也可以不写在 Go 里——见[声明式装图](/guide/assembly)；想看每个节点花了多久等待、多久执行，见[图观测](/guide/observability)。
