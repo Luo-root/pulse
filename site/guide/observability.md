@@ -1,249 +1,174 @@
-# 图观测
+# 观测与诊断
 
-观测是**独立的一层**：引擎不认识任何观测包，只暴露一个 `Observer` seam；`pulse/observe` 实现这个 seam，把回调折成结构化记录写进出口。不需要观测的宿主只 import 根包。
+本页面向需要查看运行进度、记录执行结果或排查流程问题的开发者。需要 Go 1.25+，并了解[输入与输出](./inputs-outputs.md)。示例对应开发版。
 
-## 随时看进度：执行快照
+Pulse 提供三种互补入口：`Topology` 查看定义，`Snapshot` 查看某次运行当前状态，`Observer` 接收生命周期回调。业务结果另由 `ReadOutput` 提供；结构与进度视图都不包含业务值。
 
-`e.Snapshot()` 是一次运行的当前读数；Observer 是事件历史，两者互补。快照不用订阅回调，读取不会推进运行或新增事件。每次执行有不同的 `Graph.Execution`，对应记录里的 `pulse.execution`；`Graph.Path`、`Site.Path` 和静态子树的 `Graph.Path` 使用同一套挂载路径。
+## 完整示例：记录两次独立运行
+
+下面的程序复用一张图运行两次。每次都创建新的观察者配置和 TraceID，以便把请求关联与执行身份分开处理。保存为一个空目录中的 `main.go`：
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/Luo-root/pulse"
+	"github.com/Luo-root/pulse/observe"
+)
+
+func run() error {
+	result := pulse.NewKey[int]("result")
+	g, err := pulse.New("observe-demo", "记录独立运行")
+	if err != nil {
+		return err
+	}
+	if err := g.DeclareOutput(pulse.NewPort(result)); err != nil {
+		return err
+	}
+	if err := g.Add(pulse.NewNode("answer", "生成结果", nil,
+		pulse.Provides(result), func(rc *pulse.RunCtx) error {
+			return pulse.Set(rc, result, 42)
+		})); err != nil {
+		return err
+	}
+	for i := 1; i <= 2; i++ {
+		sink := &observe.MemorySink{}
+		obs, err := observe.NewRecordObserver(observe.ObserveConfig{
+			Sink: sink, HostID: "docs", TraceID: observe.NewTraceID(),
+		})
+		if err != nil {
+			return err
+		}
+		e, err := g.NewExecution(context.Background(), pulse.Inputs{},
+			pulse.WithExecObserver(obs))
+		if err != nil {
+			return err
+		}
+		defer e.Cancel()
+		if err := e.Start(); err != nil {
+			return err
+		}
+		if err := e.Wait(); err != nil {
+			return err
+		}
+		value, state, err := pulse.ReadOutput(e, result)
+		if err != nil {
+			return err
+		}
+		progress := e.Snapshot()
+		fmt.Printf("run=%d status=%s value=%d state=%s records=%d\n",
+			i, progress.Graph.Status, value, state, sink.Len())
+	}
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+在该目录运行：
+
+```sh
+go mod init example.com/pulse-observation
+go get github.com/Luo-root/pulse@1f67045d6c42
+go run .
+```
+
+预期输出：
+
+```text
+run=1 status=completed value=42 state=ready records=4
+run=2 status=completed value=42 state=ready records=4
+```
+
+每次记录包括图开始、节点等待结束、节点执行结束、图结束四条。两次执行的图 ID 相同，Execution ID 和 TraceID 不同。`Wait` 返回时，图结束回调也已经返回；异步出口的实际排空仍需宿主执行 Flush 或 Close。
+
+## 识别定义、运行与挂载位置
+
+每条引擎回调都带 `pulse.Site`：
+
+| 字段 | 含义 | 记录属性 |
+|---|---|---|
+| `Graph` | 定义身份，由 New 指定 | `pulse.graph` |
+| `Execution` | 本次执行身份，进程内每个执行实例唯一 | `pulse.execution` |
+| `Path` | 挂载位置；根为空，嵌套如 `outer/inner` | 非空时写 `pulse.path` |
+
+同一子图在两处挂载时，Graph 可以相同，Path 和 Execution 不同；同一位置重试创建新的子执行时，Execution 也不同。Execution ID 不能充当跨进程的持久 RunID。
+
+观察者默认由子图继承。一个出口可以接收整棵执行树的记录，无需按层创建观察者。`ObserveConfig.Path` 只是 Site 没有路径时的兜底，普通引擎运行通常留空；非空兜底也会作用于根记录。
+
+## 查看进度与 Mermaid
+
+以下片段用于已有 `g`、`e` 的宿主程序，需要 `fmt` 导入：
 
 ```go
 progress := e.Snapshot()
-staticDiagram := g.Topology().Mermaid()
-statusDiagram := g.Topology().Mermaid(pulse.WithMermaidSnapshot(progress))
-_, _ = staticDiagram, statusDiagram
+fmt.Println(progress.Graph.Status)
+fmt.Println(g.Topology().Mermaid())
+fmt.Println(g.Topology().Mermaid(pulse.WithMermaidSnapshot(progress)))
 ```
 
-快照节点按定义声明序。输入 `ready` / `skipped` 都是到达：还有 `pending` 输入的 waiting 节点在等输入，输入全到达时在等进入 Run 的机会。切面也能扩展等待，不能单凭这条读数保证它正在排名额。状态先迁移再发回调，所以回调里能读到这次迁移；Retry 不倒退也不重复事件。
+`Topology` 包含完整声明端口、节点、绑定、静态子树和 `Problems`。读取不会封闭定义；它在尚未完成装配时也能返回问题列表。Mermaid 的结构来自 Topology，没有快照时不叠加运行状态。
 
-快照不携带业务值；节点与槽位分别采样，running 节点已有 ready / skipped 输出是合法的。图创建后 pending，成功 Start 后 running，Wait 收尾时才写终态。Child 是最新已创建尝试的活 `*Execution`，失败与取消仍保留，未建出才为 nil；再调用 `progress.Nodes[i].Child.Snapshot()` 取得的是另一时刻的子读数。
+快照中的节点按声明顺序排列。waiting 节点如果还有 pending 输入，就是在等数据；全部输入已到达时，是在等进入业务体的机会，可能受额度或切面影响。不能据此断言它正处于某个特定队列。
 
-Topology 包含完整声明端口、绑定与静态子树；Mermaid 只从它派生结构，没有快照就不着色。给快照后按图 ID + Path + Node ID 叠状态，子执行逐层采样，固定值和错误正文不进入图。只查看 YAML 可用无需 Registry 的 Analyze，详见 [YAML 装配](/packages/yaml/)。
+快照不是所有层和槽位在同一瞬间的原子采样，也不包含业务值。running 节点可能已有 ready 输出，其余输出仍 pending。Retry 中未发布的暂存不出现在快照中。
 
-## 业务结果与进度分开
+`NodeState.Child` 是最近一次已经创建的子执行句柄，失败或取消时仍保留，尚未创建则为 nil。调用 Child 的 Snapshot 会读取另一个时刻的状态。带快照的 Mermaid 按图 ID、Path、Node ID 匹配状态，子执行分别采样；固定值和错误正文不会进入图示。
 
-快照始终不带业务值。宿主需要结果时，用 `pulse.ReadOutput(e, result)` 读取已声明的同名同类型出口；主路径先成功 Start / Wait，再处理返回的 `value, state, err`。有值（含零值）是 ready，正常缺值是 skipped，可选透传未提供仍为 pending；后两者不报执行失败，也不等待或修改槽位。
+## 选择记录出口
 
-尚未收尾或真实失败/取消不返回部分业务值；错误时 value/state 无效。Wait 的正常 ctx 释放不污染成功结果，GraphFinished 回调也能读已确定结果。返回的可变业务对象不深拷贝，宿主仍负责同步。完整调用示例见[根 README](https://github.com/Luo-root/pulse/blob/main/README.md#取得本轮结果)。
+`observe.NewRecordObserver` 将引擎回调转换为 `Record`，通过 `Sink.Write(Record)` 输出。
 
-## 恢复成果的观测
-
-检查点恢复创建新的 Execution。已确认节点不重跑切面或业务体，只在 GraphStarted 之后迁移终态并发一次 Finished；不伪造 Waiting/Running、未创建的 Child 或子图事件。Snapshot 展示本轮实际创建的对象，仍不包含业务值。
-
-RecordObserver 不把已恢复的 completed/skipped 的单独 Finished 伪装成业务计时；恢复事实由独立 Durable 的 `EventRestored` 与持久记录提供。未进入等待段就失败或取消的单独 Finished 则保留为 `pulse.node_finished`，带节点归因，耗时留零。可靠的检查点钩子属于执行控制，错误会阻止发布，与 Observer 的只读异常隔离分开。方案 A 的子图作用域、重试预算和提交边界见[桥接契约](https://github.com/Luo-root/pulse/blob/main/docs/design/checkpoint.md)。
-
-## 引擎的 seam
-
-```go
-type Observer interface {
-	OnGraphStarted(site Site)
-	OnGraphFinished(site Site, reason NodeFinishReason, err error)
-	OnNodeWaiting(site Site, nodeID string)
-	OnNodeRunning(site Site, nodeID string)
-	OnNodeFinished(site Site, nodeID string, reason NodeFinishReason, err error)
-}
-```
-
-契约五条，都是冻结面：
-
-1. **回调次数**：图级 `Started ≤ 1`、`Finished ≤ 1`；每个节点 `Waiting ≤ 1`、`Running ≤ 1`、`Finished = 1`。`Retry` 的多次 attempt **不重复打点**；
-2. **只读**：观察者的 panic 与 error **不得**升格为节点失败（引擎侧已吞掉）；
-3. **并发安全**：节点三条在**节点自己的 goroutine** 上同步执行，图级两条在 **`Start` / `Wait` 的调用方 goroutine** 上——实现必须并发安全，且不得长时间阻塞。**别在回调里调本图的 `Start` / `Wait`**：回调就在它们的调用路径上，那是同一个 goroutine 等自己，会死等；
-4. **时序是夹住**：`GraphStarted` 先于本轮的**任何**节点回调（启动校验失败的图没有启动，不发），`GraphFinished` 晚于**全部**节点回调；只 `Start` 不 `Wait` 的宿主拿不到 `finished`，而并发 / 重复 `Wait` 都在这一发返回之后才返回（任何一个 `Wait` 返回时，本轮的收尾都已在出口落地）；
-5. **位置由引擎给出**：每条回调都带一个 `Site`——定义身份（`Site.Graph`）+ 本次运行的身份（`Site.Execution`）+ 挂载位置（`Site.Path`），实现侧不必从构造参数自行携带；同一张图跑两次的记录靠 `Site.Execution` 分得开。
-
-观察者默认 no-op（不挂就不执行观察回调；快照的状态记账仍然存在），`pulse.WithObserver(...)` 挂载（它有 `WithExecObserver(...)` 的**本次运行覆盖**：本次运行 > 定义声明 > 父执行环境）；要多个观察者用 `pulse.MultiObserver` 组合（后写覆盖前写，所以组合要在传参前做完）。
-
-## observe 的运行记录与节点记录
-
-| 事件 | 何时产出 | `Duration` | `Status` |
-|---|---|---|---|
-| `pulse.graph_started` | 提交任何节点之前 | `0` | `running` |
-| `pulse.graph_finished` | 全部节点终止之后（`Wait` 返回前） | 整轮耗时 | 运行终态（`completed` / `failed` / `canceled`） |
-| `pulse.node_wait_finished` | 等待结束（进入执行，或以 skip / 失败终结） | 等待段 | `running`，否则是对应的终态 |
-| `pulse.node_run_finished` | 执行结束 | 执行段 | 终态（`completed` / `skipped` / `failed` / `canceled`） |
-| `pulse.node_finished` | 切面在调用 next 前失败或取消，未进入等待段 | `0`（未测量） | `failed` / `canceled` |
-
-运行级两条把本轮的节点记录**夹在中间**。一轮里全部节点都跳过，整轮仍是 `completed`。输入全跳过、未进业务体的节点只有一条 `skipped` 等待记录；业务体返回 `NoValue()` 则保留等待与 `skipped` 执行记录，因为这轮确实进入过业务体。正常跳过的 `Record.Err` 为 nil，结构化日志不写 error 字段；包装 `ErrSkipped` 的可靠检查点故障仍是失败。
-
-切面在 next 前拒绝执行时，`pulse.node_finished` 保留图、执行、挂载路径与失败节点，耗时为未测量的零值，不伪造等待或执行段。
-
-归因维度走 `Attrs`：`pulse.AttrGraph` + `pulse.AttrNode` + `pulse.AttrExecution`（key 契约由**引擎**定义，`observe` 只消费不定义）。节点记录带图 + 节点两个，运行级两条只带 `pulse.AttrGraph`——节点维度对「一次运行」没有意义；`pulse.AttrExecution` 每条都带，同一张图跑两次的记录靠它分得开。
-
-**嵌套层级**是第三个维度 `pulse.AttrPath`（不透明字符串、`/` 连接各层）：**挂载位置随每条回调由引擎发出来**（`Site.Path`），那一层的**每一条**记录就都带它；为空**不写**这个 key——空串会让「根」与「忘了传」长得一样。分工是清楚的：`pulse.graph` 是**你起的图 id**，`pulse.path` 是**引擎记的层级**——同一棵子树装在两处，两处各有各的 `path`，靠它分得开（见[编排](/guide/orchestration)的「图即节点」）。**一个出口从根挂下去就够**：子图的记录自带层级，继承的出口也带 `pulse.path`；`ObserveConfig.Path` 只在 `Site` 没给位置时兜底（自己直写记录之类不经过引擎的场景）。记录中的层级怎么拆是出口的事（按 `/` 分即可）；静态树与活子执行分别从 Topology / Execution 快照查看。
-
-## 最短接入
-
-```go
-sink := observe.NewLineSink(os.Stdout, observe.WithImmediate())
-defer sink.Flush() // 关闭前必须 Flush：最后一批还在缓冲里
-
-obs, err := observe.NewRecordObserver(observe.ObserveConfig{
-	Sink:    sink,
-	HostID:  "quickstart",              // 宿主身份（跨运行稳定），与 TraceID 组成「谁 + 哪一次」
-	TraceID: observe.NewTraceID(),      // 本次运行的关联 id（运行期事实）
-})
-if err != nil {
-	return err
-}
-g, err := pulse.New("docs-pipeline", "文档摘要流水线", pulse.WithObserver(obs))
-```
-
-同一个图（单节点）的真实输出（时间戳 / trace / 耗时随运行变化）：
-
-```text
-PULSE | 2026/10/09 - 10:42:50.472 | running    |         - | pulse.graph_started | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770472465000-1667c395-2
-PULSE | 2026/10/09 - 10:42:50.472 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770472465000-1667c395-2
-PULSE | 2026/10/09 - 10:42:50.487 | completed  |   15.50ms | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770472465000-1667c395-2
-PULSE | 2026/10/09 - 10:42:50.487 | completed  |   15.50ms | pulse.graph_finished | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770472465000-1667c395-2
-```
-
-四条：运行级两条夹住节点两条。运行级那条的 `Duration` 是**整轮**（两回调之间的墙钟）——这里与节点执行段同量级，是因为这一轮几乎全花在那个节点上；装图、`Seed` 与 `Flush` 不在它的窗口里（口径见下）。`pulse.graph_finished` 的 `Status` 是运行终态，`Err` 与 `Run()` 的返回值同源。
-
-行体列序：`时间 | 状态 | 耗时 | 事件 | source | attrs | host | err | trace`。缺的状态或耗时列渲染 `-`，于是事件列起点恒定（`-` 是**内置版式的空列占位**，不是原语行为）。时间戳、trace 与耗时随运行变化。
-
-## 出口
-
-`Sink` 是唯一需要你实现的接口：
-
-```go
-type Sink interface{ Write(r Record) }
-```
-
-契约三条：
-
-1. **并发安全**，且不得长时间阻塞调用方（`Write` 在节点 goroutine 的回调路径上）；
-2. **没有 `context.Context`**——回调不带 ctx；需要截止时间的导出器自行持有内部队列；
-3. **引用语义**：产出方构造独立 `Attrs`，`Write` 返回后不再修改；Sink 只读消费。异步导出器必须自己拷贝。
-
-内置出口：
-
-| 出口 | 形态 | 适用 |
+| 出口 | 适用场景 | 收尾 |
 |---|---|---|
-| `LineSink` | **默认**。一行一条的人读文本，自带 32 KiB 缓冲、零分配、不经 slog | 终端、日志文件 |
-| `SlogSink` | `log/slog`（Text / JSON） | 接宿主既有 logger、要 JSON 喂采集器 |
-| `MemorySink` | 内存收集 | 测试断言、演示 |
-| `MultiSink` | 扇出到多个出口 | 同时落盘 + 收集 |
-| `AsyncSink` | **包装器**：有界队列 + 单后台协程 | 手慢的出口（文件 / 网络） |
+| `MemorySink` | 测试、演示、断言 | Snapshot 查看记录 |
+| `LineSink` | 终端或文本日志 | 检查 Flush 的返回错误 |
+| `SlogSink` | 使用宿主 slog logger，输出文本或 JSON | 按宿主 handler 处理 |
+| `MultiSink` | 同时写多个目的地 | 各目的地各自收尾 |
+| `AsyncSink` | 包装较慢出口，有界队列 | 使用带上下文的 Flush/Close |
 
-`SlogSink` 的 `duration_ms` 是数值毫秒，保留亚毫秒精度，零值省略。`AsyncSink.Flush(ctx)` 以本次入队序号为界，后续 Write 不延长排空范围；等待内层 Flush/Err 时也能按 ctx 返回，取消后记录仍由唯一 worker 处理。内层 Write/Flush/Err 串行，不同快照边界按序登记、同目标共享，较早目标不扩充；取消无人等待的未开始边界，边界数至多容量加一。Close 先停收，首次调用决定最终结果；并发 Close 可取消自己的等待。内层无 ctx 的调用不能强杀，取消后 worker 可能留在该调用里，直到它返回。Flush/Err panic 会在 worker 边界转成固定错误反馈，error payload 保留 Unwrap，不打印正文、不误计已交付记录为 Dropped；worker 可继续处理后续记录。
-
-### 耗时口径（实测）
-
-四段都是**墙钟**，而回调是同步执行的——所以**出口有多慢，段就有多长**。同一张图、同一个空节点（`noop`），两种出口（`MemorySink`，与一个 `Write` 每条睡 20ms 的假出口）：
-
-```text
-# MemorySink（写出一条的代价可以忽略）
-pulse.graph_started            node=-      running    0s
-pulse.node_wait_finished       node=noop   running    0s
-pulse.node_run_finished        node=noop   completed  0s
-pulse.graph_finished           node=-      completed  0s
-
-# 每条 Write 睡 20ms 的假出口
-pulse.graph_started            node=-      running    0s
-pulse.node_wait_finished       node=noop   running    0s
-pulse.node_run_finished        node=noop   completed  20.5701ms
-pulse.graph_finished           node=-      completed  62.2437ms
-```
-
-节点体是空的：`20.5701ms` 全是那一次写出的开销（等待段那条记录在 `Running` 回调里写，而执行段的计时点在它之前）。**整轮那条更长**（`62.2437ms`）——运行级的窗口覆盖「提交节点 → 全部终止」，这一轮里三次写出都在窗口内（运行级 started、节点等待段、节点执行段）。由此：
-
-- 耗时列偏大先怀疑出口，而不是节点；真终端上的 `LineSink` 本身就是慢出口（每条一次写系统调用），十几毫秒起的开销同样落在段里，且随终端与重定向而变；
-- 慢出口套 `AsyncSink`（`Write` 只做 `Attrs` 深拷 + 入队）。注意异步**不提高吞吐上限**：持续速率超过出口能力时，有界队列回压到出口速率——这正是「不丢记录」的代价，要丢不堵用 `DropOnFull()`。对已经很快的出口（如 `MemorySink`）套异步是负优化；它也**不把 `Write` 调用从窗口里摘掉**，只是把落盘推后；
-- 段耗时为 `0`（渲染成 `-`）表示该段耗时被计时精度取整为 0，而不是「没有这段」。
-
-**运行级那条与你自己在 `Run()` 外掐表的边界差别**：它的窗口起点在 `Start()` 内部（提交节点之前）、终点在 `Wait()` 返回之前——所以**不含**装图、`Seed` 与 `Wait()` 返回后的出口 `Flush`，你从外面掐一般更长；反过来它含了「运行级 started 那条记录写出」的耗时，而那部分不在任何节点段里。要「一轮的边界」用它，要「我这个函数在 `Run` 上花了多久」就自己掐表。
-
-## 宿主自带列（WithRenderer）
-
-列式版式是**默认**的，不是唯一的。宿主想让域事实进列时，用 `WithRenderer(fn)` 换掉**行体**渲染器，用包内导出的编码原语拼自己的列——不必自带一个 Sink：
+以下辅助函数演示 LineSink 收尾。需要 `context`、`errors`、`os`、`pulse` 和 `observe` 导入；`g` 是已装配图：
 
 ```go
-render := func(dst []byte, r observe.Record, color bool) []byte {
-	dst = r.Time.AppendFormat(dst, "15:04:05.000")
-	dst = append(dst, " | "...)
-	node, _ := observe.Get[string](r.Attrs, pulse.AttrNode)
-	dst = observe.AppendTextValue(dst, node)
-	dst = append(dst, " | "...)
-	dst = observe.AppendTextValue(dst, r.Status)
-	dst = append(dst, " | "...)
-	return observe.AppendDuration(dst, r.Duration)
-}
-
-sink := observe.NewLineSink(os.Stdout,
-	observe.WithImmediate(),
-	observe.WithRenderer(render))
-```
-
-真实输出（同一张图）：
-
-```text
-PULSE | 15:35:50.150 | step | running | 0ns
-PULSE | 15:35:50.164 | step | completed | 14.11ms
-```
-
-渲染器的契约只有四条：**只产行体**（行首标识与结尾换行由 sink 加）；拿到的 `color` 是 sink 解析好的结论（所以不必自己探测终端，也不会把 ANSI 写进重定向到文件的日志）；不缓冲、不写 writer（写出的时机归 sink，`WithImmediate` 控制即时性）；**在 sink 的内部锁内被调用**——别在渲染器里回调同一 sink 的 `Write` / `Flush` / `Err`（`sync.Mutex` 不可重入，会安静挂住）。
-
-六条编码原语（`AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendAttrsExcept` / `AppendPadding` / `DisplayWidth`）与内置版式**同形**，属冻结面：同一条记录在两种版式下，耗时、属性组、列补齐**逐字节一致**。其中 `AppendAttrsExcept` 用来把「固定列盖不住的属性」补到行尾，不必自己重写标量与引号口径。
-
-## Record 与 Attrs
-
-```go
-type Record struct {
-	Time     time.Time
-	HostID   string
-	TraceID  string
-	Source   Source
-	Event    string
-	Duration time.Duration
-	Status   string
-	Err      error
-	Attrs    Attrs // 开放段
+func runLogged(ctx context.Context, g *pulse.Graph, in pulse.Inputs) error {
+	sink := observe.NewLineSink(os.Stdout)
+	obs, err := observe.NewRecordObserver(observe.ObserveConfig{
+		Sink: sink, HostID: "app", TraceID: observe.NewTraceID(),
+	})
+	if err != nil {
+		return err
+	}
+	runErr := g.Run(ctx, in, pulse.WithExecObserver(obs))
+	return errors.Join(runErr, sink.Flush())
 }
 ```
 
-设计约束：**业务维度一律经 `Attrs` 进入，不扩具名字段**。具名字段只服务于所有记录共有的事实——一旦为某个域加具名字段，`Record` 就会长成所有域观测字段的汇聚点。
+观察者回调同步发生在执行路径上，慢出口会延长记录的墙钟耗时。AsyncSink 可将落盘移到后台，队列满时默认回压；`DropOnFull` 允许丢弃，应检查 Dropped。Flush 只等待调用时已经入队的边界，后续写入不延长该范围；Close 停止接收并执行最终收尾。取消等待不能强制终止内层不接受上下文的阻塞操作。
 
-`Attrs` 是**插入序小切片**（不是 map）：顺序 = 产生方的语义序，出口无需排序即得稳定输出；读取为线性扫描，条数少时快于哈希。key 用 `<组件>.<字段>` 点分约定，各组件独立 key 空间（`pulse.graph` / `pulse.node`，宿主自成一段）。
+## 记录、回调与恢复
 
-宿主直写自己的记录（例如业务事实）时，用同一套 API：
+一次正常完成的节点通常产生等待段和执行段两条记录。全部输入跳过的节点没有执行段；业务体返回 NoValue 时仍有执行段，只是终态为 skipped。切面在等待前失败时，记录为 `pulse.node_finished`，耗时为未测量的零值。精确回调次数、时序与事件表见[生命周期参考](../reference/lifecycle.md)。
 
-```go
-rec := observe.Record{
-	HostID:  "host-1",
-	TraceID: "t-1",
-	Source:  "app", // 自报家门：本包只自产 source=observe
-	Event:   "app.turn_finished",
-	Status:  "ok",
-}
-observe.Set(&rec.Attrs, "app.turns", int64(3))
-sink.Write(rec)
-```
+Observer 没有返回错误的接口，panic 被隔离，不改变节点结果。输出失败应通过出口自己的错误接口检查。不要在回调中调用同一执行的 Start 或 Wait，它们在同一调用路径上，可能等待自身。
 
-```text
-PULSE | 2026/10/08 - 15:36:12.015 | ok         |         - | app.turn_finished | source=app | app.turns=3 | host=host-1 | trace=t-1
-```
+检查点恢复的已确认节点只发一次 Finished，不重跑业务体、切面或 Commit，也不伪造 Waiting、Running 和未创建的子图事件。RecordObserver 不为这种 completed/skipped 的单独 Finished 生成业务耗时记录；恢复事实由 Durable 自身的恢复事件和持久记录提供。
 
-## TraceID
+## 属性与数据边界
 
-由宿主**单一生成源**注入：每次运行调用一次 `NewTraceID()` 即构成单一生成源，也可以完全自带方案（如 hostID 前缀 + 自增序号）。返回值**无契约语义**，消费方不要解析其结构。同一次运行的全部记录共享同一个 TraceID——这是运行级关联的全部机制。
+业务维度写入 `Attrs`，键名建议使用 `<组件>.<字段>`。值仅支持 string、int64、float64、bool 及其命名类型；记录字段不承担任意业务对象存储。字符串和 error 仍可能携带敏感内容，宿主应传入经过处理的属性和错误摘要。
 
-接 OTel / W3C trace context 的宿主**注入自己的 trace id**，而不是套用 `NewTraceID()` 的形状：
+`TraceID` 由宿主为一次运行生成或从入站追踪信息提取，不要跨独立请求复用。`observe.NewTraceID` 的格式不是 W3C trace-id；需要 W3C 或 OTel 关联时，由宿主传入自己的追踪 ID 与 span 语义。
 
-```go
-TraceID: span.SpanContext().TraceID().String(), // 32 位小写 hex（W3C trace-id）
-```
+## 常见错误与下一步
 
-`NewTraceID()` 返回的是「时间戳-随机段-序号」：人读友好、天然可排序，但**不是** W3C 的 32 位 hex。两条边界值得记住：
+日志混入多个运行时，先按 Execution 和 TraceID 分组；缺少子图记录时检查观察者覆盖与路径；运行显示 running 而节点已结束时，确认宿主调用了 Wait。不要把快照当作恢复协议或业务结果容器。
 
-- 只有 trace-id 也发不出一条合法的 `traceparent`——`parent-id`（16 位）与 `trace-flags` 是 span 语义，`observe` 只有「一次运行」的概念、没有 span，那两段归宿主；
-- **入站续接**就是把收到的 trace-id 填进 `ObserveConfig.TraceID`；非法 `traceparent` 整条忽略（W3C 的规定）同样是宿主的责任。
-
-`ObserveConfig` 的生命周期**等于一次运行**（图的一次 `Run`）：跨运行必须新建（TraceID 每次唯一，复用旧值会造成假关联）。
-
-## 隐私边界
-
-`Record` 没有 `map[string]any` 逃生舱：`Attrs` 的写入面只有泛型 `Set`（约束 `~string | ~int64 | ~float64 | ~bool`），**prompt、附件字节、密钥、思维链在类型上就无法进入**。
-
-边界的残余部分要说清：`Err` 是 `error`，来源是调用方传入的——所以**适配层不得把上游原始错误体直接塞进 `Err`**，应传已分类的摘要。「把 payload 塞进一个标量」属于蓄意行为，防线在 key 自述意图 + Sink 侧 redact 钩子（实现可拒绝敏感 key / 截断超长 / 限条数）。
-
-包级 API 与基准口径见 [observe 包文档](/packages/observe/)；完整设计见[设计文档](https://github.com/Luo-root/pulse/blob/main/docs/design/pulse.md)。
+[生命周期参考](../reference/lifecycle.md)给出精确事实，[错误参考](../reference/errors.md)说明诊断后的处理步骤。[YAML 装配](./assembly.md)还提供不执行业务的 Analyze 入口。
