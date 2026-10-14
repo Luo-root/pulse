@@ -31,16 +31,19 @@ Read static structure with `g.Topology()`, including the full declared interface
 
 ## Record shape
 
-**Two run-level records per run**, plus **two segmented-timing records per node**:
+**Two run-level records per run**. Node records describe the waiting and execution segments that actually occurred; a failure before waiting receives a separate terminal record:
 
 | Event | Produced when | `Duration` | `Status` |
 |---|---|---|---|
 | `pulse.graph_started` | before any node is committed | `0` | `running` |
 | `pulse.graph_finished` | after every node terminated (before `Wait` returns) | the whole run | `completed` / `failed` / `canceled` |
 | `pulse.node_wait_finished` | the waiting segment ends | the waiting segment | `running`, otherwise the finish reason |
-| `pulse.node_run_finished` | the execution segment ends | the execution segment | `completed` / `failed` / `canceled` |
+| `pulse.node_run_finished` | the execution segment ends | the execution segment | `completed` / `skipped` / `failed` / `canceled` |
+| `pulse.node_finished` | an Aspect fails or cancels before calling next, without waiting/execution timing | `0` (not measured) | `failed` / `canceled` |
 
-The two run-level records **bracket** the run's node records (`started` precedes every node record, `finished` follows all of them); a host that only calls `Start` without `Wait` never sees `finished`. A skipped node gets **only** a `skipped` waiting record — it did arrive, it just never executed. A run in which every node skipped is still `completed` at run level: skipping is a node-level fact.
+The two run-level records **bracket** the run's node records (`started` precedes every node record, `finished` follows all of them); a host that only calls `Start` without `Wait` never sees `finished`. A node whose inputs all skipped and whose body never ran gets one `skipped` waiting record. A body returning `NoValue()` already entered execution, so both its waiting record and its `skipped` execution record remain. Normal skipping has nil `Record.Err`, and a run in which every node skipped is still `completed`. A reliable checkpoint failure wrapping `ErrSkipped` retains its failure identity and cause.
+
+The early-rejection `pulse.node_finished` carries graph, execution, path and node attribution, with zero duration because it was not measured. Restored completed/skipped nodes do not invent business timing records; Durable events report restoration.
 
 Attribution rides `Attrs` (`pulse.AttrGraph` / `pulse.AttrNode` / `pulse.AttrExecution`; the key contract is defined by the engine, this package only consumes it): node records carry both, the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run"; `pulse.AttrExecution` is on every record (it is what keeps two runs of one graph apart).
 
@@ -53,6 +56,10 @@ Attribution rides `Attrs` (`pulse.AttrGraph` / `pulse.AttrNode` / `pulse.AttrExe
 `LineSink` (**default**: one human-readable line per record, buffered, zero-alloc, no slog) · `SlogSink` (attach to an existing logger, or JSON for a collector) · `MemorySink` (test assertions and demos) · `MultiSink` (fan out) · `AsyncSink` (a **wrapper** that takes a slow egress off the callback path).
 
 `Sink` is the only interface you have to implement — a single `Write(Record)` method. It must be concurrency-safe and must not block for long: callbacks run synchronously **on the node's goroutine**, so a slow egress is a slow node.
+
+`AsyncSink.Flush(ctx)` captures the current enqueue boundary, waits for those records and flushes the inner sink; later writes do not extend that boundary. Cancellation returns even while the inner Flush/Err blocks, preserving records for the worker. One worker serializes Write/Flush/Err. Distinct snapshot boundaries are registered in order, equal targets share a boundary, and earlier targets are never expanded. Unstarted boundaries with no waiters are removed on cancellation; there are at most capacity+1 boundaries. `Close(ctx)` stops acceptance before draining and flushing; the first call determines the final result, while concurrent callers may cancel their own wait. An inner call without context cannot be forcibly stopped; at most that one worker remains until the inner call returns. Inner Flush/Err panics are caught at the worker boundary and reported as a fixed error. Error payloads remain available through Unwrap without printing their text; already delivered Write records are not counted as Dropped, and the worker can process later records.
+
+`SlogSink` emits `duration_ms` as numeric milliseconds with sub-millisecond precision; zero duration omits the key.
 
 ## Host-supplied columns
 
