@@ -3,6 +3,7 @@ package pulse
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 )
 
@@ -329,6 +330,10 @@ func Get[T any](rc *RunCtx, k Key[T]) (T, error) {
 	if err != nil {
 		return zero, err
 	}
+	// ready 的 nil 接口没有动态类型，断言会失败，但它仍是接口 T 的合法零值。
+	if v == nil && ref.typ.Kind() == reflect.Interface {
+		return zero, nil
+	}
 	out, ok := v.(T)
 	if !ok {
 		return zero, fmt.Errorf("pulse: key %q type assertion failed", ref.name)
@@ -362,6 +367,9 @@ func TryGet[T any](rc *RunCtx, k Key[T]) (v T, ok bool, skipped bool, err error)
 	st, raw := rc.readTarget(ref).snapshot()
 	switch st {
 	case slotReady:
+		if raw == nil && ref.typ.Kind() == reflect.Interface {
+			return v, true, false, nil
+		}
 		out, cast := raw.(T)
 		if !cast {
 			err = fmt.Errorf("pulse: key %q type assertion failed", ref.name)

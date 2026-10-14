@@ -33,6 +33,9 @@ type keyRef struct {
 	typ  reflect.Type
 }
 
+// valid 判键指纹是否完整。泛型零值 Key[T] 仍带着 T 的类型，不能只看 typ。
+func (k keyRef) valid() bool { return k.name != "" && k.typ != nil }
+
 func (k keyRef) String() string {
 	if k.typ == nil {
 		return k.name
@@ -63,6 +66,9 @@ func (r *keyRegistry) register(k keyRef) error {
 // 供「先全量校验、再提交」的两段式装配（Graph.Add / seedRef）用——
 // 半途失败不能让图留下改了一半的登记表。
 func (r *keyRegistry) check(k keyRef) error {
+	if !k.valid() {
+		return fmt.Errorf("pulse: %s: zero key: build it with NewKey[T] and pass it whole", k)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if old, ok := r.seen[k.name]; ok && old != k.typ {
