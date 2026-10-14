@@ -31,16 +31,19 @@ g, err := pulse.New("demo", "演示图", pulse.WithObserver(obs))
 
 ## 记录形状
 
-**一次运行两条运行级记录**，加**每个节点两条分段计时记录**：
+**一次运行两条运行级记录**；节点按实际经历的等待段、执行段产出记录，未进入等待段的失败另发终态记录：
 
 | 事件 | 何时产出 | `Duration` | `Status` |
 |---|---|---|---|
 | `pulse.graph_started` | 提交任何节点之前 | `0` | `running` |
 | `pulse.graph_finished` | 全部节点终止之后（`Wait` 返回前） | 整轮耗时 | `completed` / `failed` / `canceled` |
 | `pulse.node_wait_finished` | 等待段结束 | 等待段 | `running`，否则是对应终态 |
-| `pulse.node_run_finished` | 执行段结束 | 执行段 | 终态 `completed` / `failed` / `canceled` |
+| `pulse.node_run_finished` | 执行段结束 | 执行段 | 终态 `completed` / `skipped` / `failed` / `canceled` |
+| `pulse.node_finished` | 切面在调用 next 前失败或取消，没有等待/执行计时 | `0`（未测量） | `failed` / `canceled` |
 
-图级两条把本轮的节点记录**夹在中间**（`started` 先于任何节点记录、`finished` 晚于全部）；只 `Start` 不 `Wait` 的宿主拿不到 `finished`。跳过节点**只有**一条 `skipped` 等待记录——它到达了，只是没执行。一轮里全部节点都跳过时运行级仍是 `completed`：跳过是节点级的事实。
+图级两条把本轮的节点记录**夹在中间**（`started` 先于任何节点记录、`finished` 晚于全部）；只 `Start` 不 `Wait` 的宿主拿不到 `finished`。输入全跳过、未进入业务体的节点只有一条 `skipped` 等待记录；业务体返回 `NoValue()` 时已经有执行段，因此保留等待与 `skipped` 执行记录。正常跳过的 `Record.Err` 为 nil，一轮里全部节点都跳过时运行级仍是 `completed`。可靠检查点故障即使包装了 `ErrSkipped` 仍保留失败身份和错误链。
+
+切面提前拒绝执行的 `pulse.node_finished` 带完整图、执行、路径与节点归因，未测量耗时留零。恢复的 completed/skipped 节点不伪造业务计时记录，恢复事实由 Durable 事件提供。
 
 归因维度走 `Attrs`（`pulse.AttrGraph` / `pulse.AttrNode` / `pulse.AttrExecution`，key 契约由引擎定义，本包只消费）：节点记录两个都带，运行级两条只带 `pulse.AttrGraph`——节点维度对「一次运行」没有意义；`pulse.AttrExecution` 每条都带（同一张图跑两次的记录靠它分得开）。
 
@@ -53,6 +56,10 @@ g, err := pulse.New("demo", "演示图", pulse.WithObserver(obs))
 `LineSink`（**默认**：一行一条的人读文本、自带缓冲、零分配、不经 slog）· `SlogSink`（接宿主既有 logger，要 JSON 喂采集器）· `MemorySink`（测试断言与演示）· `MultiSink`（扇出）· `AsyncSink`（**包装器**：把手慢的出口从回调路径上摘掉）。
 
 `Sink` 是唯一需要你实现的接口——`Write(Record)` 一个方法。它必须并发安全且不得长时间阻塞：回调在**节点 goroutine** 上同步执行，出口有多慢，节点就有多慢。
+
+`AsyncSink.Flush(ctx)` 固定本次入队快照，等这些记录送达并刷新内层；后续写入不延长它的排空范围。取消在内层 Flush/Err 阻塞时也能返回，记录保留、worker 继续处理。Write/Flush/Err 都由同一个 worker 串行调用。不同快照边界按序登记，同目标共享，较早目标不扩充；取消后撤销无人等待且未开始的边界，边界数至多容量加一。`Close(ctx)` 先停收，再排空刷新；首次调用决定最终结果，并发调用可用自己的 ctx 停止等待。内层无 context 的调用无法强杀，取消后最多保留这个 worker，等内层返回才能退出。内层 Flush/Err 的 panic 在 worker 边界捕获并返回固定错误；error payload 经 Unwrap 保留，不打印正文，不把已经交给 inner.Write 的记录计为 Dropped，worker 仍能处理后续记录。
+
+`SlogSink` 的 `duration_ms` 是数值毫秒，保留亚毫秒精度；零耗时省略该键。
 
 ## 宿主自带列
 

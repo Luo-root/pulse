@@ -134,13 +134,19 @@ func subBinds(child *Graph, id string, binds []SubBind) (requires, provides []ke
 // parentBinds 从 binds 推出父侧那两端：`In(父, 子)` 的父侧端进 Requires、
 // `Out(子, 父)` 的父侧端进 Provides——边界写在接线处，读父图一眼看清这一步吃什么吐什么。
 // `Fix` / `FixSkip` 两边都不进：它不牵涉父侧任何键。
+// 同一父值可以送往多个不同的子入口，父侧依赖只记首次；按名字 + 真实类型去重，
+// 同名跨型仍留给 Add 拒绝。binds 保留每条接线，子入口重绑仍逐条核；依赖去重不代表读者合并。
 func parentBinds(binds []SubBind) (requires, provides []keyRef) {
+	seen := make(map[keyRef]struct{}, len(binds))
 	for _, b := range binds {
 		if b.fix != nil {
 			continue
 		}
 		if b.in {
-			requires = append(requires, b.parent)
+			if _, dup := seen[b.parent]; !dup {
+				requires = append(requires, b.parent)
+				seen[b.parent] = struct{}{}
+			}
 			continue
 		}
 		provides = append(provides, b.parent)
@@ -186,8 +192,13 @@ func checkBinds(child *Graph, id string, binds []SubBind) error {
 			}
 			continue
 		}
-		if b.child.typ == nil || b.parent.typ == nil {
+		if !b.child.valid() || !b.parent.valid() {
 			return fmt.Errorf("pulse: Sub %q: bind %d is zero: build binds with In/Out/Fix", id, i)
+		}
+		// 动态 Ref 绕过泛型的同 T 约束，必须比较真实类型，不能只比较显示用的 String。
+		if b.parent.typ != b.child.typ {
+			return fmt.Errorf("pulse: Sub %q: bind %d type mismatch: parent key %s and child key %s "+
+				"must have the same Go type", id, i, b.parent, b.child)
 		}
 		if b.in {
 			if err := checkInletLocked(child, id, b.child, seenIn); err != nil {
@@ -383,7 +394,7 @@ func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 		if err != nil {
 			return err
 		}
-		if err := in.set(b.child, v, skip); err != nil {
+		if err := in.setArrived(b.child, v, skip); err != nil {
 			return fmt.Errorf("pulse: Sub %q: %w", id, err)
 		}
 	}
@@ -398,6 +409,10 @@ func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 		return fmt.Errorf("pulse: Sub %q: %w", id, err)
 	}
 	rc.exec.recordChild(rc.node, sub)
+	if err := rc.prepareChildCheckpoint(sub); err != nil {
+		sub.Cancel()
+		return err
+	}
 
 	// 3) 跑子执行：Start + Wait。失败原样冒泡（首错就是子图的首错）。
 	if err := sub.Start(); err != nil {
@@ -531,7 +546,7 @@ func Out[T any](child, parent Key[T]) SubBind {
 //
 // 给**声明式装配**（`pulse/yaml`）用——那里两端是运行期的 name+type 记号，
 // 编译期拿不到 `T`，所以「同一对必须同一个类型」只能在**装配期**对账：两端用
-// **同一个 type 记号**去查注册表与端口声明，对不上就报。
+// **真实 reflect.Type**与子图端口声明对账（显示用的短名不能代替类型身份），对不上就报。
 //
 // 手写装配**优先用 `In` / `Out`**：那边编译期就能红，便宜得多。
 func InRef(parent, child keyRef) SubBind {

@@ -19,6 +19,18 @@ _, _ = staticDiagram, statusDiagram
 
 Topology 包含完整声明端口、绑定与静态子树；Mermaid 只从它派生结构，没有快照就不着色。给快照后按图 ID + Path + Node ID 叠状态，子执行逐层采样，固定值和错误正文不进入图。只查看 YAML 可用无需 Registry 的 Analyze，详见 [YAML 装配](/packages/yaml/)。
 
+## 业务结果与进度分开
+
+快照始终不带业务值。宿主需要结果时，用 `pulse.ReadOutput(e, result)` 读取已声明的同名同类型出口；主路径先成功 Start / Wait，再处理返回的 `value, state, err`。有值（含零值）是 ready，正常缺值是 skipped，可选透传未提供仍为 pending；后两者不报执行失败，也不等待或修改槽位。
+
+尚未收尾或真实失败/取消不返回部分业务值；错误时 value/state 无效。Wait 的正常 ctx 释放不污染成功结果，GraphFinished 回调也能读已确定结果。返回的可变业务对象不深拷贝，宿主仍负责同步。完整调用示例见[根 README](https://github.com/Luo-root/pulse/blob/main/README.md#取得本轮结果)。
+
+## 恢复成果的观测
+
+检查点恢复创建新的 Execution。已确认节点不重跑切面或业务体，只在 GraphStarted 之后迁移终态并发一次 Finished；不伪造 Waiting/Running、未创建的 Child 或子图事件。Snapshot 展示本轮实际创建的对象，仍不包含业务值。
+
+RecordObserver 不把已恢复的 completed/skipped 的单独 Finished 伪装成业务计时；恢复事实由独立 Durable 的 `EventRestored` 与持久记录提供。未进入等待段就失败或取消的单独 Finished 则保留为 `pulse.node_finished`，带节点归因，耗时留零。可靠的检查点钩子属于执行控制，错误会阻止发布，与 Observer 的只读异常隔离分开。方案 A 的子图作用域、重试预算和提交边界见[桥接契约](https://github.com/Luo-root/pulse/blob/main/docs/design/checkpoint.md)。
+
 ## 引擎的 seam
 
 ```go
@@ -41,16 +53,19 @@ type Observer interface {
 
 观察者默认 no-op（不挂就不执行观察回调；快照的状态记账仍然存在），`pulse.WithObserver(...)` 挂载（它有 `WithExecObserver(...)` 的**本次运行覆盖**：本次运行 > 定义声明 > 父执行环境）；要多个观察者用 `pulse.MultiObserver` 组合（后写覆盖前写，所以组合要在传参前做完）。
 
-## observe 折成运行级两条 + 节点级两条
+## observe 的运行记录与节点记录
 
 | 事件 | 何时产出 | `Duration` | `Status` |
 |---|---|---|---|
 | `pulse.graph_started` | 提交任何节点之前 | `0` | `running` |
 | `pulse.graph_finished` | 全部节点终止之后（`Wait` 返回前） | 整轮耗时 | 运行终态（`completed` / `failed` / `canceled`） |
 | `pulse.node_wait_finished` | 等待结束（进入执行，或以 skip / 失败终结） | 等待段 | `running`，否则是对应的终态 |
-| `pulse.node_run_finished` | 执行结束 | 执行段 | 终态（`completed` / `failed` / `canceled`） |
+| `pulse.node_run_finished` | 执行结束 | 执行段 | 终态（`completed` / `skipped` / `failed` / `canceled`） |
+| `pulse.node_finished` | 切面在调用 next 前失败或取消，未进入等待段 | `0`（未测量） | `failed` / `canceled` |
 
-运行级两条把本轮的节点记录**夹在中间**：宿主不必再靠 `pulse.graph` 这个 Attr 把节点记录自行拼回一轮——一轮在观测里是一个有头有尾的实体。运行级终态只会是 `completed` / `failed` / `canceled`：**一轮里全部节点都跳过，整轮仍是 `completed`**（跳过是节点级的事实，不升格为失败）。跳过节点**只有一条 `skipped` 等待记录**——它确实到达了，只是没执行。
+运行级两条把本轮的节点记录**夹在中间**。一轮里全部节点都跳过，整轮仍是 `completed`。输入全跳过、未进业务体的节点只有一条 `skipped` 等待记录；业务体返回 `NoValue()` 则保留等待与 `skipped` 执行记录，因为这轮确实进入过业务体。正常跳过的 `Record.Err` 为 nil，结构化日志不写 error 字段；包装 `ErrSkipped` 的可靠检查点故障仍是失败。
+
+切面在 next 前拒绝执行时，`pulse.node_finished` 保留图、执行、挂载路径与失败节点，耗时为未测量的零值，不伪造等待或执行段。
 
 归因维度走 `Attrs`：`pulse.AttrGraph` + `pulse.AttrNode` + `pulse.AttrExecution`（key 契约由**引擎**定义，`observe` 只消费不定义）。节点记录带图 + 节点两个，运行级两条只带 `pulse.AttrGraph`——节点维度对「一次运行」没有意义；`pulse.AttrExecution` 每条都带，同一张图跑两次的记录靠它分得开。
 
@@ -109,6 +124,8 @@ type Sink interface{ Write(r Record) }
 | `MemorySink` | 内存收集 | 测试断言、演示 |
 | `MultiSink` | 扇出到多个出口 | 同时落盘 + 收集 |
 | `AsyncSink` | **包装器**：有界队列 + 单后台协程 | 手慢的出口（文件 / 网络） |
+
+`SlogSink` 的 `duration_ms` 是数值毫秒，保留亚毫秒精度，零值省略。`AsyncSink.Flush(ctx)` 以本次入队序号为界，后续 Write 不延长排空范围；等待内层 Flush/Err 时也能按 ctx 返回，取消后记录仍由唯一 worker 处理。内层 Write/Flush/Err 串行，不同快照边界按序登记、同目标共享，较早目标不扩充；取消无人等待的未开始边界，边界数至多容量加一。Close 先停收，首次调用决定最终结果；并发 Close 可取消自己的等待。内层无 ctx 的调用不能强杀，取消后 worker 可能留在该调用里，直到它返回。Flush/Err panic 会在 worker 边界转成固定错误反馈，error payload 保留 Unwrap，不打印正文、不误计已交付记录为 Dropped；worker 可继续处理后续记录。
 
 ### 耗时口径（实测）
 

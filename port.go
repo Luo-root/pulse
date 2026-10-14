@@ -37,8 +37,8 @@ func (p Port) Name() string { return p.ref.name }
 // String 是给人看的写法（与 `Key` 的 `String()` 同形）。
 func (p Port) String() string { return p.ref.String() }
 
-// declared 说这条端口声明是不是空的——零值 `Port{}` 什么都不指，声明它没有意义。
-func (p Port) declared() bool { return p.ref.typ != nil }
+// declared 说端口的键名与类型是否完整；Port{} 与 NewPort(Key[T]{}) 都不是有效声明。
+func (p Port) declared() bool { return p.ref.valid() }
 
 // DeclareInput 声明「这张图接受外部喂这几条 Key」（入口）。
 //

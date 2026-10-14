@@ -264,11 +264,11 @@ nodes:
 
 这些检查对**被引用的每一张 `graphs:` 声明**生效，并且按**引用点**各来一遍：同一张 spec 挂两处时两边的 `in:` 可以不一样，而「子图里这条键有没有来源」正是按引用点成立的——有一处没喂，那张图跑到就一定会挂，按并集校验等于说「另一处喂了 = 这一处也喂了」。
 
-**谁也引用不到的 spec 是例外**：它没有挂载点、也就没有接口面——「这条键没人喂」在那里判不了（按闭合图去查会把它一律报成「名字写错了」，于是模板库里只要有一张暂时还没接上，整份文档就 `Load` 不过）。所以这类 spec 只查**真判得了**的那几条：工厂名 / 空 `nodes` / 重复 id / 来源冲突 / 依赖成环 / 流式那批照旧，**来源那条不作数**——它读到的、解析不到来源的键一律当入口声明进那张只装不跑的校验图（`declareSpecInputs`，判据直接用引擎的 `Topology().Requires[].From`，不在 yaml 里重写一遍来源表）。等它真的被引用时，接口面由**那一处**的 `in:` / `out:` 定，来源判据在那时按引用点生效。
+**谁也引用不到的 spec 是例外**：它没有挂载点、也就没有接口面——「这条键没人喂」在那里判不了（按闭合图去查会把它一律报成「名字写错了」，于是模板库里只要有一张暂时还没接上，整份文档就 `Load` 不过）。这类 spec 仍查工厂名 / 空 `nodes` / 重复 id / 已知来源冲突 / 依赖成环 / 流式关系。literal 或 skip seed 都是已明确的外部来源，会声明进临时校验图；同键还有节点 Provides 就包装 ErrDuplicateSource 拒绝。只有解析不到来源的 Requires 才按未来入口补声明（`declareSpecInputs`，直接用引擎的 `Topology().Requires[].From`，不在 yaml 里重写来源表）。真正引用时，接口面由那一处的 `in:` / `out:` 定，缺来源按引用点判断。
 
 做法是 `Load` 期先装一棵**只装不跑**的校验树：**同一段装配代码**（子图一律按静态形态挂上去，`Sub` / `Add` 在装配期做的检查一个不少），每个引用点各是一张实例。每张实例按**那一处**的 `in:` / `out:` 把它自己的接口面声明成端口（`DeclareInput` / `DeclareOutput`）——于是「这本来就是外部输入」与「你忘了接线」分得开，也不必再往校验图上种「假来源」；父侧能接的也只有端口（接到子图内部的中间 Key 是静态错）。最后让引擎自己判一遍（`Validate`，判据本体是 `problems.go` 那一份）：所以**报文与 `Start` 那次逐字相同**，而且点明**挂载路径**（`mounted at "step1/toInner"`）。
 
-**校验树（整棵）都建在 `context.Background()` 上，子图的定义也不挂宿主 ctx，而根图要等所有可能失败的校验都过完才建**：校验树不会跑、也没人会 cancel 它们，从宿主 ctx 派生出来的子 ctx 只会一直挂着（热重载反复 Load = 越攒越多）；而 `Load` 失败时返回 `nil, nil, err`——图不交出去，**调用方连清理的把手都没有**，所以那之前一步都不动宿主的 ctx。静态挂载的子图同样不挂宿主 ctx：取消是运行期从**挂载点**转发进去的（`Sub` 把父节点这一层的取消转发进子图，见「图即节点」），定义本身没有要取消的东西。根图建出来之后交出去的那张照旧继承宿主 ctx（取消必须从宿主传得进去），宿主跑到 `Wait` 就把它释放。
+**Load 构建的校验树和正式树都是静态定义，不接收宿主 context**。校验全部通过后才把正式 Graph 与 SeedPlan 交出去，失败返回 `nil, nil, err`。宿主在 `Run(ctx, in)` 或 `NewExecution(ctx, in)` 时建立本次取消域；每个子执行从挂载节点的 context 派生，定义本身没有要取消的东西。Wait 等业务链自行退出，再锁存终态并释放本次执行资源。
 
 **另一条边界**：**根层自己**那几条判据（无来源 / 环 / 流式）仍在 `Start` 那一刻报——根层的外部输入是宿主在 `Load` 之后种的（`SeedPlan.Apply`），装图期看它当然是「没人提供、没人 seed」，在这一步校验会把任何一份 `seeds:` 正常的文档都误报掉。「声明归端口、值归运行输入」是阶段 2 随 `Execution` 落地的事；子图那一层没有这个问题，它们的输入面就是引用点的 `in:`。
 
@@ -434,10 +434,14 @@ err = pulse.Consume(g, "sinkC", sC, func(rc *pulse.RunCtx, v int) error { return
 | 件 | 展开成 | 语义来源 |
 |---|---|---|
 | `Produce` | 一个节点：`Provides(out)`，`Set` 出 channel 后**活着发完** | 关闭只在返回时的 `defer`（成功 / 出错 / 取消 / panic 都走它，没有双次 close）；`send` 在发送与 `rc.Context().Done()` 上 `select` |
-| `Consume` | 一个节点：`Requires(in)`，`select` 循环读 | **不能用 `for range`**：实测它会「取消之后把缓冲区算完」并且整轮报成功（没人看见取消 → `Run()` 返回 `nil`，见 #286） |
+| `Consume` | 一个节点：`Requires(in)`，`select` 循环读 | 使用 `select` 响应取消，避免 `for range` 在取消后仍把缓冲区全部处理。Wait 收尾会独立锁存执行上下文取消；节点是否协作退出与整轮结果分别判断 |
 | `Tee` | 一个节点：`Requires(in)` + `Provides(outs...)`，逐条转发 | 广播：每个下游拿到完整同序数据；**背压按最慢的下游算** |
 | 装配校验 | `checkStreamSlots`（装配期快速失败）+ `Graph.problemsStreamLocked`（`Start` 的权威校验） | 「流的两端必须同时活着」是**组合**性质的约束：糖在装配那一刻看不全整张图，所以局部检查只做即时反馈，`Start` 按**整张流图**要名额——流节点 + **每条流出口的读取者**（消费者可以手写，它同样得占一个名额才读得到；实测：`maxRun=2` 下 `Produce → Tee → Consume` 与 `Produce → Tee → 手写 sink` 都会装配全过、运行期死锁），并要求每条流出口都有人 `Requires`、且**只喂一个下游**（没人读的出口会让发送端永久堵住；两个各写各的读取者会在静默里瓜分值——同一个 `FanOut` 组的 worker 共读是显式声明，不算多消费者）。**递归到子图时按每一层的有效名额判**（`effectiveCapacity`：本次运行 > 定义声明 > 继承）：父图声明 2 而子图有条要 3 个名额的流，整树校验当场就拒——不传这一层的话子图会被按「没声明 = 不限」放行，等它自己的 `Start` 才报，那时父图别的节点可能已经跑完了 |
 | 写入暂存 | `checkChannelVisibleNow`：生产节点开跑时发现 `rc.writes != nil` → 当场报错 | 判据直接看「有没有写暂存」，不认切面的身份（`Aspect` 是裸函数类型，装配期认不出来）；放它过去的后果是**互等挂死**而不是报错，见下 |
+
+跨子图时，检查沿 `In` / `Out` 与透传追踪同一条 channel，读取者是子图内实际 Requires 的节点，Sub 代理不算读取者也不占额度。同一个 FanOut 竞争组只在同一挂载位置内合并。额度按真实池身份分组：未声明的子图继承父池，自己声明的子图另建一池，即使数字相同也不合并；同定义挂两处是两份节点和各自声明的池。同池仍保守要求全部流参与者同时有名额。例：Produce + Tee + 子图内两个 Consume 共需 4，父层那个 Sub 不计数。没有已知流的树只做逐层只读探测，不复制所有未使用端口。
+
+普通 Key 到达之外，还检查内置流的 start / finish / channel close / child completion / Out 桥回关系。Tee 必须让各出口的读取者开始读取才能完成同步发送并关闭；Consume 等关闭才正常完成；Sub 等 child.Wait 后才桥回出口。于是“A 挂载要等 B 的 done、B 要等流关闭、Tee 要等 A 开始读”的环，即使额度无限也在 Validate / Start / Topology 报具体等待路径。缓冲不能证明任意数据量都安全。固定 FixSkip 与 Start 已供给的 skip 是确定事实，按挂载位置保留；确定不进入 body 的节点不产生发送/关闭等待，有有效切面时不推断其输出必定 skipped。child.Start 采用自己的已供给输入和有效切面，递归 Topology 子视图共用根检查的诊断事实，不把这些状态写回 Graph。该模型仅用于静态校验，不参与调度；业务 callback / Aspect 的隐藏等待、手写 channel 的关闭时机与 Fix 值之间的实际 channel 指针别名不作推断。已知 Produce/Tee 出口仍必须有真实读取者，声明为根出口也不能代替消费。
 
 **为什么「要复制」的只有流这一类**（实测四种分发形态）：普通值——一个 `Provides`、N 个下游各自 `Requires` 同一个 Key——3 个下游都拿到完整值；一组值（slice 当一个值）同理；**只有 channel 会抢**：同一条 channel 给 3 个下游，6 个值被瓜分（合计 6，不是 18）；复制成 3 条 channel 才是 18。所以「抢」用 `FanOut`、「每个都拿到」用 `Tee`，两者不互相替代。
 
@@ -548,7 +552,21 @@ Child 是挂载点最新已创建尝试的活 `*Execution`，创建后、Start �
 
 Snapshot **不携带业务值，没有带值开关**。除 Child 与 error 引用外，结构与切片都隔离；读取不建槽、不推进运行、不发新事件。定义、执行状态与各槽位分别在自己的锁里采样，**不是原子切面**：running 节点已有 ready / skipped 输出、其他输出仍 pending 都合法。Retry 暂存中的写尚未发布，不出现在执行槽位读数中；它不是 checkpoint、恢复或结果读取协议。
 
-## 6.2 Mermaid：从静态结构生成图
+## 6.2 宿主结果读取：`ReadOutput`
+
+```go
+value, state, err := pulse.ReadOutput(e, result)
+```
+
+这是泛型包函数，签名为 `ReadOutput[T any](e *Execution, k Key[T]) (T, SlotState, error)`。它只读本轮执行所属图 `DeclareOutput` 声明过的同名同类型键；Key 没有图来源身份，同名同类型等价。内部 Key、未声明出口、零 Key 与错误类型拒绝，包装 ErrUndeclared；nil / 零 Execution 直接报错。它不复用节点 Get 的权限，不开放字符串 any 黑板。
+
+成功 Wait 收尾后，ready 返回业务值（包括零值、nil interface 与 typed nil），skipped 返回零值与 skipped，未喂且无人 Requires 的可选透传返回零值与真实 pending；三者均为 nil error。尚未收尾立即报错，不等待、不返回部分值；失败或取消返回执行原因。错误非 nil 时值与状态无效，状态为空串；不把正常缺值编码成失败。GraphFinished 回调前终态已确定，所以回调内可读；Wait 正常释放 ctx 不改变结果。
+
+Wait 在同一执行锁内先锁存首错或当前真实取消，再置 done，后续重复 / 并发 Wait 只读终态；这样既保留“所有节点已退出、收尾前才取消”的真实原因，也不会把自己收尾的 cancel 反抓成失败（#327）。
+
+读取只在定义、执行与槽位各自的锁内取已有数据，不造槽、不推进、不发事件。业务值不深拷贝；slice/map/指针等仍引用宿主对象，宿主负责同步和所有权。Snapshot 与 Observer 仍不带业务值；Durable 全节点提交/恢复另走 #307 的受校验契约，不借用结果读取绕开内部键权限。
+
+## 6.3 Mermaid：从静态结构生成图
 
 ```go
 structure := g.Topology().Mermaid()
@@ -559,6 +577,14 @@ _, _ = structure, progress
 序列化归根包，不让手写 Go 图为了出图依赖 YAML 或 observe。图、节点、端口与接线沿视图声明序展开，内部 ID 由遍历序数生成；map 只查找，不决定输出顺序。用户名字、描述、类型与 Key 名均作显示文本编码，不进入 Mermaid 指令位置。未使用口、透传、固定输入与同一子图多处挂载均有独立端点；Fix / FixSkip 只显示 fixed，不显示值。
 
 没有快照就只出结构，不猜状态、不着色。给 WithMermaidSnapshot 时，只按图 ID + Path + Node ID 匹配当前结构；未知状态和错图 / 错路径快照忽略。子状态从活 Child 逐层再采样，不能称为整树同一瞬间的快照；错误正文和业务值不进入图。nil Topology 返回 flowchart 声明，nil Snapshot 与未提供选项一致。渲染时调用方不能并发改传入的 Topology / Snapshot 副本。
+
+## 6.4 可靠检查点桥接
+
+`WithExecCheckpoint` 显式启用整棵执行树的检查点模式：完整 Aspect 链外开节点写集，Retry 成功仅交外层暂存，最终完整输出经同步 Commit 确认之后才逐键发布。可靠钩子失败锁存到整棵执行树，即使含 ErrSkipped 或被祖先切面吞错也不能成为正常成功。
+
+`CheckpointNodes` / `CheckpointPorts` 提供真实类型声明副本，`CheckpointInputs` 只复制已接收外部输入；内部值仅通过受校验完整节点包交付。`RestoreNodes` 登记整批计划，Start 在封口同一临界区复验并全部恢复，合法恢复节点不重跑体、切面或提交。
+
+子图采用已确认方案 A：持久根尝试与嵌套 Retry 游标先认回，再打开对应子作用域；进程中断复用已确认子成果，明确失败的新尝试不能复用旧成果。最终失败不靠反复 Resume 刷新预算。声明和动态容器中的 channel 均拒绝，普通模式不受影响。完整机制、取消/失败边界、Store/Codec 责任与真实进程验收见 [检查点桥接与子图恢复](checkpoint.md)。
 
 ## 7. 分层
 
@@ -638,20 +664,23 @@ type Sink interface{ Write(r Record) }
 
 `AsyncSink` 的注意点：**异步不提高吞吐上限**——持续速率超过出口能力时，有界队列会被填满并把生产者回压到出口速率；这正是「不丢记录」的代价。要丢不堵就用 `DropOnFull()`。对已经很快的出口是负优化，别默认套。
 
+Flush 的入队序号固定本次排空范围，后续 Write 不延长它。唯一 worker 串行执行 inner.Write/Flush/Err；不同快照边界立即按序登记，同目标共享、较早目标不扩充，取消无人等待的未开始边界，边界数至多容量加一。ctx 覆盖等待内层刷新，取消 Flush 不丢记录。Close 先停收，首次调用控制排空与最终结果，并发调用可用自己的 ctx 结束等待。无 ctx 的内层调用不能强杀，取消后最多这个 worker 继续留在调用里，等返回后收尾。Flush/Err panic 在这个 worker 边界捕获并作为固定错误返回，不格式化 payload；error payload 经 Unwrap 保留，已交付记录不误计 Dropped，后续记录仍能继续处理。Slog 的 duration_ms 为数值毫秒，保留亚毫秒精度，零耗时省键。
+
 ## 10. 图适配：`NewRecordObserver`
 
-`observe` 实现引擎的 seam，把**一次运行折成两条运行级记录**，把**每个节点折成两条分段计时记录**：
+`observe` 实现引擎的 seam，把**一次运行折成两条运行级记录**；节点按实际经历的等待段、执行段产出记录，未进入等待段的失败另发终态记录：
 
 | 事件 | 何时 | 内容 |
 |---|---|---|
 | `pulse.graph_started` | 提交任何节点之前 | `Duration = 0`；`Status = "running"` |
 | `pulse.graph_finished` | 全部节点终止之后（`Wait` 返回前） | `Duration` = 整轮耗时；`Status` = 运行终态 |
 | `pulse.node_wait_finished` | 等待完成（进入执行，或以 skip/失败终结） | `Duration` = 等待段；进入执行时 `Status = "running"`，否则为 finish reason |
-| `pulse.node_run_finished` | 执行完成 | `Duration` = 执行段；`Status` = finish reason |
+| `pulse.node_run_finished` | 执行完成 | `Duration` = 执行段；`Status` = finish reason，含业务体返回 NoValue 的 skipped |
+| `pulse.node_finished` | 切面在调用 next 前失败或取消，未进入等待段 | `Duration = 0`（未测量）；`Status = "failed"` / `"canceled"`；保留节点归因与 Err |
 
-运行级两条把本轮的节点记录**夹在中间**：宿主因此不必再靠 `pulse.graph` 这个 Attr 把节点记录自行拼回一轮——一轮在观测里是一个有头有尾的实体。运行级终态只会是 `completed` / `failed` / `canceled`：**一轮里全部节点都跳过，整轮仍是 `completed`**（跳过是节点级的事实，不升格为失败）。
+运行级两条把本轮的节点记录**夹在中间**。一轮里全部节点都跳过，整轮仍是 `completed`。输入全跳过、未进业务体的节点只有一条 skipped 等待记录；业务体返回 `NoValue()` 时保留等待与 skipped 执行记录，因为确实进入过执行段。正常 NodeSkipped 的 `Record.Err` 为 nil；可靠故障即使包装 ErrSkipped 也保留 failed 身份与原因链。
 
-跳过节点**只有一条 skipped 等待记录，无运行记录**——这与「跳过是到达」一致：它确实到达了，只是没执行。
+Finished-only 的 completed/skipped 恢复节点不伪造业务计时记录，恢复事实由 Durable 事件提供。Finished-only 的 failed/canceled 则产出 `pulse.node_finished`，保留完整 Site 和节点，未知耗时留零。
 
 归因维度走 Attrs：`pulse.graph`（定义 ID）+ `pulse.node`（节点 ID）+ `pulse.execution`（本次执行 ID）。**key 契约由引擎定义**（事实归属包），`observe` 只消费不定义。节点记录带图与节点，运行级两条不带节点；每条记录都带 execution，同一张定义在同一位置跑两次也分得开。
 

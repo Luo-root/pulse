@@ -3,6 +3,7 @@ package pulse
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 )
 
@@ -127,6 +128,10 @@ type RunCtx struct {
 	// ——「这一步推进过没有」是那一次运行的事实。`Fork` 浅拷贝，所以 `Timeout` 里面
 	// 那层看到的是同一份账。
 	advance *advanceLedger
+	// checkpointAttempt 是当前持久尝试，Fork 复制其视图；Retry 只在自己的层次换它。
+	checkpointAttempt CheckpointAttempt
+	aspectIndex       int
+	checkpointEntries *checkpointEntryLedger
 }
 
 // advanceLedger 是**一次运行里一个节点**的推进账：体推进过没有、上一次推进挂在哪条
@@ -325,6 +330,10 @@ func Get[T any](rc *RunCtx, k Key[T]) (T, error) {
 	if err != nil {
 		return zero, err
 	}
+	// ready 的 nil 接口没有动态类型，断言会失败，但它仍是接口 T 的合法零值。
+	if v == nil && ref.typ.Kind() == reflect.Interface {
+		return zero, nil
+	}
 	out, ok := v.(T)
 	if !ok {
 		return zero, fmt.Errorf("pulse: key %q type assertion failed", ref.name)
@@ -358,6 +367,9 @@ func TryGet[T any](rc *RunCtx, k Key[T]) (v T, ok bool, skipped bool, err error)
 	st, raw := rc.readTarget(ref).snapshot()
 	switch st {
 	case slotReady:
+		if raw == nil && ref.typ.Kind() == reflect.Interface {
+			return v, true, false, nil
+		}
 		out, cast := raw.(T)
 		if !cast {
 			err = fmt.Errorf("pulse: key %q type assertion failed", ref.name)

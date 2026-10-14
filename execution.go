@@ -35,9 +35,13 @@ type Execution struct {
 
 	// observer / lim / aspects 是**这一次运行的有效值**（本次运行的 ExecOption >
 	// 定义声明 > 父执行环境）。它们只在创建时算一次，此后不写——定义因此保持只读。
-	observer Observer
-	lim      *limiter
-	aspects  []Aspect
+	observer   Observer
+	lim        *limiter
+	aspects    []Aspect
+	checkpoint *checkpointConfig
+	// restore 是尚未灌槽的完整恢复计划；restored 在 Start 成功后只读。
+	restore  []NodeCheckpoint
+	restored map[*Node]NodeCheckpoint
 
 	slots   map[string]*slot
 	slotsMu sync.Mutex
@@ -124,6 +128,11 @@ func (g *Graph) newExecution(ctx context.Context, parentID, path string, parent 
 		e.observer = parent.observer
 		e.lim = parent.lim
 		e.aspects = parent.aspects
+	}
+	if cfg.checkpoint != nil {
+		c := *cfg.checkpoint
+		c.failure = &checkpointFailure{root: e}
+		e.checkpoint = &c
 	}
 
 	// 定义只读：拿一次锁把要用的东西读完（同一时刻别人正在 Add 的话，读到的是
@@ -357,7 +366,8 @@ func (e *Execution) Start() error {
 	// 与 Validate 同一条边界，见 assemblyMu。
 	assemblyMu.Lock()
 	g.mu.Lock()
-	if err := g.validateLocked(e.lim.capacity()); err != nil {
+	known := streamKnownInputs{skipped: e.streamInputSkips(), hasAspects: len(e.aspects) != 0}
+	if err := g.validateRunLocked(e.lim.capacity(), known); err != nil {
 		g.mu.Unlock()
 		assemblyMu.Unlock()
 		return err
@@ -370,22 +380,37 @@ func (e *Execution) Start() error {
 		assemblyMu.Unlock()
 		return err
 	}
-	// 通过校验地启动 = 这棵树的定义从此不再变化（**含挂着的子图**）：跑起来之后定义还在变，
-	// 观测与拓扑看到的那张图、真正在跑的那张图就成了两张。封口放在校验**之后**，所以
-	// 启动被拒的那次一层都不封——补上缺的那块重新 Start 正是要支持的用法（见 Validate）。
-	g.sealTreeLocked(mountChain{g})
-	nodes := append([]*Node(nil), g.nodes...)
-	g.mu.Unlock()
-
 	e.mu.Lock()
 	if e.started {
 		e.mu.Unlock()
+		g.mu.Unlock()
 		assemblyMu.Unlock()
 		return ErrGraphStarted
 	}
+	if e.checkpoint != nil {
+		// 整批恢复与声明按即将封口的同一版本核验，失败零灌槽、零事件、零封口。
+		err := g.checkCheckpointLocked(e.checkpoint, mountChain{g})
+		if err == nil {
+			err = e.checkCheckpointInputsLocked()
+		}
+		if err == nil {
+			err = g.checkRestoreLocked(e.restore)
+		}
+		if err != nil {
+			e.mu.Unlock()
+			g.mu.Unlock()
+			assemblyMu.Unlock()
+			return err
+		}
+		e.applyRestoreLocked()
+	}
+	// 全部校验通过才封整棵树；临界区内不运行 Store/Codec 或宿主回调。
+	g.sealTreeLocked(mountChain{g})
+	nodes := append([]*Node(nil), g.nodes...)
 	e.started = true
 	e.wg.Add(len(nodes) + 1) // +1：started 那一发落地前，其他 goroutine 的 Wait 不该溜过去
 	e.mu.Unlock()
+	g.mu.Unlock()
 	assemblyMu.Unlock()
 
 	e.notify(func(o Observer) { o.OnGraphStarted(e.site) })
@@ -396,6 +421,25 @@ func (e *Execution) Start() error {
 		go e.runNode(n)
 	}
 	return nil
+}
+
+// streamInputSkips 只读创建时供给的外部输入，不采信节点运行留下的输出。
+// 不创建槽位、不发事件；根与 child.Start 都把相同的确定事实交给流检查。
+func (e *Execution) streamInputSkips() map[string]bool {
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	var skipped map[string]bool
+	for name := range e.seeded {
+		if s := e.slots[name]; s != nil {
+			if state, _ := s.snapshot(); state == slotSkipped {
+				if skipped == nil {
+					skipped = make(map[string]bool)
+				}
+				skipped[name] = true
+			}
+		}
+	}
+	return skipped
 }
 
 // Wait 等待 Start 提交的节点全部终止，并释放这次运行的 ctx。
@@ -495,6 +539,14 @@ func (e *Execution) release() { e.lim.release() }
 
 func (e *Execution) runNode(n *Node) {
 	defer e.wg.Done()
+	if r, ok := e.restored[n]; ok {
+		var err error
+		if r.Reason == NodeSkipped {
+			err = NoValue()
+		}
+		e.finishNode(n, r.Reason, err)
+		return
+	}
 
 	rc := newRunCtx(e, n, e.ctx)
 	defer rc.Cancel()
@@ -563,7 +615,12 @@ func (e *Execution) runNode(n *Node) {
 		return nil
 	})
 
-	err := chain(rc)
+	var err error
+	if e.checkpoint != nil {
+		err = e.runCheckpointChain(n, rc, chain)
+	} else {
+		err = chain(rc)
+	}
 	if isSkipped(err) {
 		e.settleUnwritten(n, rc)
 		e.finishNode(n, NodeSkipped, err)

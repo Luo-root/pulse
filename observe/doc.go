@@ -7,8 +7,10 @@
 // 引擎的依赖闭包为零——它不依赖任何观测包；本包依赖引擎，并实现它的
 // Observer seam。图节点分段计时（等待段 / 执行段）由本包的
 // NewRecordObserver 折叠，事件名 `pulse.node_wait_finished` /
-// `pulse.node_run_finished`，归因维度走 Attrs（`pulse.graph` /
-// `pulse.node`，key 契约由引擎定义）。
+// `pulse.node_run_finished`。切面在 next 前失败或取消时另发
+// `pulse.node_finished`，未测量的 Duration 留零；正常跳过的 Err 为 nil。
+// 归因维度走 Attrs（`pulse.graph` / `pulse.node` / `pulse.execution` /
+// `pulse.path`，key 契约由引擎定义）。
 //
 // # 三个概念
 //
@@ -24,7 +26,7 @@
 //     obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 //     Sink: sink, HostID: "host-1", TraceID: observe.NewTraceID(),
 //     })
-//     g, _ := pulse.New(ctx, "demo", pulse.WithObserver(obs))
+//     g, _ := pulse.New("demo", "演示图", pulse.WithObserver(obs))
 //     // ... 装图、Seed、Run
 //
 // 需要接宿主既有 logger、或要 JSON 喂采集器时换 SlogSink（同一批字段、

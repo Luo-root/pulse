@@ -45,7 +45,7 @@ type inputEntry struct {
 // 三条判据都在这里当场报（不等到运行）：
 //
 //   - 键是零值（`Key[T]{}`）——名字或类型没写全；
-//   - `v` 是 `nil`——`nil` 分不出「没写」与「写了空」，该用 `SkipSeed` 表达「这次没有值」；
+//   - `v` 是 nil 接口——宿主喂值入口拒它，该用 `SkipSeed` 表达「这次没有值」；typed nil 仍是值；
 //   - 同一条键这次已经放过（值或跳过）——幂等首写会**静默**丢掉后一笔，正是要拦的那类错。
 //
 // 键有没有被声明成进口、值对不对得上类型，都要等见到图才判得了（`NewExecution`）。
@@ -61,17 +61,26 @@ func SkipSeed[T any](in *Inputs, k Key[T]) error {
 	return in.set(k.asRef(), nil, true)
 }
 
-// set 是 Seed / SkipSeed 的共用路径（内部入口，给子图绑定用的非泛型版本也走它）。
-//
-// 它**不碰图**，所以不改任何定义的字段：一次运行的输入就活在这份数据里。
+// set 是宿主 Seed / SkipSeed 与固定值 Fix / FixSkip 的共用路径。
 func (in *Inputs) set(ref keyRef, v any, skip bool) error {
+	return in.setEntry(ref, v, skip, false)
+}
+
+// setArrived 转送父槽已经确认的到达状态：ready 的 nil 接口仍是值，不能改成 skipped。
+// 只供子图的 In 桥接用；宿主与固定值入口仍走 set，拒绝 nil 接口。
+func (in *Inputs) setArrived(ref keyRef, v any, skip bool) error {
+	return in.setEntry(ref, v, skip, true)
+}
+
+// setEntry 不碰图；两条入口共用键有效性、重复写与入表判据。
+func (in *Inputs) setEntry(ref keyRef, v any, skip, arrived bool) error {
 	if in == nil {
 		return fmt.Errorf("pulse: nil Inputs: take the address of a value (pulse.Seed(&in, k, v))")
 	}
-	if ref.typ == nil {
+	if !ref.valid() {
 		return fmt.Errorf("pulse: %s: zero key: build it with NewKey[T] and pass it whole", ref)
 	}
-	if !skip && v == nil {
+	if !skip && v == nil && (!arrived || ref.typ.Kind() != reflect.Interface) {
 		return fmt.Errorf("pulse: input %s: nil value: use SkipSeed to say \"no value this run\"", ref)
 	}
 	if _, dup := in.entries[ref.name]; dup {

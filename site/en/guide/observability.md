@@ -19,6 +19,18 @@ Snapshots contain no business values. Nodes and slots are sampled separately, so
 
 Topology includes the complete declared interface, binds and static child tree. Mermaid derives structure only from that view and adds no colors without a snapshot. With a snapshot, it matches states by graph ID + Path + Node ID and samples children separately; fixed values and error text stay out of the diagram. Registry-free Analyze can inspect YAML without factories; see [YAML assembly](/en/packages/yaml/).
 
+## Business results and progress
+
+Snapshots never contain business values. Use `pulse.ReadOutput(e, result)` for a declared output with the matching name and type; the main path is successful Start / Wait followed by `value, state, err`. Ready includes zero values, skipped means normal absence, and an unfed optional pass-through stays pending. The latter two are not execution failures; reading neither waits nor changes slots.
+
+An unfinished, failed or canceled run returns no partial business value; value/state are invalid on error. Normal context cleanup after Wait does not pollute successful results, and GraphFinished can read the finalized result. Mutable business objects are not deep-copied, so hosts still own synchronization. See the [root README](https://github.com/Luo-root/pulse/blob/main/README_en.md#read-this-runs-results) for a complete usage example.
+
+## Observing restored results
+
+Checkpoint recovery creates a new Execution. A confirmed node skips its Aspect chain and body, changes to its terminal state and emits one Finished after GraphStarted. It does not invent Waiting/Running, an uncreated Child or child lifecycle events. Snapshot describes the objects actually created in this run and still contains no business values.
+
+RecordObserver does not invent business timing for a restored completed/skipped node's lone Finished. The separate Durable layer reports restoration through `EventRestored` and persistent records. A lone Finished for a failure or cancellation before waiting instead produces `pulse.node_finished`, with node attribution and zero duration. Reliable checkpoint hooks control execution and can prevent publication; this is distinct from read-only Observer panic isolation. See the [bridge contract](https://github.com/Luo-root/pulse/blob/main/docs/design/checkpoint.md) (Chinese) for plan A scopes, retry budgets and commit boundaries.
+
 ## The engine's seam
 
 ```go
@@ -41,16 +53,19 @@ The contract has five clauses, all of them frozen surface:
 
 The observer defaults to no-op (no callbacks when none is attached; snapshot state bookkeeping still exists); `pulse.WithObserver(...)` attaches one (a run can override it with `WithExecObserver(...)`: this run > the definition's declaration > the parent execution environment); for several observers, combine them with `pulse.MultiObserver` (a later write overwrites an earlier one, so do the combining before passing it in).
 
-## observe folds it into two run-level + two per-node records
+## observe's run and node records
 
 | Event | Produced when | `Duration` | `Status` |
 |---|---|---|---|
 | `pulse.graph_started` | before any node is committed | `0` | `running` |
 | `pulse.graph_finished` | after every node terminated (before `Wait` returns) | the whole run | the run's terminal state (`completed` / `failed` / `canceled`) |
 | `pulse.node_wait_finished` | waiting ends (execution is entered, or the node terminates with skip / failure) | the waiting segment | `running`, otherwise the matching terminal state |
-| `pulse.node_run_finished` | execution ends | the execution segment | the terminal state (`completed` / `failed` / `canceled`) |
+| `pulse.node_run_finished` | execution ends | the execution segment | the terminal state (`completed` / `skipped` / `failed` / `canceled`) |
+| `pulse.node_finished` | an Aspect fails or cancels before calling next, before waiting starts | `0` (not measured) | `failed` / `canceled` |
 
-The two run-level records **bracket** the run's node records: a host no longer has to stitch node records back into a run by way of the `pulse.graph` attribute — a run is an entity with a head and a tail in the observation. The run-level terminal state is only ever `completed` / `failed` / `canceled`: **a run in which every node skipped is still `completed`** (skipping is a node-level fact and is not promoted to failure). A skipped node gets **only one `skipped` waiting record** — it did arrive, it just never executed.
+The two run-level records **bracket** the run's node records. A run in which every node skipped is still `completed`. A node whose inputs all skipped and whose body never ran gets one `skipped` waiting record. A body returning `NoValue()` retains both its waiting record and its `skipped` execution record because execution did occur. Normal skipping has nil `Record.Err`, so structured logs omit error; a reliable checkpoint failure wrapping `ErrSkipped` is still a failure.
+
+When an Aspect rejects execution before next, `pulse.node_finished` retains graph, execution, mount path and failing-node attribution. Its zero duration means timing was not measured; it does not invent waiting or execution segments.
 
 The attribution dimensions ride `Attrs`: `pulse.AttrGraph` + `pulse.AttrNode` + `pulse.AttrExecution` (the key contract is defined by the **engine**; `observe` only consumes it, never defines it). Node records carry the graph + node pair; the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run"; `pulse.AttrExecution` is on every record, and it is what keeps two runs of one graph apart.
 
@@ -109,6 +124,8 @@ Built-in egresses:
 | `MemorySink` | In-memory collection | Test assertions, demos |
 | `MultiSink` | Fan out to several egresses | Landing on disk and collecting at the same time |
 | `AsyncSink` | **A wrapper**: bounded queue + a single background goroutine | Slow egresses (files / network) |
+
+`SlogSink` emits numeric `duration_ms` with sub-millisecond precision and omits zero. `AsyncSink.Flush(ctx)` captures an enqueue boundary, so later Write calls do not extend the drain. Context cancellation also ends waiting for inner Flush/Err, while the single worker retains the records. Inner Write/Flush/Err are serialized. Snapshot boundaries are ordered, equal targets share one, and earlier targets never expand. Cancellation removes unstarted boundaries with no waiters; their count is at most capacity+1. Close stops acceptance; the first call determines the final result, while concurrent Close callers may cancel their own wait. An inner call without context cannot be forcibly stopped; the worker may remain there until it returns. Inner Flush/Err panics become fixed errors at the worker boundary, retaining error payloads through Unwrap without printing them. Delivered records are not added to Dropped, and the worker can continue.
 
 ### Duration accounting (measured)
 

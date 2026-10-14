@@ -196,6 +196,15 @@ func TestDocsExampleGateNegativeControls(t *testing.T) {
 		{name: "分析缺少身份选项", doc: `pulseyaml.Analyze(data)`, want: "Analyze 要 data 与 LoadOptions"},
 		{name: "分析错传注册表", doc: `pulseyaml.Analyze(data, reg)`, want: "不吃 Registry"},
 		{name: "分析沿用 Load 参数表", doc: `pulseyaml.Analyze(data, reg, opts)`, want: "不吃 Registry"},
+		{name: "宿主出口读取", doc: `pulse.ReadOutput(e, result)`},
+		{name: "出口读取显式类型", doc: `pulse.ReadOutput[map[string]int](exec, result)`},
+		{name: "出口读取函数名含前缀", doc: `customReadOutput(e, result)`, count: -1},
+		{name: "出口读取不能用图", doc: `pulse.ReadOutput(g, result)`, want: "ReadOutput 需要 Execution"},
+		{name: "出口读取不能用节点上下文", doc: `ReadOutput(rc, result)`, want: "ReadOutput 需要 Execution"},
+		{name: "出口读取不能用快照", doc: `pulse.ReadOutput(e.Snapshot(), result)`, count: 2, want: "ReadOutput 需要 Execution"},
+		{name: "出口读取不能用字符串", doc: `pulse.ReadOutput(e, "result")`, want: "类型化 Key"},
+		{name: "出口读取缺键", doc: `pulse.ReadOutput(e)`, want: "Execution 与 Key 两件实参"},
+		{name: "出口读取显式类型缺键", doc: `pulse.ReadOutput[int](e)`, want: "Execution 与 Key 两件实参"},
 	}
 
 	for _, tc := range cases {
@@ -204,6 +213,8 @@ func TestDocsExampleGateNegativeControls(t *testing.T) {
 			wantCount := tc.count
 			if wantCount == 0 {
 				wantCount = 1
+			} else if wantCount < 0 {
+				wantCount = 0 // 长标识符不是这个入口，扫描数也必须为零。
 			}
 			if checked != wantCount {
 				t.Fatalf("合成片段里应当扫到 %d 处调用，实扫到 %d 处：%s", wantCount, checked, tc.doc)
@@ -244,6 +255,7 @@ var (
 	// 阶段 4：括号接收者覆盖 g.Topology().Mermaid() / Child.Snapshot() 等表达式。
 	viewCall    = regexp.MustCompile(`(\(\*[A-Za-z_][A-Za-z0-9_]*\)|[A-Za-z_][A-Za-z0-9_]*|\))\.(Snapshot|Mermaid)\(`)
 	analyzeCall = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*\.)?Analyze\(`)
+	outputCall  = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*\.)?ReadOutput(\[[^\n]+?\])?\(`)
 )
 
 // execSideNames 是「接收者写出来就是执行侧」的那些名字：执行句柄（`e` / `exec` …）、
@@ -434,6 +446,37 @@ func docExampleFindings(path, text string) (findings []string, checked, elided, 
 		checked++
 		if len(args) != 2 || args[1] == "nil" || args[1] == "reg" || args[1] == "registry" {
 			findings = append(findings, fmt.Sprintf("%s:%d：Analyze 要 data 与 LoadOptions 两件实参，不吃 Registry——照抄会编译不过：%s", path, lineAt(text, loc[0]), oneLine(frag)))
+		}
+	}
+	// —— 八、宿主结果只从 Execution 按类型化 Key 读取 ——
+	for _, loc := range outputCall.FindAllStringIndex(text, -1) {
+		if loc[0] > 0 && isIdentByte(text[loc[0]-1]) {
+			continue
+		}
+		args, frag, why := parseCall(text, loc[0], loc[1]-1)
+		if why != "" {
+			count(why)
+			continue
+		}
+		checked++
+		bad := ""
+		if len(args) != 2 {
+			bad = "ReadOutput 要 Execution 与 Key 两件实参"
+		} else {
+			first, key := strings.TrimSpace(args[0]), strings.TrimSpace(args[1])
+			switch first {
+			case "g", "graph", "Graph", "rc", "RunCtx", "ctx", "snapshot", "progress", "Snapshot":
+				bad = "ReadOutput 需要 Execution，不能传图定义、节点上下文或快照"
+			}
+			if strings.Contains(first, ".Snapshot(") || strings.Contains(first, ".Topology(") {
+				bad = "ReadOutput 需要 Execution，不能传图定义、节点上下文或快照"
+			}
+			if key == "nil" || strings.HasPrefix(key, "\"") || strings.HasPrefix(key, "`") || strings.HasPrefix(key, "'") {
+				bad = "ReadOutput 的第二件必须是类型化 Key，不能是字符串名字或 nil"
+			}
+		}
+		if bad != "" {
+			findings = append(findings, fmt.Sprintf("%s:%d：%s——照抄会违反结果读取契约：%s", path, lineAt(text, loc[0]), bad, oneLine(frag)))
 		}
 	}
 	return findings, checked, elided, ignored

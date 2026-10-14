@@ -10,7 +10,8 @@
 //         zh: /pulse/packages/<pkg>/    en: /pulse/en/packages/<pkg>/
 //       * 其余相对链接（.go、docs/design/*.md 等）→ GitHub blob 绝对链接
 //       * http(s):// 与 #anchor 原样保留
-import { readdirSync, statSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { readdirSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { dirname, join, relative, resolve, posix } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -21,17 +22,18 @@ const BASE = '/pulse/'
 
 const NAV_LINE = /^\[English\]\(README_en\.md\) \| \[中文\]\(README\.md\)\s*$/
 
-function* walk(dir) {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    const st = statSync(p)
-    if (st.isDirectory()) {
-      if (name === '.git' || name === 'node_modules' || p === siteDir) continue
-      yield* walk(p)
-    } else {
-      yield p
-    }
-  }
+function sourceReadmes() {
+  // 源清单遵守 Git ignore；不能把本机验证 worktree / 缓存中的 README 当成包文档。
+  // 未提交的修改和未被 ignore 的新包仍可预览。NUL 分隔保留路径里的空格。
+  return execFileSync('git', [
+    'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--',
+    '**/README.md', '**/README_en.md',
+  ], { cwd: repoDir, encoding: 'utf8' })
+    .split('\0')
+    .filter(Boolean)
+    .filter(name => !name.startsWith('site/'))
+    .map(name => resolve(repoDir, name))
+    .filter(name => existsSync(name)) // Git 仍列出尚未提交的删除；工作树里不存在就不生成。
 }
 
 function rewriteLinks(md, srcRelDir, lang, pageDirs) {
@@ -112,7 +114,7 @@ function convert(srcFile, lang, pageDirs) {
 
 // ---- Pass 1：收集双语 README 目录清单（供目录链接的站内路由判定）----
 const readmeByLang = { zh: new Map(), en: new Map() } // relDir → srcFile
-for (const f of walk(repoDir)) {
+for (const f of sourceReadmes()) {
   const rel = relative(repoDir, f).replaceAll('\\', '/')
   if (rel === 'README.md' || rel === 'README_en.md') continue // 根 README 不收录
   const base = posix.basename(rel)
