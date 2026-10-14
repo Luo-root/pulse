@@ -58,7 +58,7 @@ Scope 不是 Path 或 ExecutionID 的拼接。Durable 在原子存储变更中�
 
 根完整链的 Limit=1。未被切面处理的最终真实失败会确认根失败；以后 Resume 不能通过换根作用域刷新内层 Retry 次数，新的 RunID 才获得新的完整运行预算。内层失败若被外层 Retry 处理，外层按自己的持久次数继续。
 
-宿主上下文取消、进程突然退出和可靠钩子失败留下活跃尝试，恢复时从权威记录继续。业务 RPC 返回 context.Canceled/DeadlineExceeded、但执行上下文仍正常时，是已知业务失败，仍要确认根失败；不能仅凭错误链含 context 哨兵推断宿主中断。
+宿主上下文取消、进程突然退出和可靠钩子失败留下活跃尝试，恢复时从权威记录继续。业务 RPC 返回 context.Canceled/DeadlineExceeded、但执行上下文仍正常时，是已知业务失败，仍要确认根失败；不能仅凭错误链含 context 哨兵推断宿主中断。失败确认使用该节点所属 Execution 的持久化上下文，与最终失败分类一致；业务 `defer rc.Cancel()` 只清理节点上下文，不阻断已知失败的确认，不让后续 Resume 重新获得根预算。
 
 Store/Codec/恢复钩子的错误或 panic 是 CheckpointError。即使错误链含 ErrSkipped，仍必须失败，errors.Is/As 保留原原因。整棵执行树共享可靠失败锁存，父 Retry 或外层切面吞掉返回值也不能让运行继续提交并假称成功。
 

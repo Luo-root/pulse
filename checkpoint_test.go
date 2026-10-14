@@ -207,6 +207,78 @@ func TestCheckpointReliabilityFailureCannotBeSwallowed(t *testing.T) {
 	}
 }
 
+func TestCheckpointRejectedCommitLeavesActualLeafPending(t *testing.T) {
+	for _, nested := range []bool{false, true} {
+		name := "root-leaf"
+		if nested {
+			name = "child-leaf"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			leafGraph := mustNew(t, ctx, "leaf-graph")
+			ready, skipped, implicit := NewKey[int]("ready"), NewKey[int]("skipped"), NewKey[int]("implicit")
+			mustAdd(t, leafGraph, NewNode("leaf", "业务成功但可靠提交拒绝", nil, Provides(ready, skipped, implicit), func(rc *RunCtx) error {
+				if err := Set(rc, ready, 42); err != nil {
+					return err
+				}
+				return Skip(rc, skipped)
+			}))
+			g := leafGraph
+			if nested {
+				declareOut(t, leafGraph, NewPort(ready))
+				g = mustNew(t, ctx, "parent")
+				out := NewKey[int]("parent-output")
+				if err := Sub(g, "mount", "检查实际子执行的发布状态", []SubBind{Out(ready, out)}, leafGraph); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p := &checkpointProbe{}
+			hooks := p.hooks()
+			cause := errors.New("store refused checkpoint")
+			var commits atomic.Int32
+			hooks.Commit = func(_ context.Context, c CheckpointCommit) error {
+				commits.Add(1)
+				if c.Node.NodeID != "leaf" {
+					t.Errorf("ancestor committed after leaf rejection: %s", c.Node.NodeID)
+				}
+				return cause
+			}
+			e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Start(); err != nil {
+				t.Fatal(err)
+			}
+			err = e.Wait()
+			var reliable *CheckpointError
+			if !errors.Is(err, cause) || !errors.As(err, &reliable) || reliable.Operation != "commit" || e.Snapshot().Graph.Status != GraphStatusFailed {
+				t.Fatalf("commit failure not preserved: %v", err)
+			}
+			if commits.Load() != 1 || len(p.failures) != 0 {
+				t.Fatalf("uncertain commit retried/invalidated: commits=%d failed=%v", commits.Load(), p.failures)
+			}
+			leafExecution := e
+			if nested {
+				leafExecution = e.Snapshot().Nodes[0].Child
+				if leafExecution == nil {
+					t.Fatal("actual child execution missing")
+				}
+			}
+			// 父 mount 的 pending 不能证明 leaf 没发布：可靠失败锁存会阻止父侧桥回。
+			leaf := leafExecution.Snapshot().Nodes[0]
+			if leaf.ID != "leaf" || len(leaf.Outputs) != 3 {
+				t.Fatalf("wrong leaf observation: %+v", leaf)
+			}
+			for _, output := range leaf.Outputs {
+				if output.State != SlotStatePending {
+					t.Errorf("unconfirmed actual leaf output %q published: %s", output.Name, output.State)
+				}
+			}
+		})
+	}
+}
+
 func TestCheckpointTerminalOutputStates(t *testing.T) {
 	cases := []struct {
 		name   string
