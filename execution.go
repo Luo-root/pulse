@@ -366,7 +366,8 @@ func (e *Execution) Start() error {
 	// 与 Validate 同一条边界，见 assemblyMu。
 	assemblyMu.Lock()
 	g.mu.Lock()
-	if err := g.validateLocked(e.lim.capacity()); err != nil {
+	known := streamKnownInputs{skipped: e.streamInputSkips(), hasAspects: len(e.aspects) != 0}
+	if err := g.validateRunLocked(e.lim.capacity(), known); err != nil {
 		g.mu.Unlock()
 		assemblyMu.Unlock()
 		return err
@@ -420,6 +421,25 @@ func (e *Execution) Start() error {
 		go e.runNode(n)
 	}
 	return nil
+}
+
+// streamInputSkips 只读创建时供给的外部输入，不采信节点运行留下的输出。
+// 不创建槽位、不发事件；根与 child.Start 都把相同的确定事实交给流检查。
+func (e *Execution) streamInputSkips() map[string]bool {
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	var skipped map[string]bool
+	for name := range e.seeded {
+		if s := e.slots[name]; s != nil {
+			if state, _ := s.snapshot(); state == slotSkipped {
+				if skipped == nil {
+					skipped = make(map[string]bool)
+				}
+				skipped[name] = true
+			}
+		}
+	}
+	return skipped
 }
 
 // Wait 等待 Start 提交的节点全部终止，并释放这次运行的 ctx。

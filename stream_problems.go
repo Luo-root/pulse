@@ -18,26 +18,29 @@ type streamTree struct {
 }
 
 type streamSite struct {
-	at    string
-	pool  *streamPool
-	mount *streamNode
-	nodes []*streamNode
-	keys  map[string]*streamKey
+	at         string
+	pool       *streamPool
+	mount      *streamNode
+	nodes      []*streamNode
+	keys       map[string]*streamKey
+	hasAspects bool
 }
 
 type streamNode struct {
-	def   Node
-	at    string
-	site  *streamSite
-	child *streamSite
+	def         Node
+	at          string
+	site        *streamSite
+	child       *streamSite
+	bodySkipped bool // 全输入确定 skip，或挂载它的祖先不会进入 Sub body
 }
 
 type streamKey struct {
-	ref    keyRef
-	site   *streamSite
-	writer *streamNode
-	parent *streamKey // channel 别名的并查集；普通值不合并到达事件
-	group  *streamGroup
+	ref     keyRef
+	site    *streamSite
+	writer  *streamNode
+	parent  *streamKey // channel 别名的并查集；普通值不合并到达事件
+	group   *streamGroup
+	skipped bool // 确定的到达状态；没有事实的入口仍是未知，不能当作 skip
 }
 
 type streamPool struct {
@@ -55,19 +58,25 @@ type streamGroup struct {
 // problemsStreamLocked 展开整个检查范围，再把诊断放回最小共同图层，保持
 // 来源 → 出口 → 普通依赖环 → 流式 → 子树的既有顺序。根 capacity 已解析
 // ExecOption > 定义声明；子层有声明就新建池，否则继承同一池（不能按数值合并）。
-func (g *Graph) problemsStreamLocked(at string, chain mountChain, capacity int) map[string][]error {
+func (g *Graph) problemsStreamLocked(at string, chain mountChain, capacity int, known ...streamKnownInputs) map[string][]error {
 	if !g.hasStreamsLocked(chain) {
 		return nil
 	}
 	t := &streamTree{}
 	pool := &streamPool{capacity: capacity}
 	t.pools = append(t.pools, pool)
-	t.collectLocked(g, at, chain, pool, nil)
+	facts := streamKnownInputs{hasAspects: len(g.aspects) != 0}
+	if len(known) != 0 {
+		facts = known[0]
+	}
+	t.collectLocked(g, at, chain, pool, nil, facts.hasAspects)
+	t.propagateSkips(facts.skipped)
 	t.connectAliases()
 	t.collectReaders()
 	out := make(map[string][]error)
 	t.problemsSlots(out)
 	t.problemsReaders(out)
+	t.problemsLifecycle(out)
 	return out
 }
 
@@ -95,8 +104,8 @@ func (g *Graph) hasStreamsLocked(chain mountChain) bool {
 
 // 调用方持 g.mu。Node 在入图后不可改；仍复制切片，后续推导只读这份副本。
 // checkBinds 自己取子锁，必须在 collect 的子锁之外调用；组合环先挡住重入。
-func (t *streamTree) collectLocked(g *Graph, at string, chain mountChain, pool *streamPool, mount *streamNode) *streamSite {
-	s := &streamSite{at: at, pool: pool, mount: mount, keys: make(map[string]*streamKey)}
+func (t *streamTree) collectLocked(g *Graph, at string, chain mountChain, pool *streamPool, mount *streamNode, hasAspects bool) *streamSite {
+	s := &streamSite{at: at, pool: pool, mount: mount, keys: make(map[string]*streamKey), hasAspects: hasAspects}
 	t.sites = append(t.sites, s)
 	for _, n := range g.nodes {
 		def := *n
@@ -119,7 +128,7 @@ func (t *streamTree) collectLocked(g *Graph, at string, chain mountChain, pool *
 		for _, b := range mount.def.binds {
 			if b.fix != nil {
 				for _, ref := range b.fixKeys() {
-					t.key(s, ref)
+					t.key(s, ref).skipped = b.fix.in.entries[ref.name].skip
 				}
 			} else {
 				t.key(s, b.child)
@@ -140,7 +149,8 @@ func (t *streamTree) collectLocked(g *Graph, at string, chain mountChain, pool *
 			childPool = &streamPool{capacity: child.declaredCapacity()}
 			t.pools = append(t.pools, childPool)
 		}
-		n.child = t.collectLocked(child, n.at, chain.push(child), childPool, n)
+		childAspects := (hasAspects && !child.aspectsCut) || len(child.aspects) != 0
+		n.child = t.collectLocked(child, n.at, chain.push(child), childPool, n, childAspects)
 		child.mu.Unlock()
 	}
 	return s
@@ -219,7 +229,7 @@ func (t *streamTree) collectReaders() {
 		}
 	}
 	for _, n := range t.nodes {
-		if n.def.sub {
+		if n.def.sub || n.bodySkipped {
 			continue
 		}
 		live := n.def.streamKind != ""
@@ -253,7 +263,7 @@ func (t *streamTree) problemsSlots(out map[string][]error) {
 
 func (t *streamTree) problemsReaders(out map[string][]error) {
 	for _, gr := range t.groups {
-		if !gr.known {
+		if !gr.known || (gr.source != nil && gr.source.writer.bodySkipped) {
 			continue
 		}
 		if len(gr.readers) == 0 && gr.source != nil {
