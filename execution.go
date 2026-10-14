@@ -35,9 +35,13 @@ type Execution struct {
 
 	// observer / lim / aspects 是**这一次运行的有效值**（本次运行的 ExecOption >
 	// 定义声明 > 父执行环境）。它们只在创建时算一次，此后不写——定义因此保持只读。
-	observer Observer
-	lim      *limiter
-	aspects  []Aspect
+	observer   Observer
+	lim        *limiter
+	aspects    []Aspect
+	checkpoint *checkpointConfig
+	// restore 是尚未灌槽的完整恢复计划；restored 在 Start 成功后只读。
+	restore  []NodeCheckpoint
+	restored map[*Node]NodeCheckpoint
 
 	slots   map[string]*slot
 	slotsMu sync.Mutex
@@ -124,6 +128,11 @@ func (g *Graph) newExecution(ctx context.Context, parentID, path string, parent 
 		e.observer = parent.observer
 		e.lim = parent.lim
 		e.aspects = parent.aspects
+	}
+	if cfg.checkpoint != nil {
+		c := *cfg.checkpoint
+		c.failure = &checkpointFailure{root: e}
+		e.checkpoint = &c
 	}
 
 	// 定义只读：拿一次锁把要用的东西读完（同一时刻别人正在 Add 的话，读到的是
@@ -357,7 +366,8 @@ func (e *Execution) Start() error {
 	// 与 Validate 同一条边界，见 assemblyMu。
 	assemblyMu.Lock()
 	g.mu.Lock()
-	if err := g.validateLocked(e.lim.capacity()); err != nil {
+	known := streamKnownInputs{skipped: e.streamInputSkips(), hasAspects: len(e.aspects) != 0}
+	if err := g.validateRunLocked(e.lim.capacity(), known); err != nil {
 		g.mu.Unlock()
 		assemblyMu.Unlock()
 		return err
@@ -370,22 +380,37 @@ func (e *Execution) Start() error {
 		assemblyMu.Unlock()
 		return err
 	}
-	// 通过校验地启动 = 这棵树的定义从此不再变化（**含挂着的子图**）：跑起来之后定义还在变，
-	// 观测与拓扑看到的那张图、真正在跑的那张图就成了两张。封口放在校验**之后**，所以
-	// 启动被拒的那次一层都不封——补上缺的那块重新 Start 正是要支持的用法（见 Validate）。
-	g.sealTreeLocked(mountChain{g})
-	nodes := append([]*Node(nil), g.nodes...)
-	g.mu.Unlock()
-
 	e.mu.Lock()
 	if e.started {
 		e.mu.Unlock()
+		g.mu.Unlock()
 		assemblyMu.Unlock()
 		return ErrGraphStarted
 	}
+	if e.checkpoint != nil {
+		// 整批恢复与声明按即将封口的同一版本核验，失败零灌槽、零事件、零封口。
+		err := g.checkCheckpointLocked(e.checkpoint, mountChain{g})
+		if err == nil {
+			err = e.checkCheckpointInputsLocked()
+		}
+		if err == nil {
+			err = g.checkRestoreLocked(e.restore)
+		}
+		if err != nil {
+			e.mu.Unlock()
+			g.mu.Unlock()
+			assemblyMu.Unlock()
+			return err
+		}
+		e.applyRestoreLocked()
+	}
+	// 全部校验通过才封整棵树；临界区内不运行 Store/Codec 或宿主回调。
+	g.sealTreeLocked(mountChain{g})
+	nodes := append([]*Node(nil), g.nodes...)
 	e.started = true
 	e.wg.Add(len(nodes) + 1) // +1：started 那一发落地前，其他 goroutine 的 Wait 不该溜过去
 	e.mu.Unlock()
+	g.mu.Unlock()
 	assemblyMu.Unlock()
 
 	e.notify(func(o Observer) { o.OnGraphStarted(e.site) })
@@ -396,6 +421,25 @@ func (e *Execution) Start() error {
 		go e.runNode(n)
 	}
 	return nil
+}
+
+// streamInputSkips 只读创建时供给的外部输入，不采信节点运行留下的输出。
+// 不创建槽位、不发事件；根与 child.Start 都把相同的确定事实交给流检查。
+func (e *Execution) streamInputSkips() map[string]bool {
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	var skipped map[string]bool
+	for name := range e.seeded {
+		if s := e.slots[name]; s != nil {
+			if state, _ := s.snapshot(); state == slotSkipped {
+				if skipped == nil {
+					skipped = make(map[string]bool)
+				}
+				skipped[name] = true
+			}
+		}
+	}
+	return skipped
 }
 
 // Wait 等待 Start 提交的节点全部终止，并释放这次运行的 ctx。
@@ -458,18 +502,6 @@ func (e *Execution) Err() error {
 // 也给宿主一个明确的「拆掉它」动作——定义与别的运行不受影响。
 func (e *Execution) Cancel() { e.cancel() }
 
-func (e *Execution) fail(err error) {
-	if err == nil || isSkipped(err) {
-		return
-	}
-	e.mu.Lock()
-	if e.err == nil {
-		e.err = err
-		e.cancel()
-	}
-	e.mu.Unlock()
-}
-
 // slotOf 取（必要时建）这次运行里某条键的槽位。
 func (e *Execution) slotOf(k keyRef) *slot {
 	e.slotsMu.Lock()
@@ -484,119 +516,6 @@ func (e *Execution) slotOfLocked(k keyRef) *slot {
 	s := newSlot()
 	e.slots[k.name] = s
 	return s
-}
-
-// acquire 占用这次运行的**有效**名额表里的一个名额（nil = 无限，直接放行）。
-// 取消语义见 limiter.acquire。
-func (e *Execution) acquire(ctx context.Context) error { return e.lim.acquire(ctx) }
-
-// release 归还名额。没占过、或名额表无限，都安全。
-func (e *Execution) release() { e.lim.release() }
-
-func (e *Execution) runNode(n *Node) {
-	defer e.wg.Done()
-
-	rc := newRunCtx(e, n, e.ctx)
-	defer rc.Cancel()
-
-	// 每节点生命周期事件至多一次（防 Retry 双打点）。
-	var waited, ran atomic.Bool
-	emitWaiting := func() {
-		if waited.CompareAndSwap(false, true) {
-			e.recordNodeState(n, NodeStatusWaiting, nil)
-			e.notify(func(o Observer) { o.OnNodeWaiting(e.site, n.id) })
-		}
-	}
-	emitRunning := func() {
-		if ran.CompareAndSwap(false, true) {
-			e.recordNodeState(n, NodeStatusRunning, nil)
-			e.notify(func(o Observer) { o.OnNodeRunning(e.site, n.id) })
-		}
-	}
-
-	// 切面覆盖「等输入 + 执行」整段，这样 Timeout 能打断 Wait。
-	// MaxRunning 只在即将执行用户 Run 时占用。
-	// 生命周期埋点在 innermost core：Retry 重入时靠门闩只发一次。
-	chain := buildChain(append(append([]Aspect{}, e.aspects...), n.aspects...), func(rc *RunCtx) (err error) {
-		// 推进闸：同一个节点执行上下文里 `next()` 只允许成功推进一次——`Retry` 每试都开
-		// 新的尝试边界，所以它的重入放行；用户自己写的重试切面开不了边界，第二次推进
-		// 当场拒（见 beginAdvance）。判据在最内层，所以**所有**节点（含挂子图那一步）
-		// 共用同一处，不各写一套。
-		if err := rc.beginAdvance(); err != nil {
-			return err
-		}
-		defer func() { rc.endAdvance(err) }()
-		emitWaiting()
-		skipped, err := awaitAll(rc, n.requires)
-		if err != nil {
-			return err
-		}
-		if rc.ctx.Err() != nil {
-			return rc.ctx.Err()
-		}
-		// 到几个收几个：**只要有一条输入真的到了值**，就带着到了的那些进入
-		// Run；一条值都没到才轮到本节点自己跳过。判据是「有没有值」，不是
-		// 「有没有跳过」——上游某一路没有值，不该让手里还有数据的下游跟着停，
-		// 也不该让已经到达的值作废。一条 Requires 都没有的源节点不适用此
-		// 判据，照常执行。
-		if len(n.requires) > 0 && len(skipped) == len(n.requires) {
-			return skipErr(skipped...)
-		}
-		// 挂子图那一步**不吃名额**：它整段（取值 + 子图 + 桥回）都在等子图跑完，
-		// 占着名额就等于把父侧额度锁在「等」上——名额共享之后那就是死锁
-		// （限额 ≤ 嵌套深度时必现，实测见 .workbase/probe-sharedsem）。
-		if !n.sub {
-			if err := e.acquire(rc.ctx); err != nil {
-				return err
-			}
-			defer e.release()
-		}
-		emitRunning()
-		defer func() {
-			if rec := recover(); rec != nil {
-				err = fmt.Errorf("pulse: panic in node %s: %v", n.id, rec)
-			}
-		}()
-		if n.run != nil {
-			return n.run(rc)
-		}
-		return nil
-	})
-
-	err := chain(rc)
-	if isSkipped(err) {
-		e.settleUnwritten(n, rc)
-		e.finishNode(n, NodeSkipped, err)
-		return
-	}
-	if err != nil {
-		e.fail(err)
-		e.settleUnwritten(n, rc)
-		e.finishNode(n, finishReason(err), err)
-		return
-	}
-	e.settleUnwritten(n, rc)
-	e.finishNode(n, NodeCompleted, nil)
-}
-
-// settleUnwritten 把这次运行里**还没有落地**的 Provide 收成跳过（隐式跳过）。
-//
-// 判据是**落地状态**，不是「这个节点写过谁」。这个差别是实的：一次失败的尝试写过 K、
-// 而整份暂存被丢掉了，K 就仍然没有落地——它该以跳过收尾，而不是把下游永远吊在那条槽上
-// （一句看不出病因的超时）。没有尝试边界时两种判据一一对应（写过 ⟺ 已就绪 / 已跳过），
-// 所以不装 `Retry` 的节点行为逐条不变。
-//
-// 写入走**当前写入目标**（见 `RunCtx.writeTarget`）：有暂存就落暂存，没有就直写执行槽位。
-// 于是 #307 的 Durable 模式下，「完整 Aspect 链结束、收敛全部 Provides 状态」这一步同样
-// 落在节点暂存里，由检查点提交之后才发布——两层暂存是**按顺序组合**，不是互相替代
-// （见 #317「与 Durable 输出提交的边界」）。
-func (e *Execution) settleUnwritten(n *Node, rc *RunCtx) {
-	for _, k := range n.provides {
-		if rc.landed(k) {
-			continue
-		}
-		_ = rc.writeTarget(k).resolveSkip()
-	}
 }
 
 // Run 是**同步便捷入口**：为这一次调用新建一份执行，跑完并等到全部终止。
@@ -618,4 +537,55 @@ func (g *Graph) Run(ctx context.Context, in Inputs, opts ...ExecOption) error {
 		return err
 	}
 	return e.Wait()
+}
+
+// 本文件是**一次运行的运行期配置**：`WithExec*` 一族覆盖这张定义声明的默认值。
+//
+// 分工：`Option`（`With*`）是**定义**的声明，每次运行都生效；`ExecOption`（`WithExec*`）
+// 只作用于**这一次**运行。优先级从高到低：本次运行 > 定义声明 > 父执行环境。
+
+// ExecOption 配置**某一次运行**，在 `NewExecution` / `Run` 时给。
+type ExecOption func(*execConfig)
+
+// execConfig 是一次运行的覆盖项；每项都带一个「给了没有」的标记，
+// 否则零值（nil 出口、0 名额）分不出「没给」与「给了零值」。
+type execConfig struct {
+	observer    Observer
+	observerSet bool
+	maxRunning  int
+	quotaSet    bool
+	aspects     []Aspect
+	checkpoint  *checkpointConfig
+}
+
+// WithExecObserver 让**这一次运行**用这个观察者，压过定义上 `WithObserver` 声明的那一个。
+//
+// 它与定义声明的关系是「覆盖」而不是「叠加」：要组合两个出口就自己用 `MultiObserver`
+// 拼好再传进来。子图那一层没声明出口时会继承父执行环境的（这次覆盖后的）出口——
+// 继承走的是**有效值**，不是定义上的声明。
+func WithExecObserver(o Observer) ExecOption {
+	return func(c *execConfig) {
+		c.observer = o
+		c.observerSet = true
+	}
+}
+
+// WithExecMaxRunning 让**这一次运行**用这个名额上限，压过定义上 `WithMaxRunning` 声明的那个。
+//
+// `n<=0` = 这一次不限（与定义声明同一条规则：`<=0` 也是「声明过」，不是「没声明」）。
+// 这次声明的名额同样会往下继承给子执行环境（同一棵执行树共用一个计数）。
+func WithExecMaxRunning(n int) ExecOption {
+	return func(c *execConfig) {
+		c.maxRunning = n
+		c.quotaSet = true
+	}
+}
+
+// WithExecAspects 给**这一次运行**追加图级切面：它们排在定义声明的那批**之后**
+// （更靠内），并照样继承给子执行环境。
+//
+// **是追加不是替换**：替换会让「这一次多加一个超时」变成「把这张图的图级切面全撤掉」，
+// 那不是调用方想要的。要撤掉继承来的那批，用定义上的 `WithoutAspects()`。
+func WithExecAspects(as ...Aspect) ExecOption {
+	return func(c *execConfig) { c.aspects = append(c.aspects, as...) }
 }

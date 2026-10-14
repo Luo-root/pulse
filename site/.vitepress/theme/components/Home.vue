@@ -15,7 +15,7 @@ const copy = {
     badge: `${VERSION} · 开源 MIT`,
     heroTitle: '数据到达即调度，',
     heroTitleAccent: '失败显式',
-    tagline: `Pulse 是可嵌入 Go 程序的 workflow 执行内核，数据驱动、可组合、可观测。节点声明读写的 Key，图定义可以复用，每次 Execution 独立；核心只用标准库。pulse-durable 正在设计节点检查点恢复，持久等待与分布式运行管理是后续方向，尚未实现。`,
+    tagline: `Pulse 是可嵌入 Go 程序的 workflow 执行内核，数据驱动、可组合、可观测。图定义可复用，每次 Execution 独立；核心只用标准库，已有完整节点链的检查点桥接。独立的 pulse-durable 已有 Store、Codec、Run/Resume、方案 A 子图恢复和本机文件后端；持久等待与分布式运行管理是后续方向。`,
     ctaStart: '快速开始',
     ctaPackages: '包文档',
     ctaGithub: 'GitHub',
@@ -44,7 +44,7 @@ const copy = {
     badge: `${VERSION} · Open Source MIT`,
     heroTitle: 'Data arrival is scheduling, ',
     heroTitleAccent: 'failure is explicit',
-    tagline: `Pulse is an embeddable workflow execution engine for Go: data driven, composable and observable. Nodes declare the keys they read and write; graph definitions are reusable, each Execution is independent, and the core uses only the standard library. pulse-durable is designing node checkpoint recovery. Durable waits and distributed run management are future directions, not implemented capabilities.`,
+    tagline: `Pulse is an embeddable workflow execution engine for Go: data driven, composable and observable. Definitions are reusable, each Execution is independent, and the standard-library-only core includes a checkpoint bridge around the complete node chain. The separate pulse-durable provides Store, Codec, Run/Resume, plan A child recovery and a local file backend. Durable waits and distributed run management are future directions.`,
     ctaStart: 'Quick start',
     ctaPackages: 'Package docs',
     ctaGithub: 'GitHub',
@@ -145,7 +145,7 @@ const icons = {
           <div class="card start-card">
             <span class="card-title">{{ t.start2Title }}</span>
             <span class="card-desc">{{ t.start2Desc }}</span>
-            <code class="code">g, _ := pulse.New(ctx, "demo")</code>
+            <code class="code">g, _ := pulse.New("demo", "演示图")</code>
           </div>
         </div>
       </div>

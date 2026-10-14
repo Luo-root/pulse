@@ -46,7 +46,7 @@ pulse.NewNode("summarize", "把 docs 折成一句摘要",
 | 情形 | 终态 | 观测记录 |
 |---|---|---|
 | 节点对某条 `Provide` 调 `Skip` 后正常返回 | `completed` | 等待段 + 执行段两条 |
-| 节点因**一条值都没到**而没执行 | `skipped` | **只有一条**等待记录（`err="pulse: skipped [key]"`），无执行段 |
+| 节点因**一条值都没到**而没执行 | `skipped` | **只有一条**等待记录（`Record.Err = nil`，不写 error 字段），无执行段 |
 
 看真实输出（两个节点：`translate` 对 `translated` 调 `Skip`，`publish` 依赖 `translated`）：
 
@@ -54,7 +54,7 @@ pulse.NewNode("summarize", "把 docs 折成一句摘要",
 PULSE | 2026/10/09 - 10:42:50.550 | running    |         - | pulse.graph_started | source=observe | pulse.graph=branch-demo | host=quickstart | trace=branch-demo
 PULSE | 2026/10/09 - 10:42:50.550 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
 PULSE | 2026/10/09 - 10:42:50.550 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
-PULSE | 2026/10/09 - 10:42:50.550 | skipped    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=publish | host=quickstart | err="pulse: skipped [translated]" | trace=branch-demo
+PULSE | 2026/10/09 - 10:42:50.550 | skipped    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=publish | host=quickstart | trace=branch-demo
 PULSE | 2026/10/09 - 10:42:50.550 | completed  |   524.5µs | pulse.graph_finished | source=observe | pulse.graph=branch-demo | host=quickstart | trace=branch-demo
 ```
 

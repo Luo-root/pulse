@@ -1,6 +1,6 @@
 # 快速开始
 
-Pulse 是一个**数据到达驱动的图引擎**，外加一层**图观测**。本页跑通最短链路：**声明 Key → 装节点 → `Run` → 挂观测**。
+Pulse 是一个**数据到达驱动的图引擎**，外加一层**图观测**。本页跑通最短链路：**声明 Key 与端口 → 装节点 → 创建 Execution → `Start` / `Wait` → `ReadOutput` → 挂观测**。
 
 ## 环境要求
 
@@ -43,7 +43,7 @@ func main() {
 
 	// Seed：把这一轮运行的值写进 Inputs——喂值之前，那条键必须已经声明成入口。
 	var in pulse.Inputs
-	_ = pulse.Seed(&in, Docs, []string{"pulse 只做编排与观测", "槽位三态：跳过也是到达"})
+	must(pulse.Seed(&in, Docs, []string{"pulse 只做编排与观测", "槽位三态：跳过也是到达"}))
 
 	// summarize 等 docs 到达后才进入 Run。
 	must(g.Add(pulse.NewNode("summarize", "把 docs 折成一段摘要",
@@ -57,8 +57,6 @@ func main() {
 			return pulse.Set(rc, Summary, fmt.Sprintf("%d 段 / %d 字", len(docs), len([]rune(strings.Join(docs, "")))))
 		})))
 
-	// report 自己拿结果：Graph 没有 Run 之后的公开读槽，产物归调用方。
-	var report string
 	must(g.Add(pulse.NewNode("report", "把摘要包成一句报告",
 		pulse.Requires(Summary),
 		pulse.Provides(Report),
@@ -67,14 +65,25 @@ func main() {
 			if err != nil {
 				return err
 			}
-			report = "报告：" + summary
-			return pulse.Set(rc, Report, report)
+			return pulse.Set(rc, Report, "报告："+summary)
 		})))
+	// 声明公共出口；宿主从这一轮 Execution 读取，结果不用存进共享闭包。
+	must(g.DeclareOutput(pulse.NewPort(Report)))
 
-	if err := g.Run(context.Background(), in); err != nil {
-		panic(err)
+	e, err := g.NewExecution(context.Background(), in)
+	must(err)
+	must(e.Start())
+	must(e.Wait())
+	report, state, err := pulse.ReadOutput(e, Report)
+	must(err) // error 非 nil 时，report 和 state 都无效。
+	switch state {
+	case pulse.SlotStateReady:
+		fmt.Println(report)
+	case pulse.SlotStateSkipped:
+		fmt.Println("这轮没有报告")
+	case pulse.SlotStatePending:
+		fmt.Println("可选透传出口未提供")
 	}
-	fmt.Println(report)
 }
 
 func must(err error) {
@@ -90,14 +99,15 @@ func must(err error) {
 报告：2 段 / 24 字
 ```
 
-这段代码里出现了全部四个基本概念：
+这段代码把定义、一次运行与结果读取分开：
 
 | 你写的 | 它是什么 |
 |---|---|
 | `pulse.NewKey[T]("docs")` | **Key**：类型化数据槽。名字用于诊断与 YAML 对账，类型给编译期安全；同名必须以同一个 `T` 注册 |
-| `pulse.DeclareInput(...)` + `pulse.Seed(&in, Docs, …)` | **入口 + Seed**：`DeclareInput` 声明「这条键从外面来」，`Seed` 把**这一次运行**的值写进 `Inputs`——每个 Key 只允许一个来源（声明过的入口，或恰好一个节点的 `Provides`；两处都产 → `ErrDuplicateSource`） |
+| `g.DeclareInput(...)` + `pulse.Seed(&in, Docs, …)` | **入口 + Seed**：`DeclareInput` 声明「这条键从外面来」，`Seed` 把**这一次运行**的值写进 `Inputs`——每个 Key 只允许一个来源（声明过的入口，或恰好一个节点的 `Provides`；两处都产 → `ErrDuplicateSource`） |
 | `pulse.NewNode(id, description, Requires, Provides, run)` | **Node**：只声明读哪些槽、写哪些槽。它**不声明**下一个节点是谁 |
-| `g.Run(ctx, in)` | **Graph**：为这一次运行新建一份 `Execution`、提交全部节点并阻塞到全部终止；返回首错，**不含跳过**；没有首错时，终态确定前的真实取消也会保留，业务体仍需协作退出 |
+| `g.NewExecution(ctx, in)` + `e.Start()` / `e.Wait()` | **Graph + Execution**：图是定义，执行是这一轮；`Wait` 等全部节点终止，返回首错或终态确定前的真实取消，**不含正常跳过**；业务体仍需协作退出 |
+| `g.DeclareOutput(...)` + `pulse.ReadOutput(e, Report)` | **出口 + 结果**：只读这一轮声明的公共出口；ready、正常 skipped 和未喂的可选透传 pending 都是正常状态，error 非 nil 时值与状态无效 |
 
 ## 数据到达即调度
 

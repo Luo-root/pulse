@@ -1,14 +1,17 @@
 // Package observe 是 pulse 的图观测组件：把图引擎的 Observer 回调折成
 // 结构化 Record，写进宿主选的 Sink。
 //
-// # pulse 的两件东西之一
+// # pulse 的三个包
 //
-// pulse 只有两样：**图引擎**（根包 pulse）与**图观测**（本包）。
-// 引擎的依赖闭包为零——它不依赖任何观测包；本包依赖引擎，并实现它的
+// 根包 pulse 负责图执行，pulse/observe（本包）负责图观测，pulse/yaml 负责
+// 声明式装图。引擎的依赖闭包为零——它只用标准库，不依赖观测或装配包；
+// 本包依赖引擎，并实现它的
 // Observer seam。图节点分段计时（等待段 / 执行段）由本包的
 // NewRecordObserver 折叠，事件名 `pulse.node_wait_finished` /
-// `pulse.node_run_finished`，归因维度走 Attrs（`pulse.graph` /
-// `pulse.node`，key 契约由引擎定义）。
+// `pulse.node_run_finished`。切面在 next 前失败或取消时另发
+// `pulse.node_finished`，未测量的 Duration 留零；正常跳过的 Err 为 nil。
+// 归因维度走 Attrs（`pulse.graph` / `pulse.node` / `pulse.execution` /
+// `pulse.path`，key 契约由引擎定义）。
 //
 // # 三个概念
 //
@@ -24,7 +27,7 @@
 //     obs, err := observe.NewRecordObserver(observe.ObserveConfig{
 //     Sink: sink, HostID: "host-1", TraceID: observe.NewTraceID(),
 //     })
-//     g, _ := pulse.New(ctx, "demo", pulse.WithObserver(obs))
+//     g, _ := pulse.New("demo", "演示图", pulse.WithObserver(obs))
 //     // ... 装图、Seed、Run
 //
 // 需要接宿主既有 logger、或要 JSON 喂采集器时换 SlogSink（同一批字段、

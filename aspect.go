@@ -17,7 +17,11 @@ func buildChain(aspects []Aspect, core func(*RunCtx) error) func(*RunCtx) error 
 	for i := len(aspects) - 1; i >= 0; i-- {
 		a := aspects[i]
 		next := invoker
+		index := i
 		invoker = func(rc *RunCtx) error {
+			previous := rc.aspectIndex
+			rc.aspectIndex = index
+			defer func() { rc.aspectIndex = previous }()
 			// 门闩：单节点的体不得**并发**进入（两个 goroutine 同时跑同一
 			// 节点会抢同一批槽位，语义上必然错）。顺序重入的判据不在这里——
 			// 「有没有新的尝试边界」由最内层的推进闸判（见 RunCtx.beginAdvance），
@@ -105,6 +109,9 @@ func Retry(attempts int, delay time.Duration) Aspect {
 		attempts = 1
 	}
 	return func(rc *RunCtx, next func(*RunCtx) error) error {
+		if rc.exec.checkpoint != nil {
+			return retryCheckpoint(rc, next, attempts, delay)
+		}
 		var err error
 		for i := 0; i < attempts; i++ {
 			// 开边界 → 跑 → 关边界。暂存是**这一次尝试**的：失败就整份丢掉，而「丢掉」

@@ -9,7 +9,7 @@ import (
 
 // 图观测记录事件名（<组件>.<事实> 点分约定）。
 //
-// 归属规则：**谁生产记录谁拥有事件名**——这两条记录由本包折叠产出，
+// 归属规则：**谁生产记录谁拥有事件名**——这些记录由本包折叠产出，
 // 故归本包。相对地，attrs key 的契约由**事实归属包**定义
 // （pulse.AttrGraph / pulse.AttrNode），本包只消费不定义。
 const (
@@ -18,6 +18,9 @@ const (
 	EventNodeWaitFinished = "pulse.node_wait_finished"
 	// EventNodeRunFinished 是节点执行完成的观测记录事件名。
 	EventNodeRunFinished = "pulse.node_run_finished"
+	// EventNodeFinished 是只收到 Finished 的失败或取消终态记录事件名。
+	// 未观测到等待或执行段，Duration 为 0，不编造分段耗时。
+	EventNodeFinished = "pulse.node_finished"
 	// EventGraphStarted 是「这一轮开始了」的运行级记录事件名：引擎在提交
 	// 任何节点之前发出，所以它排在本轮全部节点记录之前。
 	EventGraphStarted = "pulse.graph_started"
@@ -27,8 +30,8 @@ const (
 )
 
 // NewRecordObserver 返回写 Record 的观察者：**一次运行两条运行级记录**
-// （started / finished）+ **每个节点两条分段计时记录**（等待完成与执行完成
-// 各一条，Duration 分别为等待段/执行段耗时）。
+// （started / finished）；观测到等待与执行的节点各有两条分段计时记录
+// （等待完成与执行完成各一条，Duration 分别为等待段/执行段耗时）。
 //
 // 归因走 Attrs：节点记录带 pulse.AttrGraph + pulse.AttrNode，运行级记录只带
 // pulse.AttrGraph（节点维度对它没有意义）——key 契约由**事实归属包** pulse
@@ -38,7 +41,10 @@ const (
 // 会把并发两次运行折叠成一份。`cfg.Path` 只在 site 给不出位置时兜底（旧装配的用法）。
 // Status 为
 // running（等待段 / 运行级 started）或终态
-// （finish reason）。跳过节点只有一条 skipped 等待记录，无运行记录。
+// （finish reason）。等待后跳过而未运行的节点只有一条 skipped 等待记录；
+// 已运行后返回 NoValue 的节点则以 skipped 执行记录收尾。正常跳过的 Err 为 nil。
+// 只收到 Finished 的 failed / canceled 节点补一条 EventNodeFinished，Duration 为 0；
+// completed / skipped 仍不产节点记录，包括恢复节点和成功或跳过的切面短路。
 //
 // 记录顺序即引擎事件的顺序：运行级 started 排在本轮全部节点记录之前，
 // finished 排在它们之后。
@@ -160,12 +166,20 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 			seg(site, nodeID, EventNodeWaitFinished, "running", d, nil)
 		},
 		Finished: func(site pulse.Site, nodeID string, reason pulse.NodeFinishReason, err error) {
+			// 终态原因由引擎判定：正常跳过不是失败。不能按 ErrSkipped 过滤，
+			// 因为可靠失败的错误链也可能包含它。
+			if reason == pulse.NodeSkipped {
+				err = nil
+			}
 			mu.Lock()
 			k := nodeKey{site.Execution, nodeID}
 			st := states[k]
 			delete(states, k)
 			mu.Unlock()
 			if st == nil {
+				if reason == pulse.NodeFailed || reason == pulse.NodeCanceled {
+					seg(site, nodeID, EventNodeFinished, string(reason), 0, err)
+				}
 				return
 			}
 			// 未进入执行（skip / 直接失败）：只补等待段。

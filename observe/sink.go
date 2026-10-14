@@ -2,7 +2,6 @@ package observe
 
 import (
 	"log/slog"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -41,7 +40,7 @@ func (s SlogSink) Write(r Record) {
 		attrs = append(attrs, "status", r.Status)
 	}
 	if r.Duration != 0 {
-		attrs = append(attrs, "duration_ms", strconv.FormatFloat(float64(r.Duration)/float64(time.Millisecond), 'f', -1, 64))
+		attrs = append(attrs, "duration_ms", float64(r.Duration)/float64(time.Millisecond))
 	}
 	attrs = append(attrs, "event", r.Event)
 	if r.Source != "" {

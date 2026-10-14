@@ -1,13 +1,13 @@
 # Pulse 的理念与设计思想
 
 > 这篇讲**为什么**这样设计：几条贯穿全仓的公理、各自的代价与边界，以及由此「刻意不做什么」。
-> 具体形状（类型、签名、时序、冻结面）见 [`pulse.md`](pulse.md)；**对象模型正在按
-> [#311](https://github.com/Luo-root/pulse/issues/311) 重定案**，目标模型与现状差距见
+> 具体形状（类型、签名、时序、冻结面）见 [`pulse.md`](pulse.md)；**对象模型已按
+> [#311](https://github.com/Luo-root/pulse/issues/311) 定案并实现**，契约与旧模型的迁移缘由见
 > [`object-model.md`](object-model.md)。
 
 ## 定位
 
-Pulse 的产品方向是**数据驱动、可观测、可组合的 Go workflow-engine 基座**。当前 `pulse` 提供可嵌入的单进程执行内核和图观测；独立的 `pulse-durable` 按节点检查点恢复路线扩展长期运行能力，持久化等待与分布式运行管理是后续设计方向，尚未实现。两仓职责、现状与开发顺序见 [workflow-foundation.md](workflow-foundation.md)。
+Pulse 的产品方向是**数据驱动、可观测、可组合的 Go workflow-engine 基座**。当前 `pulse` 提供可嵌入的单进程执行内核、图观测与完整节点链的检查点桥接；独立的 `pulse-durable` 已有 Store/Codec、Run/Resume、方案 A 子图恢复与本机文件后端。持久化等待与分布式运行管理是后续设计方向。两仓职责、现状与开发顺序见 [workflow-foundation.md](workflow-foundation.md)。
 
 下面的公理约束**执行内核**。核心只做三件事：
 
@@ -23,7 +23,7 @@ Pulse 的产品方向是**数据驱动、可观测、可组合的 Go workflow-en
 
 **一句话**：节点只声明 `Requires` / `Provides`；边是「谁生产这条 Key、谁消费它」推出来的。
 
-**为什么**：写边就会写错边——漏一条、指错一端。而「这条 Key 谁生产」在声明里本来就唯一：一个 Key 至多一个来源（否则 `ErrDuplicateSource`，见 [`source.go`](../../source.go)）。既然唯一，边就是**派生视图**，不该是输入。`Topology().Edges` 因此是算出来的，不是存下来的。
+**为什么**：写边就会写错边——漏一条、指错一端。而「这条 Key 谁生产」在声明里本来就唯一：一个 Key 至多一个来源（否则 `ErrDuplicateSource`，见 [`graph.go`](../../graph.go)）。既然唯一，边就是**派生视图**，不该是输入。`Topology().Edges` 因此是算出来的，不是存下来的。
 
 **代价**：不支持「同一对节点多条边、分别表达」这类图论玩法，也不支持同名 Key 多来源。要那种表达力，Edge 就得变成一等资产——那正是本仓刻意不要的复杂度。
 
@@ -63,7 +63,7 @@ Pulse 的产品方向是**数据驱动、可观测、可组合的 Go workflow-en
 
 **为什么**：两套口径就会漂——看板说 A、日志说 B，谁都对。而观测一旦能改语义，它就不再是观测，是隐式控制流。
 
-**住哪**：`runNode` 的几发回调（[`graph.go`](../../graph.go)）；`Record` + `Attrs` 与 `<component>.<field>` 键约定（[`observe/`](../../observe/)）；`MultiObserver` 的扇出隔离。
+**住哪**：`runNode` 的几发回调（[`execution_run.go`](../../execution_run.go)）；`Record` + `Attrs` 与 `<component>.<field>` 键约定（[`observe/`](../../observe/)）；`MultiObserver` 的扇出隔离。
 
 **代价**：想加一个「引擎认识的业务字段」无处可写——只能进 `Attrs`，且键名归定义它的包所有。
 
@@ -93,13 +93,13 @@ Pulse 的产品方向是**数据驱动、可观测、可组合的 Go workflow-en
 
 **为什么当初先用一次性模型**：那时 `Graph` 同时是定义与一次执行（`Start` 只能一次、`Wait` 释放并取消图的 ctx、槽位与节点状态都挂在图上），`Sub` 还要在运行期用 `build` 造子图——于是「组合完成但尚未运行时看不到完整结构」「构建 / 绑定错误延迟到运行期」这些限制互相牵连。先用一次性模型把数据流语义（三态、跳过、门闩、观测）跑通并冻住，再拆对象；反过来会把「语义对不对」和「对象边界对不对」搅在一起，谁也定不下来。
 
-**落地进度**（按 [#311](https://github.com/Luo-root/pulse/issues/311) 分阶段，细则见 [`object-model.md`](object-model.md)）：阶段 1 静态组合（`Sub` 挂现成子图 + 端口 + 整棵子树封口）、阶段 2 `Execution` 拆分（定义不含任何运行态、每处挂载一份子执行）、阶段 3 事务性 `Retry`（attempt 写集：失败那一次的写不发布给下游）**都已落地**；阶段 4（快照 / 观测 / YAML 对齐）已实现（#319，主干合入与发布状态以 PR / release 为准）：静态结构看 Topology，运行进度看 Execution 的无值快照；Mermaid 从结构派生，YAML Analyze 不依赖注册表。阶段 5 负责迁移与发布收口。
+**落地进度**（按 [#311](https://github.com/Luo-root/pulse/issues/311) 分阶段，细则见 [`object-model.md`](object-model.md)）：阶段 1 静态组合（`Sub` 挂现成子图 + 端口 + 整棵子树封口）、阶段 2 `Execution` 拆分（定义不含任何运行态、每处挂载一份子执行）、阶段 3 事务性 `Retry`（attempt 写集：失败那一次的写不发布给下游）**都已落地**；阶段 4（快照 / 观测 / YAML 对齐）已实现（#319，静态接口、执行快照、Mermaid 与 YAML Analyze 均已具备）：静态结构看 Topology，运行进度看 Execution 的无值快照；Mermaid 从结构派生，YAML Analyze 不依赖注册表。阶段 5 负责迁移与发布收口。
 
 **代价**：迁移期公开面会动（0.x 允许 minor 破坏），文档必须说清哪份描述**现状**、哪份描述**目标**，每批改动同步示例与迁移说明。阶段完成不自动发版：Pulse 能力与 Durable 桥接定稿、整套联调通过后发布 Pulse v0.5.0 / Durable v0.1.0；之后继续 0.x 小步迭代，达到项目目标且不再有可预见的系统性重大变更后，完善详细文档并发布 v1.0.0，基本固定 API 与实现。具体闸门见 [`workflow-foundation.md`](workflow-foundation.md) §8。
 
 ## 因此刻意不做
 
-这里的边界针对执行内核。`pulse-durable` 的检查点提交、持久化等待、任务领取与接管属于另一层运行管理；未来的这些能力不受“核心没有中心调度循环”这一实现选择禁止，具体进度以开发总纲和对应实施票为准。
+这里的边界针对执行内核。`pulse-durable` 已有的检查点存储与恢复，以及后续的持久化等待、任务领取与接管，属于另一层运行管理；这些能力不受“核心没有中心调度循环”这一实现选择禁止，具体范围以开发总纲和对应实施票为准。
 
 | 不做 | 因为 |
 |---|---|

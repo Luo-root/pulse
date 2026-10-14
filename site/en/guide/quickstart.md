@@ -1,6 +1,6 @@
 # Quick start
 
-Pulse is a **data-arrival-driven graph engine** plus a **graph-observation layer**. This page walks the shortest path end to end: **declare Keys → add nodes → `Run` → attach observation**.
+Pulse is a **data-arrival-driven graph engine** plus a **graph-observation layer**. This page walks the shortest path end to end: **declare Keys and ports → add nodes → create an Execution → `Start` / `Wait` → `ReadOutput` → attach observation**.
 
 ## Requirements
 
@@ -43,7 +43,7 @@ func main() {
 
 	// Seed: write this run's value into Inputs — a key must be declared an inlet before it is fed.
 	var in pulse.Inputs
-	_ = pulse.Seed(&in, Docs, []string{"pulse only orchestrates and observes", "slot tri-state: skip is arrival"})
+	must(pulse.Seed(&in, Docs, []string{"pulse only orchestrates and observes", "slot tri-state: skip is arrival"}))
 
 	// summarize enters Run only after docs has arrived.
 	must(g.Add(pulse.NewNode("summarize", "fold docs into a summary",
@@ -57,8 +57,6 @@ func main() {
 			return pulse.Set(rc, Summary, fmt.Sprintf("%d segments / %d chars", len(docs), len([]rune(strings.Join(docs, "")))))
 		})))
 
-	// report takes the result itself: the Graph has no public slot read after Run, so outputs belong to the caller.
-	var report string
 	must(g.Add(pulse.NewNode("report", "wrap the summary into a report",
 		pulse.Requires(Summary),
 		pulse.Provides(Report),
@@ -67,14 +65,25 @@ func main() {
 			if err != nil {
 				return err
 			}
-			report = "Report: " + summary
-			return pulse.Set(rc, Report, report)
+			return pulse.Set(rc, Report, "Report: "+summary)
 		})))
+	// Declare a public outlet; read from this Execution without a shared result closure.
+	must(g.DeclareOutput(pulse.NewPort(Report)))
 
-	if err := g.Run(context.Background(), in); err != nil {
-		panic(err)
+	e, err := g.NewExecution(context.Background(), in)
+	must(err)
+	must(e.Start())
+	must(e.Wait())
+	report, state, err := pulse.ReadOutput(e, Report)
+	must(err) // With a non-nil error, both report and state are invalid.
+	switch state {
+	case pulse.SlotStateReady:
+		fmt.Println(report)
+	case pulse.SlotStateSkipped:
+		fmt.Println("no report this run")
+	case pulse.SlotStatePending:
+		fmt.Println("optional pass-through output was not supplied")
 	}
-	fmt.Println(report)
 }
 
 func must(err error) {
@@ -90,14 +99,15 @@ Save it as `main.go`, then `go run ./main.go`:
 Report: 2 segments / 67 chars
 ```
 
-All four basic concepts appear in this code:
+This code separates the definition, one run and result reading:
 
 | What you write | What it is |
 |---|---|
 | `pulse.NewKey[T]("docs")` | **Key**: a typed data slot. The name is for diagnostics and YAML reconciliation; the type gives compile-time safety. The same name must always be registered with the same `T` |
-| `pulse.DeclareInput(...)` + `pulse.Seed(&in, Docs, …)` | **Inlet + Seed**: `DeclareInput` says "this key comes from outside", `Seed` writes **this run's** value into `Inputs` — each Key allows only one source (a declared inlet, or exactly one node's `Provides`; both producing it → `ErrDuplicateSource`) |
+| `g.DeclareInput(...)` + `pulse.Seed(&in, Docs, …)` | **Inlet + Seed**: `DeclareInput` says "this key comes from outside", `Seed` writes **this run's** value into `Inputs` — each Key allows only one source (a declared inlet, or exactly one node's `Provides`; both producing it → `ErrDuplicateSource`) |
 | `pulse.NewNode(id, description, Requires, Provides, run)` | **Node**: declares only which slots it reads and which it writes. It does **not** declare who the next node is |
-| `g.Run(ctx, in)` | **Graph**: builds one fresh `Execution` for this run, submits all nodes and blocks until all have terminated; returns the first error, **excluding skips**; absent a first error, real cancellation before finalization is retained, while bodies must still exit cooperatively |
+| `g.NewExecution(ctx, in)` + `e.Start()` / `e.Wait()` | **Graph + Execution**: the graph is the definition, the execution is this run; `Wait` waits for all nodes to terminate and returns the first error or real cancellation before finalization, **excluding normal skips**; bodies must still exit cooperatively |
+| `g.DeclareOutput(...)` + `pulse.ReadOutput(e, Report)` | **Outlet + result**: read only this run's declared public outputs; ready, normal skipped and an unfed optional pass-through pending are normal states, while a non-nil error invalidates both value and state |
 
 ## Data arrival is scheduling
 

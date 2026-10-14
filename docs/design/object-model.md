@@ -1,6 +1,6 @@
 # 对象模型与契约（#311 阶段零）
 
-> **本文状态：阶段零已定案（2026-10-11），阶段 1 / 2 / 3 已合入；阶段 4 已实现（#319），主干合入 / 发布状态以对应 PR 与 release 为准。** 它是 [#311](https://github.com/Luo-root/pulse/issues/311)「阶段零」的产物：
+> **本文状态：阶段零已定案（2026-10-11），阶段 1 / 2 / 3 已落地；阶段 4 已实现（#319），静态端口、执行快照、Mermaid 与 YAML Analyze 均已具备。** 它是 [#311](https://github.com/Luo-root/pulse/issues/311)「阶段零」的产物：
 > 先把 Graph / Execution 的职责、边界与契约定下来，**再**动代码。第 8 节列出**已定案**内容与
 > **原暂定项的实施结果**；定案部分与 `pulse.md` 的冻结面那一节同步。第 7 节的阶段表逐行
 > 标着落地情况。
@@ -23,19 +23,19 @@
 | 迁移前的形状 | 住哪（给**符号**，不写行号——行号会漂） | 与新模型的关系 |
 |---|---|---|
 | `Graph` 同时持定义与一次运行的全部字段：`ctx/cancel/slots/slotsMu/states/err/started/claimed/done/wg/finishOnce` | `graph.go` 的 `Graph` | **拆**：定义留 `Graph`，运行搬 `Execution`。**阶段 2 已落地**：那些字段全在 `execution.go`，`Graph` 只剩 id / 描述 / Key / 来源表 / 端口 / 节点 / 声明式默认配置 + `sealed` |
-| `Graph.sem` 是**死字段**（全仓无读无写；名额在 `limiter.sem`） | `graph.go` 的 `Graph`；`limiter.go` 的 `limiter` | 迁移时删掉（`g.lim.sem` 才是活的，用例读的是它）。**阶段 2 已落地** |
+| `Graph.sem` 是**死字段**（全仓无读无写；名额在 `limiter.sem`） | 迁移前 `graph.go` 的 `Graph`；当前 `execution_run.go` 的 `limiter` | 迁移时已删掉（旧模型活的是 `g.lim.sem`，不是 `Graph.sem`）；当前名额由 Execution 的 limiter 持有。**阶段 2 已落地** |
 | `New(ctx, graphID, description, opts…)`：ctx 属于**定义** | `graph.go` 的 `New` | ctx 移到 `NewExecution`；`New` 只收定义信息。**阶段 2 已落地**：`New(graphID, description, opts…)`，一次运行的取消域由 `Run(ctx, in)` / `NewExecution(ctx, in)` 给 |
-| `Seed` / `SkipSeed` / `SeedByName` / `SkipSeedByName`：既是「声明外部来源」又是「写这一轮的值」 | `graph.go` 的 `Seed` 一族、`coerce.go` | **拆**成两件事：静态端口声明 + 本次执行输入。**声明的另一半阶段 1 已落地**（`DeclareInput` / `DeclareOutput` + `SourceInput`）；**值的这一半阶段 2 已落地**：`pulse.Seed(&in, k, v)` 收的是这一次运行的 `*Inputs`（零值可用、重复写当场报），同一家族的 `Fix` / `FixSkip` 把「属于某一处挂载」的固定值也收进绑定；定义层的 `SourceSeed` 随之删除 |
+| `Seed` / `SkipSeed` / `SeedByName` / `SkipSeedByName`：既是「声明外部来源」又是「写这一轮的值」 | 迁移前 `graph.go` 的 `Seed` 一族；当前 `inputs.go` 的输入与形状对齐 | **拆**成两件事：静态端口声明 + 本次执行输入。**声明的另一半阶段 1 已落地**（`DeclareInput` / `DeclareOutput` + `SourceInput`）；**值的这一半阶段 2 已落地**：`pulse.Seed(&in, k, v)` 收的是这一次运行的 `*Inputs`（零值可用、重复写当场报），同一家族的 `Fix` / `FixSkip` 把「属于某一处挂载」的固定值也收进绑定；定义层的 `SourceSeed` 随之删除 |
 | 旧的动态形态 `SubFunc(g, id, desc, binds, build)`：子图在**运行期**由 `build(*SubCtx)` 造，**绑定校验也在运行期**（`runSub` 建完子图才比对键存在与类型） | **已删除**（原 `sub.go` 的 `SubCtx` / `SubFunc` / `runSub` / `subStartedErr`） | 由 `Sub` 组合现成 `*Graph` 取代；绑定校验进装配期与 `Validate`。**阶段 1 已落地**：整套动态面**直接删掉**，不是改名留着——改名只是把旧模型带进新模型；端口 / 类型 / 环都在装配期与 `Validate` 报 |
 | `claimSub` + `adopt`：认领一次性 + **改写子图字段**（`observer` / `lim` / `aspects`） | `graph.go` 的 `claimSub`、`sub.go` 的 `adopt` | 由「创建子 Execution 时算有效配置」取代，定义不再被写。**阶段 1 做了一半**（`path` 已经不上定义，按挂载位置现推）；**阶段 2 已收口**：两个东西整体删除——不再有认领（定义可以跑很多次），有效配置（观察者 / 名额 / 图级切面）在**建子执行**时按「父执行环境 + 子图自己的声明」算出来 |
 | `Start` / `Wait` / `Run` / `Err` 都在 `Graph` 上；`Start` 只能成功一次 | `graph.go` 的运行入口 | 搬到 `Execution`；`Graph` 只留同步便捷入口。**阶段 2 已落地**：`Start` / `Wait` / `Err` / `Cancel` / `Site` / `ID` 以及槽位与每节点状态都在 `Execution`；`Graph` 留 `Run(ctx, in)`，内部 `NewExecution` + `Start` + `Wait`。`ErrGraphStarted` 的第二层含义（定义已封口的那条）不变 |
-| `slot` 是「到达即发布、幂等首写」，没有 attempt 层 | `slot.go` | 每个 attempt 一份写暂存，成功才提交（第 5 节）。**阶段 3 已落地**：写路径按「有没有尝试边界」分流——有边界就落写暂存（`writeset.go`），没有就直写执行槽位；暂存与槽位共用同一个 `slot` 类型，所以「幂等首写 / 就绪与跳过互斥 / 阻塞等待」几条语义逐条一致 |
+| `slot` 是「到达即发布、幂等首写」，没有 attempt 层 | `slot.go` | 每个 attempt 一份写暂存，成功才提交（第 5 节）。**阶段 3 已落地**：写路径按「有没有尝试边界」分流——有边界就落写暂存（`slot.go`），没有就直写执行槽位；暂存与槽位共用同一个 `slot` 类型，所以「幂等首写 / 就绪与跳过互斥 / 阻塞等待」几条语义逐条一致 |
 | `Retry` 的文档明说「**重试安全的前提**：失败前没有写过任何 Provide」 | `aspect.go` 的 `Retry` | 这条前提改由引擎接管——本票硬要求。**阶段 3 已落地**：失败的尝试整条暂存丢掉，那一次的输出版本下游从未见过（不是「被幂等首写静默吞掉」，而是根本没写进去） |
 | `Topology()` 只覆盖**一张图** | `topology.go` 的 `Topology` | 递归全树。**阶段 1 已落地**：静态挂载的子图在 `Nodes[i].Sub` 里、路径按挂载位置推导（`GraphShape.Path` 是**这一次视图里**的位置，不需要运行、也不上定义） |
-| `Graph.Snapshot()` + `NodeState.Child *Graph` 建在「Graph = 一次运行」之上 | PR #310 的旧草案 | **阶段 4 已实现（#319），主干合入 / 发布状态以对应 PR 与 release 为准**：`Execution.Snapshot()` 替换旧形状，保留本次 Execution 身份、状态和来源；Child 是最新已创建尝试的活子执行。Topology 补完整声明端口，Mermaid 从结构派生，YAML Analyze 无需注册表 |
+| `Graph.Snapshot()` + `NodeState.Child *Graph` 建在「Graph = 一次运行」之上 | PR #310 的旧草案 | **阶段 4 已实现（#319），静态端口、执行快照、Mermaid 与 YAML Analyze 均已具备**：`Execution.Snapshot()` 替换旧形状，保留本次 Execution 身份、状态和来源；Child 是最新已创建尝试的活子执行。Topology 补完整声明端口，Mermaid 从结构派生，YAML Analyze 无需注册表 |
 | `Validate()` 只看本图；`Problems` 一次给全、`Start` 报第一条 | `topology.go` 的 `Topology`、`problems.go` | 组合**整棵树**校验；错误仍在最早可判定处报。**阶段 1 已落地**：`Validate` 沿静态挂载边递归、**按引用点**各报一条并点明挂载位置；组合环在 `Sub` 装配期拒 |
 | YAML 的 `Load` 返回 `(*Graph, *SeedPlan)`，子图也在运行期建 | `yaml/load.go`、`yaml/subgraph.go` | 结构语义与 Go 组合对齐；`SeedPlan` 只负责**本次执行**的输入。**阶段 1 已落地**：子图在 `Load` 期按挂载位置装一次（一处一张实例、装完即可递归看全树）。**阶段 3 已落地**：`retry:` 落在 `graph:` 节点上照装照跑（每次尝试各建一份新子执行，第一次那轮的桥回随它自己那条写暂存一起作废）。**阶段 2 已落地**：`SeedPlan.Apply` 换成 `SeedPlan.Inputs(resolve)`——它产的是**一次运行**的 `pulse.Inputs`，装配器不再碰任何 ctx（`LoadOptions.Context` 随之删除） |
-| 限流 / 切面 / 观察者靠 `adopt` **继承**（写进子图字段） | `sub.go` 的 `adopt`、`limiter.go` | 改成「执行树创建时算有效配置」，不动共享定义。**阶段 2 已落地**：三个有效值（出口 / 名额 / 图级切面）在建子执行时按「父执行环境 + 子图自己的声明」算定，此后不写；`WithExecObserver` / `WithExecMaxRunning` / `WithExecAspects` 覆盖**这一次运行**，优先级 = 本次运行 > 定义声明 > 父执行环境 |
+| 限流 / 切面 / 观察者靠 `adopt` **继承**（写进子图字段） | 原 `sub.go` 的 `adopt`；当前 `execution.go` 的有效配置与 `execution_run.go` 的 limiter | 改成「执行树创建时算有效配置」，不动共享定义。**阶段 2 已落地**：三个有效值（出口 / 名额 / 图级切面）在建子执行时按「父执行环境 + 子图自己的声明」算定，此后不写；`WithExecObserver` / `WithExecMaxRunning` / `WithExecAspects` 覆盖**这一次运行**，优先级 = 本次运行 > 定义声明 > 父执行环境 |
 
 ## 3. 职责与生命周期
 
@@ -141,10 +141,10 @@ Mermaid 归根包：`(*Topology).Mermaid(opts ...MermaidOption) string`，用 `W
    - **Execution / 父 ctx** 取消或到期 → **不重试**，错误原样带出（再试也不会变好，而且外层已经不再等它）；
    - `Retry` **外层**的 `Timeout` 触发（`Timeout(Retry(f))`）→ 就是上一条：`Retry` 拿到的正是那层派生 ctx，已到期 → 不重试；
    - `Retry` **内层**包的超时（`Retry(Timeout(f))`）→ 那只是**这一次 attempt 的失败**，照常重试（`Retry` 自己那一层的 ctx 并没有到期）——这是「这次没在时限内做完，再试一次」的正常用法。
-   今天的 `Retry` 已经是这个判据（`Retry` 判 `rc.ctx.Err()`；`Timeout` 用 `Fork()` 把派生 ctx 交给内层）。新契约把它**写下来并测**，实现照旧——它必须先有专门用例（四种嵌套：`Retry(Timeout)`、`Timeout(Retry)`、父取消、attempt 自己返回 ctx 错误）才允许被改。**阶段 3 已落地这四个用例**（`retry_txn_test.go` 的 `TestRetryCtxJudgement`）。
+   今天的 `Retry` 已经是这个判据（`Retry` 判 `rc.ctx.Err()`；`Timeout` 用 `Fork()` 把派生 ctx 交给内层）。新契约把它**写下来并测**，实现照旧——它必须先有专门用例（四种嵌套：`Retry(Timeout)`、`Timeout(Retry)`、父取消、attempt 自己返回 ctx 错误）才允许被改。**阶段 3 已落地这四个用例**（`TestRetryCtxJudgement`）。
 7. **最终失败**：写集丢弃 + 未写输出按既有语义自动跳过 + 错误原样冒泡（槽位终态与节点终态一致，可测）；
 8. **切面顺序决定事务边界**：`Retry` 包住的那一段（`next` 之内、含更内层切面）属于 attempt；`Retry` **外层**切面里的写入**不**属于任何 attempt、也不参与作废——文档必须点名这条，不能把外层的写默默说成事务内的；
-9. **多 Key 的可见性保证**：硬保证是「**没有任何失败 attempt 的输出被下游观察到**」。**已定案（2026-10-11；2026-10-12 评审后补一条）**：第一版**不承诺**同一节点多个输出严格原子可见——提交**逐条**写（每条走槽位自己的幂等首写与广播，没有执行级大锁；按 key 名排序，map 的迭代顺序不进任何可观察行为）。**补的那一条**：逐条写之前先**整批判过**（判据 = 对面是不是已经以另一个状态到达，值写进已跳过的槽 / 跳过写进已就绪的槽都是 `ErrConflict`），判不过**一条都不发布**——「提交失败留下半批」（前面几条已经落地、下游可能已被唤醒）没有可解释的语义，不是这条窗口允许的东西（PR #318 评审点名，实现与用例见 `writeset.go` 的 `commit` / `checkCommitTarget` 与 `TestRetryCommitConflictPublishesNothing`）。窗口的**准确**形状（评审 #117）：槽位是一次性的、开始全是 `pending`，失败 attempt 的写集整批丢弃，所以窗口里**看不到任何旧 attempt 的值**；可能看到的是「**一部分输出已经 `ready`、另一部分仍是 `pending`**，等这些输出的下游可能被先到的那一条先唤醒」。验收要专门覆盖这个窗口（一条输出已到、另一条尚未提交）；要严格原子得另设 commit/read 同步协议，留作后续票。
+9. **多 Key 的可见性保证**：硬保证是「**没有任何失败 attempt 的输出被下游观察到**」。**已定案（2026-10-11；2026-10-12 评审后补一条）**：第一版**不承诺**同一节点多个输出严格原子可见——提交**逐条**写（每条走槽位自己的幂等首写与广播，没有执行级大锁；按 key 名排序，map 的迭代顺序不进任何可观察行为）。**补的那一条**：逐条写之前先**整批判过**（判据 = 对面是不是已经以另一个状态到达，值写进已跳过的槽 / 跳过写进已就绪的槽都是 `ErrConflict`），判不过**一条都不发布**——「提交失败留下半批」（前面几条已经落地、下游可能已被唤醒）没有可解释的语义，不是这条窗口允许的东西（PR #318 评审点名，实现与用例见 `slot.go` 的 `commit` / `checkCommitTarget` 与 `TestRetryCommitConflictPublishesNothing`）。窗口的**准确**形状（评审 #117）：槽位是一次性的、开始全是 `pending`，失败 attempt 的写集整批丢弃，所以窗口里**看不到任何旧 attempt 的值**；可能看到的是「**一部分输出已经 `ready`、另一部分仍是 `pending`**，等这些输出的下游可能被先到的那一条先唤醒」。验收要专门覆盖这个窗口（一条输出已到、另一条尚未提交）；要严格原子得另设 commit/read 同步协议，留作后续票。
 
 **嵌套 `Retry` 的边界**（同一轮评审点名）：内层提交的目标是**外层那一次尝试的暂存**（`writeSet.outer`），所以内层的成功**不等于**对外发布——外层那一次尝试失败时，内层的写随外层的暂存一起作废（用例 `TestNestedRetryInnerResultBelongsToOuterAttempt`）。「内层直接落执行槽位」是一条能跑出错误结果的实现（外层失败那批会先发出去，而成功那批被幂等首写静默吞掉），已进变异对照。
 
@@ -156,7 +156,7 @@ Mermaid 归根包：`(*Topology).Mermaid(opts ...MermaidOption) string`，用 `W
 
 ## 6. 兼容与迁移
 
-- **发布节奏（2026-10-13 更新）**：这是 0.x 的破坏性改造，走 **minor**，配迁移说明；不在 patch 里做。阶段完成与发版分开：先完善 Pulse 能力，预留并定稿 Durable 桥接，整套联调没有重大问题后，才由维护者发布 Pulse `v0.5.0` 与 `pulse-durable` `v0.1.0`；首期桥接尚未实现。之后继续 0.x 迭代，直到项目目标达到、确认后续不再有系统性重大变更，再完善详细文档体系并发布两仓各自的 `v1.0.0`，基本固定 API 与实现。首期必要的 godoc、示例与迁移说明仍随实现同步，不留到 `v1.0.0` 才补。完整发布闸门见 [`workflow-foundation.md` §8](workflow-foundation.md#8-演进顺序与可交付产物)。
+- **发布节奏（2026-10-13 更新）**：这是 0.x 的破坏性改造，走 **minor**，配迁移说明；不在 patch 里做。阶段完成与发版分开：先完善 Pulse 能力，预留并定稿 Durable 桥接，整套联调没有重大问题后，才由维护者发布 Pulse `v0.5.0` 与 `pulse-durable` `v0.1.0`；首期代码已具备完整节点链检查点桥接、Store/Codec、Run/Resume、方案 A 子图恢复与本机文件后端，持久等待和分布式运行管理仍属后续方向。之后继续 0.x 迭代，直到项目目标达到、确认后续不再有系统性重大变更，再完善详细文档体系并发布两仓各自的 `v1.0.0`，基本固定 API 与实现。首期必要的 godoc、示例与迁移说明仍随实现同步，不留到 `v1.0.0` 才补。完整发布闸门见 [`workflow-foundation.md` §8](workflow-foundation.md#8-演进顺序与可交付产物)。
 - **`Sub` 换了含义（最要紧的一条，迁移说明放最前）**：`pulse.Sub(g, id, desc, binds, build)`（运行期现造子图）**被删除**，今天 `Sub` 是「挂一张**现成的**子图」（第 4 节）。跟着一起没的还有 `SubCtx`（`Context()` / `GraphID()` / `Path()` / `Observer()`）与运行期的绑定校验。替代写法逐条：① 子图在**装配期**建好，并 `DeclareInput` / `DeclareOutput` 声明端口——接线只能接端口，接子图内部的中间 Key 是静态错；② 子图的取消域**不用自己管**：每一次跑到那一步，引擎从**那一步的 ctx** 派生子执行的 ctx（阶段 2 之后没有转发 goroutine 这回事）；③ 图 id 自己起，建议沿用 `<父图 id>/<节点 id>` 这套写法；④ 挂载位置随每条回调由引擎发出来（`Site.Path`），出口直接读它就能带 `pulse.path`——不必再按层各建一个出口。`Fix` / `FixSkip` 补上「某一处挂载的固定值」这一格。YAML 侧**阶段 1 收紧过的那条已经撤回**（阶段 3）：`graph:` 节点上的 `retry:` 照装照跑——每一次尝试各建一份**新的子执行**，第一次那轮的桥回随它自己那条写暂存一起作废，父侧只拿得到成功那一次的输出版本（Go 侧 `Sub(..., pulse.Retry(...))` 同理）。
 - **冻结面怎么动**：七条哨兵**不新增、不改名**，但触发点要在 godoc、迁移说明与 release notes 里写准（第 8 节 (e)）：`ErrGraphStarted` 有两处——定义已封口后，`Add` / `DeclareInput` / `DeclareOutput` / `Sub` 改定义被拒；同一 `Execution` 二次 `Start` 被拒。`ErrGraphNotStarted` 仅由尚未成功启动的 `(*Execution).Wait` 返回；`Err` 不要求先启动，读取首错或当前 ctx 的错误，Wait 正常收尾的资源释放不会变成取消结果。
 - **端口是新的一层，子图要跟着声明**：`DeclareInput` / `DeclareOutput` 落地后，**被当作子图组合的图必须声明端口**——旧形态那种「绑定指向子图里任意声明过的 Key」不再成立（接到非端口是静态错）。迁移说明要逐条给出「原来绑内部 Key → 现在补一句 `DeclareOutput`」的改法。
@@ -174,8 +174,8 @@ Mermaid 归根包：`(*Topology).Mermaid(opts ...MermaidOption) string`，用 `W
 | **0（本文）** | 对象模型与契约冻结 + 理念文档 | 本文定案；#303 / #309 / #310 关系写清 |
 | **1 静态定义与组合** | `Sub` 组合现成子图是**唯一**入口，旧的动态形态（`SubFunc` / `SubCtx`）**整体删除**；`DeclareInput` / `DeclareOutput` 端口（**出口同样有静态判据**：声明了却没人产出 → 装配期报）；接线形状的判据共用一份 `checkBinds`（进口只许绑一次、进口在子图里已有来源就判死、`In` + `Out` 打同一端口 = 透传）；组合环在装配期拒（「查一遍子树 + 挂上」在同一个全局装配临界区里，递归另带挂载链兜底判环）；递归 `Topology` / `Validate`（**每层自己取锁**，`Validate` 通过 / `Start` 成功时**整棵子树一起封**，且「判 + 封」与改定义共用装配锁）；运行 ctx 由父节点给 | A/B/C 各自构建、D 组合后**无运行**即可递归看全树并报全部静态错；同一子图多处挂载不改定义；预建子图上的取消传得下去 —— **已落地**（PR #314，`refactor/sub-to-subfunc`：`Sub` / 端口 + 整棵子树封口 / 递归拓扑与校验 / yaml 在 `Load` 期装一次 / 未引用的 spec 不查来源）。这一阶段顺手加的那条临时限制——`retry:` 落在 `graph:` 节点上拒（yaml `Load` 期、Go 进 `Run` 第一件事）——**已由阶段 3 撤回**：每次尝试一份新子执行之后，它不再是问题 |
 | **2 执行运行时** | `Execution`；槽位 / 状态 / 错误 / 取消域隔离；子 Graph → 每个挂载位置一个子 Execution | 同 Graph 顺序两次结果隔离；并发两次 `-race` 干净；取消只影响本次 —— **已落地**（票 #315，`refactor/sub-to-subfunc`：`Execution` / `Inputs` + `Seed(&in,…)` / `Site{Graph,Execution,Path}`（观测身份一次到位）/ 每挂载点一份子执行 / 启动条件在建执行那一刻判 / `ExecOption` 三件 / 定义侧只剩 `Validate` + `Run` 便捷入口 / `New` 去 ctx / `SourceSeed` 删除 / YAML 的 `Load` 不碰 ctx） |
-| **3 事务性 Retry** | attempt 写集、提交 / 丢弃；aspect 边界 | 「第一次写 K=a 后失败、第二次写 K=b 成功 → 下游只见到 b」；多 Key 一个都不可见；变异对照：去掉暂存必红 —— **已落地**（票 #317，`refactor/txn-retry`：`writeset.go` 的写暂存帧链（提交目标是父写入目标）/ 写路径与读路径分开（读不建条目）/ 推进闸统一到最内层 core（判据 = 有没有新尝试边界）/ 收尾按「落没落地」判 / `Retry` 装上子图步骤与 yaml `graph:` 节点 / 流生产端拒写暂存 / 五条既有契约用例翻面 + 8 条新验收用例 + 8 条变异对照） |
-| **4 快照 / 观测 / YAML 对齐** | `Execution.Snapshot()`；Observer 身份；YAML 与 Go 同语义；Mermaid 静态全貌（可叠加一次执行） | 快照与结构同序同 id；子 Child 指向子 Execution；YAML `Analyze` 与 Go `Topology` 结构语义一致 —— **已实现（#319），主干合入 / 发布状态以对应 PR 与 release 为准**：完整有序端口 / 无值执行快照 / 活 Child / 根包 Mermaid 与快照选项 / registry-free Analyze(data, LoadOptions) / 文档签名闸门扩容 |
+| **3 事务性 Retry** | attempt 写集、提交 / 丢弃；aspect 边界 | 「第一次写 K=a 后失败、第二次写 K=b 成功 → 下游只见到 b」；多 Key 一个都不可见；变异对照：去掉暂存必红 —— **已落地**（票 #317，`refactor/txn-retry`：`slot.go` 的写暂存帧链（提交目标是父写入目标）/ 写路径与读路径分开（读不建条目）/ 推进闸统一到最内层 core（判据 = 有没有新尝试边界）/ 收尾按「落没落地」判 / `Retry` 装上子图步骤与 yaml `graph:` 节点 / 流生产端拒写暂存 / 五条既有契约用例翻面 + 8 条新验收用例 + 8 条变异对照） |
+| **4 快照 / 观测 / YAML 对齐** | `Execution.Snapshot()`；Observer 身份；YAML 与 Go 同语义；Mermaid 静态全貌（可叠加一次执行） | 快照与结构同序同 id；子 Child 指向子 Execution；YAML `Analyze` 与 Go `Topology` 结构语义一致 —— **已实现（#319），静态端口、执行快照、Mermaid 与 YAML Analyze 均已具备**：完整有序端口 / 无值执行快照 / 活 Child / 根包 Mermaid 与快照选项 / registry-free Analyze(data, LoadOptions) / 文档签名闸门扩容 |
 | **5 迁移与发布** | 文档 / 示例 / release notes 全部迁移；不兼容项逐条列 | `go build` / `vet` / `-race` / `gofmt` 全绿；零外部依赖；旧模型示例清零 |
 
 每阶段一条铁律：**先开票、评审过再开工**；每条语义要有用例，行为类结论要有变异对照。
@@ -193,7 +193,7 @@ Mermaid 归根包：`(*Topology).Mermaid(opts ...MermaidOption) string`，用 `W
 - **落在挂载子图那一步上的 `Retry`**：**阶段 1 / 2 期间不支持，阶段 3 起支持**。当时拒的理由值得留档：这一步的桥回（写进父侧槽位）是在第一次 attempt 里做完的，而父侧槽位是幂等首写——凡是第一次已经桥过去的键，第二次 attempt 的写会被静默丢掉，父图手里就是「一半第一次、一半第二次」的混装；同时 `Retry` 返回的是**最后一次** attempt 的错误，第一次失败的真正原因也被盖掉。当时的判据放在 `Retry` 进 `Run` 的第一件事（装配期认不出一个 `Aspect` 是不是 `Retry`——裸函数类型，闭包没有可查标识，实测 `reflect` 代码指针每次实例化都不同），`pulse/yaml` 的 `Load` 期拒同一个形状。**阶段 3 把缺的那一半补上之后，这个形状整体解禁**：每次尝试各建一份**新的子执行**，第一次的桥回随它自己那条 attempt 写集一起作废，父侧只拿得到成功那一次的输出版本；`retry:` 与 `Sub(..., Retry(...))` 都照装照跑。**重入仍然管住**：无新边界的重入（用户自己写的重试切面、或用户自写的重试用例）当场 `ErrNextCalledTwice`，并把第一次的失败原因一起带出来。
 - **执行 id**：对每个执行实例唯一，**不**做「父 id + path」的纯确定性派生——同一挂载点的第 n 次 attempt 重建的子执行也是不同实例（第 3.3 节）。**阶段 3 落地后这条真的生效了**：`Retry` 装在子图步骤上时，每次尝试各是一份新子执行、各有自己的执行 id（用例 `TestRetryOnSubgraphStepRunsEveryAttemptOnAFreshChildExecution` 按 `Site.Path == "step"` 数出两个执行 id）。
 - **Retry 与取消 / 超时**：判据是「进入 `Retry` 那层拿到的 ctx 是否已到期」；内层 `Timeout` 可重试、外层 `Timeout` 与父取消不重试（第 5 节第 6 条）。
-- **发布切分（历史记录与当前口径）**：早期阶段规划曾拟「每阶段落地就发一个小版本」；现行规则是阶段完成与发版分开。先完善 Pulse 能力，预留并定稿 Durable 桥接，整套桥接联调没有重大问题后，由维护者发布 Pulse `v0.5.0` 与 `pulse-durable` `v0.1.0`。首期桥接尚未实现；之后继续 0.x 迭代，直到项目目标达到、确认后续不再有系统性重大变更，再完善详细文档体系并发布两仓各自的 `v1.0.0`，基本固定 API 与实现。首期必要的 godoc、示例与迁移说明仍随实现同步。
+- **发布切分（历史记录与当前口径）**：早期阶段规划曾拟「每阶段落地就发一个小版本」；现行规则是阶段完成与发版分开。发布前确认 Pulse 能力与 Durable 桥接契约，完成整套桥接联调且没有重大问题后，由维护者发布 Pulse `v0.5.0` 与 `pulse-durable` `v0.1.0`。首期代码已具备完整节点链检查点桥接、Store/Codec、Run/Resume、方案 A 子图恢复与本机文件后端，持久等待和分布式运行管理仍属后续方向；之后继续 0.x 迭代，直到项目目标达到、确认后续不再有系统性重大变更，再完善详细文档体系并发布两仓各自的 `v1.0.0`，基本固定 API 与实现。首期必要的 godoc、示例与迁移说明仍随实现同步。
 
 **原暂定项的实施结果**：
 

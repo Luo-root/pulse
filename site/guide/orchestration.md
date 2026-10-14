@@ -128,6 +128,8 @@ err := pulse.Sub(parent, "step1", "交给子图跑的一步",
 
 **接线的形状判据只有一份**（`Sub` / `Validate` / `Topology().Problems` 共用）：① 同一条子侧**进口**只许绑一次——第二次那笔会被幂等首写**静默吃掉**；② 进口在子图里**已经有来源**时直接判死：子图内部自己产出的键**不是能绑的端口**（报文点明「它不是子图的输入端口」）——读一遍声明就能定的事，别留到这一步真跑起来。而「一条键既是声明过的进口、又有节点产出它」这个状态**根本建不出来**：`DeclareInput` 与 `Add` 两个方向都在声明那一刻撞 `ErrDuplicateSource`（一个键恰好一个来源），所以声明过的进口永远是能用的进口。**子图需要的进口在这一处漏绑也在装配期拒**：有节点 `Requires` 它，或它是一条被 `Out` 绑出去的透传出口的唯一来源——否则那句「has no value for this run」要等父图跑起来才从建子执行那里冒出来（那时别的节点可能已经跑完、`Validate()` 也已经封了口）。没人要的进口是**可选**的，不逼调用方编值。出口**不去重**：同一条出口推给两个父侧键谁也不丢（推给同一个父侧键早在 `Add` 那层就被拒），所以 **`In(父, k)` + `Out(k, 父2)` 打在同一条端口上是合法的**——那就是透传。
 
+同一个普通父值可同时用 `In(p,a), In(p,b)` 喂两个不同子入口；父侧 Requires 只记一次，接线表保留两条，子侧每个入口仍只许绑定一次。动态 `InRef` / `OutRef` 在装配时比较两端真实 reflect.Type；零 Key 不能种输入或声明端口。节点与恢复写出的 nil interface 仍是 ready，Get/TryGet 和内部 In 桥接原样传递；宿主 Seed 的 nil interface 拒绝约定不变。
+
 **装配完即可见、不必运行**：`Topology()` 沿静态挂载边**递归**（`Nodes[i].Sub` 是一棵完整子树，`Binds` 是这一处的接线），路径由**挂载位置**推导（`outer` / `outer/inner`），**读它不会改动任何定义**；`Validate()` 同样递归——子图的静态毛病在**父图**上就报，**按引用点**各报一条并点明挂载位置：
 
 ```text
@@ -144,7 +146,7 @@ pulse: subgraph "inner" (mounted at "step1/toInner"): pulse: node "leaf" require
 |---|---|---|
 | 把观察者挂到子图 | 父图照常跑完、`Run()` 返回 `nil`，子图的记录**一条都不出现** | 子图没挂观察者时**自动继承**父图的（挂了自己的就用它自己的） |
 | 子图执行挂到父节点这一层 | 手工搭的话子图在另一份取消域里跑，父图取消它看不见——实测父图耗时 300ms 且报**成功** | `Sub` 把子执行的 ctx 从父节点这一层派生，取消天然传下去 |
-| 手写两端桥接 | 子 → 父只能让子图的节点把结果写进**闭包变量**（`Graph` 没有公开读槽 API），谁绑谁全靠人记 | `In` / `Out` 声明一次，跑完自动桥回 |
+| 手写两端桥接 | 父子键名、类型与出口声明要逐条对齐，手写桥回容易漏项 | `In` / `Out` 声明一次，跑完自动桥回；宿主声明父图出口后用 `ReadOutput` 读取 |
 
 **运行语义与手写嵌套一样**：子图成功 → 本节点成功（输出就绪的 `Set`、跳过的 `Skip`）；**全部输出都跳过** → 本节点以 `skipped` 收尾（不是失败）；子图失败 → 本节点失败、**首错原样冒泡**（`errors.Is` 成立）；取消 → 子图看得见。**挂上去之后有两处边界**：
 
@@ -182,10 +184,14 @@ err = pulse.Consume(g, "sinkB", sB, func(rc *pulse.RunCtx, v int) error {
 ```
 
 - **生产端活着发完**：channel 的关闭只在节点返回时的 `defer` 里（成功 / 出错 / 取消 / panic 都走它，不会双次 close），`send` 在发送与 `rc.Context().Done()` 上 `select`。
-- **消费端用 `select`，不是 `for range`**：后者在取消之后会把缓冲区里的值**继续算完**，而且整轮还报成功；`select` 在取消那一刻退出并返回取消原因。
+- **消费端用 `select` 响应取消**：`for range` 可能在取消之后仍把缓冲区里的值继续算完；`select` 让等待读取的节点能在取消后退出。Wait 会独立报告整轮的执行上下文取消，业务体是否响应取消与整轮结果分别判断。
 - **空流不是跳过**：一次都没发、出口正常关闭 → 下游照样进入 `Run`（零次回调、`completed`、整轮成功）。
 - **名额**：流的两端必须同时活着——装配那一刻糖只能做一次快速检查，`Start()` 还会按**整张流图**复核：流节点与**每条流出口的读取者**（消费者也可以手写）要同时有名额，否则直接拒（不留到运行时卡死）。所以「小流量 + 大缓冲」这种凑合跑的配置会被拒——它的成败取决于数据量，不该被依赖。另外**每条流出口都得有人消费、且只喂一个下游**：漏挂下游同样在 `Start()` 被拒（没人读的出口会让发送端永久堵在那里）；第二个读取者也会被拒——两个各写各的读者会在**静默**里瓜分值，要广播就每条下游开一条 `Tee` 出口，要「抢」就用一个 `FanOut`。
 - **`FanOut` 与 `Tee` 别混**：抢（每个数据只做一次）用 `FanOut`；每个下游都要拿到全部数据用 `Tee`。普通值不需要 `Tee`——一个 `Provides` 加 N 个 `Requires` 本来就是广播，只有 channel 会被瓜分。
+
+跨子图也沿绑定追到真实读取者：Sub 本身不占名额，`Produce + Tee + 子图内两个 Consume` 在共享池里需 4 个名额。子图自己声明额度就另建池，相同数字不代表同一个池；同定义多处挂载也分别计数。把同一条 channel 换名接到两个独立消费者，仍会因静默瓜分而被拒。
+
+关闭和桥回也是依赖：Sub 要等整张子图结束才 Out，Consume 要等 channel 关闭，而 Tee 要等各路开始读取才完成发送。若 A 挂载等 B 子图的 done、B 又等 Tee 关闭、Tee 又等 A 开始读取，Validate/Start 会报流生命周期环，额度无限和有限缓冲也不放行。这里检查的是内置流与静态接线能看见的关系；业务回调或切面里的隐藏等待、手写关闭时机仍由宿主负责。Produce/Tee 的根声明出口也需要真实消费者。
 
 ## 分支：对未选中的路调 Skip
 
@@ -337,14 +343,38 @@ err = pulse.Consume(g, "sinkB", sB, archive)
 
 ## 结果从哪读
 
-`Graph` 没有 `Run` 之后的公开读槽。产物归调用方，两条常规做法：
+宿主先用 `DeclareOutput` 声明公共出口，再创建这一轮 `Execution`，成功 `Start` / `Wait` 后用 `ReadOutput(e, key)` 读取。内部 Key 仍是图的实现细节；结果跟着本轮执行，顺序或并发运行都不必借共享闭包保存。
 
 ```go
-var report string // 1) 节点闭包写出——终端产物用这个
-// ...
-
-if err := g.Run(ctx, in); err != nil { return err } // 2) 失败看返回值
+// result 是 g 中已有来源的 Key[T]。
+if err := g.DeclareOutput(pulse.NewPort(result)); err != nil {
+	return err
+}
+e, err := g.NewExecution(ctx, in)
+if err != nil {
+	return err
+}
+if err := e.Start(); err != nil {
+	return err
+}
+if err := e.Wait(); err != nil {
+	return err
+}
+value, state, err := pulse.ReadOutput(e, result)
+if err != nil {
+	return err // value 与 state 都无效。
+}
+switch state {
+case pulse.SlotStateReady:
+	fmt.Println(value) // 零值或 nil 也可以是正常 ready 值。
+case pulse.SlotStateSkipped:
+	fmt.Println("这轮没有这个结果")
+case pulse.SlotStatePending:
+	fmt.Println("可选透传出口未提供")
+}
 ```
+
+读取立即返回，不等待、不造槽；正常 skipped 和未喂的可选透传 pending 都是 nil error。尚未收尾或真实失败/取消不返回部分值，error 非 nil 时值与状态无效。可变业务值不深拷贝，宿主负责共享对象的同步。`Sub` 的 `Out` 把子图声明出口桥回父侧 Key，宿主要读它时再声明父图出口，按同一路径读取。
 
 `Run(ctx, in)` / `Execution.Err()` 返回**首错**，**不含单纯的跳过**（全图都跳过是合法结果）。取消是协作式的：业务体自行响应 ctx，引擎等它退出，不强行停止 goroutine。`Wait` 随后锁存终态：没有首错时，终态确定前发生的执行取消仍成为运行结果，无需节点先将它返回为错误。节点正常 completed 与整轮 canceled 可以同时成立；终态确定后的资源释放 cancel 不影响结果，重复 Wait 也不会重新捕获它。
 

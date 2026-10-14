@@ -663,3 +663,216 @@ func TestRetryCrossAttemptReadWaitsForItsOwnSource(t *testing.T) {
 		}
 	})
 }
+
+// TestAspectSequentialNextWithoutBoundaryRejected 钉住**推进闸**：同一个节点执行上下文里，
+// `next()` 只允许成功推进一次——切面在没有开新尝试边界的情况下再推一次，整轮报错。
+//
+// 阶段 3 之前这条契约是**反的**（当时那条用例叫 `TestAspectSequentialNextAllowed`，断言
+// 「再推一次合法、节点跑两次、第二次的 Set 被幂等首写静默忽略」）。翻面它的是 #311 阶段 3
+// 的判据：没有隔离的第二次推进会让两次执行的输出混装，而引擎当时是**安静地放过**。
+//
+// `Retry` 不受影响——它每次尝试都换一条新的写暂存，那是「有边界的重入」（见
+// `TestRetryHidesFailedAttemptWrites` 与 Retry 自己的 godoc）；另一次 `Run` 是全新的执行
+// 上下文，账从零开始。
+func TestAspectSequentialNextWithoutBoundaryRejected(t *testing.T) {
+	g := mustNew(t, context.Background(), "advance-gate")
+	var runs atomic.Int32
+	aspect := Aspect(func(rc *RunCtx, next func(*RunCtx) error) error {
+		if err := next(rc); err != nil {
+			return err
+		}
+		// 顺序再调一次：**没有开新的尝试边界**，该被推进闸拒。
+		return next(rc)
+	})
+	mustAdd(t, g, NewNode("n", "", nil, Provides(kA), func(rc *RunCtx) error {
+		runs.Add(1)
+		return Set(rc, kA, "value")
+	}, aspect))
+
+	err := runOn(g)
+	if err == nil || !errors.Is(err, ErrNextCalledTwice) {
+		t.Fatalf("Run = %v，want ErrNextCalledTwice", err)
+	}
+	if !strings.Contains(err.Error(), "without a new attempt boundary") {
+		t.Fatalf("报文要点明「没有新边界的重入」，got %v", err)
+	}
+	if !strings.Contains(err.Error(), "pulse.Retry") {
+		t.Fatalf("报文要给出能照着改的写法，got %v", err)
+	}
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("节点跑了 %d 次，want 1（第二次推进该被拒在体之前）", got)
+	}
+}
+
+func TestAspectConcurrentNextCalledOnce(t *testing.T) {
+	g := mustNew(t, context.Background(), "test")
+	var runs atomic.Int32
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	aspect := Aspect(func(rc *RunCtx, next func(*RunCtx) error) error {
+		errCh := make(chan error, 1)
+		go func() { errCh <- next(rc) }()
+		<-started // 第一个已进入 core 并持有 depth
+		err2 := next(rc)
+		close(release)
+		err1 := <-errCh
+		if !errors.Is(err2, ErrNextCalledTwice) {
+			return fmt.Errorf("overlapping next want ErrNextCalledTwice, got %v (first=%v)", err2, err1)
+		}
+		return ErrNextCalledTwice
+	})
+	mustAdd(t, g, NewNode("n", "", nil, Provides(kA), func(rc *RunCtx) error {
+		started <- struct{}{}
+		<-release
+		runs.Add(1)
+		return Set(rc, kA, "value")
+	}, aspect))
+	if err := runOn(g); !errors.Is(err, ErrNextCalledTwice) {
+		t.Fatalf("want ErrNextCalledTwice, got %v", err)
+	}
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("node ran %d times, want 1", got)
+	}
+}
+
+// 跳过不是失败：输入一条值都没到时 Retry 必须立即返回，不得重跑整段
+// 「等输入 + 执行」——否则白等 (attempts-1) × delay，内层切面
+// （观测/埋点/记账）也被重复执行。
+func TestRetryDoesNotRerunSkippedNode(t *testing.T) {
+	in := NewKey[string]("retry.skip.in")
+	out := NewKey[string]("retry.skip.out")
+	const delay = 300 * time.Millisecond
+
+	g := mustNew(t, context.Background(), "test", WithAspects(Retry(3, delay)))
+	declareIn(t, g, NewPort(in))
+	if err := skipSeedOn(g, in); err != nil {
+		t.Fatal(err)
+	}
+
+	var runs, inner atomic.Int32
+	mustAdd(t, g, NewNode("down", "", Requires(in), Provides(out), func(rc *RunCtx) error {
+		runs.Add(1) // 断言在主 goroutine 上做（节点跑在自己的 goroutine 里）
+		return nil
+	}, Aspect(func(rc *RunCtx, next func(*RunCtx) error) error {
+		inner.Add(1)
+		return next(rc)
+	})))
+
+	start := time.Now()
+	if err := runOn(g); err != nil {
+		t.Fatalf("a skip is not a failure: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if got := inner.Load(); got != 1 {
+		t.Fatalf("inner aspect ran %d times, want 1 (a skipped input must not be retried)", got)
+	}
+	if got := runs.Load(); got != 0 {
+		t.Fatalf("node Run ran %d times, want 0 when its input is skipped", got)
+	}
+	if elapsed >= delay {
+		t.Fatalf("skip path took %v, want no retry delay (Retry must not add attempts-1 waits)", elapsed)
+	}
+	rc := inspect(g)
+	if _, ok, skipped, err := TryGet(rc, out); err != nil || ok || !skipped {
+		t.Fatalf("out = ok=%v skipped=%v err=%v, want skipped", ok, skipped, err)
+	}
+}
+
+func TestTimeoutInterruptsWait(t *testing.T) {
+	g := mustNew(t, context.Background(), "test")
+	// kA 必须有来源（Start 的来源校验），但它迟迟不写：slow 会真的**在等**，
+	// 这条用例测的就是超时能不能打断等待段。
+	mustAdd(t, g, NewNode("late", "", nil, Provides(kA), func(rc *RunCtx) error {
+		<-rc.Context().Done()
+		return rc.Context().Err()
+	}))
+	mustAdd(t, g, NewNode("slow", "", Requires(kA), Provides(kB), func(rc *RunCtx) error {
+		_, err := Get(rc, kA)
+		return err
+	}, Timeout(30*time.Millisecond)))
+	err := runOn(g)
+	if err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("Run err = %v, want timeout", err)
+	}
+}
+
+// TestTimeoutWaitsForInnerRun 超时到期后必须等内层收干净再返回：
+// 切面共享 `wrote`，提前返回会让收尾路径与还在跑的 Run 同时碰同一批槽
+// （数据竞态），也会让 Run 的「阻塞到全部终止」失真。
+func TestTimeoutWaitsForInnerRun(t *testing.T) {
+	out := NewKey[string]("to.out")
+	var bodyDone atomic.Bool
+
+	g := mustNew(t, context.Background(), "test", WithAspects(Timeout(20*time.Millisecond)))
+	mustAdd(t, g, NewNode("slow", "", nil, Provides(out), func(rc *RunCtx) error {
+		time.Sleep(120 * time.Millisecond)
+		bodyDone.Store(true)
+		return Set(rc, out, "late")
+	}))
+
+	start := time.Now()
+	err := runOn(g)
+	elapsed := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("Run err = %v, want timeout", err)
+	}
+	if !bodyDone.Load() {
+		t.Fatalf("Run 在 %v 就返回了，节点体还没退出（超时提前返回）", elapsed.Round(time.Millisecond))
+	}
+	if elapsed < 100*time.Millisecond {
+		t.Fatalf("Run 耗时 %v，短于节点体自身耗时——没等内层", elapsed.Round(time.Millisecond))
+	}
+}
+
+// TestRetryHidesFailedAttemptWrites 钉住阶段 3 的硬保证：**失败的尝试写出去的东西，
+// 下游从来没有见过**。
+//
+// 阶段 2 及以前这条契约是**反的**（当时那条用例叫 `TestRetryDoesNotRollbackPublishedSlots`）：
+// 槽位「到达即发布、幂等首写」，第一次尝试的 Set 当场唤醒下游并留在槽里，后续尝试的写被
+// 静默忽略——下游拿到的是「注定失败的那一次」的值，而整轮还可能报成功。
+//
+// 判据落在**下游读到的值**上，不落在「下游有没有被唤醒」上：后者在时间窗里等「没被唤醒」
+// 只能靠超时兜底，而值本身是确定性的证据——只有成功的那一次被提交过，下游就不可能读到别的。
+func TestRetryHidesFailedAttemptWrites(t *testing.T) {
+	out := NewKey[string]("retry.hide.out")
+	var attempts, downstreamRuns atomic.Int32
+	var seen atomic.Value
+
+	g := mustNew(t, context.Background(), "retry-hide")
+	mustAdd(t, g, NewNode("flaky", "", nil, Provides(out), func(rc *RunCtx) error {
+		n := attempts.Add(1)
+		if err := Set(rc, out, fmt.Sprintf("attempt-%d", n)); err != nil {
+			return err
+		}
+		if n == 1 {
+			return errors.New("第一次注定失败")
+		}
+		return nil
+	}, Retry(2, 0)))
+	mustAdd(t, g, NewNode("downstream", "", Requires(out), nil, func(rc *RunCtx) error {
+		v, err := Get(rc, out)
+		if err != nil {
+			return err
+		}
+		seen.Store(v)
+		downstreamRuns.Add(1)
+		return nil
+	}))
+
+	if err := runOn(g); err != nil {
+		t.Fatalf("第二次尝试成功，整轮该成功，got %v", err)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
+	}
+	if got := downstreamRuns.Load(); got != 1 {
+		t.Fatalf("downstream 进入 Run %d 次，want 1", got)
+	}
+	if v := seen.Load(); v != "attempt-2" {
+		t.Fatalf("下游读到 %v，want attempt-2——失败那一次的写不该被任何人看见", v)
+	}
+	if st, v := slotOn(g, out.asRef()); st != slotReady || v != "attempt-2" {
+		t.Fatalf("槽位终态 = (%v, %v)，want (slotReady, attempt-2)", st, v)
+	}
+}

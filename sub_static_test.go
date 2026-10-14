@@ -403,7 +403,7 @@ func TestSubPassThroughPort(t *testing.T) {
 // 旧版本这条用例测的是另一半（子图声明了进口、内部又有节点产出它，于是挂载点报
 // `is provided inside the child by node "prod"`）：那半句随判据**提前**消失——那个状态现在
 // 根本建不出来，「一条键既是声明过的进口、又有节点产出它」在声明那一刻就撞 `ErrDuplicateSource`
-// （`DeclareInput` 与 `Add` 两个方向同一句话，见 port.go / graph.go 的 addAllLocked，
+// （`DeclareInput` 与 `Add` 两个方向同一句话，见 key.go / graph.go 的 addAllLocked，
 // 用例 `TestInputPortAndProducerConflict`）。判据一条没少，只是更早。
 func TestSubRejectsInletProvidedInside(t *testing.T) {
 	ctx := context.Background()

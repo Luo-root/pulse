@@ -159,10 +159,10 @@ type LoadOptions struct {
 	// `TestLoadOptionsQuotaPrecedence` 钉住；推荐把额度只写在 `MaxRunning` 上，
 	// `Graph` 留给观察者与切面。
 	MaxRunning int
-	// ObserverFor 按层建出口：声明式装配里每一层是另一张图，而一个出口实例
-	// 只能带一条 `pulse.path`，所以「按层各建一个」得由宿主决定。path 是这一层的
-	// 路径（一层子图是它的节点 id，再深一层是 `outer/inner`），宿主拿它填
-	// observe.ObserveConfig.Path 就能把层级写进记录。
+	// ObserverFor 可选地为不同子图挂载点选择不同观察者或记录出口。
+	// 默认继承父图观察者即可：引擎的每条回调已带 Site.Path，同一个观察者
+	// 能服务多层，无需为记录层级逐层另建出口或填写 ObserveConfig.Path。
+	// path 是这一处的挂载路径（一层为节点 id，更深为 "outer/inner"）。
 	//
 	// **调用时机**：子图在 `Load` 装到那一层时各调一次（每处挂载一次——同一张 spec
 	// 挂两处就是两个出口实例，path 各是各自的挂载路径）。只装不跑的校验树**不调**它：
@@ -174,15 +174,14 @@ type LoadOptions struct {
 
 // checkGraph 起一张**只装不跑**的校验图，并且带上与真图**同一份额度**。
 //
-// 额度必须一起给：`Start` / `Validate` 的流式判据按**有效容量**判
-// （`problemsStreamLocked` 比的是容量与这一层同时活着的流节点数），校验图没有额度时那道
-// 检查形同虚设——于是「额度养不起这条流」会装图全过、跑到那一层 `Start` 才爆。校验图
-// 与真图的选项必须是**同一次推导**出来的（与函数末尾那份 `rootOpts` 一致），两处各写
-// 一遍就会漂。
+// 额度必须一起给：核心的流式检查展开整棵挂载树，沿 In/Out/透传追踪 channel
+// 别名和实际读取者，按共享额度池身份计数（Sub 不占额），并检查已知发送/关闭、
+// 子图完成与 Wait 后 Out 桥回形成的生命周期等待环。校验树与真图必须使用同一套
+// 静态选项推导（与下方 rootOpts 一致），否则继承池和有效容量的判断会漂。
 //
-// 今天 YAML 还表达不了流式节点（`Produce` / `Consume` / `Tee` 是 Go 糖，跑在工厂里面），
-// 所以这条差异在公开面上暂时不可观测；它是给「YAML 也能声明流」那天留的闸门，也顺手
-// 钉住「校验图 = 真图的选项」这件事（包内用例 `TestCheckGraphCarriesCapacity`）。
+// YAML 目前没有 Produce/Consume/Tee 声明语法，普通工厂只提供 Run；静态装配不能
+// 推断工厂回调或切面中隐藏的 channel 等待和手写关闭时机。此处不声称能校验那些
+// 行为；它保留校验树与真图的静态配置一致性（TestCheckGraphCarriesCapacity）。
 func checkGraph(id string, opts LoadOptions) (*pulse.Graph, error) {
 	o := append([]pulse.Option(nil), opts.Graph...)
 	if opts.MaxRunning > 0 {
@@ -295,6 +294,11 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 				return nil, nil, err
 			}
 		}
+		// seed 已明确是外部来源，即使没有挂载点，也不能与节点产出同一条键。
+		// 声明进校验图，让核心判来源冲突；未知来源仍由 declareSpecInputs 补成可能的入口。
+		if err := declareSeedInputs(g, spec.Seeds, reg); err != nil {
+			return nil, nil, fmt.Errorf("pulse/yaml: graph %q seeds: %w", name, err)
+		}
 		if err := a.declareSpecInputs(g, name); err != nil {
 			return nil, nil, err
 		}
@@ -355,8 +359,8 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 
 // declareSeedInputs 把 `seeds:` 里那几条键声明成**这一层的入口**。
 //
-// 根层用它（见 Load）；子图那一层的对应物是 `declarePorts` 里那段（子图自己 seeds 的键
-// 也是它的入口，值来自挂载点上的 `Fix` 绑定）。
+// 根层与未引用模板的校验图用它（见 Load）；已引用子图的对应物是 `declarePorts` 里那段
+// （子图自己 seeds 的键也是它的入口，值来自挂载点上的 `Fix` 绑定）。
 func declareSeedInputs(g *pulse.Graph, seeds []SeedSpec, reg *pulse.Registry) error {
 	if len(seeds) == 0 {
 		return nil

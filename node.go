@@ -3,6 +3,7 @@ package pulse
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 )
 
@@ -26,7 +27,7 @@ type Node struct {
 	compete string
 	// sub 表示这个节点是挂子图的一步（「图即节点」，`Sub` 置它）。
 	// 它整段都在等子图跑完，所以**不吃运行名额**——占着就等于把父侧额度锁在「等」上，
-	// 名额跨图共享之后那是死锁（见 WithMaxRunning / Graph.runNode）。
+	// 名额跨图共享之后那是死锁（见 WithMaxRunning / Execution.runNode）。
 	sub bool
 	// child 是这一步挂的子图**定义**（`Sub` 装的节点才有它）。静态拓扑靠它递归展开
 	// 整棵树，组合环也靠它判（见 Sub 与 findInSubtree）。
@@ -75,7 +76,7 @@ func Deps(groups ...[]keyRef) []keyRef {
 //
 // 注意 `Get` 是**阻塞等待**：等一个永远不会被写入的槽会一直等到本层 ctx
 // 被取消（`Timeout` 切面能打断它）。想知道「现在到了没有」用 `TryGet`。
-// 静止的图（所有 `Requires` 都没有来源）与含依赖环的图都会在 `Graph.Start`
+// 静止的图（所有 `Requires` 都没有来源）与含依赖环的图都会在 `Execution.Start`
 // 就被拒掉——两者都不可能跑完，且都是启动那一刻能静态判定的。
 //
 // `description` 是人可读的说明（`""` = 没写，合法）：不参与节点唯一性、Key 匹配、
@@ -116,17 +117,22 @@ type RunCtx struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	allowed map[string]keyRef // name → 声明过的 key
-	// writes 是**当前尝试的写暂存**：nil = 没有尝试边界，`Set` / `Skip` 直写执行槽位。
+	// writes 是**当前写暂存**：nil 时 `Set` / `Skip` 直写执行槽位。
 	//
-	// 它只由 `Retry` 开与关——**切面套在哪一层，事务边界就在哪一层**：`Retry` 包住的那一段
-	// （`next` 之内，含更内层的切面）属于 attempt；`Retry` 外面的切面写的值不属于任何
-	// attempt、也不参与回滚。`Fork` 浅拷贝，所以 `Timeout` 里面那层看到的是同一份暂存。
+	// `Retry` 为每次尝试开一层暂存，边界是它包住的 `next`（含更内层切面）；外层切面的
+	// 写不属于该 attempt，也不随该 attempt 回滚。启用检查点时，runCheckpointChain
+	// 先为完整节点链开外层暂存，Retry 的成功写交到这一层，存储确认 Commit 后才发布。
+	// 因此检查点模式下，即使不装 Retry，体和切面的写也先暂存；`Fork` 浅拷贝共享当前帧。
 	writes *writeSet
 	// advance 是**这一次运行里这个节点**的推进账（见 advanceLedger）。它长在这里而不是
 	// 节点上：节点属于**定义**、要跨运行复用，而 `newRunCtx` 是每个 (执行, 节点) 一份
 	// ——「这一步推进过没有」是那一次运行的事实。`Fork` 浅拷贝，所以 `Timeout` 里面
 	// 那层看到的是同一份账。
 	advance *advanceLedger
+	// checkpointAttempt 是当前持久尝试，Fork 复制其视图；Retry 只在自己的层次换它。
+	checkpointAttempt CheckpointAttempt
+	aspectIndex       int
+	checkpointEntries *checkpointEntryLedger
 }
 
 // advanceLedger 是**一次运行里一个节点**的推进账：体推进过没有、上一次推进挂在哪条
@@ -325,6 +331,10 @@ func Get[T any](rc *RunCtx, k Key[T]) (T, error) {
 	if err != nil {
 		return zero, err
 	}
+	// ready 的 nil 接口没有动态类型，断言会失败，但它仍是接口 T 的合法零值。
+	if v == nil && ref.typ.Kind() == reflect.Interface {
+		return zero, nil
+	}
 	out, ok := v.(T)
 	if !ok {
 		return zero, fmt.Errorf("pulse: key %q type assertion failed", ref.name)
@@ -358,6 +368,9 @@ func TryGet[T any](rc *RunCtx, k Key[T]) (v T, ok bool, skipped bool, err error)
 	st, raw := rc.readTarget(ref).snapshot()
 	switch st {
 	case slotReady:
+		if raw == nil && ref.typ.Kind() == reflect.Interface {
+			return v, true, false, nil
+		}
 		out, cast := raw.(T)
 		if !cast {
 			err = fmt.Errorf("pulse: key %q type assertion failed", ref.name)
@@ -373,8 +386,8 @@ func TryGet[T any](rc *RunCtx, k Key[T]) (v T, ok bool, skipped bool, err error)
 
 // Set 幂等首写为就绪。二次调用忽略。与已跳过冲突则报错。
 //
-// **有尝试边界时落暂存**：`Retry` 里面的 `Set` 写的是这一次尝试的写暂存，不是执行槽位
-// ——下游要等这次尝试成功（或以跳过收尾）提交之后才会被唤醒。没装 `Retry` 时照旧直写槽位。
+// **有写暂存时先暂存**：Retry 内的 Set 写入当前尝试，成功或正常跳过才交给外层写入目标。
+// 检查点模式还为完整节点链提供外层暂存，存储确认 Commit 后才发布；未开任何暂存时直写执行槽位。
 func Set[T any](rc *RunCtx, k Key[T], v T) error { return setRef(rc, k.asRef(), v) }
 
 // setRef 是 Set 的非泛型内核：只有 keyRef 可用的地方（糖、子图桥接）走这里。

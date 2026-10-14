@@ -22,30 +22,44 @@ func (g *Graph) problemsLocked(capacity int) []error {
 	return g.problemsAtLocked("", mountChain{g}, capacity)
 }
 
-// problemsAt 是递归的**入口**：自己加锁，再交给递归体。`capacity` 是**这一层继承下来的**
-// 有效名额上限（0 = 不限），由调用方按优先级解析好（见 Graph.effectiveCapacity）。
-//
-// 递归读子图必须走这里：父图持着自己的锁，子图那把锁由子图自己取（`topologyAt` 同理）。
-// 沿挂载边一层层往下取，锁序恒为「父 → 子」；挂载边不可能成环（`Sub` 装配期就拒，且装配
-// 那一步是全局串行的），所以不会两层互等对方的锁。万一真成了环，`chain` 会在那一层当场
-// 报出来而不是一路递归下去（见 problemsSubAtLocked）。
-func (g *Graph) problemsAt(at string, chain mountChain, capacity int) []error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.problemsAtLocked(at, chain, capacity)
-}
-
 // problemsAtLocked 是递归体：`at` 是这张图**在本视图里**的位置（根为空串），`chain` 是从根
 // 一路挂到这张图的图链（判环用），`capacity` 是**这一层的有效名额上限**。调用方持 g.mu。
 //
 // 五类判据，顺序固定：来源 → 出口 → 依赖环 → 流式 → **静态子树**（每处挂载各报一条）。
 func (g *Graph) problemsAtLocked(at string, chain mountChain, capacity int) []error {
+	// 流的别名、额度池与完成等待关系要看整棵挂载树，不能在每层重新从零判断。
+	// 只复制定义；子层各自取锁，不读取 Execution，也不创建槽位。
+	streams := g.problemsStreamLocked(at, chain, capacity)
+	return g.problemsWithStreamsAtLocked(at, chain, capacity, streams)
+}
+
+// validateRunLocked 与定义检查共用判据，只额外提供这次已确认的外部 skip。
+// 子执行的 Start 也走这里，不能在递归运行时重新丢失已供给的输入状态。
+func (g *Graph) validateRunLocked(capacity int, known streamKnownInputs) error {
+	chain := mountChain{g}
+	streams := g.problemsStreamLocked("", chain, capacity, known)
+	if problems := g.problemsWithStreamsAtLocked("", chain, capacity, streams); len(problems) != 0 {
+		return problems[0]
+	}
+	return nil
+}
+
+// problemsWithStreamsAt 是递归子图的加锁入口：父图持有自己的锁，子图自己取锁。
+// streams 复用根检查已算好的整树流事实，不在每一层重新计算；capacity 已按该层优先级解析。
+// 锁序沿挂载边由父到子；装配期拒绝组合环，递归时 chain 再兜底判环。
+func (g *Graph) problemsWithStreamsAt(at string, chain mountChain, capacity int, streams map[string][]error) []error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.problemsWithStreamsAtLocked(at, chain, capacity, streams)
+}
+
+func (g *Graph) problemsWithStreamsAtLocked(at string, chain mountChain, capacity int, streams map[string][]error) []error {
 	var out []error
 	out = append(out, g.problemsSourcesLocked()...)
 	out = append(out, g.problemsOutputsLocked()...)
 	out = append(out, g.problemsCycleLocked()...)
-	out = append(out, g.problemsStreamLocked(capacity)...)
-	out = append(out, g.problemsSubAtLocked(at, chain, capacity)...)
+	out = append(out, streams[at]...)
+	out = append(out, g.problemsSubAtLocked(at, chain, capacity, streams)...)
 	if len(out) == 0 {
 		return nil
 	}
@@ -61,7 +75,7 @@ func (g *Graph) problemsAtLocked(at string, chain mountChain, capacity int) []er
 // 顺带把接线**重新核一遍**：子图的端口可能在挂载之后、它自己封口之前改过（挂载那一刻核过
 // 一次，但那是当时的事实）。判据与 `Sub` 共用同一份 checkBinds，报文逐字相同。
 //
-// 往下一层是 `n.child.problemsAt`（**它自己加锁**），不是直接读字段：父图那把锁管不到子图，
+// 往下一层是 `n.child.problemsWithStreamsAt`（**它自己加锁**），不是直接读字段：父图那把锁管不到子图，
 // 而子图在装配期一直躺在宿主手里——那头一边 `Add`、这头一边读，就是一处竞态（用例
 // TestSubChildAssemblyVsParentReadOnly）。
 //
@@ -70,7 +84,7 @@ func (g *Graph) problemsAtLocked(at string, chain mountChain, capacity int) []er
 // 正是父图这一份——于是「父图限额 2、子图有一条要 3 个名额的流」这种图整树校验会放行，
 // 等子图自己的 `Start` 才拒，那时父图别的节点可能已经跑完并留下副作用了。子图的
 // `limSet` / `maxRunning` 只在 `New` 的选项里写一次、此后不再变，所以不持它的锁读也安全。
-func (g *Graph) problemsSubAtLocked(at string, chain mountChain, capacity int) []error {
+func (g *Graph) problemsSubAtLocked(at string, chain mountChain, capacity int, streams map[string][]error) []error {
 	var out []error
 	for _, n := range g.nodes {
 		if n.child == nil {
@@ -91,7 +105,7 @@ func (g *Graph) problemsSubAtLocked(at string, chain mountChain, capacity int) [
 			continue
 		}
 		sub := chain.push(n.child)
-		for _, err := range n.child.problemsAt(here, sub, n.child.effectiveCapacity(capacity)) {
+		for _, err := range n.child.problemsWithStreamsAt(here, sub, n.child.effectiveCapacity(capacity), streams) {
 			out = append(out, fmt.Errorf("pulse: subgraph %q (mounted at %q): %w",
 				n.child.id, here, err))
 		}
@@ -251,116 +265,4 @@ func (g *Graph) sccWitness(d depGraph, comp []int) error {
 	}
 	return fmt.Errorf("pulse: dependency cycle: %s (%s)",
 		strings.Join(ids, " -> "), strings.Join(waits, ", "))
-}
-
-// problemsStreamLocked 是流式糖（Produce / Consume / Tee）在 Start 的静态校验。
-// 调用方持 g.mu。三条都是「静态可判定、运行期表现为挂死或静默丢数据」的病：
-//
-//  1. **名额是「同时活着」的约束，而糖在装配那一刻看不全整张图。** 一条流上
-//     生产端 / 复制端堵在发送上、消费端堵在读上，链上每个节点都得同时在名额表
-//     里；逐个 helper 的局部检查**证明不了组合图安全**——实测
-//     `WithMaxRunning(2)` 下 `Produce → Tee([a]) → Consume(a)`（三个流节点）
-//     装配全过，运行期直接死锁，只能等外部超时。这里按**整张流图**要名额：糖装
-//     出来的流节点 + **每条流出口的读取者**——读取者可以是手写的 `NewNode`
-//     （糖之外的那条路），它同样得拿到名额才进得去 Run、才读得到那条流：实测
-//     `Produce → Tee([a]) → 手写 sink(a)` 在 `maxRun=2` 下也是装配全过、运行
-//     期死锁，`maxRun=3` 才跑得通。偏保守（两条互不相关的流也会要求名额之和），
-//     但引擎的名额是逐个申请的、没有 gang 调度，凑合的分配同样会死锁——宁可拒
-//     得早。
-//  2. **流节点的每条出口都得有人 Requires。** `problemsSourcesLocked` 只判「每个
-//     Requires 有来源」，不判「每个 Provides 有消费者」；漏挂一个消费者（或
-//     Tee 的某条出口没接下游）时，发送端会永久堵在那条无缓冲出口上——缓冲只把
-//     死锁推到「缓冲写满」。
-//  3. **一条流出口只喂一个下游**（或**一组** `FanOut` worker）。同一个出口被两个
-//     各写各的节点 `Requires` 时，两边都会跑、各自只拿到一部分值：实测
-//     `Tee([a])` 加两个 `Consume(a)` 装配全过，10 个值被 8/2 瓜分，而 Tee 的
-//     承诺是「每个下游拿到完整、同序的数据」。瓜分是**静默**的，所以在 Start 拒。
-//     「抢」是 `FanOut` 的用法（N 个 worker 共读一条流，本来就是显式声明），
-//     同一组不算多消费者——否则会把文档点名推荐的玩法一起拒掉。
-//
-// 每条出口一条毛病（没人读 / 被几个各写各的读了各一条）；名额不足那条在这批
-// 之先，与旧实现的先后一致。
-func (g *Graph) problemsStreamLocked(capacity int) []error {
-	var stream []*Node
-	outlets := make(map[string]struct{})
-	for _, n := range g.nodes {
-		if n.streamKind == "" {
-			continue
-		}
-		stream = append(stream, n)
-		for _, k := range n.provides {
-			outlets[k.name] = struct{}{}
-		}
-	}
-	if len(stream) == 0 {
-		return nil
-	}
-
-	// 流图 = 流节点 + 读取流出口的节点（手写消费者也算：它同样要占一个名额才读得到）。
-	readers := make(map[string][]*Node, len(outlets)) // 出口 Key 名 → 读取它的节点
-	var live []*Node
-	for _, n := range g.nodes {
-		isStream, touched := n.streamKind != "", false
-		seen := make(map[string]struct{}, len(n.requires))
-		for _, k := range n.requires {
-			if _, ok := outlets[k.name]; !ok {
-				continue
-			}
-			if _, dup := seen[k.name]; dup {
-				continue // 同一个 Key 声明两次仍只是一个读取者
-			}
-			seen[k.name] = struct{}{}
-			readers[k.name] = append(readers[k.name], n)
-			touched = true
-		}
-		if isStream || touched {
-			live = append(live, n)
-		}
-	}
-
-	var out []error
-	if c := capacity; c > 0 && c < len(live) {
-		ids := make([]string, 0, len(live))
-		for _, n := range live {
-			ids = append(ids, n.id)
-		}
-		out = append(out, fmt.Errorf("pulse: stream needs %d slots at the same time, but WithMaxRunning(%d): %s",
-			len(live), c, strings.Join(ids, ", ")))
-	}
-	for _, n := range stream {
-		for _, k := range n.provides {
-			rs := readers[k.name]
-			if len(rs) == 0 {
-				out = append(out, fmt.Errorf("pulse: node %q provides %q but nothing consumes it: "+
-					"a stream output nobody reads blocks the sender forever", n.id, k.name))
-				continue
-			}
-			if len(rs) > 1 && !sameFanOut(rs) {
-				ids := make([]string, 0, len(rs))
-				for _, r := range rs {
-					ids = append(ids, r.id)
-				}
-				out = append(out, fmt.Errorf("pulse: stream output %q is read by %d nodes (%s), "+
-					"so its values would be split between them: one stream output feeds one downstream — "+
-					"add a Tee output per downstream to broadcast, or make it one FanOut to compete",
-					k.name, len(rs), strings.Join(ids, ", ")))
-			}
-		}
-	}
-	return out
-}
-
-// sameFanOut 判这一串读取者是不是**同一次 FanOut** 的 worker：几个 worker 共读
-// 一条流本来就是 FanOut 的用法（「抢」），是显式声明；两个各写各的节点共读同一条
-// 出口则是静默瓜分。调用方保证 rs 非空。
-func sameFanOut(rs []*Node) bool {
-	if rs[0].compete == "" {
-		return false
-	}
-	for _, r := range rs[1:] {
-		if r.compete != rs[0].compete {
-			return false
-		}
-	}
-	return true
 }

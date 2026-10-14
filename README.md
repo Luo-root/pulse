@@ -22,7 +22,7 @@
 
 **Pulse** 是可嵌入 Go 程序的 workflow 执行内核，以数据到达驱动图中的步骤，并提供图观测。节点只声明读哪些 Key、写哪些 Key，拓扑由数据的生产与消费隐式形成——没有边对象、没有「先排序再执行」的调度阶段、没有本地调度循环。
 
-当前支持单进程中的执行与静态子图组合。独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable) 按节点检查点恢复路线扩展能力，**目前处于设计阶段、尚无实现**；持久化等待与分布式运行管理是后续设计方向。两仓的定位、职责与开发顺序见 [workflow-engine 开发总纲](docs/design/workflow-foundation.md)。已确认的首次桥接发布目标是 **Pulse v0.5.0 / Durable v0.1.0**，以能力补齐、桥接契约定稿和整套联调通过为闸门；之后继续 0.x 迭代，达到项目目标且无可预见的系统性重大变更后，再完善详细文档并发布 v1.0.0、基本固定 API 与实现。
+当前支持单进程中的执行、静态子图组合和显式检查点桥接。独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable) 提供 Store、Codec、Run/Resume、方案 A 子图恢复和本机文件后端：重启认回原父尝试并保留已确认子进度，失败后的新 Retry 使用新作用域；持久化等待与分布式运行管理是后续设计方向。两仓的定位、职责与开发顺序见 [workflow-engine 开发总纲](docs/design/workflow-foundation.md)。已确认的首次桥接发布目标是 **Pulse v0.5.0 / Durable v0.1.0**，以能力补齐、桥接契约定稿和整套联调通过为闸门；之后继续 0.x 迭代，达到项目目标且无可预见的系统性重大变更后，再完善详细文档并发布 v1.0.0、基本固定 API 与实现。
 
 Pulse 只有三样东西：
 
@@ -79,23 +79,58 @@ func main() {
 			return pulse.Set(rc, Summary, fmt.Sprintf("%d docs", len(docs)))
 		}))
 
-	if err := g.Run(context.Background(), in); err != nil {
+	if err := g.DeclareOutput(pulse.NewPort(Summary)); err != nil {
 		panic(err)
 	}
-	// Summary 已到达。
+	e, err := g.NewExecution(context.Background(), in)
+	if err != nil {
+		panic(err)
+	}
+	if err := e.Start(); err != nil {
+		panic(err)
+	}
+	if err := e.Wait(); err != nil {
+		panic(err)
+	}
+	summary, state, err := pulse.ReadOutput(e, Summary)
+	if err != nil {
+		panic(err) // summary 与 state 无效。
+	}
+	switch state {
+	case pulse.SlotStateReady:
+		fmt.Println(summary)
+	case pulse.SlotStateSkipped:
+		fmt.Println("这轮没有摘要")
+	case pulse.SlotStatePending:
+		fmt.Println("可选透传出口未提供")
+	}
 }
 ```
+
+## 可运行示例
+
+[ExampleSub](examples_test.go) 演示父图通过 `In` / `Out` 接入“下载 → 提取 → 摘要”子图，同一份父子图定义用不同输入运行两次，再从每次 Execution 读取声明出口。[ExampleReadOutput](examples_test.go) 同时展示正常结果与正常跳过。
+
+```bash
+go test -count=1 -run 'ExampleSub|ExampleReadOutput' -v .
+```
+
+普通执行的两轮都会运行全部业务节点。需要复用已经确认的历史成果时，保持图定义与端口接线方式，通过独立 `pulse-durable` 的 Run/Resume 接入存储；它的子图恢复示例使用文件后端演示中断后只重进未确认步骤。
+
+输入与接线在入口处核验名字和真实类型：零 Key 不能 Seed 或声明端口，`InRef` / `OutRef` 也要求两端 reflect.Type 相同。同一个普通父值可用 `In(p,a), In(p,b)` 喂两个不同子入口，父侧只记一次依赖，子侧每个入口仍只许绑定一次。节点写出的 nil interface 是合法 ready 值，`Get` / `TryGet` 和子图桥接都保留它；宿主 `Seed` 仍拒绝 nil interface，表达缺值用 `SkipSeed`。
 
 ## 一屏看懂设计
 
 - **数据到达即调度。** `Requires` 是 AND 前置：全部输入到达（就绪或跳过）才判门；**到几个收几个**——只要有一条输入真的到了值就执行 `Run`，一条值都没到才跳过自己。
 - **槽位三态**：`pending` | `ready(值)` | `skipped`。就绪与跳过**都是到达**——跳过不是失败。分支靠对未选中的 `Provide` 调用 `Skip`（选中的那条照常 `Set`）写出；**两边都要表态**，只 Skip 一边、漏了选中的 `Set`，那条输出会被自动跳过，两条下游都不跑。
 - **失败显式。** 节点 error 记录首错并取消整图，**不会**被改写成 `ErrSkipped`。
-- **定义可复用，一次运行一个世界。** `Graph` 是**可复用的静态定义**（节点、依赖、端口、挂载的子图）；一次运行的 ctx / 输入值 / 槽位 / 首错 / 取消域全在新的 `Execution` 里——同一张图可以顺序跑很多次、并发跑很多次、挂在多处当子图，一次运行的取消 / 失败 / 完成不污染定义，也不污染别的运行。跑一次就是 `g.Run(ctx, in)`；要分步控制就自己 `g.NewExecution(ctx, in)` 再 `Start` / `Wait`。跨运行状态（历史、缓存、会话）仍然归调用方，不归引擎：pulse 持有「这一轮正在流动的数据」，不持有历史。对象模型按 [#311](https://github.com/Luo-root/pulse/issues/311) 分阶段改造，**阶段 1（静态组合）/ 2（`Execution` 拆分）/ 3（事务性 `Retry`）都已落地**，阶段 4（快照 / 观测 / YAML 对齐）已实现（#319，主干合入与发布状态以 PR / release 为准），阶段 5 负责迁移与发布收口；契约与逐阶段落地情况见 [`docs/design/object-model.md`](docs/design/object-model.md)。
+- **定义可复用，一次运行一个世界。** `Graph` 是**可复用的静态定义**（节点、依赖、端口、挂载的子图）；一次运行的 ctx / 输入值 / 槽位 / 首错 / 取消域全在新的 `Execution` 里——同一张图可以顺序跑很多次、并发跑很多次、挂在多处当子图，一次运行的取消 / 失败 / 完成不污染定义，也不污染别的运行。跑一次就是 `g.Run(ctx, in)`；要分步控制就自己 `g.NewExecution(ctx, in)` 再 `Start` / `Wait`。跨运行状态（历史、缓存、会话）仍然归调用方，不归引擎：pulse 持有「这一轮正在流动的数据」，不持有历史。[#311](https://github.com/Luo-root/pulse/issues/311) 的静态组合、`Execution` 拆分、事务性 `Retry` 与阶段 4 的快照 / 观测 / YAML 对齐均已实现；契约、迁移缘由与阶段路线见 [`docs/design/object-model.md`](docs/design/object-model.md)，发版由维护者决定。
 - **切面包住「等输入 + 执行」整段**，所以 `Timeout` 能打断还在等数据的节点。**图级切面会继承给子图并往下叠**（继承的在外、子图自己声明的在内，`pulse.WithoutAspects()` 切断）——正因如此**图级切面慎用、尽量用节点级切面**：一个图级 `Timeout(d)` 会同时套在父图普通节点、挂子图那一步（= 整张子图）以及子图里的每个节点上，而**子图天生比普通节点更容易超时**。子图的总时间**先被挂子图那一步上的 `d` 掐死**，不会变成「每个节点各 `d`、加起来 `N*d`」；名额紧时，超时还可能发生在子图拿到名额之前——那一步不占名额，但那个 `d` 从它进入 `Run` 就开始计时。
 - **图即节点：一张图可以当一步。** 唯一的公共入口是 **`pulse.Sub`**：把一张**现成的**子图在装配期挂成父图上的一个节点，父图**不运行**就能递归看完整棵子树（`Topology().Nodes[i].Sub`，路径按挂载位置推导），子图的静态毛病（无来源 / 出口没人产出 / 依赖环）也在装配期就报、报文点明**挂载位置**；**端口是唯一的接线面**——`DeclareInput` / `DeclareOutput` 声明入口与出口，接到子图**内部的中间 Key** 是静态错（出口还多一条：声明了却没人产出的出口，装配期就报，不必等子图跑完才说 `never arrived`——入口与出口同名是**透传**，那不算，所以 `In(父, k)` + `Out(k, 父)` 打在同一条端口上是**合法的**）；**接线的形状判据只有一份**（`Sub` / `Validate` / `Topology().Problems` 共用）：同一条子侧进口只许绑一次（第二次那笔会被幂等首写静默吃掉），进口在子图内部有来源时直接判死（子图内部自己产出的键**不是能绑的端口**，报文点明「它不是子图的输入端口」）——读一遍声明就能定的事，别留到这一步真跑起来；而「一条键既是声明过的进口、又有节点产出它」这个状态**根本建不出来**：`DeclareInput` 与 `Add` 两个方向都在声明那一刻撞来源冲突（一个键恰好一个来源），所以**声明过的进口永远是能用的进口**；**子图需要的进口在这一处漏绑也在装配期拒**（有节点 `Requires` 它，或它是一条被 `Out` 绑出去的透传出口的唯一来源）——不留到父图跑起来才从「建子执行」或 `bridgeOutputs` 那里冒出一句；没人要的进口是**可选**的，不逼调用方编值；组合环在装配期拒（判据只看当前递归路径上的祖先，同一张子图挂多处是合法复用；「查一遍子树」与「挂上」在同一个全局装配临界区里，两个方向对向挂载也进不去环）。运行语义：`In` / `Out` 是**箭头读法**（来源在前、去向在后）声明父侧边界，父图的静态校验（来源 / 环 / 名额）照常生效；子图失败即本节点失败、**首错原样冒泡**（`errors.Is` 成立）；输出就绪的 `Set`、跳过的 `Skip`，**全部跳过**则本节点以 `skipped` 收尾（不是失败）；子图没挂观察者时**自动继承**父图的（手工搭漏挂是**静默**的——父图照常跑完、`Run` 返回 `nil`，而子图的记录一条都不出现）。**挂载位置（`pulse.path`）现在随每条回调由引擎发出来**（`Site.Path`），继承下去的出口直接读它就带层级——不必再按层各建一个出口。**名额整棵树共享**：`WithMaxRunning(n)` = 这棵树里同时最多 n 个节点在 `Run` 里干活（**没人自己声明过时**）——子图没自己声明就继承父图那份，挂子图那一步不吃名额（它整段都在等子图）；子图自己声明 `m` 是**这一支退出父表、自己另算**（`m<=0` = 这一子树不限），不是「在父表之上再卡一道更紧的上限」。**子图是定义，可以挂多处**：同一张子图**挂两处**时两处各跑一份（每个挂载位置一份自己的子执行——ctx / 槽位 / 首错互不干扰）；`Retry` 装在这一步上也照装照跑——每一次尝试各建一份**新的子执行**，第一次那轮的桥回结果随它自己那条 **attempt 写集**一起作废，父侧只拿得到成功那一次的输出版本（声明式装图里 `graph:` 节点上的 `retry:` 同理，`Load` 期不拒）。节点 id 不能带 `/`——它是 `pulse.path` 的层级分隔符，`a/b` 与「`a` 里嵌 `b`」会拼出同一条 path——装配期就拒。
-- **装配糖只收名字、不改语义。** `pulse.FanOut` / `pulse.Join` 把「一个输入 → N 个并行实例」与「N 路同类型 → 一束」收进函数签名（`pulse.Keys(...)` + `pulse.Batch[T]`）：每条输入都带**来源名**（`Batch.Items`，缺项也占一行），要整束严格就 `m.WaitAll()`，要单路严格就 `m.Get(k)`（缺这一路回 `*SkipError`、传了没声明的 Key 回 `ErrUndeclared`），两个回调都拿到**本节点自己的 `*RunCtx`**（长任务靠 `rc.Context()` 感知取消）。`pulse.NoValue()` 是**节点级**跳过，与只跳一条输出的 `Skip(rc, key)` 不是一回事；`FanOut` 的 N 个 worker **整批一次校验、一次提交**，装不完就整个失败、图上不留半个 fan-out。糖产出的图与手写 `NewNode` 的图观测记录**逐字段一致**（有等价锚用例钉着）。**编译期锁元素类型与个数，锁不住同类型槽位的顺序**（`Keys(a,b)` 与 `Keys(b,a)` 都编译，实测）——按来源 Key 取不受影响，这条边界写在设计文档里。**接线之外还有三件**：`pulse.Only(rc, k, v)` 一句话写排他分支（写这一条、本节点其余出口全作废——手写漏表态时两条下游会都不跑而整轮仍报成功）；`pulse.Produce` / `pulse.Consume` 把流式生产 / 消费的 channel 创建、关闭责任、取消响应与循环收进一次调用（生产端**活着发完**，消费端用 `select` 而不是 `for range`：后者会在取消之后把缓冲区算完、还报成功）；`pulse.Tee` 把一根流**复制**给 N 个下游（普通值不需要它——一个 `Provides` 加 N 个 `Requires` 本来就是广播；channel 才会被瓜分）。流式三件在装配期做快速检查、`Start` 再按**整张流图**复核：流节点与**每条流出口的读取者**（消费者可以手写）要同时有名额，每条流出口得有人消费、且**只喂一个下游**（漏挂下游、或两个读取者静默瓜分值，都会在 `Start` 就被拒，不留到运行时卡死）；另外**写入暂存类的切面（`Retry`）不能套在流生产端上**——那条 channel 要等这次尝试提交之后才发布，而消费端在拿到它之前只能等着，双方互等会一直挂到 ctx 到期（实测过），所以那里是**运行期当场报错、点名改法**，不是静默挂死。
+- **装配糖只收名字、不改语义。** `pulse.FanOut` / `pulse.Join` 把「一个输入 → N 个并行实例」与「N 路同类型 → 一束」收进函数签名（`pulse.Keys(...)` + `pulse.Batch[T]`）：每条输入都带**来源名**（`Batch.Items`，缺项也占一行），要整束严格就 `m.WaitAll()`，要单路严格就 `m.Get(k)`（缺这一路回 `*SkipError`、传了没声明的 Key 回 `ErrUndeclared`），两个回调都拿到**本节点自己的 `*RunCtx`**（长任务靠 `rc.Context()` 感知取消）。`pulse.NoValue()` 是**节点级**跳过，与只跳一条输出的 `Skip(rc, key)` 不是一回事；`FanOut` 的 N 个 worker **整批一次校验、一次提交**，装不完就整个失败、图上不留半个 fan-out。糖产出的图与手写 `NewNode` 的图观测记录**逐字段一致**（有等价锚用例钉着）。**编译期锁元素类型与个数，锁不住同类型槽位的顺序**（`Keys(a,b)` 与 `Keys(b,a)` 都编译，实测）——按来源 Key 取不受影响，这条边界写在设计文档里。**接线之外还有三件**：`pulse.Only(rc, k, v)` 一句话写排他分支（写这一条、本节点其余出口全作废——手写漏表态时两条下游会都不跑而整轮仍报成功）；`pulse.Produce` / `pulse.Consume` 把流式生产 / 消费的 channel 创建、关闭责任、取消响应与循环收进一次调用（生产端**活着发完**，消费端用 `select` 响应取消，避免 `for range` 在取消后继续处理缓冲区；Wait 独立报告执行上下文取消）；`pulse.Tee` 把一根流**复制**给 N 个下游（普通值不需要它——一个 `Provides` 加 N 个 `Requires` 本来就是广播；channel 才会被瓜分）。流式三件在装配期做快速检查、`Start` 再按**整张流图**复核：流节点与**每条流出口的读取者**（消费者可以手写）要同时有名额，每条流出口得有人消费、且**只喂一个下游**（漏挂下游、或两个读取者静默瓜分值，都会在 `Start` 就被拒，不留到运行时卡死）；另外**写入暂存类的切面（`Retry`）不能套在流生产端上**——那条 channel 要等这次尝试提交之后才发布，而消费端在拿到它之前只能等着，双方互等会一直挂到 ctx 到期（实测过），所以那里是**运行期当场报错、点名改法**，不是静默挂死。
 - **观测只走一个 seam。** 引擎发出图级两条（开始 / 结束，把本轮夹在中间）与每节点至多三条回调；把它们折成记录是 `observe` 的事。
+
+流校验跨子图沿绑定追到实际消费者，按共享额度池统计（Sub 不占额），同一条 channel 换名也不允许两个独立读者静默瓜分。内置流的关闭、子图完成和 Wait 后 Out 桥回也参与静态等待环判断；有限缓冲与无限额度不能放过这类互等。业务回调或切面里隐藏的等待仍由调用方负责，详见编排指南。
 
 完整设计（编排 + 观测）：[`docs/design/pulse.md`](docs/design/pulse.md)。
 
@@ -124,6 +159,38 @@ if err := e.Wait(); err != nil {
 
 仅查看 YAML 时，用 `pulse/yaml.Analyze(data, LoadOptions{GraphID: "demo"})`，无需登记工厂。它共用 Load 的装配与结构判据；类型是文档标签，无法推断时留空，真实 Go 类型与值仍由 Load / SeedPlan.Inputs 对账。详见 [YAML 包说明](yaml/README.md)。这些读取不推进执行，也不增加 Observer 事件。
 
+## 取得本轮结果
+
+需要业务值时，先用 `g.DeclareOutput(pulse.NewPort(result))` 声明公共出口，再从这一轮执行读取；不必增加一个仅为取值的输出节点，也不必用共享闭包保存结果。
+
+```go
+// e 已成功 Start / Wait，result 是本图声明过的 Key[T] 出口。
+value, state, err := pulse.ReadOutput(e, result)
+if err != nil {
+    panic(err)
+}
+switch state {
+case pulse.SlotStateReady:
+    fmt.Println(value) // 0、空串或 nil 也可以是真正的 ready 值。
+case pulse.SlotStateSkipped:
+    fmt.Println("这轮没有这个结果")
+case pulse.SlotStatePending:
+    fmt.Println("可选透传出口未提供")
+}
+```
+
+`ReadOutput` 立即返回，只接受本执行所属图声明过的同名同类型出口。同名同类型的 `Key[T]` 等价；内部 Key 与类型不符的键返回 `ErrUndeclared`。正常 `skipped` 和未喂的可选透传 `pending` 都返回 nil error，不把缺值当失败，也不把 pending 改写成 skipped。
+
+结果在 Wait 收尾确定之后可读（GraphFinished 回调里也可读）。尚未收尾时不返回部分值；真实失败或取消返回执行原因，`errors.Is` 可判断。任何 error 非 nil 时，value 和 state 均无效；正常收尾的 ctx 释放不影响结果。slice、map、指针等仍是原业务值，不深拷贝；宿主负责共享对象的并发安全。读取不改变槽位、不发事件，也不把业务值加入 Snapshot 或默认记录。可运行示例见 [ExampleReadOutput](examples_test.go)。
+
+## 检查点执行与恢复
+
+需要跨进程恢复时，使用独立的 `pulse-durable` Run/Resume；同一份 Graph/Node/Key 定义继续复用。Core 的 `WithExecCheckpoint` 在完整节点及切面链外暂存输出，Store 同步确认完整检查点之后才发布，`RestoreNodes` 在启动前整批校验并恢复已确认节点。
+
+方案 A 保留子图进度：下载和提取已确认、摘要时退出，恢复仅重做未确认的摘要；三个子节点已完成而父步骤未确认，恢复也不重做三个子业务。父 Retry 明确失败后，新尝试使用新持久作用域，旧子成果不会混入。最终真实失败的运行不会通过 Resume 重新获得 Retry 预算；进程中断或宿主取消则认回活跃尝试。
+
+首期支持注册 Codec 的非流式值，包含合法零值、nil interface 与 typed nil；不支持 channel、持久等待或分布式派发。MemoryStore 验证协议，文件后端和真实退出/重启用例验证本机进程恢复。副作用仍由业务提供幂等或事务。完整机制与边界见 [检查点桥接与子图恢复](docs/design/checkpoint.md)。
+
 ## 设计理念
 
 上一条「一屏看懂设计」讲的是**形状**，这里讲**为什么**——完整版见 [`docs/design/philosophy.md`](docs/design/philosophy.md)，站点上也有[设计理念](https://luo-root.github.io/pulse/guide/philosophy)一页。
@@ -134,6 +201,10 @@ if err := e.Wait(); err != nil {
 - **错误显式，且在最早能判定处报。** `Start()`（一次运行的启动；`Run` 内部同样走它）直接拒那几类静态可判的死图（无来源、声明的出口没人产出、依赖成环），`Validate` 让装配期反复问（**通过即封口**：这张定义**连同它挂着的子图整棵**从此不再变化——`Start()` 成功同样封整棵树；校验失败一层都不封，补上缺的那块再问一次正是要支持的用法），声明式装图连子图也在 `Load` 那一刻校验——按**引用点**各一条，报文点明**挂载路径**（谁也引用不到的 spec 例外：它没有挂载点就没有接口面，「这条键没人喂」在那里判不了，所以只查工厂名 / 重复 id / 来源冲突 / 依赖环 / 流式那几条）。
 - **观测与语义同源，且观测不改语义。** 事件与状态在同一点写；观察者抛 panic 不会变成节点失败；业务维度只能走 `Attrs`。
 - **引擎零依赖，能力分层。** `pulse` 只用标准库；观测在 `observe`、声明式装图在 `yaml`，依赖方向单向。
+
+## 仓库布局
+
+根目录保留 `pulse` 生产代码与包内白盒测试；公开 API 回归测试放在 `tests/`。外部可运行示例集中在根目录 `examples_test.go`，由 godoc 收录。`observe/` 与 `yaml/` 是各自独立的公开包；`docs/design/` 保留五份设计文档，`site/guide/` 与 `site/en/guide/` 提供对应的中英文指南。
 
 ## 构建与测试
 
@@ -151,7 +222,7 @@ go test -race -count=1 ./...
 - workflow-engine 定位与两仓开发总纲：[`docs/design/workflow-foundation.md`](docs/design/workflow-foundation.md)
 - 设计文档（编排 + 观测）：[`docs/design/pulse.md`](docs/design/pulse.md)
 - 理念与设计思想：[`docs/design/philosophy.md`](docs/design/philosophy.md)
-- 对象模型与契约（`Graph` / `Execution`，迁移中）：[`docs/design/object-model.md`](docs/design/object-model.md)
+- 对象模型与迁移契约（`Graph` / `Execution`）：[`docs/design/object-model.md`](docs/design/object-model.md)
 - API 契约写在 godoc 里：每个导出符号都带一条。
 
 ## 许可证
