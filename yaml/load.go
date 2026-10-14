@@ -295,6 +295,11 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 				return nil, nil, err
 			}
 		}
+		// seed 已明确是外部来源，即使没有挂载点，也不能与节点产出同一条键。
+		// 声明进校验图，让核心判来源冲突；未知来源仍由 declareSpecInputs 补成可能的入口。
+		if err := declareSeedInputs(g, spec.Seeds, reg); err != nil {
+			return nil, nil, fmt.Errorf("pulse/yaml: graph %q seeds: %w", name, err)
+		}
 		if err := a.declareSpecInputs(g, name); err != nil {
 			return nil, nil, err
 		}
@@ -355,8 +360,8 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 
 // declareSeedInputs 把 `seeds:` 里那几条键声明成**这一层的入口**。
 //
-// 根层用它（见 Load）；子图那一层的对应物是 `declarePorts` 里那段（子图自己 seeds 的键
-// 也是它的入口，值来自挂载点上的 `Fix` 绑定）。
+// 根层与未引用模板的校验图用它（见 Load）；已引用子图的对应物是 `declarePorts` 里那段
+// （子图自己 seeds 的键也是它的入口，值来自挂载点上的 `Fix` 绑定）。
 func declareSeedInputs(g *pulse.Graph, seeds []SeedSpec, reg *pulse.Registry) error {
 	if len(seeds) == 0 {
 		return nil
