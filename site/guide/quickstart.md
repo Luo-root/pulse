@@ -1,19 +1,25 @@
 # 快速开始
 
-Pulse 是一个**数据到达驱动的图引擎**，外加一层**图观测**。本页跑通最短链路：**声明 Key 与端口 → 装节点 → 创建 Execution → `Start` / `Wait` → `ReadOutput` → 挂观测**。
+本教程创建一条“文档列表 → 摘要 → 报告”的工作流，并从执行结果读取报告。完成后，你会知道如何声明数据、添加节点、提供输入和运行流程。
 
-## 环境要求
+## 开始之前
 
-- **Go 1.25.0+**（工具链缺失时自动下载）
-- 没有别的依赖：引擎只用标准库；本页示例只需要根包
+需要 Go 1.25+。示例使用本站对应的开发 API；如果已经安装 v0.4.1，请先阅读[安装与版本](installation.md)。
 
-## 安装
+在一个新目录中初始化模块：
 
-```bash
-go get github.com/Luo-root/pulse
+```sh
+mkdir pulse-quickstart
+cd pulse-quickstart
+go mod init example.com/pulse-quickstart
+go get github.com/Luo-root/pulse@1f67045d6c42
 ```
 
-## 一张最小的图
+以下所有命令在该目录执行。
+
+## 1. 创建程序
+
+新建 `main.go`，写入完整代码：
 
 ```go
 package main
@@ -21,141 +27,139 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/Luo-root/pulse"
 )
 
-var (
-	Docs    = pulse.NewKey[[]string]("docs")
-	Summary = pulse.NewKey[string]("summary")
-	Report  = pulse.NewKey[string]("report")
-)
-
 func main() {
-	g, err := pulse.New("docs-pipeline", "文档摘要流水线")
-	if err != nil {
-		panic(err)
-	}
+	documents := pulse.NewKey[[]string]("documents")
+	summary := pulse.NewKey[string]("summary")
+	report := pulse.NewKey[string]("report")
 
-	// DeclareInput：声明 docs 是这张图的入口——先声明，运行时才喂得进去。
-	must(g.DeclareInput(pulse.NewPort(Docs)))
+	g, err := pulse.New("documents", "生成文档报告")
+	check(err)
+	check(g.DeclareInput(pulse.NewPort(documents)))
+	check(g.DeclareOutput(pulse.NewPort(report)))
 
-	// Seed：把这一轮运行的值写进 Inputs——喂值之前，那条键必须已经声明成入口。
+	check(g.Add(pulse.NewNode("summarize", "整理文档列表",
+		pulse.Requires(documents), pulse.Provides(summary),
+		func(rc *pulse.RunCtx) error {
+			docs, err := pulse.Get(rc, documents)
+			if err != nil {
+				return err
+			}
+			text := fmt.Sprintf("%s (%d documents)", strings.Join(docs, ", "), len(docs))
+			return pulse.Set(rc, summary, text)
+		})))
+
+	check(g.Add(pulse.NewNode("format", "生成最终报告",
+		pulse.Requires(summary), pulse.Provides(report),
+		func(rc *pulse.RunCtx) error {
+			text, err := pulse.Get(rc, summary)
+			if err != nil {
+				return err
+			}
+			return pulse.Set(rc, report, "Report: "+text)
+		})))
+
 	var in pulse.Inputs
-	must(pulse.Seed(&in, Docs, []string{"pulse 只做编排与观测", "槽位三态：跳过也是到达"}))
-
-	// summarize 等 docs 到达后才进入 Run。
-	must(g.Add(pulse.NewNode("summarize", "把 docs 折成一段摘要",
-		pulse.Requires(Docs),
-		pulse.Provides(Summary),
-		func(rc *pulse.RunCtx) error {
-			docs, err := pulse.Get(rc, Docs)
-			if err != nil {
-				return err
-			}
-			return pulse.Set(rc, Summary, fmt.Sprintf("%d 段 / %d 字", len(docs), len([]rune(strings.Join(docs, "")))))
-		})))
-
-	must(g.Add(pulse.NewNode("report", "把摘要包成一句报告",
-		pulse.Requires(Summary),
-		pulse.Provides(Report),
-		func(rc *pulse.RunCtx) error {
-			summary, err := pulse.Get(rc, Summary)
-			if err != nil {
-				return err
-			}
-			return pulse.Set(rc, Report, "报告："+summary)
-		})))
-	// 声明公共出口；宿主从这一轮 Execution 读取，结果不用存进共享闭包。
-	must(g.DeclareOutput(pulse.NewPort(Report)))
-
+	check(pulse.Seed(&in, documents, []string{"alpha", "beta"}))
 	e, err := g.NewExecution(context.Background(), in)
-	must(err)
-	must(e.Start())
-	must(e.Wait())
-	report, state, err := pulse.ReadOutput(e, Report)
-	must(err) // error 非 nil 时，report 和 state 都无效。
-	switch state {
-	case pulse.SlotStateReady:
-		fmt.Println(report)
-	case pulse.SlotStateSkipped:
-		fmt.Println("这轮没有报告")
-	case pulse.SlotStatePending:
-		fmt.Println("可选透传出口未提供")
+	check(err)
+	check(e.Start())
+	check(e.Wait())
+
+	value, state, err := pulse.ReadOutput(e, report)
+	check(err)
+	if state != pulse.SlotStateReady {
+		log.Fatalf("expected a report, got %s", state)
 	}
+	fmt.Println(value)
 }
 
-func must(err error) {
+func check(err error) {
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 }
 ```
 
-保存为 `main.go`，`go run ./main.go`：
+`check` 仅用于让这个独立程序在错误时报告原因并退出。节点函数里的错误返回给 Pulse，由执行统一处理；在服务中，应把装配和执行错误返回给调用方。
+
+## 2. 运行并检查结果
+
+```sh
+go run .
+```
+
+预期输出：
 
 ```text
-报告：2 段 / 24 字
+Report: alpha, beta (2 documents)
 ```
 
-这段代码把定义、一次运行与结果读取分开：
+数据依赖是 `documents → summarize → summary → format → report`。`format` 只有在 `summary` 到达后才能处理数据；这由 `Requires` / `Provides` 决定，与 `Add` 的先后顺序无关。
 
-| 你写的 | 它是什么 |
-|---|---|
-| `pulse.NewKey[T]("docs")` | **Key**：类型化数据槽。名字用于诊断与 YAML 对账，类型给编译期安全；同名必须以同一个 `T` 注册 |
-| `g.DeclareInput(...)` + `pulse.Seed(&in, Docs, …)` | **入口 + Seed**：`DeclareInput` 声明「这条键从外面来」，`Seed` 把**这一次运行**的值写进 `Inputs`——每个 Key 只允许一个来源（声明过的入口，或恰好一个节点的 `Provides`；两处都产 → `ErrDuplicateSource`） |
-| `pulse.NewNode(id, description, Requires, Provides, run)` | **Node**：只声明读哪些槽、写哪些槽。它**不声明**下一个节点是谁 |
-| `g.NewExecution(ctx, in)` + `e.Start()` / `e.Wait()` | **Graph + Execution**：图是定义，执行是这一轮；`Wait` 等全部节点终止，返回首错或终态确定前的真实取消，**不含正常跳过**；业务体仍需协作退出 |
-| `g.DeclareOutput(...)` + `pulse.ReadOutput(e, Report)` | **出口 + 结果**：只读这一轮声明的公共出口；ready、正常 skipped 和未喂的可选透传 pending 都是正常状态，error 非 nil 时值与状态无效 |
+## 3. 理解关键步骤
 
-## 数据到达即调度
+### 声明数据与接口
 
-- 节点在**自己的 goroutine** 里阻塞在输入槽上，输入到达即进入 `Run`——你不需要给节点排序，也不存在拓扑排序这一步；
-- 拓扑是**隐式的**：谁写 `summary`、谁读 `summary`，依赖就在那里。没有边对象，没有调度循环；
-- `Requires` 是 **AND** 前置：全部输入到达（就绪或跳过）才判门——**到几个收几个**，只要有一条真的到了值就执行（一条值都没到才不执行，见[核心概念](/guide/concepts)）。
+`NewKey[[]string]("documents")` 创建带类型的键。键的名字用于识别数据，类型决定 `Get` 和 `Set` 的参数。名称相同且类型相同的键表示同一项数据。
 
-## 定义可复用，一次运行一个世界
+`DeclareInput` 声明工作流接受宿主提供的 `documents`；`DeclareOutput` 声明宿主可以读取 `report`。`summary` 仅在内部流动，因此无需声明端口。
 
-`Graph` 是**可复用的静态定义**（节点、依赖、端口、挂载的子图），不是一次运行本身。这一条是对外契约，不是实现细节：
+### 添加处理节点
 
-- 同一张图可以顺序跑很多次、并发跑很多次、挂在多处当子图；一次运行的取消 / 失败 / 完成不污染定义，也不污染别的运行；
-- `g.Run(ctx, in)` 每次调用都是**独立的一次运行**（内部就是 `NewExecution` + `Start` + `Wait`）；要分步控制就自己建一份 `Execution`，它的 `Start()` 只能成功一次，槽位一旦到达即关闭、不会重开；
-- 跨运行的状态（历史、缓存、会话）**归调用方**，引擎不持有。理由见[核心概念](/guide/concepts)。
+`NewNode` 接收节点 ID、描述、输入声明、输出声明和处理函数。处理函数通过 `RunCtx` 读取声明过的输入、写入声明过的输出。图中的一项数据只有一个来源；重复生产同一键会在装配时返回错误。
 
-## 加一层观测：三行
+### 提供这一次的输入
+
+`Seed` 将值写入 `Inputs`，不会修改图定义。下一次请求应创建自己的 `Inputs`，再创建新的 `Execution`。
+
+如果本轮明确没有某项输入，用 `SkipSeed` 表达正常跳过。未提供一个必需入口会在执行创建或启动时被拒绝，不会让节点无限等待。[输入与输出](inputs-outputs.md)说明可选入口与三态结果。
+
+### 创建并完成执行
+
+`NewExecution` 创建执行句柄，`Start` 校验并开始工作，`Wait` 等全部节点结束并确定终态。成功启动会封口整棵图定义；封口后仍可重复执行这份定义，但不能继续添加节点或修改端口。
+
+`ReadOutput` 在 `Wait` 收尾后读取公共出口。先检查错误，再判断状态：`ready` 是值，`skipped` 是正常缺值；可选透传出口还可能保持 `pending`。本示例要求报告存在，所以显式检查了 `ready`。
+
+## 4. 使用不同输入再次运行
+
+保留图定义，创建新的输入与执行即可。下面是可放在上述 `main` 函数末尾的片段：
 
 ```go
-sink := observe.NewLineSink(os.Stdout, observe.WithImmediate())
-defer sink.Flush()
-
-obs, err := observe.NewRecordObserver(observe.ObserveConfig{
-	Sink:    sink,
-	HostID:  "quickstart",
-	TraceID: observe.NewTraceID(),
-})
-g, err := pulse.New("docs-pipeline", "文档摘要流水线", pulse.WithObserver(obs))
+var another pulse.Inputs
+check(pulse.Seed(&another, documents, []string{"gamma"}))
+ex, err := g.NewExecution(context.Background(), another)
+check(err)
+check(ex.Start())
+check(ex.Wait())
+nextReport, nextState, err := pulse.ReadOutput(ex, report)
+check(err)
+fmt.Println(nextReport, nextState)
 ```
 
-加上这三行后，同一张图的真实输出（运行级两条夹住节点四条；时间戳 / trace / 耗时随运行变化）：
+新增输出为：
 
 ```text
-PULSE | 2026/10/09 - 10:42:50.372 | running    |         - | pulse.graph_started | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770372309700-d47dc250-1
-PULSE | 2026/10/09 - 10:42:50.388 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770372309700-d47dc250-1
-PULSE | 2026/10/09 - 10:42:50.388 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770372309700-d47dc250-1
-PULSE | 2026/10/09 - 10:42:50.388 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791513770372309700-d47dc250-1
-PULSE | 2026/10/09 - 10:42:50.388 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791513770372309700-d47dc250-1
-PULSE | 2026/10/09 - 10:42:50.388 | completed  |   15.80ms | pulse.graph_finished | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770372309700-d47dc250-1
+Report: gamma (1 documents) ready
 ```
 
-引擎每一轮另有两条运行级回调（开始 / 结束），`observe` 把它们折成**运行级两条**：`pulse.graph_started` 排在任何节点记录之前、`pulse.graph_finished` 排在全部之后，`Status` 是运行终态（跳过是节点级的事实，有节点跳过**不**让整轮变失败）。节点两条是**分段计时**——等待段（等输入花了多久）与执行段（`Run` 花了多久）：等待段的 `Status` 恒为 `running`，`Duration` 是等待耗时（`summarize` 的输入由 `Seed` 预先写入，所以是 `-`）；执行段的 `Status` 是结束原因，`Duration` 是 `Run` 本身的耗时。
+这里的第二次执行有自己的槽位、状态和取消域。不要对同一个 Execution 再次启动，也不需要重置 Graph。
 
-这轮两个节点本身都没花时间（节点段全被取整成 `-`），整轮那条却报了 `15.80ms`：运行级的窗口覆盖「提交节点 → 全部终止」，运行时与出口写出的开销都在里面——它的口径与边界差别见[图观测](/guide/observability)。
+## 常见问题
+
+**运行前就报输入或来源错误。** 核对 `DeclareInput`、`Requires` 和 `Seed` 使用的是同名同类型 Key，且该键没有同时由内部节点产生。
+
+**`ReadOutput` 返回未声明错误。** 宿主只能读取声明过的出口。将需要对外提供的键传给 `DeclareOutput`，并在启动前完成声明。
+
+**想查看日志或进度。** 继续阅读[图观测](observability.md)。`Snapshot` 用于查询状态，业务结果仍从声明出口读取。
 
 ## 下一步
 
-- **核心概念**：Key / Node / Graph / 槽位三态 / 切面 → [核心概念](/guide/concepts)
-- **编排**：分支、汇聚、超时、重试、限流 → [编排](/guide/orchestration)
-- **声明式装图**：拓扑归 YAML → [声明式装图](/guide/assembly)
-- **图观测**：出口选择、自带列、隐私边界 → [图观测](/guide/observability)
-- **逐包 API**：三个包的完整文档（与仓库 README 同源） → [包文档](/packages/)
+- [核心概念](concepts.md)：理解定义、执行和数据三态。
+- [分支与汇聚](branching.md)：根据条件输出，并选择汇聚策略。
+- [组合子图](subgraphs.md)：把完整流程复用为一个步骤。

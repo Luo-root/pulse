@@ -1,249 +1,174 @@
-# Graph observation
+# Observation and diagnostics
 
-Observation is an **independent layer**: the engine knows no observation package and only exposes one `Observer` seam; `pulse/observe` implements that seam, folding callbacks into structured records and writing them to an egress. A host that does not need observation imports the root package alone.
+This page is for developers inspecting progress, recording outcomes, or diagnosing flow problems. It requires Go 1.25+ and familiarity with [inputs and outputs](./inputs-outputs.md). Examples target the development version.
 
-## Read progress at any time: execution snapshots
+Pulse offers three complementary views: `Topology` inspects the definition, `Snapshot` reads one execution's current state, and `Observer` receives lifecycle callbacks. `ReadOutput` separately provides business results. Structure and progress views contain no business values.
 
-`e.Snapshot()` reads one run's current state; Observer records event history, so they complement each other. No subscription is needed, and reading neither advances execution nor emits events. Each run has a distinct `Graph.Execution`, matching the records' `pulse.execution`; `Graph.Path`, `Site.Path` and the static child tree's `Graph.Path` share the same mounting paths.
+## Complete example: record two independent runs
+
+The program reuses one graph twice. Each run creates a fresh observer configuration and TraceID, keeping request correlation separate from execution identity. Save it as `main.go` in an empty directory:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/Luo-root/pulse"
+	"github.com/Luo-root/pulse/observe"
+)
+
+func run() error {
+	result := pulse.NewKey[int]("result")
+	g, err := pulse.New("observe-demo", "Record independent executions")
+	if err != nil {
+		return err
+	}
+	if err := g.DeclareOutput(pulse.NewPort(result)); err != nil {
+		return err
+	}
+	if err := g.Add(pulse.NewNode("answer", "Produce the answer", nil,
+		pulse.Provides(result), func(rc *pulse.RunCtx) error {
+			return pulse.Set(rc, result, 42)
+		})); err != nil {
+		return err
+	}
+	for i := 1; i <= 2; i++ {
+		sink := &observe.MemorySink{}
+		obs, err := observe.NewRecordObserver(observe.ObserveConfig{
+			Sink: sink, HostID: "docs", TraceID: observe.NewTraceID(),
+		})
+		if err != nil {
+			return err
+		}
+		e, err := g.NewExecution(context.Background(), pulse.Inputs{},
+			pulse.WithExecObserver(obs))
+		if err != nil {
+			return err
+		}
+		defer e.Cancel()
+		if err := e.Start(); err != nil {
+			return err
+		}
+		if err := e.Wait(); err != nil {
+			return err
+		}
+		value, state, err := pulse.ReadOutput(e, result)
+		if err != nil {
+			return err
+		}
+		progress := e.Snapshot()
+		fmt.Printf("run=%d status=%s value=%d state=%s records=%d\n",
+			i, progress.Graph.Status, value, state, sink.Len())
+	}
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+Run in that directory:
+
+```sh
+go mod init example.com/pulse-observation
+go get github.com/Luo-root/pulse@1f67045d6c42
+go run .
+```
+
+Expected output:
+
+```text
+run=1 status=completed value=42 state=ready records=4
+run=2 status=completed value=42 state=ready records=4
+```
+
+Each run records graph start, node wait completion, node run completion, and graph finish. Graph IDs match across runs; Execution IDs and TraceIDs differ. When Wait returns, the graph finish callback has also returned. An asynchronous sink still needs host Flush or Close to drain actual delivery.
+
+## Identify the definition, execution, and mount
+
+Every engine callback carries `pulse.Site`:
+
+| Field | Meaning | Record attribute |
+|---|---|---|
+| `Graph` | Definition identity supplied to New | `pulse.graph` |
+| `Execution` | This execution's identity, unique per instance within the process | `pulse.execution` |
+| `Path` | Mount position; empty at root, nested as `outer/inner` | `pulse.path` when nonempty |
+
+Two mounts of one child may share Graph but have different Path and Execution values. Retry at one mount creates another child Execution ID. An Execution ID is not a durable RunID across processes.
+
+Children inherit observers by default. One sink can serve the complete execution tree without an observer per layer. `ObserveConfig.Path` is only a fallback when Site has no path and is normally empty for engine runs. A nonempty fallback also applies to root records.
+
+## Inspect progress and Mermaid
+
+This fragment belongs in a host program with existing `g`, `e`, and the `fmt` import:
 
 ```go
 progress := e.Snapshot()
-staticDiagram := g.Topology().Mermaid()
-statusDiagram := g.Topology().Mermaid(pulse.WithMermaidSnapshot(progress))
-_, _ = staticDiagram, statusDiagram
+fmt.Println(progress.Graph.Status)
+fmt.Println(g.Topology().Mermaid())
+fmt.Println(g.Topology().Mermaid(pulse.WithMermaidSnapshot(progress)))
 ```
 
-Snapshot nodes follow declaration order. Both ready and skipped inputs have arrived: a waiting node with pending inputs is waiting for them; once all inputs arrive it is waiting for a chance to enter Run. Aspects can extend this wait, so this alone does not prove it is queued for a quota. States change before callbacks, which can read that change; Retry neither regresses states nor repeats events.
+Topology includes all declared ports, nodes, binds, the static child tree, and `Problems`. Reading does not seal definitions and can report problems during incomplete assembly. Mermaid derives its structure from Topology and adds no execution state without a snapshot.
 
-Snapshots contain no business values. Nodes and slots are sampled separately, so a running node may already have ready or skipped outputs. Graph status is pending after creation, running after a successful Start, and terminal when Wait finalizes the run. Child is the live `*Execution` from the latest created attempt, retained after failure or cancellation and nil only when none was created. Calling `progress.Nodes[i].Child.Snapshot()` reads that child at a different time.
+Snapshot nodes follow declaration order. A waiting node with pending inputs is waiting for data. If all inputs arrived, it is waiting for a chance to enter its body, possibly due to quota or aspects. This does not identify a specific queue.
 
-Topology includes the complete declared interface, binds and static child tree. Mermaid derives structure only from that view and adds no colors without a snapshot. With a snapshot, it matches states by graph ID + Path + Node ID and samples children separately; fixed values and error text stay out of the diagram. Registry-free Analyze can inspect YAML without factories; see [YAML assembly](/en/packages/yaml/).
+A snapshot is not an atomic sample of every layer and slot, and it contains no business values. A running node may have ready outputs while others remain pending. Unpublished Retry staging does not appear in snapshots.
 
-## Business results and progress
+`NodeState.Child` is the latest child execution already created. It remains available after failure or cancellation and is nil when no child was created. Calling its Snapshot samples another time. Mermaid with a snapshot matches states by graph ID, Path, and node ID and samples children separately. Fixed values and error text are excluded from the diagram.
 
-Snapshots never contain business values. Use `pulse.ReadOutput(e, result)` for a declared output with the matching name and type; the main path is successful Start / Wait followed by `value, state, err`. Ready includes zero values, skipped means normal absence, and an unfed optional pass-through stays pending. The latter two are not execution failures; reading neither waits nor changes slots.
+## Choose a record sink
 
-An unfinished, failed or canceled run returns no partial business value; value/state are invalid on error. Normal context cleanup after Wait does not pollute successful results, and GraphFinished can read the finalized result. Mutable business objects are not deep-copied, so hosts still own synchronization. See the [root README](https://github.com/Luo-root/pulse/blob/main/README_en.md#read-this-runs-results) for a complete usage example.
+`observe.NewRecordObserver` converts engine callbacks into `Record` values delivered through `Sink.Write(Record)`.
 
-## Observing restored results
-
-Checkpoint recovery creates a new Execution. A confirmed node skips its Aspect chain and body, changes to its terminal state and emits one Finished after GraphStarted. It does not invent Waiting/Running, an uncreated Child or child lifecycle events. Snapshot describes the objects actually created in this run and still contains no business values.
-
-RecordObserver does not invent business timing for a restored completed/skipped node's lone Finished. The separate Durable layer reports restoration through `EventRestored` and persistent records. A lone Finished for a failure or cancellation before waiting instead produces `pulse.node_finished`, with node attribution and zero duration. Reliable checkpoint hooks control execution and can prevent publication; this is distinct from read-only Observer panic isolation. See the [bridge contract](https://github.com/Luo-root/pulse/blob/main/docs/design/checkpoint.md) (Chinese) for plan A scopes, retry budgets and commit boundaries.
-
-## The engine's seam
-
-```go
-type Observer interface {
-	OnGraphStarted(site Site)
-	OnGraphFinished(site Site, reason NodeFinishReason, err error)
-	OnNodeWaiting(site Site, nodeID string)
-	OnNodeRunning(site Site, nodeID string)
-	OnNodeFinished(site Site, nodeID string, reason NodeFinishReason, err error)
-}
-```
-
-The contract has five clauses, all of them frozen surface:
-
-1. **Callback counts**: run level `Started ≤ 1`, `Finished ≤ 1`; per node `Waiting ≤ 1`, `Running ≤ 1`, `Finished = 1`. `Retry`'s several attempts **do not re-emit**;
-2. **Read-only**: an observer's panic or error **must not** be promoted into a node failure (the engine side already swallows it);
-3. **Concurrency-safe**: the three node callbacks run synchronously **on the node's own goroutine**, the two run-level ones on the **`Start` / `Wait` caller's goroutine** — so an implementation must be concurrency-safe, and must not block for long. **Do not call this graph's `Start` / `Wait` from inside a callback**: the callback runs on their calling path, so it is a goroutine waiting on itself and it deadlocks;
-4. **The timing is a bracket**: `GraphStarted` precedes **every** node callback of the run (a graph that fails start validation never started, so nothing is emitted), and `GraphFinished` follows **all** of them; a host that calls `Start` without `Wait` never sees `finished`, while concurrent or repeated `Wait` calls all return only after that emission returned (by the time any `Wait` returns, the run's finish record has landed in the egress);
-5. **The position comes from the engine**: every callback carries a `Site` — the definition identity (`Site.Graph`) + this run's identity (`Site.Execution`) + the mounting position (`Site.Path`) — so an implementation never has to carry them in from constructor arguments of its own; two runs of one graph are told apart by `Site.Execution`.
-
-The observer defaults to no-op (no callbacks when none is attached; snapshot state bookkeeping still exists); `pulse.WithObserver(...)` attaches one (a run can override it with `WithExecObserver(...)`: this run > the definition's declaration > the parent execution environment); for several observers, combine them with `pulse.MultiObserver` (a later write overwrites an earlier one, so do the combining before passing it in).
-
-## observe's run and node records
-
-| Event | Produced when | `Duration` | `Status` |
-|---|---|---|---|
-| `pulse.graph_started` | before any node is committed | `0` | `running` |
-| `pulse.graph_finished` | after every node terminated (before `Wait` returns) | the whole run | the run's terminal state (`completed` / `failed` / `canceled`) |
-| `pulse.node_wait_finished` | waiting ends (execution is entered, or the node terminates with skip / failure) | the waiting segment | `running`, otherwise the matching terminal state |
-| `pulse.node_run_finished` | execution ends | the execution segment | the terminal state (`completed` / `skipped` / `failed` / `canceled`) |
-| `pulse.node_finished` | an Aspect fails or cancels before calling next, before waiting starts | `0` (not measured) | `failed` / `canceled` |
-
-The two run-level records **bracket** the run's node records. A run in which every node skipped is still `completed`. A node whose inputs all skipped and whose body never ran gets one `skipped` waiting record. A body returning `NoValue()` retains both its waiting record and its `skipped` execution record because execution did occur. Normal skipping has nil `Record.Err`, so structured logs omit error; a reliable checkpoint failure wrapping `ErrSkipped` is still a failure.
-
-When an Aspect rejects execution before next, `pulse.node_finished` retains graph, execution, mount path and failing-node attribution. Its zero duration means timing was not measured; it does not invent waiting or execution segments.
-
-The attribution dimensions ride `Attrs`: `pulse.AttrGraph` + `pulse.AttrNode` + `pulse.AttrExecution` (the key contract is defined by the **engine**; `observe` only consumes it, never defines it). Node records carry the graph + node pair; the run-level two carry only `pulse.AttrGraph` — the node dimension means nothing for "one run"; `pulse.AttrExecution` is on every record, and it is what keeps two runs of one graph apart.
-
-**Nesting depth** is the third dimension, `pulse.AttrPath` (an opaque string, layers joined by `/`): the **mounting position arrives with every callback** (`Site.Path`), so **every** record of that layer carries it; when it is empty the key is **not written** — an empty string would make "root" and "forgot to pass it" look alike. The split of duties is clear: `pulse.graph` is the **graph id you chose** — a child's id is whatever its mounting step passed to `pulse.New` (`<parent id>/<node id>` reads best, and is what declarative assembly uses) — and `pulse.path` is the **layering the engine recorded**; the two together are what makes the layers of a nested run separable (see "A graph as a node" in [Orchestration](/en/guide/orchestration)). **One egress attached at the root is enough**: a child's records carry their layer by themselves, inherited egresses included; `ObserveConfig.Path` is only a fallback for when the `Site` brings no position (records written by hand, say, outside the engine). Splitting record paths is the egress's business (`/` works); the static tree and live child executions are available through Topology / Execution snapshots.
-
-## Shortest wiring
-
-```go
-sink := observe.NewLineSink(os.Stdout, observe.WithImmediate())
-defer sink.Flush() // Flush before shutdown: the last batch is still buffered
-
-obs, err := observe.NewRecordObserver(observe.ObserveConfig{
-	Sink:    sink,
-	HostID:  "quickstart",              // host identity (stable across runs); with TraceID it means "who + which run"
-	TraceID: observe.NewTraceID(),      // this run's correlation id (a run-time fact)
-})
-if err != nil {
-	return err
-}
-g, err := pulse.New("docs-pipeline", "docs summary pipeline", pulse.WithObserver(obs))
-```
-
-Real output for that same graph (a single node; timestamps, trace ids and durations vary per run):
-
-```text
-PULSE | 2026/10/09 - 10:42:50.472 | running    |         - | pulse.graph_started | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770472465000-1667c395-2
-PULSE | 2026/10/09 - 10:42:50.472 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770472465000-1667c395-2
-PULSE | 2026/10/09 - 10:42:50.487 | completed  |   15.50ms | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770472465000-1667c395-2
-PULSE | 2026/10/09 - 10:42:50.487 | completed  |   15.50ms | pulse.graph_finished | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770472465000-1667c395-2
-```
-
-Four records: the two run-level ones bracket the two node ones. The run-level `Duration` is the **whole run** (wall clock between the two callbacks) — here it is the same order as the node's execution segment because this run was spent almost entirely in that node; graph assembly, `Seed` and `Flush` are outside its window (accounting below). The `Status` of `pulse.graph_finished` is the run's terminal state and its `Err` is the very value `Run()` returns.
-
-Line-body column order: `time | status | duration | event | source | attrs | host | err | trace`. A missing status or duration column renders `-`, which is what keeps the event column's start fixed (`-` is the **built-in layout's empty-column placeholder**, not primitive behaviour). Timestamps, trace ids and durations vary per run.
-
-## Egress
-
-`Sink` is the only interface you have to implement:
-
-```go
-type Sink interface{ Write(r Record) }
-```
-
-Three contract clauses:
-
-1. **Concurrency-safe**, and must not block the caller for long (`Write` sits on the callback path, on the node's goroutine);
-2. **No `context.Context`** — callbacks carry no ctx; an exporter that needs a deadline keeps an internal queue of its own;
-3. **Reference semantics**: the producer builds a fresh `Attrs` and does not modify it once `Write` returns; the Sink consumes read-only. An asynchronous exporter must copy for itself.
-
-Built-in egresses:
-
-| Egress | Shape | Fits |
+| Sink | Use | Finalization |
 |---|---|---|
-| `LineSink` | **The default**. One human-readable line per record, with its own 32 KiB buffer, zero-alloc, no slog | Terminals, log files |
-| `SlogSink` | `log/slog` (Text / JSON) | Attaching to an existing host logger; JSON fed to a collector |
-| `MemorySink` | In-memory collection | Test assertions, demos |
-| `MultiSink` | Fan out to several egresses | Landing on disk and collecting at the same time |
-| `AsyncSink` | **A wrapper**: bounded queue + a single background goroutine | Slow egresses (files / network) |
+| `MemorySink` | Tests, demonstrations, assertions | Snapshot reads collected records |
+| `LineSink` | Terminal or text logs | Check Flush errors |
+| `SlogSink` | Existing slog logger, text or JSON | Follow the host handler's policy |
+| `MultiSink` | Several destinations | Finalize each destination |
+| `AsyncSink` | Bounded queue around a slow sink | Context-aware Flush/Close |
 
-`SlogSink` emits numeric `duration_ms` with sub-millisecond precision and omits zero. `AsyncSink.Flush(ctx)` captures an enqueue boundary, so later Write calls do not extend the drain. Context cancellation also ends waiting for inner Flush/Err, while the single worker retains the records. Inner Write/Flush/Err are serialized. Snapshot boundaries are ordered, equal targets share one, and earlier targets never expand. Cancellation removes unstarted boundaries with no waiters; their count is at most capacity+1. Close stops acceptance; the first call determines the final result, while concurrent Close callers may cancel their own wait. An inner call without context cannot be forcibly stopped; the worker may remain there until it returns. Inner Flush/Err panics become fixed errors at the worker boundary, retaining error payloads through Unwrap without printing them. Delivered records are not added to Dropped, and the worker can continue.
-
-### Duration accounting (measured)
-
-All four segments are **wall clock**, and callbacks run synchronously — so **however slow the egress is, that is how long the segment is**. The same graph, the same empty node (`noop`), two egresses (`MemorySink`, and a fake egress whose `Write` sleeps 20ms per record):
-
-```text
-# MemorySink (writing a record costs about nothing)
-pulse.graph_started            node=-      running    0s
-pulse.node_wait_finished       node=noop   running    0s
-pulse.node_run_finished        node=noop   completed  0s
-pulse.graph_finished           node=-      completed  0s
-
-# a fake egress whose Write sleeps 20ms
-pulse.graph_started            node=-      running    0s
-pulse.node_wait_finished       node=noop   running    0s
-pulse.node_run_finished        node=noop   completed  20.5701ms
-pulse.graph_finished           node=-      completed  62.2437ms
-```
-
-The node body is empty: the `20.5701ms` is entirely that one write (the waiting-segment record is written inside the `Running` callback, and the execution segment's timer starts before it). **The run-level record is longer** (`62.2437ms`) — its window covers "commit the nodes → everything terminated", and this run performed three writes inside that window (run-level started, node waiting segment, node execution segment). Hence:
-
-- When the duration column looks too large, suspect the egress before the node; `LineSink` on a real terminal is itself a slow egress (one write syscall per record), its double-digit-millisecond costs land in the segments the same way, and they vary with the terminal and with redirection;
-- Wrap a slow egress in `AsyncSink` (`Write` only deep-copies `Attrs` and enqueues). Note that async **does not raise the throughput ceiling**: when the sustained rate exceeds what the egress can take, the bounded queue back-pressures to the egress rate — that is precisely the price of "never drop a record"; to drop instead of blocking, use `DropOnFull()`. Wrapping an already fast egress (such as `MemorySink`) in async is a pessimisation; it also **does not take the `Write` call out of the window**, it only defers landing;
-- A segment of `0` (rendered `-`) means the segment was rounded to 0 by the timer's precision, not that "there was no such segment".
-
-**How the run-level record differs from your own stopwatch around `Run()`**: its window starts inside `Start()` (before any node is committed) and ends before `Wait()` returns — so it **excludes** graph assembly, `Seed`, and the egress `Flush` after `Wait()` returns, which makes your outside stopwatch generally longer; conversely it includes the write of the run-level started record, which is in no node segment at all. Use it for "the boundary of one run"; keep your own stopwatch for "how long my function spent in `Run`".
-
-## Host-supplied columns (WithRenderer)
-
-The columnar layout is the **default**, not the only one. When a host wants domain facts in columns, it swaps the **line body** renderer with `WithRenderer(fn)` and builds its own columns from the package's exported encoding primitives — no need to bring a Sink of its own:
+This helper demonstrates LineSink finalization. It needs `context`, `errors`, `os`, `pulse`, and `observe`; `g` is an assembled graph:
 
 ```go
-render := func(dst []byte, r observe.Record, color bool) []byte {
-	dst = r.Time.AppendFormat(dst, "15:04:05.000")
-	dst = append(dst, " | "...)
-	node, _ := observe.Get[string](r.Attrs, pulse.AttrNode)
-	dst = observe.AppendTextValue(dst, node)
-	dst = append(dst, " | "...)
-	dst = observe.AppendTextValue(dst, r.Status)
-	dst = append(dst, " | "...)
-	return observe.AppendDuration(dst, r.Duration)
-}
-
-sink := observe.NewLineSink(os.Stdout,
-	observe.WithImmediate(),
-	observe.WithRenderer(render))
-```
-
-Real output (the same graph):
-
-```text
-PULSE | 15:40:40.526 | step | running | 0ns
-PULSE | 15:40:40.540 | step | completed | 13.65ms
-```
-
-The renderer's contract is only four clauses: it **produces the line body only** (the line prefix and the trailing newline are added by the sink); the `color` it receives is the sink's already-resolved verdict (so it need not probe the terminal itself, and will not write ANSI into logs redirected to a file); it does not buffer and does not write to the writer (when to write belongs to the sink, and `WithImmediate` controls immediacy); and **it is called inside the sink's internal lock** — do not call back into the same sink's `Write` / `Flush` / `Err` from inside a renderer (`sync.Mutex` is not reentrant, so it hangs silently).
-
-The six encoding primitives (`AppendDuration` / `AppendTextValue` / `AppendAttrs` / `AppendAttrsExcept` / `AppendPadding` / `DisplayWidth`) are **isomorphic** to the built-in layout and belong to the frozen surface: for one record under the two layouts, durations, attribute groups and column padding are **byte-identical**. `AppendAttrsExcept` is there to add "attributes the fixed columns cannot hold" at the end of the line, without rewriting the scalar and quoting rules yourself.
-
-## Record and Attrs
-
-```go
-type Record struct {
-	Time     time.Time
-	HostID   string
-	TraceID  string
-	Source   Source
-	Event    string
-	Duration time.Duration
-	Status   string
-	Err      error
-	Attrs    Attrs // the open segment
+func runLogged(ctx context.Context, g *pulse.Graph, in pulse.Inputs) error {
+	sink := observe.NewLineSink(os.Stdout)
+	obs, err := observe.NewRecordObserver(observe.ObserveConfig{
+		Sink: sink, HostID: "app", TraceID: observe.NewTraceID(),
+	})
+	if err != nil {
+		return err
+	}
+	runErr := g.Run(ctx, in, pulse.WithExecObserver(obs))
+	return errors.Join(runErr, sink.Flush())
 }
 ```
 
-Design constraint: **business dimensions always enter through `Attrs`; named fields are never extended**. Named fields serve only the facts every record shares — once a named field is added for one domain, `Record` grows into a convergence point for every domain's observation fields.
+Observer callbacks are synchronous on the execution path, so slow sinks extend wall-clock durations. AsyncSink moves delivery to a worker and backpressures when its queue is full by default. `DropOnFull` permits dropping; inspect Dropped. Flush waits for the enqueue boundary captured at the call, so later writes do not extend it. Close stops acceptance and performs final draining. Canceling the wait cannot forcibly stop a blocking inner operation that accepts no context.
 
-`Attrs` is an **insertion-ordered small slice** (not a map): the order is the producer's semantic order, so an egress gets stable output without sorting; reads are a linear scan, which beats hashing when the entry count is small. Keys use the `<component>.<field>` dot convention, each component with its own key space (`pulse.graph` / `pulse.node`; a host forms a segment of its own).
+## Records, callbacks, and recovery
 
-When a host writes its own records (business facts, say), it uses the same API:
+A normally completed node usually produces a wait segment and a run segment. All-skipped inputs produce no run segment. A body returning NoValue still has a run segment, with skipped status. An aspect failing before waiting produces `pulse.node_finished`, with zero duration because timing was not measured. Exact callback counts, order, and the event table are in the [lifecycle reference](../reference/lifecycle.md).
 
-```go
-rec := observe.Record{
-	HostID:  "host-1",
-	TraceID: "t-1",
-	Source:  "app", // declare your own home: this package only produces source=observe
-	Event:   "app.turn_finished",
-	Status:  "ok",
-}
-observe.Set(&rec.Attrs, "app.turns", int64(3))
-sink.Write(rec)
-```
+Observer has no error return. Its panics are isolated and do not change node results. Check delivery failures through the sink's own error interface. Do not call Start or Wait on the same execution inside a callback; it runs on that execution's call path and may wait for itself.
 
-```text
-PULSE | 2026/10/08 - 15:40:11.308 | ok         |         - | app.turn_finished | source=app | app.turns=3 | host=host-1 | trace=t-1
-```
+A confirmed restored node emits Finished once without repeating its body, aspects, or Commit. It invents no Waiting, Running, or lifecycle events for children that were never created. RecordObserver does not generate business timing records from this lone completed/skipped Finished. Durable reports restoration through its own recovery events and persistent records.
 
-## TraceID
+## Attributes and data boundaries
 
-It is injected by the host from a **single generation source**: calling `NewTraceID()` once per run is a single generation source, and a scheme you bring entirely yourself (such as a hostID prefix plus a monotonic sequence number) works just as well. The return value has **no contractual semantics**; consumers must not parse its structure. Every record of one run shares the same TraceID — that is the entire mechanism for run-level correlation.
+Business dimensions belong in `Attrs`, with names such as `<component>.<field>`. Values support string, int64, float64, bool, and named versions of these types. Record fields do not store arbitrary business objects. Strings and errors can still contain sensitive data; hosts should supply processed attributes and error summaries.
 
-A host that speaks OTel / W3C trace context **injects its own trace id** rather than adopting the shape of `NewTraceID()`:
+The host generates a TraceID for one run or extracts it from incoming tracing data. Do not reuse it across unrelated requests. `observe.NewTraceID` does not produce a W3C trace-id. Supply host trace IDs and span semantics when integrating with W3C or OTel.
 
-```go
-TraceID: span.SpanContext().TraceID().String(), // 32 lowercase hex chars (a W3C trace-id)
-```
+## Common errors and next steps
 
-`NewTraceID()` returns a "timestamp-random-seq" string — friendly to humans and naturally sortable, but **not** the 32-hex W3C form. Two boundaries are worth remembering:
+When logs mix runs, group by Execution and TraceID. For missing child records, check observer overrides and paths. If the graph stays running after nodes finish, confirm the host called Wait. Do not use snapshots as recovery plans or result containers.
 
-- a trace-id alone cannot produce a valid `traceparent`: `parent-id` (16 chars) and `trace-flags` are span semantics, and `observe` only knows about "one run" — it has no spans, so those two fields belong to the host;
-- **continuing an inbound trace** is simply putting the received trace-id into `ObserveConfig.TraceID`; ignoring an invalid `traceparent` wholesale (as W3C requires) is the host's responsibility too.
-
-An `ObserveConfig`'s lifetime **equals one run** (one `Run` of the graph): across runs a new one is required (the TraceID is unique per run, and reusing an old value manufactures false correlation).
-
-## Privacy boundary
-
-`Record` has no `map[string]any` escape hatch: the only write surface for `Attrs` is the generic `Set` (constrained to `~string | ~int64 | ~float64 | ~bool`), so **prompts, attachment bytes, secrets and chain-of-thought cannot enter by type**.
-
-The residual part of the boundary should be stated plainly: `Err` is an `error`, and where it comes from is whatever the caller passed — so **an adapter layer must not stuff an upstream's raw error body into `Err`**; it should pass an already-classified summary. "Cramming a payload into a scalar" is deliberate behaviour; the defence is the key declaring its own intent, plus a redact hook on the Sink side (an implementation can reject sensitive keys / truncate over-long values / cap the count).
-
-Package-level API and benchmark accounting: [observe package docs](/en/packages/observe/); the full design: [design doc](https://github.com/Luo-root/pulse/blob/main/docs/design/pulse.md).
+The [lifecycle reference](../reference/lifecycle.md) gives exact facts, and the [error reference](../reference/errors.md) gives follow-up actions. [YAML assembly](./assembly.md) also provides Analyze without business execution.

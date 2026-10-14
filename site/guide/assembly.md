@@ -1,21 +1,12 @@
-# 声明式装图
+# YAML 装配
 
-`pulse/yaml` 把一份 YAML 装成 `*pulse.Graph` + `SeedPlan`。分工是硬的：
+本页面向希望把流程拓扑放入配置文件、同时保留 Go 业务实现的开发者。需要 Go 1.25+，并了解[节点读写声明](./orchestration.md)与[静态子图](./subgraphs.md)。示例使用开发版 API。
 
-> **YAML 拥有拓扑，注册的工厂只给 `Run`。**
+`pulse/yaml` 将 YAML 装配为 `Graph` 和 `SeedPlan`。YAML 声明节点、依赖与子图接线；注册表提供键的真实类型和具名业务函数。注册的函数只负责 Run，不返回 Node，也不决定拓扑位置。
 
-工厂不返回 `*Node`，因为它不该决定自己接在图的哪里。同一个 `Run` 换个 YAML 就能接进另一张图。
+## 完整示例：装配子图并读取结果
 
-## 两条路
-
-| 路线 | 拓扑写在哪 | 适用 |
-|---|---|---|
-| 命令式 | Go 代码：`pulse.NewNode(...)` + `g.Add(...)` | 拓扑与代码同生命周期，编译期就能对上 |
-| 声明式 | YAML：`id` / `requires` / `provides` | 拓扑要能改、要能按请求下发、要能与人共享 |
-
-两条路都产出 `*Graph`，可以混用（声明式里 `uses` 指向的工厂本身就是普通 Go 函数）。
-
-## 完整例子
+把程序保存为一个空目录中的 `main.go`。YAML 的根输入来自 literal，子图有自己的固定前缀；宿主将计划转换为本次输入，再通过声明出口读取报告。
 
 ```go
 package main
@@ -23,190 +14,205 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/Luo-root/pulse"
 	"github.com/Luo-root/pulse/yaml"
 )
 
-var (
-	Topic   = pulse.NewKey[string]("topic")
-	Summary = pulse.NewKey[string]("summary")
-	Report  = pulse.NewKey[string]("report")
-)
-
-const doc = `
+const document = `
 version: 1
+description: Assemble a reusable summary step
 seeds:
   - key: {name: topic, type: string}
-    from: {kind: literal, value: "slot contract"}
+    from: {kind: literal, value: Pulse}
+graphs:
+  summarize:
+    description: Add a prefix
+    seeds:
+      - key: {name: child.prefix, type: string}
+        from: {kind: literal, value: "about "}
+    nodes:
+      - id: format
+        uses: demo.format
+        requires:
+          - {name: child.topic, type: string}
+          - {name: child.prefix, type: string}
+        provides: [{name: child.summary, type: string}]
 nodes:
-  - id: summarize
-    uses: demo.summarize
-    requires: [{name: topic, type: string}]
-    provides: [{name: summary, type: string}]
-    timeout: 30s
-    retry: {attempts: 3, delay: 100ms}
-  - id: report
-    uses: demo.report
-    requires: [{name: summary, type: string}]
-    provides: [{name: report, type: string}]
+  - id: summary
+    description: Run the summary step
+    graph: summarize
+    in: {child.topic: topic}
+    out: {child.summary: report}
+    timeout: 2s
+    retry: {attempts: 3, delay: 10ms}
 `
 
-func main() {
-	// 1) 注册 Key（YAML 用 {name, type} 对账）与具名工厂。
+func run() error {
+	topic := pulse.NewKey[string]("topic")
+	childTopic := pulse.NewKey[string]("child.topic")
+	prefix := pulse.NewKey[string]("child.prefix")
+	summary := pulse.NewKey[string]("child.summary")
+	report := pulse.NewKey[string]("report")
 	reg := pulse.NewRegistry()
-	pulse.MustRegisterKey(reg, Topic)
-	pulse.MustRegisterKey(reg, Summary)
-	pulse.MustRegisterKey(reg, Report)
-
-	reg.MustRegister("demo.summarize", func(rc *pulse.RunCtx) error {
-		topic, err := pulse.Get(rc, Topic)
+	for _, key := range pulse.Keys(topic, childTopic, prefix, summary, report) {
+		if err := pulse.RegisterKey(reg, key); err != nil {
+			return err
+		}
+	}
+	if err := reg.Register("demo.format", func(rc *pulse.RunCtx) error {
+		if err := pulse.WaitAll(rc, pulse.Requires(childTopic, prefix)...); err != nil {
+			return err
+		}
+		value, err := pulse.Get(rc, childTopic)
 		if err != nil {
 			return err
 		}
-		return pulse.Set(rc, Summary, "about "+topic)
-	})
-	reg.MustRegister("demo.report", func(rc *pulse.RunCtx) error {
-		summary, err := pulse.Get(rc, Summary)
+		p, err := pulse.Get(rc, prefix)
 		if err != nil {
 			return err
 		}
-		return pulse.Set(rc, Report, "report: "+summary)
-	})
-
-	// 2) 装图：拓扑来自 YAML。
-	g, plan, err := yaml.Load([]byte(doc), reg, yaml.LoadOptions{
-		GraphID: "yaml-demo", // 必填：观测靠它区分「跑的是哪张图」
+		return pulse.Set(rc, summary, p+value)
+	}); err != nil {
+		return err
+	}
+	g, plan, err := yaml.Load([]byte(document), reg, yaml.LoadOptions{
+		GraphID: "yaml-demo", MaxRunning: 2,
 	})
 	if err != nil {
-		panic(err)
+		return err
 	}
-
-	// 3) 宿主把 Seed 计划解成这一次运行的输入，然后运行。
-	in, err := plan.Inputs(nil) // literal 之外需要 resolve
+	if err := g.DeclareOutput(pulse.NewPort(report)); err != nil {
+		return err
+	}
+	if err := g.Validate(); err != nil {
+		return err
+	}
+	in, err := plan.Inputs(nil)
 	if err != nil {
-		panic(err)
+		return err
 	}
-	if err := g.Run(context.Background(), in); err != nil {
-		panic(err)
+	e, err := g.NewExecution(context.Background(), in)
+	if err != nil {
+		return err
 	}
-	fmt.Println("run ok:", g.ID())
+	defer e.Cancel()
+	if err := e.Start(); err != nil {
+		return err
+	}
+	if err := e.Wait(); err != nil {
+		return err
+	}
+	value, state, err := pulse.ReadOutput(e, report)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("report=%s state=%s\n", value, state)
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
 }
 ```
 
+在该目录运行：
+
+```sh
+go mod init example.com/pulse-yaml
+go get github.com/Luo-root/pulse@1f67045d6c42
+go run .
+```
+
+预期输出：
+
 ```text
-run ok: yaml-demo
+report=about Pulse state=ready
 ```
 
-## YAML 字段
+`Load` 查注册表并装配定义，不运行业务体，也不读取外部输入。`plan.Inputs` 解析根层输入计划；子图 literal 在挂载处形成 Fix。宿主在 Validate 前补充根出口，并由 NewExecution/Start/Wait 控制本次运行。
 
-| 字段 | 说明 |
+## 文档字段
+
+| 字段 | 含义 |
 |---|---|
-| `version` | 缺省或 `1`；其它值拒绝 |
-| `seeds[].key` | `{name, type}`——必须与 `RegisterKey` 登记的一致 |
-| `seeds[].from` | `kind`：`literal` / `env` / `file` / `context`；`literal` 之外的取值由宿主的 `resolve` 给出 |
-| `seeds[].skip` | `true` 表示这条走 `SkipSeed`（槽位以「跳过」到达） |
-| `nodes[].id` | 节点 ID，必填；观测归因键 |
-| `nodes[].uses` | 必填，对应 `Registry` 上的具名工厂 |
-| `nodes[].requires` / `provides` | `{name, type}` 列表 |
-| `graphs` | 可复用子图的声明（名字在文档内唯一），子图自己不写 `graphs` |
-| `nodes[].graph` | 这个节点 = 装一张子图（与 `uses` 二选一） |
-| `nodes[].in` / `out` | 子图节点的边界，一律「**子键: 父键**」 |
-| `nodes[].timeout` | 装成 `pulse.Timeout`，**在外** |
-| `nodes[].retry` | `{attempts, delay}`，装成 `pulse.Retry`，**在内** |
+| `version` | 缺省、0 或 1，其他版本拒绝 |
+| `description` | 根图说明；`graphs.<name>.description` 为子图说明 |
+| `seeds[].key` | `{name, type}`，必须与注册表对应 |
+| `seeds[].from` | `kind` 为 literal、env、file、context；缺省 kind 按 literal 处理 |
+| `seeds[].skip` | true 表示本次正常跳过，该条 from 不取值 |
+| `nodes[].id` / `description` | 节点身份与说明 |
+| `nodes[].uses` | 注册表中的业务函数名 |
+| `nodes[].requires` / `provides` | 工厂节点的键声明列表 |
+| `graphs` / `nodes[].graph` | 可复用子图表与引用，graph 与 uses 二选一 |
+| `nodes[].in` / `out` | 子图绑定，均写作 `子键: 父键` |
+| `nodes[].timeout` | Go 时长形式，例如 2s；装为外层 Timeout |
+| `nodes[].retry` | attempts 和 delay；装为内层 Retry |
+| `observer` | 文档提示字段，Load 忽略；观察者通过选项配置 |
 
-几个要点：
+`type` 是注册键的 `reflect.Type.String()`，不是任意类型别名。使用 `Registry.TypeTagOf` 可以查询期望标签；同名跨类型、缺标签、未注册键与未注册 uses 都会报错。YAML 不提供 Produce/Consume/Tee 声明语法；普通工厂中的隐藏 channel 行为无法靠拓扑推断。
 
-- **Key 用 `{name, type}` 对账**。`type` 就是 `reflect.Type.String()`（`string`、`[]string`、`[]Doc`……），与 `RegisterKey` 登记的一致；名字对不上或缺 `type` 都在 `Load` 期报错。
-- **时间字段**用 Go 的 `ParseDuration` 形式（`30s` / `100ms`），不写裸数字。
-- **切面顺序**：先列的更靠外 → `timeout` 在外、`retry` 在内，即「总时长受限、每次尝试各自重试」。
-- **引擎不做 IO**。`from.kind` 不是 `literal` 时，`Load` 只把它原样交给 `plan.Inputs(resolve)`；读文件、读环境变量、从请求取 context 都是宿主的事。
-- `observer` 字段是文档提示位，`Load` 忽略它——观察者走 `LoadOptions.Graph`（`pulse.WithObserver(...)`）与 `LoadOptions.ObserverFor`（按层，见下）。
+## 外部输入由宿主解析
 
-## 子图：一步 = 一张图
-
-`graphs:` 声明可复用的子图，`nodes[].graph` 把某一步指向它——**子图是拓扑的复用单元**，不用为了复用一段流程去写 Go 工厂：
-
-```yaml
-version: 1
-graphs:
-  enrich:
-    nodes:
-      - id: work
-        uses: demo.enrich
-        requires: [{name: sg.topic, type: string}]
-        provides: [{name: sg.summary, type: string}]
-seeds:
-  - key: {name: sg.input, type: string}
-    from: {kind: literal, value: "slot contract"}
-nodes:
-  - id: step1
-    graph: enrich
-    in:  {sg.topic: sg.input}      # 子键: 父键（父读 → 子 Seed）
-    out: {sg.summary: sg.result}   # 子键: 父键（子产出 → 父 Set）
-```
-
-它展开成[图即节点](/guide/orchestration)的**静态组合 `pulse.Sub`**：子图在 **`Load` 期按挂载位置装好**（一处挂载一张实例），父侧那个节点的 `Requires` / `Provides` 由 `in` / `out` 推出来，引擎的静态校验（来源 / 环 / 名额）照常生效。由此：
-
-- **装完不运行就能看完整棵树**：`g.Topology()` 沿静态挂载边递归，`Nodes[i].Sub` 就是这一处的子图（再深一层继续 `.Sub`），路径按**挂载位置**推导（`step1`、`step1/toInner`），图身份是 `<根 id>/<挂载路径>`；
-- **子图的静态毛病在 `Load` 期报**，报文点明**挂载路径**：`pulse/yaml: graph "inner" (mounted at "step1/toInner"): pulse: node "leaf" requires "c.nope" but nothing provides it (declare it with DeclareInput if the value comes from outside)`；
-- **同一张 spec 挂几处 = 几张独立实例**：每处都有自己的槽位与挂载路径，两处都跑得了，观测里靠 graph id 与 `pulse.path` 分得开；
-- **取消从挂载点传进子图**：父图 ctx 一取消，子图节点当场看见——不是跑满整段再把取消吞掉。
-
-规则：
-
-- **边界写在接线处**：`in` / `out` 一律「子键: 父键」；子图节点**不能**再写 `requires` / `provides`。
-- **类型与名字都在 `Load` 期比**：两端各按 `{name, type}` 查表且用**同一个** type 记号（父侧那条键登记成别的类型就报）；引用不存在的子图、绑定子图里没人声明的键、子图没有节点，三条都点名报错。
-- **引用环在 `Load` 期拦**：子图里再挂子图允许、深度不设限；`a → b → a` 会被拦并给出具体路径。
-- **边界只有一处说法**：子图节点不能再写 `requires` / `provides`，**工厂节点也不能写 `in` / `out`**——写错那一侧就是静默不生效，所以都在装图期报。
-- **`in:` 喂的键不能被子图自己再提供**：一条键恰好一个来源——`in:` 要做的正是把那条键声明成子图的进口，声明那一刻就撞 `ErrDuplicateSource`，装图期就报。
-- **子图的 `seeds`**：**要种值**的那条只允许 `literal`（`env` / `file` / `context` 要靠宿主 IO，而 `SeedPlan` 是父图的产物；`skip: true` 的那条 `from` 没有语义，与顶层 `seeds` 一个口径）；键名 / 类型按登记表对账；**同一条键在同一张图里声明两次**也报——第二次会被幂等首写静默忽略，谁赢取决于声明顺序。
-- **被引用的每一张 `graphs:` 声明都查，而且按引用点各查一遍**：装配期先装一棵**只装不跑**的校验树——**同一段装配代码**，子图一律按静态形态挂上去，每个引用点各是一张实例。每张实例按**那一处**的 `in:` / `out:` 把自己的接口面声明成端口（`DeclareInput` / `DeclareOutput`），于是「这本来就是外部输入」与「你忘了接线」分得开，也不必再往校验树上种「假来源」；最后让引擎自己递归 `Validate` 判一遍——所以子图里「某条 `Requires` 没人提供（也没声明成入口）」「声明过的出口没人产出」与「依赖成环」也在 `Load` 报，**报文与 `Start` 那次逐字相同**，还点明**挂载路径**（例：`graph "inner" (mounted at "step1/toInner")`）。按引用点而不是按并集：同一张 spec 挂两处时两边的 `in:` 可以不一样，按并集校验等于说「另一处喂了 = 这一处也喂了」。
-- **未引用 spec 不判缺来源，仍判已知冲突**：未知 Requires 可能是未来的入口，先声明进临时校验图；literal/skip seed 是已知的外部来源，同键还有节点 Provides 时，Load 与 Analyze 都包装 ErrDuplicateSource 拒绝。工厂名 / 空 `nodes` / 重复 id / 依赖环 / 流式关系也照查。实际引用后，缺来源按那一处的 `in:` / `out:` 判断。
-- **`Load` 不碰任何 ctx**：图是定义、定义没有生命周期，一次运行在谁的取消域里跑是 `Run` / `NewExecution` 那一刻的事（`LoadOptions.Context` 因此删掉了——留着只会是个静默失效的旋钮）；子图的取消照样从挂载点传进去（运行期由挂载点把父节点这一层的 ctx 派生给子执行）。`Load` 失败时返回 `nil, nil, err`，调用方连清理的把手都没有，所以「所有可能失败的校验」都排在「把图交出去」前面。
-- **切面落在父侧那个节点上**：`timeout: 30s` 就是给整张子图限时，`retry: {attempts: 3, delay: 100ms}` 就是整张子图最多跑三次——`retry:` 的**每一次尝试各建一份新的子执行**，第一次那轮的桥回结果随它自己那条 **attempt 写集**一起作废，父侧只拿得到**成功那一次**的输出版本（「一半第一次、一半第二次」的混装不会出现）；子图**里面**的节点各写各的，放进里面的 `retry:` 照旧只重跑那一个节点。
-- **每处挂载装一张、各有自己的槽位与挂载路径，两处都跑得了**：同一张 spec 被引用两次就是两个独立实例，观测里靠 graph id 与 `pulse.path` 分得开。
-- **根层自己那几条判据仍在启动那一刻报**（`Run` / `NewExecution`；装图期不判根层）：顶层 `seeds:` 只把键声明成根图的入口，值由宿主在运行前经 `SeedPlan.Inputs` 给出——根层的外部输入面在 `Load` 之后还可能被宿主自己补声明，装图期看不全，所以来源那条留给启动一并判。
-
-**观测默认继承，可按挂载点另选出口**：根图通过 `LoadOptions.Graph` 挂观察者；子图需要不同观察者或记录目的地时，才给 `LoadOptions.ObserverFor(path)`。它在 **Load 装配每处子图挂载时调用一次**，path 一层为节点 id，更深为 `outer/inner`，根图不调它。返回 nil 则继承父图的有效观察者，选出的观察者也可继续由后代继承。每条回调已有 `Site.Path`，同一个出口能服务多层并写出各自的 `pulse.path`，通常不填 `ObserveConfig.Path`。校验树**不调** ObserverFor，宿主的回调次数不会因额外校验而变。
-
-## 边界与坑
-
-**`literal` 的取值按登记类型做形状对齐，列表与映射开箱即用。** YAML 解出的泛型容器（`[]any` / `map[string]any`）会被 `pulse.SeedByName` 递归转成目标类型：`value: ["a","b"]` 直接填 `[]string`、`value: {a: 1}` 直接填 `map[string]int`，都不需要 `resolve`。
-
-**刻意不做**的三类（一律报错，用 `resolve` 给出类型正确的值）——判据是「形状可以机器对齐，语义只有调用方知道」：
-
-| 情形 | 报错（本机实测，类型名随你的包而变） |
-|---|---|
-| 元素是对象、目标是 struct（字段映射是宿主的语义） | `pulse: seed "demo.in": value type []interface {} not assignable to []yaml_test.Doc (element 0: cannot convert map[string]interface {} to yaml_test.Doc)` |
-| 字符串 ↔ 数字互转 | `pulse: seed "demo.in": … (element 0: cannot convert string to int)` |
-| 浮点截断成整数 / 越界收窄 | `… (element 0: cannot convert float64 to int)` · `… (element 0: cannot convert int to int8)` |
-
-需要这些取值时，把 `resolve` 交给 `plan.Inputs` 自己给出类型正确的值：
+对于 env、file、context 等非 literal 输入，宿主把 resolver 传给 `plan.Inputs`。下面片段放在返回 `error` 的宿主函数内，需要 `os`、`fmt` 和 `yaml` 导入，已有 `plan` 与 `g`：
 
 ```go
 in, err := plan.Inputs(func(from yaml.SeedFrom) (any, error) {
-	if from.Kind == "file" {
-		raw, err := os.ReadFile(from.Path) // 宿主做 IO
-		if err != nil {
-			return nil, err
-		}
-		var docs []Doc
-		if err := json.Unmarshal(raw, &docs); err != nil {
-			return nil, err
-		}
-		return docs, nil
+	if from.Kind != "env" {
+		return nil, fmt.Errorf("unsupported seed kind %q", from.Kind)
 	}
-	return nil, fmt.Errorf("unsupported seed kind %q", from.Kind)
+	value, ok := os.LookupEnv(from.Env)
+	if !ok {
+		return nil, fmt.Errorf("environment variable %q is not set", from.Env)
+	}
+	return value, nil
 })
+if err != nil {
+	return err
+}
+if err := g.Run(ctx, in); err != nil {
+	return err
+}
 ```
 
-其它边界：
+这里 `ctx` 为宿主已有的执行上下文。resolver 返回值仍要与键类型相符。literal 的通用切片和映射会递归对齐到登记的容器类型；不会猜测 map 到 struct 的字段关系，也不会进行字符串与数字互转、浮点截断或越界收窄。需要业务转换时，由 resolver 返回正确类型。
 
-- **YAML only**：不提供 JSON 入口（同一种拓扑只维护一种方言）；
-- `nodes` 为空、节点缺 `id` / `uses`、`uses` 指向未注册的工厂，都在 `Load` 期报错（后者带上节点 id）；
-- `LoadOptions.GraphID` 必填——图身份是观测的归因键；
-- **额度只走 `LoadOptions.MaxRunning`**：它是**整棵声明树**的额度（`<=0` = 不限，默认）。不要在 `LoadOptions.Graph` 里再放 `pulse.WithMaxRunning`——两个都写时按「`MaxRunning > 0` 压过 `Graph` 里那份（哪怕更小），`<= 0` 不动它」合（`int` 的零值分不出「没写」与「写了 0」，所以 `MaxRunning: 0` 表达不了「整棵树不限」）；七档组合由包内用例 `TestLoadOptionsQuotaPrecedence` 钉住；
-- 本包是唯一带第三方依赖的包（`gopkg.in/yaml.v3`）；根包与 `observe` 都不依赖它。
+## 子图与校验范围
 
-包级 API 与示例见 [yaml 包文档](/packages/yaml/)。
+子图节点的接口由 `in`、`out` 和子图 seeds 推导，不能同时写 requires/provides；工厂节点也不能写 in/out。绑定两端真实类型要一致，子入口不能由内部节点再次生产。子图实际取值的 seed 只支持 literal；skip seed 不取 from。
+
+每处引用在 Load 期装配一份子图定义，并按该处的输入输出检查；同一 spec 挂载两次是两个位置。运行时每处又创建独立子执行。引用环、空子图、无效接线和被引用子树的来源问题会在 Load 报出挂载路径。
+
+未引用 spec 没有确定的接口，因此不按闭合图要求所有输入已有来源；已知来源冲突、重复 ID、环等仍检查。根图可在 Load 之后由宿主补充声明，根层的静态问题留给 Validate/Start，本次必需输入留给 NewExecution/Start。不要把 Load 成功等同于完整根图已经可启动。
+
+## 只检查声明：Analyze
+
+下面片段需要已有 YAML 字节 `data`、`fmt` 与 `yaml` 导入，放在返回 `error` 的函数内：
+
+```go
+topology, err := yaml.Analyze(data, yaml.LoadOptions{GraphID: "preview"})
+if err != nil {
+	return err
+}
+for _, problem := range topology.Problems {
+	fmt.Println(problem)
+}
+fmt.Println(topology.Mermaid())
+```
+
+Analyze 不需要 Registry，不执行工厂、切面、resolver 或 ObserverFor。它复用 Load 的装配规则，根层问题保留在 Problems，子图或文档装配问题返回 error。返回的 Type 是 YAML 标签，无法推导的接线键标签为空；它不验证实际 Go 类型、工厂是否登记或 literal 是否可赋值。预览通过后仍需 Load 和 Inputs 的真实检查。
+
+## 额度、观察者与常见错误
+
+用 `LoadOptions.MaxRunning` 配置整棵声明树的额度；默认不限。避免同时在 `LoadOptions.Graph` 写 WithMaxRunning：只有 MaxRunning 大于零才覆盖该声明，零值不会把已有声明重置为不限。
+
+根观察者放在 `LoadOptions.Graph`；子图默认继承。只有不同挂载需要不同目的地时才提供 `ObserverFor(path)`。它在真实 Load 装配每处子图时调用一次，根层不调用，校验与 Analyze 也不调用。
+
+超时和重试放在子图引用节点时，作用于整个子执行；放在子图内部节点时，只作用于那一步。顺序固定为 Timeout 在外、Retry 在内。调用出错时应先区分装配、输入解析还是运行失败，再按[错误参考](../reference/errors.md)处理，避免将错误替换为跳过。
+
+## 下一步
+
+[观测与诊断](./observability.md)展示静态预览和运行状态叠加；[生命周期参考](../reference/lifecycle.md)给出校验与启动边界。[包文档](../packages/index.md)提供进一步的公开 API 入口。

@@ -1,17 +1,35 @@
-# 包文档
+# 包参考
 
-Pulse 只有三个包：
+Pulse 提供图执行核心，以及可按需引入的观测和 YAML 装配包。本页按职责列出入口，便于查询配置、事件、字段和严格语义。
 
-| 包 | 是什么 | 依赖 | 文档 |
+## 包与依赖
+
+| 导入路径 | 职责 | 依赖 | 参考入口 |
 |---|---|---|---|
-| [`pulse`](https://github.com/Luo-root/pulse)（根） | 图引擎 | **零**（只用标准库） | [核心概念](/guide/concepts) · [编排](/guide/orchestration) |
-| [`pulse/observe`](/packages/observe/) | 图观测：引擎 `Observer` 回调 → 结构化记录 | `pulse` | [图观测](/guide/observability) |
-| [`pulse/yaml`](/packages/yaml/) | 声明式装图：YAML → 图 | `pulse` + `yaml.v3` | [声明式装图](/guide/assembly) |
+| `github.com/Luo-root/pulse` | 图定义、运行输入、Execution、节点与静态子图、切面和状态视图 | 标准库 | [Go API 文档](https://pkg.go.dev/github.com/Luo-root/pulse) · [当前源码](https://github.com/Luo-root/pulse) |
+| `github.com/Luo-root/pulse/observe` | 将 Observer 回调转换为结构化 Record，输出文本、slog、内存或异步记录 | `pulse` + 标准库 | [observe 包参考](/packages/observe/) |
+| `github.com/Luo-root/pulse/yaml` | 按登记的 Run 执行体装配 YAML 图，生成输入计划或静态拓扑 | `pulse` + `gopkg.in/yaml.v3` + 标准库 | [yaml 包参考](/packages/yaml/) |
 
-后两个包的页面正文 = 仓库中该包的 `README.md`（中文）原文，由 `site/scripts/sync-docs.mjs` 在构建时同步——**与代码同源，改 README 即改站点**。
+依赖方向为 `pulse` ← `observe` / `yaml`。根包不会反向引入这些包；只导入根包时，依赖闭包仅含标准库。观测与 YAML 装配可独立选用。
 
-根包没有单独的包页：它的 API 契约写在 godoc 里（每个导出符号都带一条），用法在指南页，设计在[`docs/design/pulse.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/pulse.md)。
+## 按问题查阅
 
-::: tip 依赖方向
-`pulse` ← `observe` / `yaml`，单向且不许反向。引擎不 import 任何观测包；只 import 根包的宿主，依赖闭包是空的。
-:::
+| 要查什么 | 入口 |
+|---|---|
+| 图定义与一次执行有什么区别，如何声明输入、读取输出？ | [核心概念](/guide/concepts) · [输入与输出](/guide/inputs-outputs) |
+| 图怎样连接节点、挂载子图、处理重试与取消？ | [编排](/guide/orchestration) · [静态子图](/guide/subgraphs) · [重试与取消](/guide/retry-cancellation) |
+| 某条观测事件何时产生，TraceID 与 Execution 如何区分，出口什么时候刷新？ | [observe 包参考](/packages/observe/) |
+| YAML 有哪些字段，怎样登记工厂与类型，Load 和 Analyze 分别校验什么？ | [yaml 包参考](/packages/yaml/) |
+| 从头接入观测或声明式装图？ | [图观测指南](/guide/observability) · [声明式装图指南](/guide/assembly) |
+
+包参考提供完整的最小程序和查阅表；使用指南按步骤说明接入过程。observe 与 yaml 的站点正文来自仓库对应的双语包 README，源码链接可用于核对当前契约。
+
+## 文档对应的版本
+
+本网站描述当前 `main`，其中部分 API 尚未随正式 tag 发布。最新正式 tag 为 `v0.4.1`，不是本页所有示例的 API 基线。要使用这些接口，请固定到文档示例采用的提交：
+
+```bash
+go get github.com/Luo-root/pulse@1f67045d6c42
+```
+
+需要 Go 1.25.0 或更高版本。发布版本的 Go API 文档与当前源码可能不同，请对照所使用的提交阅读。

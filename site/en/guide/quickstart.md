@@ -1,19 +1,25 @@
 # Quick start
 
-Pulse is a **data-arrival-driven graph engine** plus a **graph-observation layer**. This page walks the shortest path end to end: **declare Keys and ports → add nodes → create an Execution → `Start` / `Wait` → `ReadOutput` → attach observation**.
+Build a workflow that turns a document list into a summary and then a report. By the end, you will know how to declare data, add nodes, supply input, run the workflow, and read its result.
 
-## Requirements
+## Before you begin
 
-- **Go 1.25.0+** (toolchain auto-downloads if missing)
-- No other dependencies: the engine uses only the standard library; the examples on this page need only the root package
+You need Go 1.25+. The program uses this site's development API. If you installed v0.4.1, read [installation and versions](installation.md) first.
 
-## Install
+Initialize a module in a new directory:
 
-```bash
-go get github.com/Luo-root/pulse
+```sh
+mkdir pulse-quickstart
+cd pulse-quickstart
+go mod init example.com/pulse-quickstart
+go get github.com/Luo-root/pulse@1f67045d6c42
 ```
 
-## A minimal graph
+Run all subsequent commands in that directory.
+
+## 1. Create the program
+
+Create `main.go` with this complete source:
 
 ```go
 package main
@@ -21,141 +27,139 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/Luo-root/pulse"
 )
 
-var (
-	Docs    = pulse.NewKey[[]string]("docs")
-	Summary = pulse.NewKey[string]("summary")
-	Report  = pulse.NewKey[string]("report")
-)
-
 func main() {
-	g, err := pulse.New("docs-pipeline", "docs summary pipeline")
-	if err != nil {
-		panic(err)
-	}
+	documents := pulse.NewKey[[]string]("documents")
+	summary := pulse.NewKey[string]("summary")
+	report := pulse.NewKey[string]("report")
 
-	// DeclareInput: declare docs as an inlet of this graph — declare it before feeding it.
-	must(g.DeclareInput(pulse.NewPort(Docs)))
+	g, err := pulse.New("documents", "Build a document report")
+	check(err)
+	check(g.DeclareInput(pulse.NewPort(documents)))
+	check(g.DeclareOutput(pulse.NewPort(report)))
 
-	// Seed: write this run's value into Inputs — a key must be declared an inlet before it is fed.
+	check(g.Add(pulse.NewNode("summarize", "Summarize the document list",
+		pulse.Requires(documents), pulse.Provides(summary),
+		func(rc *pulse.RunCtx) error {
+			docs, err := pulse.Get(rc, documents)
+			if err != nil {
+				return err
+			}
+			text := fmt.Sprintf("%s (%d documents)", strings.Join(docs, ", "), len(docs))
+			return pulse.Set(rc, summary, text)
+		})))
+
+	check(g.Add(pulse.NewNode("format", "Build the final report",
+		pulse.Requires(summary), pulse.Provides(report),
+		func(rc *pulse.RunCtx) error {
+			text, err := pulse.Get(rc, summary)
+			if err != nil {
+				return err
+			}
+			return pulse.Set(rc, report, "Report: "+text)
+		})))
+
 	var in pulse.Inputs
-	must(pulse.Seed(&in, Docs, []string{"pulse only orchestrates and observes", "slot tri-state: skip is arrival"}))
-
-	// summarize enters Run only after docs has arrived.
-	must(g.Add(pulse.NewNode("summarize", "fold docs into a summary",
-		pulse.Requires(Docs),
-		pulse.Provides(Summary),
-		func(rc *pulse.RunCtx) error {
-			docs, err := pulse.Get(rc, Docs)
-			if err != nil {
-				return err
-			}
-			return pulse.Set(rc, Summary, fmt.Sprintf("%d segments / %d chars", len(docs), len([]rune(strings.Join(docs, "")))))
-		})))
-
-	must(g.Add(pulse.NewNode("report", "wrap the summary into a report",
-		pulse.Requires(Summary),
-		pulse.Provides(Report),
-		func(rc *pulse.RunCtx) error {
-			summary, err := pulse.Get(rc, Summary)
-			if err != nil {
-				return err
-			}
-			return pulse.Set(rc, Report, "Report: "+summary)
-		})))
-	// Declare a public outlet; read from this Execution without a shared result closure.
-	must(g.DeclareOutput(pulse.NewPort(Report)))
-
+	check(pulse.Seed(&in, documents, []string{"alpha", "beta"}))
 	e, err := g.NewExecution(context.Background(), in)
-	must(err)
-	must(e.Start())
-	must(e.Wait())
-	report, state, err := pulse.ReadOutput(e, Report)
-	must(err) // With a non-nil error, both report and state are invalid.
-	switch state {
-	case pulse.SlotStateReady:
-		fmt.Println(report)
-	case pulse.SlotStateSkipped:
-		fmt.Println("no report this run")
-	case pulse.SlotStatePending:
-		fmt.Println("optional pass-through output was not supplied")
+	check(err)
+	check(e.Start())
+	check(e.Wait())
+
+	value, state, err := pulse.ReadOutput(e, report)
+	check(err)
+	if state != pulse.SlotStateReady {
+		log.Fatalf("expected a report, got %s", state)
 	}
+	fmt.Println(value)
 }
 
-func must(err error) {
+func check(err error) {
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 }
 ```
 
-Save it as `main.go`, then `go run ./main.go`:
+The `check` helper reports an error and exits this standalone program. Node functions return errors to Pulse, which handles execution failure. A service should return assembly and execution errors to its caller.
+
+## 2. Run and inspect the result
+
+```sh
+go run .
+```
+
+Expected output:
 
 ```text
-Report: 2 segments / 67 chars
+Report: alpha, beta (2 documents)
 ```
 
-This code separates the definition, one run and result reading:
+The dependency chain is `documents → summarize → summary → format → report`. The `format` node can process data only after `summary` arrives. `Requires` / `Provides` determine that order, independently of the order of `Add` calls.
 
-| What you write | What it is |
-|---|---|
-| `pulse.NewKey[T]("docs")` | **Key**: a typed data slot. The name is for diagnostics and YAML reconciliation; the type gives compile-time safety. The same name must always be registered with the same `T` |
-| `g.DeclareInput(...)` + `pulse.Seed(&in, Docs, …)` | **Inlet + Seed**: `DeclareInput` says "this key comes from outside", `Seed` writes **this run's** value into `Inputs` — each Key allows only one source (a declared inlet, or exactly one node's `Provides`; both producing it → `ErrDuplicateSource`) |
-| `pulse.NewNode(id, description, Requires, Provides, run)` | **Node**: declares only which slots it reads and which it writes. It does **not** declare who the next node is |
-| `g.NewExecution(ctx, in)` + `e.Start()` / `e.Wait()` | **Graph + Execution**: the graph is the definition, the execution is this run; `Wait` waits for all nodes to terminate and returns the first error or real cancellation before finalization, **excluding normal skips**; bodies must still exit cooperatively |
-| `g.DeclareOutput(...)` + `pulse.ReadOutput(e, Report)` | **Outlet + result**: read only this run's declared public outputs; ready, normal skipped and an unfed optional pass-through pending are normal states, while a non-nil error invalidates both value and state |
+## 3. Understand the steps
 
-## Data arrival is scheduling
+### Declare data and ports
 
-- A node blocks on its input slots in **its own goroutine** and enters `Run` the moment the input arrives — you do not order nodes, and there is no topological-sort step;
-- The topology is **implicit**: whoever writes `summary` and whoever reads `summary` already form the dependency. There are no edge objects and no scheduler loop;
-- `Requires` is an **AND** precondition: the gate is judged once all inputs have arrived (ready or skipped) — **collect whatever arrives**, so one input with a value is enough to execute (only when no input brought a value does it not execute — see [Core concepts](/en/guide/concepts)).
+`NewKey[[]string]("documents")` creates a typed key. Its name identifies the data; its type determines the arguments to `Get` and `Set`. Keys with the same name and type identify the same data item.
 
-## A reusable definition, one run, one world
+`DeclareInput` allows the host to supply `documents`. `DeclareOutput` allows the host to read `report`. The intermediate `summary` stays internal and needs no port declaration.
 
-A `Graph` is a **reusable static definition** (nodes, dependencies, ports, mounted child graphs), not a run itself. This is an external contract, not an implementation detail:
+### Add processing nodes
 
-- one definition can run many times sequentially, many times concurrently, and be mounted as a child graph in several places; one run's cancellation / failure / completion pollutes neither the definition nor any other run;
-- every call to `g.Run(ctx, in)` is **an independent run** (inside: `NewExecution` + `Start` + `Wait`); for step-by-step control build an `Execution` yourself — its `Start()` succeeds only once, and once a slot has arrived it is closed and never reopens;
-- cross-run state (history, caches, sessions) **belongs to the caller**; the engine holds none of it. The reasoning is in [Core concepts](/en/guide/concepts).
+`NewNode` accepts an ID, description, input declarations, output declarations, and function. The function uses `RunCtx` to read declared inputs and write declared outputs. Each key has one source; a second producer is rejected during assembly.
 
-## Add observation: three lines
+### Supply this run's input
+
+`Seed` writes a value into `Inputs`, without changing the definition. Create independent inputs and a new `Execution` for the next request.
+
+Use `SkipSeed` when an input is explicitly absent in this run. A missing required inlet is rejected at execution creation or startup, rather than leaving a node waiting indefinitely. [Inputs and outputs](inputs-outputs.md) explains optional inputs and result states.
+
+### Create and finish the execution
+
+`NewExecution` creates the handle. `Start` validates and begins work. `Wait` waits for every node and finalizes the result. A successful start seals the entire definition tree. You can run a sealed definition again, but cannot add nodes or change ports.
+
+`ReadOutput` reads a public outlet after `Wait` finalizes. Check its error before its state: `ready` carries a value, `skipped` is normal absence, and an optional pass-through outlet can remain `pending`. This example requires a report, so it checks for `ready` explicitly.
+
+## 4. Run with different inputs
+
+Keep the definition and create new inputs and an execution. Append this fragment to the end of `main` above:
 
 ```go
-sink := observe.NewLineSink(os.Stdout, observe.WithImmediate())
-defer sink.Flush()
-
-obs, err := observe.NewRecordObserver(observe.ObserveConfig{
-	Sink:    sink,
-	HostID:  "quickstart",
-	TraceID: observe.NewTraceID(),
-})
-g, err := pulse.New("docs-pipeline", "docs summary pipeline", pulse.WithObserver(obs))
+var another pulse.Inputs
+check(pulse.Seed(&another, documents, []string{"gamma"}))
+ex, err := g.NewExecution(context.Background(), another)
+check(err)
+check(ex.Start())
+check(ex.Wait())
+nextReport, nextState, err := pulse.ReadOutput(ex, report)
+check(err)
+fmt.Println(nextReport, nextState)
 ```
 
-With those three lines added, the real output of the same graph (two run-level records bracketing four node records; timestamps / trace / durations vary per run):
+Additional output:
 
 ```text
-PULSE | 2026/10/09 - 10:42:50.372 | running    |         - | pulse.graph_started | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770372309700-d47dc250-1
-PULSE | 2026/10/09 - 10:42:50.388 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770372309700-d47dc250-1
-PULSE | 2026/10/09 - 10:42:50.388 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=summarize | host=quickstart | trace=1791513770372309700-d47dc250-1
-PULSE | 2026/10/09 - 10:42:50.388 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791513770372309700-d47dc250-1
-PULSE | 2026/10/09 - 10:42:50.388 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=docs-pipeline pulse.node=report | host=quickstart | trace=1791513770372309700-d47dc250-1
-PULSE | 2026/10/09 - 10:42:50.388 | completed  |   15.80ms | pulse.graph_finished | source=observe | pulse.graph=docs-pipeline | host=quickstart | trace=1791513770372309700-d47dc250-1
+Report: gamma (1 documents) ready
 ```
 
-The engine also emits two run-level callbacks per run (start / finish), and `observe` folds them into **two run-level records**: `pulse.graph_started` precedes every node record and `pulse.graph_finished` follows all of them, its `Status` being the run's terminal state (skipping is a node-level fact, so a skipped node does **not** make the run fail). The two node records are **segmented timing** — the wait segment (how long the node spent waiting for input) and the run segment (how long `Run` took): a wait record's `Status` is always `running` and its `Duration` is the wait itself (`summarize`'s input is written by `Seed` up front, hence `-`), while a run record's `Status` is the finish reason and its `Duration` is `Run` itself.
+This second execution has its own slots, state, and cancellation. Do not start the same Execution again; the Graph needs no reset.
 
-Neither node spent any time of its own here (their segments were all rounded to `-`), yet the run-level record reports `15.80ms`: its window covers "commit the nodes → everything terminated", which includes runtime and egress-write costs — for its accounting and how it differs from your own stopwatch see [Graph observation](/en/guide/observability).
+## Troubleshooting
+
+**Startup reports an input or source error.** Check that `DeclareInput`, `Requires`, and `Seed` use a key with the same name and type, and that no internal node also produces that key.
+
+**`ReadOutput` reports an undeclared key.** The host can read only declared outlets. Call `DeclareOutput` for a host-facing result before starting.
+
+**You want logs or progress.** Continue to [observation](observability.md). Use `Snapshot` for state and declared outlets for business results.
 
 ## Next steps
 
-- **Core concepts**: Key / Node / Graph / slot tri-state / aspects → [Core concepts](/en/guide/concepts)
-- **Orchestration**: branching, fan-in, timeouts, retries, rate limiting → [Orchestration](/en/guide/orchestration)
-- **Declarative assembly**: topology belongs to YAML → [Declarative assembly](/en/guide/assembly)
-- **Graph observation**: egress choice, host-provided columns, privacy boundary → [Graph observation](/en/guide/observability)
-- **Per-package API**: full documentation of all three packages (same source as the repository README) → [Packages](/en/packages/)
+- [Core concepts](concepts.md): definitions, executions, and the three data states.
+- [Branches and joins](branching.md): conditional outputs and aggregation policies.
+- [Subgraphs](subgraphs.md): reuse a complete workflow as one step.

@@ -1,6 +1,12 @@
 name: site
 
 on:
+  pull_request:
+    paths:
+      - 'site/**'
+      - '**/README.md'
+      - '**/README_en.md'
+      - '.github/workflows/site.yml'
   push:
     branches: [main]
     paths:
@@ -16,7 +22,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
   cancel-in-progress: true
 
 jobs:
@@ -40,6 +46,7 @@ jobs:
           path: site/.vitepress/dist
 
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:

@@ -1,176 +1,92 @@
 # 核心概念
 
-Pulse 只有三样东西：**Key**（数据槽）、**Node**（计算单元）、**Graph**（图的可复用静态定义）；加上 **`Execution`**（一次运行），理解它们和槽位的三态，剩下的都是推论。
+本页解释 Pulse 的数据模型和执行规则。建议先运行[快速开始](quickstart.md)，再用这里的概念理解分支、汇聚、复用与取消。
 
-## 三件事
+## 定义与执行
 
-| 概念 | 一句话 | 关键性质 |
-|---|---|---|
-| **Key** | 类型化的数据槽 | `Key[T]` 把名字和类型绑在一起：`Get` 直接拿到 `T`，不用断言；同名 Key 必须以同一个 `T` 注册，不做「同名换类型」的静默覆盖 |
-| **Node** | 声明读什么、写什么 | 只声明 `Requires` / `Provides`，**不声明下一个节点是谁**——依赖由 Key 的生产与消费隐式形成 |
-| **Graph** | 可复用的静态定义 | 节点集合 + 依赖 + 端口 + 挂载的子图；一次运行的状态在 `Execution` 里（自己的 ctx / 输入值 / 槽位 / 首错 / 取消域），随结束而灭 |
+Pulse 使用四个核心对象：
 
-节点长这样：
+| 对象 | 保存什么 | 生命周期 |
+| --- | --- | --- |
+| `Key[T]` | 数据名称与 Go 类型 | 随定义使用 |
+| `Node` | ID、描述、读写声明、函数与切面 | 属于图定义 |
+| `Graph` | 节点、端口、依赖与挂载的子图 | 可以被反复执行 |
+| `Execution` | 本轮输入、数据槽位、状态、错误与取消域 | 对应一次运行 |
 
-```go
-pulse.NewNode("summarize", "把 docs 折成一句摘要",
-	pulse.Requires(Docs),     // AND 前置：全部输入到达（就绪或跳过）才判门
-	pulse.Provides(Summary),  // 本节点会写出的槽位
-	func(rc *pulse.RunCtx) error {
-		docs, err := pulse.Get(rc, Docs)
-		if err != nil {
-			return err
-		}
-		return pulse.Set(rc, Summary, join(docs))
-	})
-```
+可以把 Graph 理解为一份处理说明，把 Execution 理解为按这份说明执行的一个请求。两个请求使用同一份说明，并不共享执行槽位。
 
-不同类型的输入用一个节点接：`pulse.Deps(pulse.Requires(A), pulse.Requires(B))`——`Requires[T]` 一次只能收同一类型的 Key。
+每次 `g.Run(ctx, in)` 都创建新的执行。要取得句柄，使用 `g.NewExecution(ctx, in)`，随后调用 `e.Start()` 与 `e.Wait()`。同一个 Execution 只能成功启动一次。
 
-## 槽位三态
+图定义的隔离不意味着业务对象被复制：闭包捕获的计数器、客户端，以及传入的 map、slice、指针仍可能共享。并发执行时，这些对象的同步由应用负责。
 
-```
-未就绪(pending) | 已就绪(ready, 值) | 已跳过(skipped)
-```
+## Key：有名字和类型的数据
 
-**就绪和跳过都是「到达」。** 等待者被唤醒后区分这两种到达，而不是把「永远不到」伪装成一个假值。这是这类引擎最容易做错的一处：把跳过当失败，会让「分支」这个基本操作无处安放。
+`pulse.NewKey[string]("summary")` 表示名为 `summary` 的字符串数据。同名、同类型的 Key 等价；在一张图内，同名键不能混用不同类型。未初始化的零 Key 不能用作输入或端口。
 
-由此推出三条规则：
+节点通过 `Requires` 声明读取权限，通过 `Provides` 声明写入权限。读取未声明的输入或写入未声明的输出会返回 `ErrUndeclared`。不同类型的声明通过 `pulse.Deps` 组合。
 
-- **到几个收几个**：等**全部**输入到达（就绪或跳过）后才判门——只要有一条输入真的到了值，节点就带着到了的那些进入 `Run`；
-- 一条值都没到（全部输入都以跳过到达）→ **不执行 `Run`**，全部输出跳过；
-- `Run` 成功返回后**漏写的 `Provides` 自动跳过**（否则下游永远等不到到达）。
+每条数据只有一个来源：它可以是声明给宿主的入口，也可以由一个节点产生。重复来源在装配时被拒绝。多个下游节点可以读取同一个普通值；多个 channel 读者会竞争流元素，流需要额外规则，见[流式处理](streams.md)。
 
-由此也推出一个容易说反的事实——**跳过是槽位的事实，不是节点的事实**：
+## 端口：图的公共接口
 
-| 情形 | 终态 | 观测记录 |
-|---|---|---|
-| 节点对某条 `Provide` 调 `Skip` 后正常返回 | `completed` | 等待段 + 执行段两条 |
-| 节点因**一条值都没到**而没执行 | `skipped` | **只有一条**等待记录（`Record.Err = nil`，不写 error 字段），无执行段 |
+Key 用于内部读写，端口决定宿主和父图能访问哪些数据：
 
-看真实输出（两个节点：`translate` 对 `translated` 调 `Skip`，`publish` 依赖 `translated`）：
+- `DeclareInput` 声明可从外部提供的输入；本轮值通过 `Inputs` 提供。
+- `DeclareOutput` 声明可从本轮执行读取的输出。
+- 子图通过声明的端口接线，内部 Key 不会自动成为公共接口。
 
-```text
-PULSE | 2026/10/09 - 10:42:50.550 | running    |         - | pulse.graph_started | source=observe | pulse.graph=branch-demo | host=quickstart | trace=branch-demo
-PULSE | 2026/10/09 - 10:42:50.550 | running    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
-PULSE | 2026/10/09 - 10:42:50.550 | completed  |         - | pulse.node_run_finished | source=observe | pulse.graph=branch-demo pulse.node=translate | host=quickstart | trace=branch-demo
-PULSE | 2026/10/09 - 10:42:50.550 | skipped    |         - | pulse.node_wait_finished | source=observe | pulse.graph=branch-demo pulse.node=publish | host=quickstart | trace=branch-demo
-PULSE | 2026/10/09 - 10:42:50.550 | completed  |   524.5µs | pulse.graph_finished | source=observe | pulse.graph=branch-demo | host=quickstart | trace=branch-demo
-```
+一个 Key 同时声明为入口与出口时，可以形成透传接口。如果它是可选入口，本轮没有提供且没有节点依赖它，结束后仍可能是 `pending`。这是明确的正常状态，不会被改写为跳过。
 
-`translate` 写了跳过，但它自己正常结束了；`publish` 才是那个「没执行」的节点。整轮那条是 `completed`——**有节点跳过，这一轮仍然是成功的**。
+具体声明、接线与读取见[输入与输出](inputs-outputs.md)和[子图](subgraphs.md)。
 
-### 汇聚：到几个收几个
+## 数据槽位的三种状态
 
-门看的是「**有没有值**」，不是「有没有跳过」。等全部输入到达之后：只要有一条真的到了值，节点就带着到了的那些进入 `Run`；一条值都没到，才是它自己跳过。
+Key 标识数据；一次 Execution 中对应的槽位保存这次数据的到达情况。
 
-```go
-pulse.NewNode("join", "把到了值的那几路拼起来",
-	pulse.Requires(A, B, C), // 这一轮只有 A、B 有值
-	pulse.Provides(Joined),
-	func(rc *pulse.RunCtx) error {
-		var parts []string
-		for _, k := range []pulse.Key[string]{A, B, C} {
-			v, ok, skipped, err := pulse.TryGet(rc, k)
-			if err != nil {
-				return err
-			}
-			switch {
-			case ok:
-				parts = append(parts, v)
-			case skipped: // 这一路没有值，跳过它
-			default:
-				return fmt.Errorf("输入既未就绪也未跳过")
-			}
-		}
-		return pulse.Set(rc, Joined, strings.Join(parts, "+"))
-	})
-```
+| 状态 | 含义 | 是否已经到达 |
+| --- | --- | --- |
+| `pending` | 尚未提供结果 | 否 |
+| `ready` | 已提供一个值，包括合法零值 | 是 |
+| `skipped` | 已明确表示这次没有值 | 是 |
 
-两条边界：
+`ready` 与 `skipped` 都会结束等待。`0`、空串和合法 nil 值不能代替缺失状态；它们可以是业务有效值。具体 nil 输入限制见[输入与输出](inputs-outputs.md)。
 
-- 读到一条没值的输入得到的是 `*SkipError`（`errors.Is(err, ErrSkipped)` 成立）——不是零值，也不是失败，`Get` 读它也不阻塞。逐条问「这一路到了没有」用 `TryGet` 最省事。
-- 反过来，**要「缺一条就别跑我」的节点自己表态**：把 `WaitAll` 的返回值直接返回出去。它仍会进入 `Run`（跳过是它自己的结论，不是被门挡住的），终态是 `skipped`、`Run`/`Err` 不报错、`Retry` 不重试。注意**已经发布的输出不回滚**：节点体先 `Set` 过的那几条照常就绪，只有还没写的 `Provides` 会被跳过（一次性槽位契约）。
+`Set` 写入值，`Skip` 写入正常缺值。同一槽位的同态重复写是幂等首写：再次 `Set` 不覆盖原值，再次 `Skip` 不改变状态。`Set` 与 `Skip` 相互冲突。宿主向 `Inputs` 重复提供同一键则会在 `Seed` / `SkipSeed` 时被拒绝。
 
-这段手写汇聚有等价的糖：`pulse.Join` 把 N 路同类型输入收成一束 `pulse.Batch[T]`（每条输入带来源名，缺项也占一行）——见[编排](/guide/orchestration)。
+成功返回的节点，其尚未写入的声明输出会自动跳过。需要选择一路时，应写入被选中的输出，并明确跳过其它输出；[分支指南](branching.md)给出完整例子。
 
-### 分支怎么写
+## 节点何时运行
 
-没有 `if` 原语。分支 = **对未选中的 `Provide` 调用 `Skip`**：
+普通节点遵守以下规则：
 
-```go
-if cond {
-	if err := pulse.Set(rc, OutA, v); err != nil {
-		return err
-	}
-	return pulse.Skip(rc, OutB)
-}
-if err := pulse.Set(rc, OutB, w); err != nil {
-	return err
-}
-return pulse.Skip(rc, OutA)
-```
+1. 没有输入依赖的节点可以开始运行。
+2. 有输入的节点等待**所有输入**到达；到达可以是 `ready` 或 `skipped`。
+3. 所有输入到达后，只要至少一项为 `ready`，节点就进入处理函数；全部为 `skipped` 时，节点跳过处理函数，输出也跳过。
 
-**两边都要表态。** 只 `Skip` 未选中的那条是不够的：`Run` 成功返回后漏写的 Provides 会被自动跳过，于是「没选 A」变成「A、B 都没到」——两条下游都不跑。选中的 `Set`、没选中的 `Skip`，缺一不可。
+例如摘要有值、标签跳过时，报告节点仍可进入函数。它需要用 `TryGet` 或 `Batch` 明确收集有值的部分。如果业务要求摘要和标签缺一不可，在函数里返回 `WaitAll` 的结果，选择整体跳过。
 
-写入语义：`Set` / `Skip` 都是**幂等首写**——已就绪时再 `Set` 会被忽略（不比对值），已跳过时再 `Skip` 也忽略；同一个槽位先 `Set` 后 `Skip`（或反过来）报 `ErrConflict`。装在 `Retry` 里面的节点写的是**那一次尝试的写暂存**，语义逐条一样（同一个键第二次 `Set` 照样被忽略、`Set` 后 `Skip` 照样冲突），换的只是「落地位置」。`Seed` 写的是**这一次运行**的 `Inputs`：同一条键写两次在那一步就被拒——它最终撞上的正是这条幂等首写，只是提前报出来。
+这不是“收到第一项就立即处理”。汇聚节点始终等各路都表明结果，再按声明的策略处理。[分支与汇聚](branching.md)说明两种策略及对应 API。
 
-## 定义可复用，一次运行一个世界
+## 跳过、失败与取消
 
-> `Graph` 是**可复用的静态定义**；`Execution` 是**一次运行**。
+**跳过是正常结果。** 节点可以跳过一项输出，或通过 `NoValue` / 跳过结果结束整个节点。整张图全部跳过也可以成功；`Wait` 不把正常跳过作为错误返回。
 
-同一张图顺序跑很多次、并发跑很多次、挂在多处当子图都成立——一次运行的取消 / 失败 / 完成不污染定义，也不污染别的运行。`Execution.Start()` 第二次调用返回 `ErrGraphStarted`；槽位一旦到达即关闭、不会重开。**没有 `Reset`，也不会加**：跨运行的状态（历史、缓存、会话）归调用方，不归引擎。
+**真实错误是执行失败。** 节点返回非跳过错误时，Pulse 记录错误并取消本次执行，使等待者和协作处理函数退出。节点 panic 会被转换为执行错误。错误不会被静默转成缺值。
 
-判据一句话：**pulse 持有「这一轮正在流动的数据」，不持有历史。** 一旦为了跑第二轮而要保存上轮的值，引擎就得回答「什么该留、什么该清」——那是存储语义，是调用方的事。三类需求都不需要引擎来存：
+**取消需要业务协作。** 在 HTTP、数据库、循环和阻塞操作中使用 `rc.Context()`。Go 无法安全终止一个忽略取消的业务函数；`Wait` 和 `Timeout` 仍需等待函数退出。
 
-| 需求 | 正确表达 |
-|---|---|
-| 同一张图跑 N 个独立请求 | 每次 `Run` / `NewExecution` |
-| 一次请求内跑 3 个候选 | 一张图内 fan-out（多 `Provides`） |
-| 长会话多轮 | 每轮一张图，拓扑来自 YAML |
+## 封口与复用
 
-## 失败显式
+`Validate` 成功，或某次 Execution 成功启动时，会封口整棵定义树，包括已挂载的子图。封口固定节点和端口，避免执行中发生结构变化。
 
-`error` 与 `skipped` 走**两个出口**，不复用：
+校验失败不会封口，可补全定义后重试。封口后的 Graph 仍可执行，也可挂载到其它图；它冻结的是定义，并没有被某次执行消耗。
 
-- 任一节点返回非跳过错误 → 记录**首错** + 取消整图，所有等待者被唤醒；
-- `Run()` / `Err()` 返回原错误，**绝不**把失败改写成 `ErrSkipped`；
-- `panic` 不穿透：节点 panic 被转成节点错误，走同一条失败路径；
-- `Err()` 不含单纯的跳过——**全图都跳过是合法结果**。
+若同一个子图挂在两个位置，每个位置创建独立子 Execution。挂载位置还会出现在观测的 `Site.Path` 中，便于区分复用模块的不同实例。
 
-取消来源有两个：这次运行的 `ctx` 被取消（`g.Run(ctx, in)` / `NewExecution(ctx, in)` 传进去的那个），或切面超时（`Timeout`）。两者都让还在等数据的节点立刻返回。
+## 切面与观测
 
-## RunCtx：只有声明过的槽位
+Aspect 包住节点的等待与处理过程，适合显式重试和超时。先声明的切面位于外层。`Retry` 为每次尝试暂存输出，失败且将重试时丢弃这些写入；这不回滚外部副作用。[重试与取消](retry-cancellation.md)解释组合顺序和限制。
 
-`RunCtx` 是一次运行里节点能看到的世界：**声明过的槽位** + 本层可取消的 context。拿不到整个黑板：
+`Topology` 描述静态结构，`Snapshot` 描述一轮执行的状态，Observer 提供事件。状态快照不携带业务值，读取视图也不会推进执行。业务输出通过声明出口读取，事件通过可选 `observe` 包接入日志。
 
-- `Get` 一个没在 `Requires` 里声明的 Key → `ErrUndeclared`；
-- 写一个不在 `Provides` 里的 Key → `ErrUndeclared`。
-
-`RunCtx.Fork()` 只派生可取消 context，**共享**声明权限与写入记录——它不是独立写入事务。
-
-## 切面
-
-```go
-type Aspect func(rc *RunCtx, next func(*RunCtx) error) error
-```
-
-切面包住节点的「**等输入 + 执行**」整段——所以 `Timeout` 能打断还在等数据的节点，而不只是打断执行。不调 `next` 即短路。
-
-- `Timeout(d)`：超时取消本层 ctx；
-- `Retry(attempts, delay)`：只对执行错误重试；**等待阶段的取消不重试，以跳过收尾的也不重试**（一条值都没到而没执行、或自己把 `WaitAll` 的跳过返回出去）——跳过是到达，不是失败。它给**每一次尝试开一条独立的写暂存**：那一次 `Set` / `Skip` 的东西先落在暂存上，失败且还要重试就整条丢掉（下游从来没见过那次写的东西），成功才整条交出去——见[编排 · 重试](/guide/orchestration)；
-- 顺序：全局切面（`pulse.WithAspects`）先于节点切面，**先写的更靠外**——所以 `Timeout` 在外、`Retry` 在内。
-
-**推进闸**：单节点的 `Run` 不得**并发**进入（两个 goroutine 同时跑同一节点必然抢同一批槽位），违反返回 `ErrNextCalledTwice`。**顺序重入的判据是「有没有新的尝试边界」**：`Retry` 每次尝试换一条写暂存，那是合法的重入（1→0→1）；用户自己写的重试切面开不出边界，第二次推进会当场被拒（`ErrNextCalledTwice`，报文连第一次的失败原因一起给）。
-
-## 三个包的分工
-
-| 包 | 是什么 | 依赖 |
-|---|---|---|
-| `pulse`（根） | 图引擎 | **零**（只用标准库） |
-| `pulse/observe` | 图观测：把引擎的 `Observer` 回调折成结构化记录 | `pulse` |
-| `pulse/yaml` | 声明式装图：YAML → 图 | `pulse` + `yaml.v3` |
-
-**依赖箭头单向且不许反向**：引擎不 import 任何观测包，只暴露一个 `Observer` seam。不需要观测的宿主只 import 根包——它的依赖闭包是空的。
-
-下一步：看[编排](/guide/orchestration)怎么把这些拼成真实拓扑，或直接看[图观测](/guide/observability)怎么接出口。
+下一步：[选择一个使用任务](orchestration.md)，或查阅[生命周期参考](../reference/lifecycle.md)。
