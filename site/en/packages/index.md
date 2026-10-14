@@ -1,17 +1,35 @@
-# Package docs
+# Package reference
 
-Pulse ships exactly three packages:
+Pulse provides a graph execution core, with optional observation and YAML assembly packages. This page groups their entry points by responsibility so you can look up configuration, events, fields and strict semantics.
 
-| Package | What it is | Depends on | Docs |
+## Packages and dependencies
+
+| Import path | Responsibility | Dependencies | Reference |
 |---|---|---|---|
-| [`pulse`](https://github.com/Luo-root/pulse) (root) | the graph engine | **nothing** (standard library only) | [Core concepts](/en/guide/concepts) · [Orchestration](/en/guide/orchestration) |
-| [`pulse/observe`](/en/packages/observe/) | graph observation: engine `Observer` callbacks → structured records | `pulse` | [Graph observation](/en/guide/observability) |
-| [`pulse/yaml`](/en/packages/yaml/) | declarative assembly: YAML → graph | `pulse` + `yaml.v3` | [Declarative assembly](/en/guide/assembly) |
+| `github.com/Luo-root/pulse` | Graph definitions, run inputs, Execution, nodes and static subgraphs, aspects and state views | Standard library | [Go API documentation](https://pkg.go.dev/github.com/Luo-root/pulse) · [Current source](https://github.com/Luo-root/pulse) |
+| `github.com/Luo-root/pulse/observe` | Converts Observer callbacks into structured Records for text, slog, memory or asynchronous output | `pulse` + standard library | [observe package reference](/en/packages/observe/) |
+| `github.com/Luo-root/pulse/yaml` | Assembles YAML graphs from registered Run bodies and produces input plans or static topology | `pulse` + `gopkg.in/yaml.v3` + standard library | [yaml package reference](/en/packages/yaml/) |
 
-The page body of the latter two is the package's `README_en.md` verbatim, synced at build time by `site/scripts/sync-docs.mjs` — **the README is the source; editing it updates the site**.
+The dependency direction is `pulse` ← `observe` / `yaml`. The root does not import these packages; its dependency closure contains only the standard library. Observation and YAML assembly can be selected independently.
 
-The root package has no separate page: its API contracts live in godoc (every exported symbol carries one), usage lives in the guide, and the design lives in [`docs/design/pulse.md`](https://github.com/Luo-root/pulse/blob/main/docs/design/pulse.md).
+## Find the right reference
 
-::: tip Dependency direction
-`pulse` ← `observe` / `yaml`, one-way and never reversed. The engine imports no observation package; a host that imports only the root package has an empty dependency closure.
-:::
+| Question | Entry |
+|---|---|
+| How does a definition differ from an execution, and how do I declare inputs or read outputs? | [Core concepts](/en/guide/concepts) · [Inputs and outputs](/en/guide/inputs-outputs) |
+| How do nodes connect, subgraphs mount, and retries or cancellation work? | [Orchestration](/en/guide/orchestration) · [Static subgraphs](/en/guide/subgraphs) · [Retries and cancellation](/en/guide/retry-cancellation) |
+| When is an event emitted, how do TraceID and Execution differ, and when must a sink flush? | [observe package reference](/en/packages/observe/) |
+| Which YAML fields exist, how are factories and types registered, and what do Load and Analyze validate? | [yaml package reference](/en/packages/yaml/) |
+| How do I integrate observation or declarative assembly from the beginning? | [Graph observation guide](/en/guide/observability) · [Declarative assembly guide](/en/guide/assembly) |
+
+Package references provide complete minimal programs and lookup tables. Guides explain the integration step by step. The observe and yaml site pages come from their bilingual package READMEs; source links help verify the current contracts.
+
+## Documentation version
+
+This website describes current `main`, including APIs that have not yet shipped in a release tag. The latest release tag is `v0.4.1`, which is not the API baseline for every example here. To use these interfaces, pin the commit used by the documentation examples:
+
+```bash
+go get github.com/Luo-root/pulse@1f67045d6c42
+```
+
+Requires Go 1.25.0 or later. Released Go API documentation may differ from current source; read against the commit your application uses.
