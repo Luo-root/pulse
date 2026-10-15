@@ -205,7 +205,9 @@ for _, problem := range topology.Problems {
 fmt.Println(topology.Mermaid())
 ```
 
-Analyze needs no Registry and executes no factories, aspects, resolvers, or ObserverFor. It shares Load assembly rules. Root problems remain in Problems; child or document assembly problems return an error. Returned Type fields retain YAML labels, with empty labels for wiring-only keys that cannot be inferred. Analyze does not validate real Go types, registered factories, or literal assignability. A successful preview still needs Load and Inputs validation.
+Analyze needs no Registry and executes no factories, aspects, resolvers, or ObserverFor. It shares Load assembly rules and static checks that do not depend on real key types. Root problems within that scope remain in Problems; child or document assembly problems return an error. Returned Type fields retain YAML labels, with empty labels for wiring-only keys that cannot be inferred. Analyze does not validate real Go types, registered factories, or literal assignability.
+
+**Type labels are not proof of stream safety.** Analyze assembles every key using an `any` placeholder, then restores labels. Even explicit `pulse.Stream[int]` or channel labels do not trigger checks for stream consumers, shared quotas, or lifecycle constraints that need real types. For example, a lone node providing `pulse.Stream[int]` without a reader can leave Analyze Problems empty. Register a real stream key and Load it: root Topology.Problems reports the missing reader, and Validate rejects it, without running the factory. A successful preview still needs Load with a Registry, Inputs and Validate / Start validation. Graphs without streams can be compared field by field when labels are known and identities, wiring and static options match; Problems need not match for graphs with streams.
 
 ## Quotas, observers, and common errors
 

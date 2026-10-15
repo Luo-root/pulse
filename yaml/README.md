@@ -262,22 +262,32 @@ func describe(doc []byte) error {
 }
 ```
 
-Analyze 与 Load 共用解码、装配、端口、绑定及核心静态判据，返回 `*pulse.Topology`。它不创建 Execution，不运行工厂或切面，不解析外部 seed，不调用 ObserverFor 或 Observer。Graph / MaxRunning 的静态选项与 Load 一致。
+Analyze 与 Load 共用解码、装配、端口、绑定及不依赖真实键类型的核心静态判据，返回 `*pulse.Topology`。它不创建 Execution，不运行工厂或切面，不解析外部 seed，不调用 ObserverFor 或 Observer。Graph / MaxRunning 的静态选项与 Load 一致。
 
-| 检查项 | Analyze | Load / Inputs |
+| 检查项 | Analyze | Load / Inputs / Validate / Start |
 |---|---|---|
-| YAML 形态、节点、引用、绑定、静态子图 | 检查 | 检查 |
-| 根层静态问题 | 保留在 Topology.Problems，调用方须读取 | Load 不提前判全部问题；Validate / Start 检查 |
-| 子图与装配错误 | 返回 error | 返回 error |
+| YAML 形态、节点、引用、绑定 | 检查 | 检查 |
+| 不依赖真实键类型的根层静态问题 | 保留在 Topology.Problems，调用方须读取 | Load 不提前判全部问题；Validate / Start 检查 |
+| 上述范围内的子图与装配错误 | 返回 error | 返回 error |
 | 同名键及绑定两端的已知类型标签 | 要求一致，并沿绑定传播 | 按 Registry 的真实类型对账 |
 | 工厂是否登记 | 不检查，未知名字可通过 | Load 检查 |
 | 类型标签是否是实际 Go 类型 | 无法证明 | Load 检查登记表 |
 | literal 是否能赋值到目标类型 | 不推断、不检查 | 根层 Inputs、子图 Load 检查 |
+| 流消费者、共享额度和生命周期等依赖真实类型的约束 | 不检查；显式 Stream / channel 标签也不例外 | Load 使用真实类型，子图在 Load 检查；根层看 Topology.Problems，并经 Validate / Start 检查 |
 | 工厂内的流式读写行为 | 不推断 | 同样无法从 Run 推断 |
 
-显式 KeySpec 仍须填写 type。Analyze 将 `example.Item` 之类的标签原样保留，不从 literal 猜类型。只出现在接线中、且不能从任何已知声明推导类型的键，返回的 Type 为空字符串。因此 Analyze 成功并不代表文档可以执行，仍需 Load 和 Inputs 校验宿主类型与值。
+显式 KeySpec 仍须填写 type。Analyze 将 `example.Item` 之类的标签原样保留，不从 literal 猜类型。只出现在接线中、且不能从任何已知声明推导类型的键，返回的 Type 为空字符串。分析装配时所有键都用 `any` 占位，返回前恢复标签不会重新执行依赖真实类型的检查；**类型标签不等于静态安全证明**。例如：
 
-拓扑保留每处挂载的完整输入、输出和透传端口，内部键不会自动变成出口。Go 端口按首次成功声明序；YAML 的 in / out 映射按键名排序，根 seeds 按文档序，子图固定输入在 in 之后按键名声明。标签可知、身份与接线一致时，Analyze、Load 与手写 Go 的拓扑可逐字段比较；类型标签预检查更早，多种错误并存时不承诺首条诊断相同。
+```yaml
+nodes:
+  - id: writer
+    uses: write
+    provides: [{name: stream, type: "pulse.Stream[int]"}]
+```
+
+这里没有读取者，Analyze 仍会得到空的 Problems 并保留流标签。用真实 `Key[pulse.Stream[int]]` 登记后 Load，同一根图的 Topology.Problems 会报告流无人读取，Validate 也会拒绝；这些检查不需要执行工厂。因此 Analyze 成功仍需经有 Registry 的 Load、Inputs 和 Validate / Start 检查真实类型、值及流约束。
+
+拓扑保留每处挂载的完整输入、输出和透传端口，内部键不会自动变成出口。Go 端口按首次成功声明序；YAML 的 in / out 映射按键名排序，根 seeds 按文档序，子图固定输入在 in 之后按键名声明。对**不含流的图**，标签可知且身份、接线、静态选项一致时，Analyze、Load 与手写 Go 的拓扑可逐字段比较。包含流时仍可预览装配形状，但 Problems 不承诺一致；类型标签预检查更早，多种错误并存时也不承诺首条诊断相同。
 
 YAML 不声明 Produce / Consume / Tee 等 Go 流糖标记。静态校验不能推断工厂或切面内部隐藏的 channel 等待、手写 close 时机等行为。
 

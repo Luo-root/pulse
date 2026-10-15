@@ -205,7 +205,9 @@ for _, problem := range topology.Problems {
 fmt.Println(topology.Mermaid())
 ```
 
-Analyze 不需要 Registry，不执行工厂、切面、resolver 或 ObserverFor。它复用 Load 的装配规则，根层问题保留在 Problems，子图或文档装配问题返回 error。返回的 Type 是 YAML 标签，无法推导的接线键标签为空；它不验证实际 Go 类型、工厂是否登记或 literal 是否可赋值。预览通过后仍需 Load 和 Inputs 的真实检查。
+Analyze 不需要 Registry，不执行工厂、切面、resolver 或 ObserverFor。它复用 Load 的装配规则及不依赖真实键类型的静态判据；这部分根层问题保留在 Problems，子图或文档装配问题返回 error。返回的 Type 是 YAML 标签，无法推导的接线键标签为空；它不验证实际 Go 类型、工厂是否登记或 literal 是否可赋值。
+
+**类型标签不等于流静态安全证明。** Analyze 装配时所有键都用 `any` 占位，最后恢复标签，因此即使显式声明 `pulse.Stream[int]` 或 channel，也不会检查依赖真实类型的流消费者、共享额度或生命周期约束。例如，只有一个节点 provides `pulse.Stream[int]` 而无人读取，Analyze 的 Problems 仍可为空；用真实流键登记后 Load，根图的 Topology.Problems 会报告缺失读取者，Validate 也会拒绝，无需执行工厂。预览通过后仍须经有 Registry 的 Load、Inputs 和 Validate / Start 检查。无流图在标签可知、身份、接线与静态选项一致时可逐字段比较拓扑；流图的 Problems 不承诺一致。
 
 ## 额度、观察者与常见错误
 
