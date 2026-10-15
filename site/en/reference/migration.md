@@ -37,6 +37,22 @@ Repeated `WithStreamAspects` options append in declaration order. Graph aspects 
 
 Consume creates no send buffer: a positive `WithBuffer` fails during assembly without leaving a node. Zero and negative sizes retain the existing no-change rule. Local Timeout covers input waits, channel operations, and callbacks; expiry cancels and waits for inner work to exit, and a truncated stream remains an execution failure. Produce/Tee still reject Retry write staging. Whole-node Retry on Consume cannot rewind or replay consumed elements. See the complete [streams example](../guide/streams.md).
 
+## Managed streams, live Sub, and incremental recovery
+
+| Migration area | Native compatibility behavior | Managed contract |
+|---|---|---|
+| Keys and helpers | Key[<-chan T], Produce/Consume/Tee remain | Key[Stream[T]], ProduceStream/ConsumeStream/TeeStream, with description after id |
+| Reading | Taking from a channel has no acknowledgement | Receive yields Delivery; explicit Ack releases total in-flight capacity; Nack requeues the same sequence |
+| Buffer and quota | Default unbuffered, quota held throughout, conservative capacity checks | Default in-flight limit 1; managed waits release quota and reacquire before business resumes; purely managed pipelines progress with quota 1 |
+| Retry | No automatic rewind or message reliability | Finite HandleMessage; progressive SendAt continues by explicit source cursor |
+| Sub | Old docs described all outputs waiting for completion | In stably binds pending slots; Stream/native-channel Out binds early; ordinary Out waits for successful child.Wait |
+| Host | ReadOutput only after Wait | SubscribeStream after NewExecution and before Start; consume and Ack or Stop |
+| Checkpoints | Native and nested channels remain rejected | Four ordinary hooks remain valid; optional complete six-entry StreamHooks separate messages from descriptors |
+
+Native helpers support WithStreamAspects but reject WithStreamSource/WithMessageHandling; they do not silently acquire reliability. ConsumeStream rejects positive WithBuffer; ProduceStream rejects nonempty message handling. WithMessageHandling configures finite managed consumer/Tee attempts. Failed results stay unpublished; closures and external effects do not roll back.
+
+Sub has no aggregate input gate. All skipped inlets still create a child whose independent sources may run. Ordinary Retry rejects actual external streams; absence proven through nested bindings remains normal. Complete finite internal pipelines bridging only ordinary values may retry together. Multiple Out aliases of a completed stream share one recovery ledger; the body stays skipped while Done and the tail are rebuilt. Active sources without continuation promises reject recovery. A host subscription makes a pass-through inlet required for this run, needing Seed/SkipSeed. Wait does not drain for the host. See the [stream guide](../guide/streams.md) and [checkpoint reference](./checkpoint.md). Use matching local source. Durable provides storage and process recovery, with integration tracked in Durable #21; actual tags/releases determine release status.
+
 ## Migrate object responsibilities first
 
 | Concern | v0.4.1 model | Current development model |

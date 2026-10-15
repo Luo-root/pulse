@@ -17,8 +17,10 @@ import "fmt"
 type StreamOption func(*streamConfig)
 
 type streamConfig struct {
-	buf     int
-	aspects []Aspect
+	buf              int
+	aspects          []Aspect
+	checkpointSource CheckpointStreamSource
+	messageOptions   []MessageOption
 }
 
 // WithStreamAspects 给本流节点追加切面；多次配置按声明顺序追加，先声明的在外层。
@@ -47,6 +49,13 @@ func WithBuffer(n int) StreamOption {
 			c.buf = n
 		}
 	}
+}
+
+func checkNativeStreamOptions(id string, cfg streamConfig) error {
+	if cfg.checkpointSource != (CheckpointStreamSource{}) || len(cfg.messageOptions) != 0 {
+		return fmt.Errorf("pulse: stream node %q: WithStreamSource and WithMessageHandling require a managed Stream endpoint; use ProduceStream, ConsumeStream or TeeStream", id)
+	}
+	return nil
 }
 
 func newStreamConfig(opts []StreamOption) streamConfig {
@@ -122,6 +131,9 @@ func Produce[T any](g *Graph, id, description string, out Key[<-chan T],
 		return err
 	}
 	cfg := newStreamConfig(opts)
+	if err := checkNativeStreamOptions(id, cfg); err != nil {
+		return err
+	}
 	n := NewNode(id, description, nil, Provides(out), func(rc *RunCtx) error {
 		if err := checkChannelVisibleNow(rc, "Produce", id, out.asRef()); err != nil {
 			return err
@@ -203,6 +215,9 @@ func Consume[T any](g *Graph, id, description string, in Key[<-chan T],
 		return fmt.Errorf("pulse: Consume %q: nil fn", id)
 	}
 	cfg := newStreamConfig(opts)
+	if err := checkNativeStreamOptions(id, cfg); err != nil {
+		return err
+	}
 	if cfg.buf > 0 {
 		return fmt.Errorf("pulse: Consume %q: WithBuffer(%d) is only supported by Produce / Tee; Consume does not create a channel", id, cfg.buf)
 	}
@@ -291,6 +306,9 @@ func Tee[T any](g *Graph, id, description string, in Key[<-chan T], outs []Key[<
 	}
 	outs = append([]Key[<-chan T](nil), outs...)
 	cfg := newStreamConfig(opts)
+	if err := checkNativeStreamOptions(id, cfg); err != nil {
+		return err
+	}
 	n := NewNode(id, description, Requires(in), Provides(outs...), func(rc *RunCtx) error {
 		src, err := Get(rc, in)
 		if err != nil {

@@ -163,3 +163,53 @@ func ExampleReadOutput() {
 	// result: 6
 	// result: skipped
 }
+
+func ExampleProduceStream() {
+	numbers := pulse.NewKey[pulse.Stream[int]]("numbers")
+	left := pulse.NewKey[pulse.Stream[int]]("left")
+	right := pulse.NewKey[pulse.Stream[int]]("right")
+	g, err := pulse.New("stream-demo", "一个额度的受管广播", pulse.WithMaxRunning(1))
+	if err != nil {
+		panic(err)
+	}
+	if err := pulse.ProduceStream(g, "source", "生成数字", numbers,
+		func(rc *pulse.RunCtx, writer *pulse.StreamWriter[int]) error {
+			for _, value := range []int{1, 2, 3} {
+				if err := writer.Send(value); err != nil {
+					return err
+				}
+			}
+			return nil
+		}, pulse.WithBuffer(1)); err != nil {
+		panic(err)
+	}
+	if err := pulse.TeeStream(g, "broadcast", "复制到两路", numbers, pulse.Keys(left, right)); err != nil {
+		panic(err)
+	}
+	var leftSum, rightSum int
+	if err := pulse.ConsumeStream(g, "left-sink", "累计左路", left,
+		func(rc *pulse.RunCtx, value int) error {
+			leftSum += value
+			return nil
+		}); err != nil {
+		panic(err)
+	}
+	if err := pulse.ConsumeStream(g, "right-sink", "累计右路", right,
+		func(rc *pulse.RunCtx, value int) error {
+			rightSum += value
+			return nil
+		}); err != nil {
+		panic(err)
+	}
+	if err := g.Validate(); err != nil {
+		panic(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := g.Run(ctx, pulse.Inputs{}); err != nil {
+		panic(err)
+	}
+	fmt.Printf("left=%d right=%d\n", leftSum, rightSum)
+	// Output:
+	// left=6 right=6
+}

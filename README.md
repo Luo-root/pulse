@@ -21,15 +21,16 @@ Pulse 将一组 Go 函数组合为可复用的工作流。每个节点声明需�
 - **多步骤业务处理**：将下载、解析、校验、生成等步骤按数据依赖组合，独立步骤可以并行执行。
 - **分支与结果汇聚**：明确表示某一路有结果或正常跳过，按业务选择收集已有结果或要求全部结果。
 - **可复用的流程模块**：通过声明端口组合子图，保持内部数据与外部接线分离。
+- **连续数据处理**：用受管流逐条发送、确认、广播，跨子图实时传递，并在运行中向宿主交付。
 - **需要可观测的执行过程**：查看结构、运行快照与节点事件，定位等待、执行、失败和取消。
 
-需要在进程退出后继续工作时，使用独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable)。它在 Pulse 的检查点桥上提供存储、编码和 Run / Resume；未确认步骤可能重新执行，外部副作用仍需业务提供幂等或事务。
+需要在进程退出后继续工作时，使用独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable)。它在 Pulse 的检查点桥上提供存储、编码和 Run / Resume；受管流的存储与进程恢复也由 Durable 提供。按 [Durable 安装说明](https://github.com/Luo-root/pulse-durable/blob/main/site/guide/installation.md)使用已验证的依赖组合，发布以实际 tag/release 为准。未确认步骤可能重新执行，外部副作用仍需业务提供幂等或事务。
 
 ## 安装
 
 需要 **Go 1.25.0 或更新版本**。
 
-> 本 README 和文档站描述开发版 API。最新正式 tag 为 **v0.4.1**，其 API 与本文不同。以下命令安装已合入主线的接口，并在 go.mod 固定解析出的伪版本；尚未合并的修改请按[安装与版本](site/guide/installation.md)使用对应本地源码。
+> 本 README 和文档站描述 `main` 的开发版 API，包含受管 Stream、实时 Sub 和增量检查点。最新正式 tag 为 **v0.4.1**，其 API 与本文不同。以下命令安装主线并在 go.mod 固定解析出的伪版本；试用尚未合并的修改时，按[安装与版本](site/guide/installation.md)使用对应本地源码。
 
 在 Go 模块中执行：
 
@@ -108,6 +109,8 @@ func main() {
 这里，`Key[T]` 标识一项有类型的数据；`Node` 声明读写权限与处理函数；`Graph` 保存流程定义；`Execution` 保存这一次运行的状态。`DeclareInput` / `DeclareOutput` 定义宿主可用的接口，`Seed` 提供本轮输入，`ReadOutput` 在 `Wait` 收尾后读取声明出口。
 
 只需要等待完成、不需要执行句柄时，可以调用 `g.Run(ctx, in)`。需要查询状态、读取输出或分步控制生命周期时，使用上例的 `NewExecution`、`Start` 和 `Wait`。完整步骤与解释见[快速开始](site/guide/quickstart.md)。
+
+连续数据使用 `Key[pulse.Stream[T]]` 与 `ProduceStream` / `ConsumeStream` / `TeeStream`。受管等待会暂时让出业务额度，显式 Ack 才释放在途容量；[完整流示例](site/guide/streams.md)用一个额度广播到两个消费端，各得到总和 6。需要宿主实时接收时，在 `NewExecution` 后、`Start` 前调用 `SubscribeStream` 并持续确认；`Wait` 也等已登记读取组完成或 Stop。Sub 的实时流出口提前接通，普通值仍等子执行成功后桥回。旧 `Key[<-chan T]` 与 Produce/Consume/Tee 保留原生兼容语义，无消息确认、自动倒带或持久流保证。
 
 ## 阅读文档
 

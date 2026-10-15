@@ -20,7 +20,7 @@ Pulse 的节点声明 `Requires`（读取哪些键）和 `Provides`（写出哪�
 | 按条件选择路径，合并部分或全部结果 | [分支与汇聚](./branching.md) | `Only`、`Skip`、`FanOut`、`Join`、`WaitAll` |
 | 重试失败步骤，为执行设置时限 | [重试、超时与取消](./retry-cancellation.md) | `Retry`、`Timeout`、`Execution.Cancel` |
 | 将一个流程作为另一个流程的步骤 | [静态子图](./subgraphs.md) | `Sub`、`In`、`Out`、`Fix` |
-| 连续生产和消费数据 | [流式处理](./streams.md) | `Produce`、`Consume`、`Tee` |
+| 连续生产和消费数据 | [流式处理](./streams.md) | `ProduceStream`、`ConsumeStream`、`TeeStream`、`SubscribeStream` |
 | 将拓扑移到声明文件 | [YAML 装配](./assembly.md) | `Registry`、`Load`、`SeedPlan`、`Analyze` |
 | 检查进度、记录生命周期或生成图示 | [观测与诊断](./observability.md) | `Observer`、`Snapshot`、`Topology.Mermaid` |
 
@@ -32,13 +32,13 @@ Pulse 的节点声明 `Requires`（读取哪些键）和 `Provides`（写出哪�
 4. 为本次运行准备一份 `Inputs`，创建并启动 `Execution`。
 5. 调用 `Wait` 等全部节点结束，再通过声明出口读取结果。
 
-`Graph` 保存可复用的定义，`Execution` 保存一次运行的输入、槽位、状态、错误和取消域。每次 `g.Run(ctx, in)` 都会创建新的执行。需要读取结果或检查运行进度时，使用分步的 `NewExecution`、`Start`、`Wait`。
+`Graph` 保存可复用的定义，`Execution` 保存一次运行的输入、槽位、状态、错误和取消域。每次 `g.Run(ctx, in)` 都会创建新的执行。需要读取结果或检查运行进度时，使用分步的 `NewExecution`、`Start`、`Wait`。若根流仅由宿主消费，可先 Validate 冻结定义，再创建执行、SubscribeStream、Start。Validate/Topology 只对声明的 managed 根出口省略缺读者诊断，不算真实宿主，不放行未导出流，也不改变原生 channel；Start 仍按实际订阅严格检查缺读者与分流。宿主在 Wait 前持续读取和确认，或显式 Stop；Wait 同时等必需宿主读取义务。
 
 成功的 `Validate` 或 `Start` 会封闭整棵定义树，使节点和端口不再变化。封闭后的定义仍能反复运行，也可以作为子图挂载到其他图中。校验失败不会封闭任何一层。不要把 `Validate` 当作完全无副作用的查询；只查看结构和问题时使用 `Topology`。
 
 ## 并发与配置
 
-不同节点在输入到达后可以并行执行。`WithMaxRunning(n)` 限制同时进入业务体的节点数；等待输入不占名额，挂载子图的步骤自身也不占名额。`n <= 0` 表示不限制。
+不同节点在输入到达后可以并行执行。`WithMaxRunning(n)` 限制同时持有业务额度的节点数；等待输入和 Sub 挂载本身不占额，受管流 Send/Receive 等阻塞等待会暂时让额，业务继续、取消返回或 panic 展开前取回。因此纯受管流水线额度 1 也可推进；原生 channel 糖仍整段持额并做保守容量检查。任意业务 I/O 不会自动让额。`n <= 0` 表示不限制。
 
 未声明额度的子图继承父执行的同一份额度。子图自己声明额度时，这一支使用独立额度池，取代继承池；它不是同时受父、子两个上限约束。每个根执行有自己的额度池，多个根执行之间没有自动的全局并发上限。
 

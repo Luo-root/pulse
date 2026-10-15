@@ -6,8 +6,9 @@ import (
 )
 
 // 以下边的方向是「事件等待哪个前提」，仅用于静态检查，不参与运行调度。
-// 普通用户节点的 Set 最早可在 start 后发生，不能猜它要等 finish；Sub 的
-// Out 则明确在 child.Wait 后桥回，提前 Set 子出口也不能提前桥回。
+// 普通执行的 Set 最早可在 start 后发生；checkpoint 的普通输出须等完整链
+// Commit，按 finish 建模，实时端点仍可在 start 后到达。Sub 的普通值 Out
+// 还须等 child.Wait，实时 Out 只等子出口到达，挂载本身没有整体输入门。
 // Produce / Tee 活着同步发送；Tee 所有出口的关闭都等所有下游能开始读取，
 // 并且等输入关闭。Consume 正常完成要等输入关闭。缓冲不消除这些结构约束。
 // 业务 callback / Aspect 内的隐藏等待、手写 channel 的关闭时机均不推断。
@@ -24,7 +25,7 @@ type streamWaitEdge struct {
 type streamWaitGraph struct {
 	dep    depGraph
 	events []streamWaitEvent
-	sends  []streamWaitEdge // 见证必须经过一条已知同步流等待边
+	sends  []streamWaitEdge // 流完成环优先锚在已知发送等待；组合依赖环另取真实边
 }
 
 func (w *streamWaitGraph) event(label, at string) int {
@@ -44,21 +45,25 @@ func (w *streamWaitGraph) sendWait(from, to int, reason string) {
 	w.sends = append(w.sends, streamWaitEdge{from: from, to: to, reason: reason})
 }
 
-func (t *streamTree) problemsLifecycle(out map[string][]error) {
-	hasSender := false
-	for _, gr := range t.groups {
-		hasSender = hasSender || gr.source != nil
-	}
-	if !hasSender {
-		return // 没有已知发送/关闭关系，普通依赖环仍由原检查负责
+func (t *streamTree) problemsLifecycle(out map[string][]error, checkpoint bool) {
+	// 含 Sub 的层由这份展开图核真实依赖；普通简单图仍走既有 DAG 判据。
+	expanded := make(map[string]bool)
+	for _, n := range t.nodes {
+		if n.child != nil {
+			expanded[n.site.at] = true
+		}
 	}
 	w := &streamWaitGraph{}
 	starts, finishes := make(map[*streamNode]int), make(map[*streamNode]int)
 	arrivals, completed := make(map[*streamKey]int), make(map[*streamSite]int)
 	closed, sent := make(map[*streamGroup]int), make(map[*streamNode]int)
+	bridged := make(map[*streamNode]int)
 	for _, n := range t.nodes {
 		starts[n] = w.event(fmt.Sprintf("node %q start", n.at), n.site.at)
 		finishes[n] = w.event(fmt.Sprintf("node %q finish", n.at), n.site.at)
+		if n.child != nil {
+			bridged[n] = w.event(fmt.Sprintf("Sub %q ordinary output bridge", n.at), n.site.at)
+		}
 		if streamSender(n) {
 			sent[n] = w.event(fmt.Sprintf("node %q sends complete", n.at), n.site.at)
 		}
@@ -77,7 +82,7 @@ func (t *streamTree) problemsLifecycle(out map[string][]error) {
 
 	for _, s := range t.sites {
 		if s.mount != nil {
-			w.wait(completed[s], starts[s.mount], "child execution starts after its mount's input gate")
+			w.wait(completed[s], starts[s.mount], "child execution starts after its mount starts")
 		}
 		for _, n := range s.nodes {
 			w.wait(completed[s], finishes[n], "graph completion waits for every node to finish")
@@ -101,13 +106,16 @@ func (t *streamTree) problemsLifecycle(out map[string][]error) {
 		}
 		w.wait(finish, start, "finish waits for start")
 		if n.site.mount != nil {
-			w.wait(start, starts[n.site.mount], "child nodes start after the mount's input gate")
+			w.wait(start, starts[n.site.mount], "child nodes start after the mount starts")
 		}
-		for _, ref := range n.def.requires {
-			w.wait(start, arrivals[n.site.keys[ref.name]], fmt.Sprintf("input gate requires %q", ref.name))
+		if !n.def.sub {
+			for _, ref := range n.def.requires {
+				w.wait(start, arrivals[n.site.keys[ref.name]], fmt.Sprintf("input gate requires %q", ref.name))
+			}
 		}
 		if n.child != nil {
-			w.wait(finish, completed[n.child], "Sub waits for child completion before returning")
+			w.wait(finish, bridged[n], "Sub waits for its output bridge before returning")
+			w.wait(bridged[n], completed[n.child], "Sub output bridge waits for child completion")
 			for _, b := range n.def.binds {
 				if b.fix != nil {
 					for _, ref := range b.fixKeys() {
@@ -117,16 +125,27 @@ func (t *streamTree) problemsLifecycle(out map[string][]error) {
 				}
 				p, c := n.site.keys[b.parent.name], n.child.keys[b.child.name]
 				if b.in {
-					w.wait(arrivals[c], start, "In installs the child input after the mount's input gate")
-					w.wait(arrivals[c], arrivals[p], fmt.Sprintf("In copies parent %q to child %q", b.parent.name, b.child.name))
+					w.wait(arrivals[c], start, "In binds the child input when the mount starts")
+					w.wait(arrivals[c], arrivals[p], fmt.Sprintf("In aliases parent %q to child %q", b.parent.name, b.child.name))
 				} else {
-					w.wait(arrivals[p], completed[n.child], "Out bridges only after child Wait completes")
-					w.wait(arrivals[p], arrivals[c], fmt.Sprintf("Out copies child %q to parent %q", b.child.name, b.parent.name))
+					w.wait(bridged[n], arrivals[c], "Sub checks every bound output before returning")
+					if isLiveStreamType(b.child.typ) {
+						w.wait(arrivals[p], start, "live Out binds before the child starts")
+					} else if checkpoint {
+						w.wait(arrivals[p], finish, "checkpoint ordinary Out publishes after complete-chain commit")
+					} else {
+						w.wait(arrivals[p], bridged[n], "ordinary Out bridges only after child Wait completes")
+					}
+					w.wait(arrivals[p], arrivals[c], fmt.Sprintf("Out exposes child %q as parent %q", b.child.name, b.parent.name))
 				}
 			}
 		} else if !n.def.sub {
 			for _, ref := range n.def.provides {
-				w.wait(arrivals[n.site.keys[ref.name]], start, "a node can publish its output after it starts")
+				if checkpoint && !isLiveStreamType(ref.typ) {
+					w.wait(arrivals[n.site.keys[ref.name]], finish, "checkpoint ordinary output publishes after complete-chain commit")
+				} else {
+					w.wait(arrivals[n.site.keys[ref.name]], start, "a node can publish its output after it starts")
+				}
 			}
 		}
 		if n.def.streamKind == "consume" || n.def.streamKind == "tee" {
@@ -144,8 +163,9 @@ func (t *streamTree) problemsLifecycle(out map[string][]error) {
 		// 避免为 N 个出口各复制 N 份等待边。
 		w.wait(sent[n], start, "sending begins after the sender starts")
 		for _, ref := range n.def.provides {
-			gr := n.site.keys[ref.name].group
-			if gr == nil {
+			key := n.site.keys[ref.name]
+			gr := key.group
+			if gr == nil || gr.source != key {
 				continue
 			}
 			closeEvent := closed[gr]
@@ -171,6 +191,7 @@ func (t *streamTree) problemsLifecycle(out map[string][]error) {
 	comps := w.dep.cyclicSCCs()
 	component := make(map[int]int)
 	anchors := make([]*streamWaitEdge, len(comps))
+	streamCycles := make([]bool, len(comps))
 	for i, comp := range comps {
 		for _, v := range comp {
 			component[v] = i
@@ -182,21 +203,42 @@ func (t *streamTree) problemsLifecycle(out map[string][]error) {
 		ci, from := component[e.from]
 		cj, to := component[e.to]
 		if from && to && ci == cj && anchors[ci] == nil {
-			anchors[ci] = e
+			anchors[ci], streamCycles[ci] = e, true
 		}
 	}
 	for i, comp := range comps {
+		if anchors[i] == nil {
+			// 不依赖同步 send 的真实组合环也必须拒绝，不能仅删除 Sub 的原子依赖。
+			// 简单层的普通环仍留给原 DAG 报，避免重复诊断和改变既有报文。
+			for _, from := range comp {
+				if !expanded[w.events[from].at] {
+					continue
+				}
+				for _, e := range w.dep.out[from] {
+					if ci, ok := component[e.to]; ok && ci == i {
+						anchors[i] = &streamWaitEdge{from: from, to: e.to, reason: e.keys[0]}
+						break
+					}
+				}
+				if anchors[i] != nil {
+					break
+				}
+			}
+		}
 		if anchors[i] != nil {
-			if at, err := w.witness(comp, anchors[i]); err != nil {
+			kind := "dependency"
+			if streamCycles[i] {
+				kind = "stream lifecycle"
+			}
+			if at, err := w.witness(comp, anchors[i], kind); err != nil {
 				out[at] = append(out[at], err)
 			}
 		}
 	}
 }
 
-// 每个环分量一条具体见证，必须锚在已知流等待边上，再在分量内找回程。
-// 仅普通数据依赖成环的分量不再报一遍；顺序由节点/绑定声明序确定。
-func (w *streamWaitGraph) witness(comp []int, anchor *streamWaitEdge) (string, error) {
+// 每个环分量一条具体见证，在分量内找锚点的真实回程。
+func (w *streamWaitGraph) witness(comp []int, anchor *streamWaitEdge, kind string) (string, error) {
 	members := make(map[int]bool, len(comp))
 	for _, i := range comp {
 		members[i] = true
@@ -238,5 +280,5 @@ func (w *streamWaitGraph) witness(comp []int, anchor *streamWaitEdge) (string, e
 		reasons = append(reasons, e.reason)
 		at = streamCommonPath(at, w.events[e.to].at)
 	}
-	return at, fmt.Errorf("pulse: stream lifecycle cycle: %s (%s)", strings.Join(labels, " -> "), strings.Join(reasons, "; "))
+	return at, fmt.Errorf("pulse: %s cycle: %s (%s)", kind, strings.Join(labels, " -> "), strings.Join(reasons, "; "))
 }

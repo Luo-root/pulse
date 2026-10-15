@@ -2,7 +2,7 @@
 
 This page is for developers implementing durable execution integration, storage, or codecs. First understand [lifecycle](./lifecycle.md), [Retry write sets](../guide/retry-cancellation.md), and [static subgraphs](../guide/subgraphs.md), and use the [development version](./migration.md). Business hosts needing recovery should normally use the independent [pulse-durable](https://github.com/Luo-root/pulse-durable) Run/Resume APIs instead of assembling reliable hooks themselves.
 
-Durable currently implements checkpointed Run/Resume and a local filestore. Durable waits and distributed run management are future capabilities. Dependencies are one-way: Durable imports Pulse; Pulse does not import Durable.
+Durable provides checkpointed Run/Resume, a local filestore, and storage and process recovery for managed streams; integration is tracked in [Durable #21](https://github.com/Luo-root/pulse-durable/issues/21). This page specifies Core's bridge. Use matching local checkouts; the maintainer's tags/releases determine release status. Durable waits and distributed run management remain future capabilities. Dependencies are one-way: Durable imports Pulse; Pulse does not import Durable.
 
 ## Confirm before publishing
 
@@ -12,7 +12,7 @@ A node that is not restored follows this sequence:
 
 1. Synchronously open or reclaim the persistent attempt for the complete node chain.
 2. Create an output write set outside the entire aspect chain; body and aspect Set/Skip calls stage there.
-3. After complete-chain success or normal skipping, settle unwritten Provides as skipped. Successful short-circuiting also waits for declared dependencies to arrive.
+3. After complete-chain success or normal skipping, settle unwritten Provides as skipped. Successful short-circuiting of ordinary business nodes also waits for declared dependencies; Sub commits follow live In wiring rules.
 4. Validate the complete terminal result, every output, and publication targets.
 5. Call Commit synchronously for persistent confirmation of the complete node record.
 6. Publish outputs key by key only after confirmation, making them available downstream.
@@ -28,10 +28,10 @@ The persistent layer must atomically save terminal status and all outputs as one
 | `Graph.CheckpointNodes` | Recursively copy static nodes, mount paths, Requires/Provides, and real reflect.Type |
 | `Graph.CheckpointPorts` | Copy every declared port, including unused and pass-through ports |
 | `Execution.CheckpointInputs` | Copy actually supplied external ready/skipped inputs; no internal output reads |
-| `WithExecCheckpoint` | Enable nonstream reliable mode for one execution and its children |
+| `WithExecCheckpoint` | Enable complete-chain reliable mode for an execution and its children; managed streams additionally need StreamHooks |
 | `Execution.RestoreNodes` | Validate and replace the whole pre-start recovery plan without installing outputs yet |
 
-For stable schema, finish assembly and pass Validate first. Returned containers are isolated from declarations, but business values are not deep-copied. Integrations must encode synchronously, never mutate values or retain references asynchronously and confirm early.
+For stable schema, finish assembly and pass Validate first. Graph.Validate/Topology omit only missing-reader diagnostics for declared managed root outlets awaiting host connection; they count no actual host, permit no unexported stream, and change no native-channel checks. Schema may therefore be frozen before BeforeStart registers subscriptions; Start still strictly checks actual readers and splitting. Returned containers are isolated from declarations, but business values are not deep-copied. Integrations must encode synchronously, never mutate values or retain references asynchronously and confirm early.
 
 The hook type below requires `context` and Pulse payload types. This is an interface definition, not a ready-to-use storage implementation:
 
@@ -41,10 +41,11 @@ type CheckpointHooks struct {
 	FailAttempt func(context.Context, string) error
 	OpenChild   func(context.Context, CheckpointChild) ([]NodeCheckpoint, error)
 	Commit      func(context.Context, CheckpointCommit) error
+	StreamHooks *CheckpointStreamHooks // Optional; all six functions are required when supplied.
 }
 ```
 
-All four hooks and a nonempty root scope are required. Hooks run synchronously outside engine locks, may be concurrent, and must be concurrency-safe. OpenAttempt returns persistent Scope, Index, and Exhausted. FailAttempt confirms a real failure before another attempt opens. OpenChild verifies the actual child and inputs and returns results for that scope. Commit confirms the complete node chain's result.
+All four hooks and a nonempty root scope are required. Hooks run synchronously outside engine locks, may be concurrent, and must be concurrency-safe. OpenAttempt returns persistent Scope, Index, and Exhausted; an active complete-node root attempt may also carry the Values subset described below. FailAttempt confirms a real failure before another attempt opens. OpenChild verifies the actual child and inputs and returns results for that scope. Commit confirms the complete node chain's result.
 
 ## Child scopes and retry budgets
 
@@ -52,7 +53,7 @@ A persistent Scope is neither a mounting Path nor a process-local Execution ID. 
 
 Suppose a parent step has download, extract, and summarize child nodes. If the process exits after download and extract are confirmed, Resume creates new parent and child executions, restores those two nodes, and restarts summarize from its function entry. If all children are confirmed but the parent step is not, parent wrapping and output bridging rerun without repeating child business work.
 
-If parent Retry confirms failure and starts another attempt, it cannot borrow child results from the old attempt. A failed ancestor logically invalidates all descendants regardless of physical record deletion. OpenChild must verify Graph, Path, and actual bound inputs; changed inputs must not mix with old results.
+If parent Retry confirms failure and starts another attempt, it cannot borrow old child results. A failed ancestor invalidates descendants regardless of physical deletion. OpenChild verifies Graph, Path, actual Fix values, and the stable In sources in Bindings. In may remain pending; it must not wait for every input. Keys in Bindings do not participate in value fingerprints; already-arrived In entries in Inputs remain for observation compatibility. The persistent layer combines root-input fingerprints, topology/Version, and binding identities to reject incompatible results. A process-local Execution ID is not a stable identity.
 
 Persistent Retry boundaries are distinguished by effective aspect-chain position and parent Scope, not function pointers or this invocation's call count. The complete root chain has Limit 1. Once final failure is confirmed, Resume must not allocate a fresh root scope or replenish retry budgets. A new complete business run needs a new RunID.
 
@@ -60,7 +61,7 @@ Persistent Retry boundaries are distinguished by effective aspect-chain position
 
 NodeCheckpoint Reason accepts completed or skipped only. Outputs must exactly cover all of that node's Provides, including implicit skipped outputs. States are ready/skipped only, with matching names, real types, and assignable values. Pending is not a confirmed result. Valid nil interfaces and typed nil values remain ready.
 
-Recovery sets must also be closed over internal dependencies: the producers required by a restored node need their own results in the set. RestoreNodes validates and replaces the entire plan, retaining the previous plan on failure. Start revalidates against the actual definition within the validation/sealing boundary. Only a fully valid plan installs outputs, seals, and starts; an invalid last record cannot partially restore earlier records.
+Recovery sets must be closed over ordinary-value dependencies: internal ordinary producers required by a restored business node need their own results in the set. Managed streams recover through independent source records without requiring the writer's complete node to have finished. A Sub's Requires describes In wiring rather than a completion gate for the whole mount; unused inlets may remain pending. RestoreNodes validates and replaces the entire plan, retaining the previous plan on failure. Start revalidates against the actual definition within the validation/sealing boundary. Only a fully valid plan installs outputs, seals, and starts; an invalid last record cannot partially restore earlier records.
 
 This integration fragment assumes host-supplied `g`, `ctx`, `in`, `scope`, complete `hooks`, and decoded `records`, inside a function returning `error`:
 
@@ -89,9 +90,32 @@ A business function returning context.Canceled while its actual Execution contex
 
 If storage commits but returns an error, this run stops without automatically retrying Commit or rolling the record back. Resume rereads authoritative results. Later cancellation does not withdraw confirmed records. Persistent attempts need not save raw error text that may contain sensitive business data.
 
+## Incremental managed-stream confirmation
+
+The ordinary four-hook configuration remains valid. `Key[Stream[T]]` additionally requires complete StreamHooks. Hooks execute synchronously outside engine locks with the same concurrency, panic, and reliable-failure-latching contract:
+
+| StreamHooks entry | Required confirmation |
+|---|---|
+| `Open` | Open or reclaim the descriptor, message tail, continuous acknowledgement frontier, and source cursor |
+| `Append` | Atomically save a message with its SendAt cursor before local delivery |
+| `OpenMessage` | Reclaim this message's persistent attempt budget and last committed explicit state |
+| `FailMessage` | Confirm a real failed attempt before advancing its budget |
+| `Commit` | Confirm input Ack, explicit state, ordinary results, output messages, or Stop together |
+| `Finish` | Confirm the actual writer's complete-chain failure; success is atomic with the complete node Commit |
+
+Messages, cursors, acknowledgements, state, and outputs have independent records. Local channels are never serialized. Complete NodeCheckpoint stream outputs use a `CheckpointOutput.Stream` descriptor, mutually exclusive with Value. `CheckpointCommit.Streams` contains only actual owned writers' terminal results and confirms them atomically with the node. Sub aliases do not own the writer and cannot publish EOF early. A stream-only pass-through Sub may complete before its actual source; an empty terminal in its historical reference does not mean production has ended. Recovery must reclaim the authoritative source through Open: known successful terminals cannot regress, and active sources require Resumed plus a declaration that they can continue from Position. Restored aliases and a continuing writer share one endpoint across the execution tree, with a single Open, tail installation, and delivery ledger. Every later alias still validates the stable source, generation, and known terminal.
+
+HandleMessage is an explicit finite transaction. Failed outputs remain unpublished; exhausted failure cannot be swallowed into success. Defaults are one attempt and 64 staged outputs, with each output batch no larger than its stream capacity. One reliable Commit confirms input acknowledgement, explicit `GetMessageState` / `SetMessageState` state, ordinary results, and output messages before local stream publication and Ack. Ordinary Set/Skip results also join the complete-chain outer frame and remain unpublished until that chain is confirmed. Closures, referenced-object mutations, and external effects are outside the rollback boundary. State APIs work only inside persistent HandleMessage callbacks; construct replacement values and Set them explicitly.
+
+When messages have been confirmed but the complete node has not committed, `CheckpointAttempt.Values []CheckpointOutput` allows an **active complete-node root attempt** to return the ordinary-output subset contributed by those confirmed messages, without stream endpoints. Before the business chain, Core restores these values into the checkpoint outer frame. It does not publish execution slots early; publication still requires successful complete Node Commit. This is not a complete NodeCheckpoint and does not fill outputs without contributions. Retry attempts and the nested Attempt.Values returned by OpenMessage must be empty. No-stream behavior and failed-ancestor invalidation remain unchanged.
+
+Stream identity combines Scope/NodeID/Key/Group and persistent Generation. Execution ID is observation only. Aliases share one ledger; stale deliveries cannot advance another generation. AckedThrough is a continuous frontier, not the largest acknowledged sequence. Persistent message budgets use the logical source, group, sequence, processing node, and parent attempt; raising the generation during recovery does not replenish attempts.
+
+A completed source does not rerun its body, but its restored branch rebuilds the endpoint, Done, Snapshot, and unacknowledged tail before Finished. Normal child cleanup does not withdraw the tail. An active source must explicitly promise Position/SendAt continuation through WithStreamSource; restoring an active source without that promise fails. See the [stream guide](../guide/streams.md) for finite message retry versus progressive tokens.
+
 ## Limits and common errors
 
-Checkpoint mode rejects stream nodes, channel declarations, and actual channels hidden in interfaces or containers. Static declarations are checked recursively before startup; dynamic values are checked at input, restoration, and commit boundaries. Cyclic objects are not rejected solely for being cyclic; codec support is a separate question.
+Native channel declarations and helpers, plus actual channels hidden inside ordinary values, interfaces, or containers remain rejected. Declare managed endpoints independently as Key[Stream[T]]; hiding them in ordinary values cannot bypass the protocol. Static declarations are checked recursively before startup; dynamic values are checked at input, restoration, and commit boundaries. Cyclic objects are not rejected solely for being cyclic; codec support is a separate question.
 
 The persistent layer owns business Version, codec ID/version, topology compatibility, input-byte fingerprints, and run ownership. Topology cannot recognize changes to closure, fixed-value, or aspect semantics automatically. Hosts must update the business version when semantics change. Reading, decoding, and version errors must stop recovery, never appear as empty history.
 

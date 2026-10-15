@@ -153,33 +153,44 @@ func TestSubChildAssemblyVsParentReadOnly(t *testing.T) {
 		t.Fatalf("Sub = %v", err)
 	}
 
-	done := make(chan struct{})
+	start, finished := make(chan struct{}), make(chan error)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { // 拿到子图指针的那一头：接着往子图里装
+	go func() { // 每轮 Add 与 Topology 之间不建立先后，轮末只限制数据规模。
 		defer wg.Done()
-		for i := 0; ; i++ {
+		for i := 0; i < 100; i++ {
 			select {
-			case <-done:
+			case <-start:
+			case <-ctx.Done():
 				return
-			default:
 			}
 			k := NewKey[string](fmt.Sprintf("cra.late%d", i))
-			_ = child.Add(NewNode(fmt.Sprintf("late%d", i), "", nil, Provides(k), func(*RunCtx) error { return nil }))
+			err := child.Add(NewNode(fmt.Sprintf("late%d", i), "", nil, Provides(k), func(*RunCtx) error { return nil }))
+			select {
+			case finished <- err:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
-
-	deadline := time.Now().Add(300 * time.Millisecond)
-	reads := 0
-	for time.Now().Before(deadline) {
+	defer func() { cancel(); wg.Wait() }()
+	for i := 0; i < 100; i++ {
+		select {
+		case start <- struct{}{}:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
 		_ = parent.Topology()
-		reads++
-	}
-	close(done)
-	wg.Wait()
-	// 读必须真的发生过，否则这条用例是空转的
-	if reads < 100 {
-		t.Fatalf("只读入口只被调了 %d 次，没盖住装配窗口", reads)
+		select {
+		case err := <-finished:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
 	}
 }
 

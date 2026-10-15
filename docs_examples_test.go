@@ -12,7 +12,7 @@ import (
 )
 
 // TestDocsExamplesUseCurrentSignatures 扫全仓 Markdown 与站点 Vue 的构造调用，
-// 包括 Join / FanOut / Produce / Consume / Tee（#359），对照当前签名看两件事：
+// 包括 Join / FanOut、原生流三糖及 ProduceStream / ConsumeStream / TeeStream，对照签名看两件事：
 // **实参够不够**、**描述位上放的是不是描述**。
 //
 // 为什么需要它：**文档里的代码块不参与编译**，所以签名一变，漏迁移的示例不会被
@@ -201,6 +201,28 @@ func TestDocsExampleGateNegativeControls(t *testing.T) {
 		{name: "非 Pulse 的 filepath.Join", doc: `filepath.Join(dir, "state")`, count: -1},
 		{name: "前缀相同的长名字", doc: `myJoin(g, "join", ins, out, fn)`, count: -1},
 
+		// —— 受管流三糖复用同一 description / 固定参数闸门 ——
+		{name: "受管生产", doc: `pulse.ProduceStream(g, "source", "生成", out, fn)`},
+		{name: "受管消费空描述", doc: `pulse.ConsumeStream(g, "sink", "", in, fn)`},
+		{name: "受管广播描述变量", doc: `pulse.TeeStream(g, "tee", cfg.Desc, in, outs)`},
+		{name: "受管显式类型参数", doc: `pulse.ProduceStream[map[string][]int](g, "source", "生成", out, fn)`},
+		{name: "受管跨行类型参数", doc: "pulse.ConsumeStream[\n int,\n](g, \"sink\", \"消费\", in, fn)"},
+		{name: "受管生产变参", doc: `pulse.ProduceStream(g, "source", "生成", out, fn, opts...)`},
+		{name: "受管消费变参", doc: `pulse.ConsumeStream(g, "sink", "消费", in, fn, opts...)`},
+		{name: "受管广播变参", doc: `pulse.TeeStream(g, "tee", "广播", in, outs, opts...)`},
+		{name: "受管生产漏描述", doc: `pulse.ProduceStream(g, "source", out, fn)`, want: "只给了 4 个实参"},
+		{name: "受管消费漏描述", doc: `pulse.ConsumeStream[int](g, "sink", in, fn)`, want: "只给了 4 个实参"},
+		{name: "受管广播漏描述", doc: `pulse.TeeStream(g, "tee", in, outs)`, want: "只给了 4 个实参"},
+		{name: "受管生产旧形状变参", doc: `pulse.ProduceStream(g, "source", out, fn, opts...)`, want: "description 位"},
+		{name: "受管消费旧形状变参", doc: `pulse.ConsumeStream(g, "sink", in, fn, opts...)`, want: "description 位"},
+		{name: "受管广播旧形状变参", doc: `pulse.TeeStream(g, "tee", in, outs, opts...)`, want: "description 位"},
+		{name: "受管生产描述不能是 nil", doc: `pulse.ProduceStream(g, "source", nil, out, fn)`, want: "description 位"},
+		{name: "受管消费描述不能是选项", doc: `pulse.ConsumeStream(g, "sink", pulse.WithBuffer(1), in, fn)`, want: "description 位"},
+		{name: "受管广播描述不能是切片", doc: `pulse.TeeStream(g, "tee", []pulse.Key[int]{}, in, outs)`, want: "description 位"},
+		{name: "受管裸省略", doc: `pulse.TeeStream(g, "tee", ...)`, count: -1, elided: 1},
+		{name: "受管长名字", doc: `myProduceStream(g, "source", out, fn)`, count: -1},
+		{name: "非 Pulse 的同名受管糖", doc: `other.ConsumeStream(g, "sink", in, fn)`, count: -1},
+
 		// —— 反例：像标识符，却给不出 string ——
 		{name: "整数", doc: `pulse.New("demo", 123)`, want: "description 位"},
 		{name: "浮点数", doc: `pulse.New("demo", 1.5)`, want: "description 位"},
@@ -315,16 +337,20 @@ func TestDocsExampleGateNegativeControls(t *testing.T) {
 }
 
 // ctorCall 支持显式类型参数；名字必须完整匹配，不能把 NewKey 当作 New。
-var ctorCall = regexp.MustCompile(`(pulse\.)?(New|NewNode|Sub|Join|FanOut|Produce|Consume|Tee)[ \t]*(\[[\s\S]+?\])?[ \t]*\(`)
+var ctorCall = regexp.MustCompile(`(pulse\.)?(New|NewNode|Sub|Join|FanOut|ProduceStream|ConsumeStream|TeeStream|Produce|Consume|Tee)[ \t]*(\[[\s\S]+?\])?[ \t]*\(`)
 
 // ctorDescAt 是 description 的下标（0 起）：普通构造器在 id 后，语法糖在 g、id 后。
 var ctorDescAt = map[string]int{
 	"New": 1, "NewNode": 1, "Sub": 2,
 	"Join": 2, "FanOut": 2, "Produce": 2, "Consume": 2, "Tee": 2,
+	"ProduceStream": 2, "ConsumeStream": 2, "TeeStream": 2,
 }
 
 // 糖的旧调用可能仍在描述位放了一个变量；同时检查固定参数个数，不能只看它像不像字符串。
-var sugarMinArgs = map[string]int{"Join": 6, "FanOut": 6, "Produce": 5, "Consume": 5, "Tee": 5}
+var sugarMinArgs = map[string]int{
+	"Join": 6, "FanOut": 6, "Produce": 5, "Consume": 5, "Tee": 5,
+	"ProduceStream": 5, "ConsumeStream": 5, "TeeStream": 5,
+}
 
 // 阶段 2 的三类新判据（来历见文件头）。
 var (

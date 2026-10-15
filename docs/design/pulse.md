@@ -136,9 +136,9 @@ return pulse.Skip(rc, OutA)
 `(*Execution).Start()` 把**全部节点一次性提交**，每个节点一个 goroutine，阻塞在自己的输入槽位上。`g.Run(ctx, in)` = `NewExecution` + `Start` + `Wait`。
 
 - **启动前静态校验三类**（判据本体在 `problems.go`，顺序固定：来源 → 出口 → 依赖环 → 流式 → 每处挂载的静态子树）：① 每个 `Requires` 都必须有来源（这一次运行喂进来的进口，或某个节点的 `Provides`，或声明过的入口）——没有来源的槽永远不会被写入；② **声明过的出口必须有人产出**（`DeclareOutput` 的一条键，既没节点 `Provides`、也不是同名入口透传）——它是这张图对外的承诺，没人产出时那句 `never arrived` 要等子图跑完才出现，而读一遍声明就能定；③ 依赖关系**无环**——有来源不等于能满足，环里每条 `Requires` 都有生产者，但没有任何节点能先进入 `Run`（门要等全部输入到达），所有槽永远停在 `pending`。三类都描述**不可能跑完**的图，也都是启动那一刻就能判定的，所以 `Start()` 直接拒绝并指出节点与 Key，而不是留到运行时挂死（有 deadline 时是一句看不出病因的超时，没有时进程会被 runtime 判为 `fatal deadlock`）。环报成一条具体路径：`pulse: dependency cycle: A -> B -> A (A requires "y", B requires "x")`（只按节点的生产者建图，进口不构成边——它们不来自某个节点）。校验不过时这次运行**仍未启动**（`started` 保持 false）：补上生产者可以重新 `Start`，含环的图则要**重新装一张**（引擎没有 `Remove`）；另外两类（进口这一次有没有交代）在**建执行那一刻**就判过了，见 §2；
-- **同一套判据也有只读入口 `(*Graph).Validate()`**（0.5 新增）：跑的就是上面那几条（外加流式名额那条），本身**不置 `started`、不建 goroutine**，所以问完照样能接着 `Seed` / `Start`。**通过即封口，而且封的是整棵子树**：那次之后 `Add` / `DeclareInput` / `DeclareOutput` / 挂子图在**这一层与它挂着的每一层子图**上都被拒（`ErrGraphStarted`——这是它的第二个触发点：不是「这一次运行已经启动」，而是「这张**定义**不再变化」）。为什么连子图一起封：挂上去的子图是这张定义的一部分，只封自己那句话就是半句空——子图还能接着 `Add`，刚校验过的那棵树会变。反过来不成立：子图自己 `Validate()` 通过只封它自己与它的子树；**已经封口的子图照样能被别处挂载**（挂载不改它的定义）。校验**失败一层都不封**（所以实现上是两趟：先判完整棵树，干净了再逐层封，`sealTreeLocked`），那只说明图还没装配完，补上缺的那块再校验正是要支持的用法。给**装配期**用：声明式装配（`pulse/yaml`）与静态组合（`Sub`）都拿它在装图那一刻把子图的静态毛病报出来（详见 §5 装配），而且沿静态挂载边**递归**——同一张子图挂两处时按引用点各报一条、报文点明挂载位置。**递归读子图时每往下一层都由那一层自己取锁**（`child.problemsWithStreamsAt` / `child.topologyAt`）：父图那把锁管不到子图，而子图在装配期一直躺在宿主手里（那头一边 `Add`、这头一边读就是一处竞态）；锁序恒为父 → 子，挂载边不成环所以不会互等，递归另带一条挂载链做兜底判环（见 §5 与 `mountChain`）。`problemsAtLocked` 先计算整棵树的流别名、额度池与生命周期诊断，再由 `problemsWithStreamsAt` 递归共享同一份 `streams`；不会在每层重建局部流模型。报文与 `Start` 逐字相同——一份判据、两个入口；已经启动的那份执行直接通过（它在 `Start` 那一刻就过了同一套判据）；
-- **首错即取消**：任一节点返回非跳过错误 → 记录首错 + `cancel()` 整图，所有等待者被唤醒；**取消优先于到达**——ctx 已取消时等待一律返回 `ctx.Err()`（「到达与取消同时就绪」也以取消为准），所以因首错而没跑的下游稳定报 `canceled`，不随调度在 `skipped` / `canceled` 之间抖。失败节点未写的 Provide 仍会补一条跳过，那只是解开阻塞，不是下游的终态；
-- **`WithMaxRunning(n)`** 限制**一棵图树里**同时进入 `Run` 的节点数（`n<=0` 无限）：名额**整棵树共享一份**——子图没自己声明时继承父图那份，挂子图那一步（`Sub`）**不吃名额**（它整段都在等子图，占着等于把额度锁在「等」上；共享之后那就是死锁）；子图自己声明 `WithMaxRunning(m)` 就是显式覆盖，那一层及其后代换成它自己那份（`m<=0` = 这一子树不限）。**等数据不占名额**（否则限流会退化成死锁）；**排队等名额也能被取消打断**（排队节点以 `canceled` 收尾，不进入 `Run`；名额空出与取消同时就绪时以取消为准——拿到名额后再复查一次 ctx）；
+- **同一套判据也有只读入口 `(*Graph).Validate()`**（0.5 新增）：跑的就是上面那几条（外加流式名额那条），本身**不置 `started`、不建 goroutine**，所以问完照样能接着 `Seed` / `Start`。**通过即封口，而且封的是整棵子树**：那次之后 `Add` / `DeclareInput` / `DeclareOutput` / 挂子图在**这一层与它挂着的每一层子图**上都被拒（`ErrGraphStarted`——这是它的第二个触发点：不是「这一次运行已经启动」，而是「这张**定义**不再变化」）。为什么连子图一起封：挂上去的子图是这张定义的一部分，只封自己那句话就是半句空——子图还能接着 `Add`，刚校验过的那棵树会变。反过来不成立：子图自己 `Validate()` 通过只封它自己与它的子树；**已经封口的子图照样能被别处挂载**（挂载不改它的定义）。校验**失败一层都不封**（所以实现上是两趟：先判完整棵树，干净了再逐层封，`sealTreeLocked`），那只说明图还没装配完，补上缺的那块再校验正是要支持的用法。给**装配期**用：声明式装配（`pulse/yaml`）与静态组合（`Sub`）都拿它在装图那一刻把子图的静态毛病报出来（详见 §5 装配），而且沿静态挂载边**递归**——同一张子图挂两处时按引用点各报一条、报文点明挂载位置。**递归读子图时每往下一层都由那一层自己取锁**（`child.problemsWithStreamsAt` / `child.topologyAt`）：父图那把锁管不到子图，而子图在装配期一直躺在宿主手里（那头一边 `Add`、这头一边读就是一处竞态）；锁序恒为父 → 子，挂载边不成环所以不会互等，递归另带一条挂载链做兜底判环（见 §5 与 `mountChain`）。`problemsAtLocked` 先计算整棵树的流别名、额度池与生命周期诊断，再由 `problemsWithStreamsAt` 递归共享同一份 `streams`；不会在每层重建局部流模型。共同静态问题沿用相同判据与报文；定义检查仅对声明的 managed 根出口省略缺读者诊断，Start 另按本次真实订阅严格核验。已经启动的执行直接通过（它在 Start 时已完成实际运行条件检查）；
+- **首错即取消**：任一节点返回非跳过错误 → 记录首错 + `cancel()` 整图，所有等待者被唤醒；**取消优先于尚未完成的普通槽等待**——ctx 已取消时等待返回 `ctx.Err()`（「到达与取消同时就绪」也以取消为准），所以因首错而没跑的下游稳定报 `canceled`，不随调度在 `skipped` / `canceled` 之间抖。失败节点未写的 Provide 仍会补一条跳过，那只是解开阻塞，不是下游的终态；
+- **`WithMaxRunning(n)`** 限制**一棵图树里**同时进入 `Run` 的节点数（`n<=0` 无限）：名额**整棵树共享一份**——子图没自己声明时继承父图那份，挂子图那一步（`Sub`）**不吃名额**（它整段都在等子图，占着等于把额度锁在「等」上；共享之后那就是死锁）；子图自己声明 `WithMaxRunning(m)` 就是显式覆盖，那一层及其后代换成它自己那份（`m<=0` = 这一子树不限）。**等数据不占名额**（否则限流会退化成死锁）；**排队等名额也能被取消打断**（尚未进入业务的排队节点以 `canceled` 收尾；首次取额后复查 ctx。已在受管 I/O 等待中让出的额度必须在业务继续、取消返回和 panic 展开前取回，完成的交付保留成功；纯受管 pipeline 额度 1 可推进，任意业务 I/O 不自动让额）；
 - **四个终态的判据**（`NodeFinishReason`）：`completed` = Run 正常返回 nil（逐键 `Skip` 或返回后未写的 Provide 被自动跳过都不改变这一终态）；`skipped` = 一条输入值都没到而没进入 `Run`（全部 `Requires` 以跳过到达），或返回正常的 `NoValue()` / `*SkipError`（含 `WaitAll` 的跳过）；`failed` = 节点真实错误，**含 panic、`Timeout` 切面的节点超时，以及即使包装 `ErrSkipped` 也不能降级的可靠检查点故障**；`canceled` = 这一轮被从外面拆了——首错取消、**父 ctx 被取消或截止时间到期**、排队等名额期间被取消。宿主按 reason 分流，所以「父 ctx 到期」不能报成 `failed`：那会把它显示成一个并不存在的节点缺陷；
 - **panic 不穿透**：节点 panic 被转成节点错误，走同一套失败路径；
 - **`Err()` 不含单纯的跳过**：全图都跳过是合法结果；`Wait()` 返回后这一轮的 ctx 会被取消（它是 `NewExecution` 从宿主给的 ctx 派生的子 ctx，不释放就会一直挂在长生命周期的父 ctx 上），这次收尾的取消**不算运行结果**；
@@ -174,7 +174,7 @@ type Aspect func(rc *RunCtx, next func(*RunCtx) error) error
 
 **它也可以装在「挂载子图」那一步上**：每一次尝试各建一份**新的子执行**，第一次尝试桥回父侧的结果随它那条暂存一起作废——父侧只拿得到成功那一次的输出版本（`pulse/yaml` 里 `graph:` 节点上的 `retry:` 同理，`Load` 期照装）。
 
-**流生产端是这条边界的一个例外**：`Produce` / `Tee` 的形状是「先 `Set` 一条 channel、再往里发值」，有尝试边界时那条 channel 要等这次尝试**提交之后**才发布，而消费端在拿到它之前只能等着——双方互等，整轮挂到 ctx 到期。所以那里是**运行期当场报错、点名改法**（把写入暂存切面从这一层拿掉），不是静默挂死；判据看的是「有没有写暂存」，不认切面的身份（见 §5 流式那一节）。
+**流 I/O 有独立边界**：受管 OpenStream/Send/Receive 不能借普通 Retry 的写集撤回或倒带；Sub 的实际外接流输入/输出也在 I/O 前拒绝，确定 skip 无数据仍正常。原生 Produce/Tee 还存在延迟发布 channel 与消费者互等的问题，当场报错。消息级有限重试用 HandleMessage；逐条渐进发布按显式来源游标续读，见 §5 流式。
 
 ## 5. 装配
 
@@ -405,59 +405,37 @@ func main() {
 
 `FanOut` 的 N 是**装配期固定**的：引擎的拓扑不随数据变，数据条数不定的并行请在节点内部做业务循环，别指望运行时长出节点。
 
-### 流式：`Produce` / `Consume` / `Tee`
+### 受管流：`ProduceStream` / `ConsumeStream` / `TeeStream`
 
-`Key[<-chan T]` 早就能用，缺的不是「再包一层 channel」，而是每个生产 / 消费节点都要手动协调的六件事（创建与发布、发送端的关闭责任、生产 / 消费循环、取消响应、错误回传、背压与名额）。手写这套形状最典型的一处写错是 **`Set` 出 channel 就 `return`**：节点已经 `completed`，真正的发送留在无人观测的后台 goroutine 里——错误回不到图上、取消也叫不醒它，`defer close` 还经常漏。
+当前主路是 `Key[Stream[T]]`。端点在运行中发布；消息带从 1 起的 Sequence，Receive 得到 Delivery，显式 Ack 才释放容量。Nack 作废当前交付、同序重投，不释放容量或推进确认前沿；旧交付再用返回 ErrDeliveryExpired。取消不自动确认，已完成 Send/Receive 在重新取额期间取消仍保留成功。
 
-```go
-// 生产：channel 的创建 / 发布 / 关闭 / 取消都在这次 Run 里，节点活着发完
-err := pulse.Produce(g, "src", "生成数据流", stream, func(rc *pulse.RunCtx, send func(int) error) error {
-    for _, v := range values {
-        if err := send(v); err != nil { // 取消能从堵住的发送里出来
-            return err
-        }
-    }
-    return nil
-})
-
-// 最简单的形状是 Produce + Consume 一对（一个出口接一个消费端）。
-// 消费：循环是 select（收到值 / ctx 取消），不是 for range
-err = pulse.Consume(g, "sink", "处理流元素", stream, func(rc *pulse.RunCtx, v int) error {
-    return handle(v)
-})
-
-// 广播：一根流复制给 N 个下游，每个都拿到完整、同序的数据。
-// 注意 Tee 的输入是**另一条**流：一条出口只喂一个下游，要 N 个下游
-// 就得让 Tee 提供 N 条出口，再一条接一个消费端（装配校验见下表最后一行）
-err = pulse.Tee(g, "fan", "广播数据流", otherStream, pulse.Keys(sA, sB, sC))
-err = pulse.Consume(g, "sinkA", "处理流元素", sA, func(rc *pulse.RunCtx, v int) error { return handle(v) })
-err = pulse.Consume(g, "sinkB", "归档流元素", sB, func(rc *pulse.RunCtx, v int) error { return archive(v) })
-err = pulse.Consume(g, "sinkC", "审计流元素", sC, func(rc *pulse.RunCtx, v int) error { return audit(v) })
-```
-
-`Produce`、`Consume`、`Tee` 也在 `id` 后接收 `description`，原样作为节点说明，空串合法。
-
-`Tee` 在装配时复制 `outs` 接线列表；后续修改原切片不会改变图的输出声明或广播出口。这里复制的是 Key 接线，不深拷贝流中的业务值。
-
-| 件 | 展开成 | 语义来源 |
+| 入口 | 展开成的普通节点 | 边界 |
 |---|---|---|
-| `Produce` | 一个节点：`Provides(out)`，`Set` 出 channel 后**活着发完** | 关闭只在返回时的 `defer`（成功 / 出错 / 取消 / panic 都走它，没有双次 close）；`send` 在发送与 `rc.Context().Done()` 上 `select` |
-| `Consume` | 一个节点：`Requires(in)`，`select` 循环读 | 使用 `select` 响应取消，避免 `for range` 在取消后仍把缓冲区全部处理。Wait 收尾会独立锁存执行上下文取消；节点是否协作退出与整轮结果分别判断 |
-| `Tee` | 一个节点：`Requires(in)` + `Provides(outs...)`，逐条转发 | 广播：每个下游拿到完整同序数据；**背压按最慢的下游算** |
-| 装配校验 | `checkStreamSlots`（糖的局部即时反馈）+ `Graph.problemsStreamLocked`（`Validate` / `Start` / `Topology` 的整树检查） | 流别名沿 `In` / `Out` / 透传追到实际读取者，Sub 不算读取者也不占额；每条流出口要有人消费，独立读者不得静默瓜分，同挂载位置内的同一 `FanOut` 竞争组除外。流节点与读取者按**真实额度池身份**计数：子图未声明则继承父池，自己声明则另算，不按相同数字合池。已知同步发送/关闭、子图完成与 Wait 后 Out 桥回另查生命周期等待环；无限额度和有限缓冲也不放行。根层 Start 使用本次有效 ExecOption，静态装配不能推断业务回调或切面里的隐藏等待 |
-| 写入暂存 | `checkChannelVisibleNow`：生产节点开跑时发现 `rc.writes != nil` → 当场报错 | 判据直接看「有没有写暂存」，不认切面的身份（`Aspect` 是裸函数类型，装配期认不出来）；放它过去的后果是**互等挂死**而不是报错，见下 |
+| ProduceStream | Provides(out)，OpenStream 后调用 `fn(*RunCtx, *StreamWriter[T]) error` | Send/SendAt 逐条接纳，完整 Aspect 链决定终态 |
+| ConsumeStream | Requires(in)，逐条 Receive/HandleMessage | `fn(*RunCtx,T) error` 成功才 Ack；空流成功、缺值正常跳过 |
+| TeeStream | Requires(in) + Provides(outs...) | 一条输入的有限分支批次提交后 Ack；outs 装配时复制 |
 
-跨子图时，检查沿 `In` / `Out` 与透传追踪同一条 channel，读取者是子图内实际 Requires 的节点，Sub 代理不算读取者也不占额度。同一个 FanOut 竞争组只在同一挂载位置内合并。额度按真实池身份分组：未声明的子图继承父池，自己声明的子图另建一池，即使数字相同也不合并；同定义挂两处是两份节点和各自声明的池。同池仍保守要求全部流参与者同时有名额。例：Produce + Tee + 子图内两个 Consume 共需 4，父层那个 Sub 不计数。没有已知流的树只做逐层只读探测，不复制所有未使用端口。
+三者在 g、id 后接 description，允许空串，WithStreamAspects 使用普通 NewNode 链。图级、执行级、本地切面由外到内，重复配置按声明顺序追加。选项隔离切片，闭包业务状态不深拷贝。手写节点直接 OpenStream/Send/Receive/Ack；OpenStream 不接受构造糖的 WithStreamAspects 或 WithMessageHandling。写端留在实际节点同步链中，同一 RunCtx（含 Fork）串行 I/O。
 
-普通 Key 到达之外，还检查内置流的 start / finish / channel close / child completion / Out 桥回关系。Tee 必须让各出口的读取者开始读取才能完成同步发送并关闭；Consume 等关闭才正常完成；Sub 等 child.Wait 后才桥回出口。于是“A 挂载要等 B 的 done、B 要等流关闭、Tee 要等 A 开始读”的环，即使额度无限也在 Validate / Start / Topology 报具体等待路径。缓冲不能证明任意数据量都安全。固定 FixSkip 与 Start 已供给的 skip 是确定事实，按挂载位置保留；确定不进入 body 的节点不产生发送/关闭等待，有有效切面时不推断其输出必定 skipped。child.Start 采用自己的已供给输入和有效切面，递归 Topology 子视图共用根检查的诊断事实，不把这些状态写回 Graph。该模型仅用于静态校验，不参与调度；业务 callback / Aspect 的隐藏等待、手写 channel 的关闭时机与 Fix 值之间的实际 channel 指针别名不作推断。已知 Produce/Tee 出口仍必须有真实读取者，声明为根出口也不能代替消费。
+WithBuffer 限制排队加已读取未确认的总在途量，受管默认 1。ConsumeStream 不建缓冲，正数配置装配拒绝。受管 I/O 仅在阻塞等待期间暂时归还业务额度，业务继续、取消返回或 panic 展开前重新取回，纯受管 pipeline 额度 1 可推进。任意业务 I/O 不自动让额，其他节点不协作持额时取消返回仍可能等它。Messages 直接暴露原生 Delivery channel，无转发 goroutine；它仅支持单读取者，原生 select 用只等待的 rc.WaitStream 回调，业务放回调外。多 worker FanOut 竞争必须用 Receive。
 
-**为什么「要复制」的只有流这一类**（实测四种分发形态）：普通值——一个 `Provides`、N 个下游各自 `Requires` 同一个 Key——3 个下游都拿到完整值；一组值（slice 当一个值）同理；**只有 channel 会抢**：同一条 channel 给 3 个下游，6 个值被瓜分（合计 6，不是 18）；复制成 3 条 channel 才是 18。所以「抢」用 `FanOut`、「每个都拿到」用 `Tee`，两者不互相替代。
+生产完成和读取完成分别记账。Snapshot 给 Terminal/Err、LastSequence、连续 AckedThrough、InFlight、Stopped；Done 在**实际写端完整 Aspect 链**结束后关闭，别名共享同一本账，祖先 Sub 不是 EOF 边界。正常 child 清理不撤销尾部。Receive 仅在正常完成且交付义务已清，或显式 Stop 后返回 io.EOF，真实失败返回原因；Messages 关闭后也要读 Snapshot.Err。空流是 ready 端点、零消息，不等于 skipped。
 
-**空流不是跳过**：一次都没 `send`、出口正常关闭 → 下游**照样进入 `Run`**（零次回调、终态 `completed`、整轮成功）。槽位里放的是 channel，走的是「值到了」这条路；想要「没有值」的语义就别 `Set` 那条 channel。
+Stop 显式结束读取组，清理不算 Ack。ConsumeStream 回调返回精确 ErrStreamStopped 表示当前条成功，先 Ack 再 Stop；包装错误仍失败。ProduceStream 只有写端确实 stopped 且回调返回精确 ErrStreamStopped 才正常结束。TeeStream 单支 Stop 后其他继续，全支 Stop 后正常 Stop 输入；真实错误不能洗成正常停止。最后读取者提前返回、既未完成消费确认也未 Stop，会明确报读取义务错误。
 
-**三个流糖都支持节点级切面**：通过 `WithStreamAspects(aspects...)` 放进 `StreamOption`，与图级、执行级切面一起走现有节点链。`Timeout` 协作取消本层上下文，等待生产、接收或广播退出，整轮保留失败；它不会撤回已经发送的前缀，也不让裸 channel 的关闭单独证明生产成功。`Consume` 也接收相同选项，但不能用正数 `WithBuffer` 调整上游 channel，装配期明确拒绝。
+宿主用 SubscribeStream(e,key)，必须在 NewExecution 后、Start 前登记并参与实际读取组/别名检查。Wait 等全部节点和必需宿主读取组完成、Ack 或 Stop，不代为排空。仅宿主读取的根流应 NewExecution → Subscribe → Start；可先 Validate 冻结定义。Graph.Validate/Topology 仅对已声明的 managed 根出口省略缺读者诊断，允许稍后接宿主，不算真实 host，不放行未导出流，也不改变原生 channel。Execution.Start 仍按实际订阅严格检查缺读者及静默分流，因此 Durable 可先冻结 schema，再在 BeforeStart 登记。被订阅的输入输出透传需本轮 Seed/SkipSeed，漏值启动前报错，skip 正常。ReadOutput 仍在 Wait 后读结果，没有启动后补订阅、补历史或无限缓冲。
 
-**生产写入仍需立即可见**：`Produce` / `Tee` 都是先 `Set` channel、再发送，有尝试写集时 channel 要等本次尝试提交才发布，而提交又等发送结束，形成互等。因此 `checkChannelVisibleNow` 在读写流之前拒绝实际写暂存，点名将写暂存移出这一层；判据不按切面名字猜测，普通观测、日志和协作超时照常工作。消费端不发布 channel，所以不会被这条守卫拒绝；但普通 `Retry` 仍然重跑整段消费循环，不倒带已经取走的消息，失败的当前消息也不会自动重放。需要重做有限整段流水线时，在父侧只桥回普通结果的 `Sub` 边界重试；逐消息确认与重试属于 #370 的后续实施。
+HandleMessage 是显式有限原子输出边界：默认一次，最多 64 条暂存，每输出批次不得超过容量，超限当场失败、不等自身回调结束。失败 Set/Skip/Send 不发布，重试同一条后再下一条；成功才确认输入，零输出与正常 NoValue/Skip 也成功，耗尽或提交错误不能吞成成功。WithMessageHandling(WithMessageRetry/WithMessageLimit) 仅配置 ConsumeStream/TeeStream，ProduceStream 拒绝非空配置。闭包、引用与外部副作用不回滚。渐进 token 在该边界外逐条 Send/SendAt，已发前缀不撤销；可续读来源显式 WithStreamSource，业务用 Position 游标续读，否则失败或新 Execution，不能自动整节点 Retry 拼两版。
+
+普通 Retry 在实际外接流 I/O 之前拒绝，确定 skip 无数据路径仍正常。整条有限内部流水线仅以普通值跨 Sub 时，可在挂载边界重试，内部节点不能继承 Retry。流的增量检查点由可选 StreamHooks 提供，不编码本地 channel，完整契约见 [checkpoint.md](checkpoint.md)，Durable #21 负责真实持久后端与进程恢复。
+
+### 原生 channel 兼容边界与静态校验
+
+旧 Key[<-chan T] 与 Produce/Consume/Tee 保留，节点活着收发、发送端返回时关闭 channel，支持 WithStreamAspects。它们仍整段持额，按真实额度池保守要求流参与者同时存活；WithBuffer 默认 0，仅限制排队。无 Ack、无自动倒带或消息持久性，WithStreamSource/WithMessageHandling 明确拒绝。Produce/Tee 在写暂存内因延迟发布 channel 而立即拒绝；旧 Consume 的整节点重跑不提供当前消息重放保证。
+
+静态校验按挂载位置展开，沿 In/Out/透传追踪原生和受管流别名，数实际读取者；Sub 不作读取者或额度参与者。同一挂载 FanOut 组是显式竞争，广播用 TeeStream/Tee。声明根出口不算实际消费者；定义检查仅允许已声明 managed 根出口等待宿主连接，Start 仍加入本次有效额度、Aspects、skip 和真实宿主订阅，严格查缺读者与分流。实时流 Out 提前绑定，普通 Out 才依赖 child.Wait，生命周期图按真实关系检查并报告具体等待环。不同独立额度池即使数字相同也不合并。
+
+校验模型只用于诊断，不调度；不推断业务/Aspect 隐藏等待、手写 channel close 时机或 Fix 的实际指针别名。确定 skip 按挂载保留，有效 Aspect 不凭空推断输出缺失；逆向索引 worklist 传播事实，避免按声明顺序反复扫全图。无流树逐层只读探测，嵌套 Topology 共享根检查事实。YAML 可登记同一 Key[Stream[T]] 与 Run 工厂，复用 core 执行器；Requires/Provides 归 YAML 显式声明，不能藏 channel 后声称拓扑齐全。中英文完整可运行主路、原生 select、host 和跨 Sub 片段见 [流指南](../../site/guide/streams.md)。
 
 ### 排他分支：`Only`
 
@@ -498,7 +476,7 @@ err := pulse.Sub(parent, "step1", "交给子图跑的一步",
 - **反向那一遍：子图需要的进口，这一处挂载都得给**（`In` / `Fix` / `FixSkip` 都算）。两种「需要」都是读一遍声明就能定的：① **子图里有节点 `Requires` 它**——漏绑的话子图这次跑不起来，而 `newChildExecution` 报那句「has no value for this run」是在**运行期**（父图别的节点可能已经跑完，`Validate()` 还已经把这个定义封了口）；② **它是这一处绑出去的出口的唯一来源**（同一条键既是进口又是出口 = 透传，而声明过的进口不可能再被节点产出）——漏绑的话 `bridgeOutputs` 只能等子图跑完才报一句 `never arrived`。两个边界：没人 `Requires`、也没被这一处绑出去的进口是**可选**的（别的挂载点的接口，或这一处用不到的透传端）；义务由**承诺**定，所以第 ② 种只看**绑出去**的出口。
 - **整批判完才提交**（与 `Add` 同一条纪律）：报文点着子侧键名，判据与报文只写一份。
 
-**切面落在父侧那一步上**（`Sub(..., aspects...)`），例如 `pulse.Timeout(30*time.Second)` = 整张子图限时、`pulse.Retry(3, 0)` = 整张子图最多跑三次。**`Retry` 现在装得上了**（阶段 3）：它给每一次尝试开一条独立的 attempt 写集，而每一次尝试都会**重新建一份子执行**——第一次那轮桥回父侧的结果属于第一次那条写集，失败就整条作废，父侧只拿得到**成功那一次**的输出版本。所以「桥回发生在第一次尝试里」不再是问题，「一半第一次、一半第二次」的混装也不会出现；`Retry` 照旧只报**最后一次**尝试的错误（那是它的契约，与任何节点一样）。流生产端是唯一进不去的地方（见 §5 流式那一节）。声明式装配那边（`pulse/yaml`）有 spec 可读，`graph:` 节点上的 `retry:` 照装照跑，同样是每次尝试一份新子执行。
+**切面落在父侧那一步上**（`Sub(..., aspects...)`），例如 `pulse.Timeout(30*time.Second)` = 整张子图限时、`pulse.Retry(3, 0)` = 整张子图最多跑三次。**`Retry` 现在装得上了**（阶段 3）：它给每一次尝试开一条独立的 attempt 写集，而每一次尝试都会**重新建一份子执行**——第一次那轮桥回父侧的结果属于第一次那条写集，失败就整条作废，父侧只拿得到**成功那一次**的输出版本。所以「桥回发生在第一次尝试里」不再是问题，「一半第一次、一半第二次」的混装也不会出现；`Retry` 照旧只报**最后一次**尝试的错误（那是它的契约，与任何节点一样）。实际外接流输入/输出不能借普通 Retry 倒带或撤回；完整内部有限流水线只桥普通值才可整体重试，内部节点不继承该 Retry（见 §5 流式）。声明式装配那边（`pulse/yaml`）有 spec 可读，`graph:` 节点上的 `retry:` 照装照跑，同样是每次尝试一份新子执行。
 
 **装配完即可见、不必运行**：`Topology()` 沿静态挂载边**递归**（`Nodes[i].Sub` 是一棵完整子树，`Binds` 是这一处的接线），路径由**挂载位置**推导（`outer` / `outer/inner`），**读它不会改动任何定义**（「同一个子图挂两处、路径互相覆盖」那类坑到此为止）；`Validate()` 同样递归——子图的静态毛病在**父图**上就报，**按引用点**各报一条并点明挂载位置：
 
@@ -520,9 +498,9 @@ pulse: subgraph "inner" (mounted at "step1/toInner"): pulse: node "leaf" require
 |---|---|---|
 | 把观察者挂到子图 | 父图照常跑完、`Run()` 返回 `nil`，子图的记录**一条都不出现** | 子图没挂观察者时**自动继承**父图的（按**有效值**继承：父执行环境里那个，子图自己声明过就用它自己的） |
 | 子图的取消域 | 手工搭时子图在谁的取消域里跑全靠自己记得，忘了就吞掉取消 | 子执行的 ctx 从**挂载那一步的 ctx** 派生：父侧取消（含这一步上的 `Timeout`）天然传下去，**没有转发 goroutine** |
-| 手写两端桥接 | 父 → 子要组装本轮 Inputs；子 → 父要逐条读取声明出口并写回父侧 Key，键名、类型和漏项全靠人对齐 | `In` / `Out` 声明一次，跑完自动桥回；宿主再从父 Execution 读取声明出口 |
+| 手写两端桥接 | 父子槽来源、实时端点与普通结果的桥接时机需要保持一致 | In 稳定绑定来源槽；实时 Out 提前接通，普通 Out 在 child.Wait 成功后桥回；宿主按实时订阅或最终 ReadOutput 读取 |
 
-**运行语义**（糖不改语义，与手写嵌套逐条一致）：子图失败即本节点失败、**首错原样冒泡**（`errors.Is` 成立）；输出按槽位桥回（就绪 → `Set`、跳过 → `Skip`，**全部**跳过 = 本节点 `NoValue()`，不是失败）；这一步同样**不吃名额**。两处要记住：
+**运行语义**：Sub 无整体输入门，In 稳定绑定父来源槽，可 pending；内部节点按各自 Requires 激活，全入口 skipped 仍创建 child，独立自产分支可运行。Stream 与原生 channel Out 在 child.Wait 前绑定，普通结果仍等 child.Wait 成功后桥回；挂载步骤本身仍等 child 最终完成且不占额。实际写端完整链决定流终态，祖先挂载不是 EOF 边界，child 正常清理不撤销尾部。真实 child 错误原样冒泡；全部绑定输出 skipped 则挂载正常 NoValue。两处要记住：
 
 1. **一处挂载一份子执行**：每一次跑到这一步，都为**这个挂载位置**建一份自己的子执行（ctx / 槽位 / 首错互不干扰），所以同一张子图挂两处时**两处各跑一份**（阶段 2 落地；旧版本是「一次性认领 + 运行期回写子图字段」，只跑得了一处、两处还会互相踩配置）。定义始终只读——有效观察者 / 名额 / 图级切面是**建子执行时算出来的**，不写回子图的字段。
 2. **取消域**：子执行的 ctx 从**挂载那一步的 ctx** 派生（这一步上的 `Timeout` 也在其中），父侧取消天然传下去——没有转发 goroutine，也不会出现「子图建在 `context.Background()` 上、把取消吞掉、父图跑满整段还报成功」那类形状（旧版本实测 300ms + 报成功；现在是 51ms + `context canceled`）。
@@ -594,7 +572,7 @@ _, _ = structure, progress
 
 `CheckpointNodes` / `CheckpointPorts` 提供真实类型声明副本，`CheckpointInputs` 只复制已接收外部输入；内部值仅通过受校验完整节点包交付。`RestoreNodes` 登记整批计划，Start 在封口同一临界区复验并全部恢复，合法恢复节点不重跑体、切面或提交。
 
-子图采用已确认方案 A：持久根尝试与嵌套 Retry 游标先认回，再打开对应子作用域；进程中断复用已确认子成果，明确失败的新尝试不能复用旧成果。最终失败不靠反复 Resume 刷新预算。声明和动态容器中的 channel 均拒绝，普通模式不受影响。完整机制、取消/失败边界、Store/Codec 责任与真实进程验收见 [检查点桥接与子图恢复](checkpoint.md)。
+子图采用方案 A：先认回持久根尝试与嵌套 Retry 游标，再打开对应子作用域；进程中断复用已确认子成果，失败新尝试不能借旧成果，Resume 不补预算。OpenChild.Bindings 保存稳定 In 来源（可 pending），Fix 核对实际值。可选 StreamHooks 六项独立保存消息/游标/确认/状态/输出；完整节点的流输出保存 descriptor，实际写端成功终态随完整 Commit 原子确认。CheckpointAttempt.Values 仅在 active 完整节点根 attempt 返回已确认消息贡献的普通输出子集；Core 在业务前恢复到 checkpoint 外帧，完整 Node Commit 成功后才发布，Retry/OpenMessage 的嵌套 Attempt.Values 必须空，无流与失败祖先规则不变。completed 来源不跑业务体但重建 Done 与尾部，active 来源无显式续读承诺则拒绝，旧代际不能推进新账。原生及普通值中嵌套 channel 仍拒绝。存储与进程恢复由 Durable 提供，集成跟踪见 Durable #21，发布以实际 tag/release 为准；完整机制见 [检查点桥接与子图恢复](checkpoint.md)。
 
 ## 7. 分层
 

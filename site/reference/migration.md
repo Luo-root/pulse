@@ -37,6 +37,22 @@ Tee(g, id, description, in, outs, opts...)
 
 Consume 不创建发送缓冲，正数 `WithBuffer` 会在装配时返回错误且不留下节点；零和负数沿用不改变配置的规则。节点级 Timeout 覆盖等输入、收发及回调，到期取消后等待内层退出，流被截断仍是本次执行失败。Produce/Tee 的 Retry 写暂存拒绝保留；Consume 的整节点 Retry 不能倒带或重放已消费元素。完整示例见[流式处理](../guide/streams.md)。
 
+## 受管流、实时 Sub 与增量恢复
+
+| 迁移位置 | 原生兼容行为 | 当前受管契约 |
+|---|---|---|
+| 键与糖 | Key[<-chan T]、Produce/Consume/Tee 保留 | Key[Stream[T]]、ProduceStream/ConsumeStream/TeeStream，均在 id 后接 description |
+| 读取 | 收到即离开 channel，无确认 | Receive 得 Delivery，显式 Ack 释放总在途容量，Nack 同序重投 |
+| 缓冲与额度 | 默认无缓冲、整段持额、保守容量检查 | 默认总在途 1，受管等待让额，业务继续前取回，纯受管 pipeline 额度 1 可推进 |
+| 重试 | 无自动倒带或消息可靠性 | 有限 HandleMessage；渐进 SendAt 按显式来源游标续读 |
+| Sub | 旧文档描述统一等待桥回 | In 稳定绑定可 pending；Stream/原生 channel Out 提前绑定；普通 Out 等 child.Wait 成功 |
+| 宿主 | ReadOutput 仅 Wait 后读取 | 实时用 SubscribeStream，NewExecution 后、Start 前登记，必须消费 Ack 或 Stop |
+| 检查点 | 原生和嵌套 channel 仍拒绝 | 普通四 hooks 保持合法，可选完整六项 StreamHooks，消息与 descriptor 分开记录 |
+
+旧流糖支持 WithStreamAspects，但拒绝 WithStreamSource/WithMessageHandling，不会静默升级可靠性。ConsumeStream 正 WithBuffer 拒绝，ProduceStream 拒绝非空消息处理配置。用 WithMessageHandling 给受管消费/Tee 配有限尝试；失败成果不发布，闭包和副作用不回滚。
+
+Sub 无整体输入门，全入口 skip 仍创建 child，独立自产分支可运行。普通 Retry 拒绝实际外接流，沿嵌套绑定可证明缺失的路径仍正常；完整有限内部流水线仅桥普通值才可整体重试。completed 流多个 Out 别名共用恢复账，不重跑来源体，先重建 Done 与尾部；active 来源没有续读承诺则拒绝恢复。宿主订阅使透传 inlet 成本轮必需输入，要 Seed/SkipSeed；Wait 不替宿主排空。完整程序见[流指南](../guide/streams.md)，持久集成边界见[检查点](./checkpoint.md)。这些 API 使用匹配本地检出；存储与进程恢复由 Durable 提供，集成跟踪见 Durable #21，发布状态以实际 tag/release 为准。
+
 ## 先迁移对象职责
 
 | 关注点 | v0.4.1 模型 | 当前开发模型 |

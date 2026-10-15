@@ -153,7 +153,7 @@ Load resolves registry entries and assembles definitions; it runs no body and re
 | `nodes[].retry` | attempts and delay; becomes inner Retry |
 | `observer` | Documentation hint ignored by Load; use options for observers |
 
-A type tag is the registered key's `reflect.Type.String()`, not an arbitrary alias. Query the expected tag with `Registry.TypeTagOf`. Same-name type conflicts, missing tags, unregistered keys, and unregistered uses are errors. YAML has no Produce/Consume/Tee declaration syntax; topology cannot infer hidden channel behavior inside ordinary factories.
+A type tag is the registered key's `reflect.Type.String()`, not an arbitrary alias. Query the expected tag with `Registry.TypeTagOf`. Same-name type conflicts, missing tags, unregistered keys, and unregistered uses are errors. YAML has no separate stream runner or specialized stream-helper syntax. Register the same `Key[pulse.Stream[T]]`; factories return only Run, which uses core OpenStream, Receive, and HandleMessage APIs. YAML still explicitly declares Requires/Provides, and subgraph in/out uses the live-binding contract. A channel hidden inside a factory does not establish a complete topology declaration; Analyze never executes factories to infer it.
 
 ## Resolve external inputs in the host
 

@@ -16,60 +16,105 @@ const (
 	slotSkipped
 )
 
-// slot 是一次运行里的一个数据槽。
+// slot 是一次运行里的一个数据槽。跨图绑定可让尚未到达的槽引用真实来源；
+// 等待者保留这个稳定句柄，不用另起一条转发 goroutine 或替换已有人等待的指针。
 type slot struct {
-	mu    sync.Mutex
-	state slotState
-	value any
-	done  chan struct{} // 到达（值或跳过）时 close
+	mu     sync.Mutex
+	state  slotState
+	value  any
+	done   chan struct{} // 到达或确定绑定目标时唤醒，wait 随后重新判断三态
+	target *slot
 }
+
+// 仅绑定安装串行化，消息与普通值的读写不取这把锁。
+// 安装前检查目标链，避免两个并发绑定各自通过检查后组成引用环。
+var slotBindMu sync.Mutex
 
 func newSlot() *slot {
 	return &slot{done: make(chan struct{})}
 }
 
+// view 同一眼取得最终来源的状态和值，以及等待这个状态变化的通知。
+func (s *slot) view() (slotState, any, <-chan struct{}) {
+	for {
+		s.mu.Lock()
+		if next := s.target; next != nil {
+			s.mu.Unlock()
+			s = next
+			continue
+		}
+		st, value, done := s.state, s.value, s.done
+		s.mu.Unlock()
+		return st, value, done
+	}
+}
+
 func (s *slot) snapshot() (slotState, any) {
+	st, value, _ := s.view()
+	return st, value
+}
+
+// bindTo 安装一个经过静态来源校验的绑定。绑定不是值到达，三态不增加第四种状态；
+// 先前已经等待本槽的调用者会被唤醒，继续等待真实来源，不能把 pending 读成 nil ready。
+func (s *slot) bindTo(target *slot) error {
+	if target == nil {
+		return fmt.Errorf("pulse: cannot bind a slot to nil")
+	}
+	slotBindMu.Lock()
+	defer slotBindMu.Unlock()
+	for at := target; at != nil; {
+		if at == s {
+			return fmt.Errorf("pulse: slot binding cycle: %w", ErrConflict)
+		}
+		at.mu.Lock()
+		next := at.target
+		at.mu.Unlock()
+		at = next
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.state, s.value
+	if s.target == target {
+		return nil
+	}
+	if s.target != nil || s.state != slotPending {
+		return fmt.Errorf("pulse: slot already arrived or bound: %w", ErrConflict)
+	}
+	s.target = target
+	close(s.done)
+	return nil
 }
 
 // isReady 报槽位是否已经就绪（有值）。只读一眼，不参与任何序列化。
 func (s *slot) isReady() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.state == slotReady
+	st, _ := s.snapshot()
+	return st == slotReady
 }
 
 // resolveValue 幂等首写为就绪。已就绪：忽略。已跳过：冲突。
-func (s *slot) resolveValue(v any) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	switch s.state {
-	case slotReady:
-		return nil
-	case slotSkipped:
-		return ErrConflict
-	default:
-		s.value = v
-		s.state = slotReady
-		close(s.done)
-		return nil
-	}
-}
+func (s *slot) resolveValue(v any) error { return s.resolve(slotReady, v) }
 
 // resolveSkip 标记跳过。已跳过：忽略。已就绪：冲突。
-func (s *slot) resolveSkip() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	switch s.state {
-	case slotSkipped:
-		return nil
-	case slotReady:
-		return ErrConflict
-	default:
-		s.state = slotSkipped
+func (s *slot) resolveSkip() error { return s.resolve(slotSkipped, nil) }
+
+func (s *slot) resolve(state slotState, value any) error {
+	for {
+		s.mu.Lock()
+		if next := s.target; next != nil {
+			s.mu.Unlock()
+			s = next
+			continue
+		}
+		if s.state == state {
+			s.mu.Unlock()
+			return nil
+		}
+		if s.state != slotPending {
+			s.mu.Unlock()
+			return ErrConflict
+		}
+		s.state, s.value = state, value
 		close(s.done)
+		s.mu.Unlock()
 		return nil
 	}
 }
@@ -86,31 +131,26 @@ func (s *slot) resolveSkip() error {
 // （首错取消时 cancel 先于那条「解阻塞用的跳过」，所以窗口里到达的一定是
 // 跳过；值那条也一样让位给取消，与 done 分支同口径）。
 func (s *slot) wait(ctx context.Context) (any, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	st, v := s.snapshot()
-	if st != slotPending {
-		if err := ctx.Err(); err != nil { // 快照与入口检查之间被取消
+	for {
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if st == slotSkipped {
-			return nil, ErrSkipped
+		st, value, done := s.view()
+		if st != slotPending {
+			if err := ctx.Err(); err != nil { // 快照与入口检查之间被取消
+				return nil, err
+			}
+			if st == slotSkipped {
+				return nil, ErrSkipped
+			}
+			return value, nil
 		}
-		return v, nil
-	}
-	select {
-	case <-s.done:
-		if err := ctx.Err(); err != nil { // done 与取消同时就绪：取消优先
-			return nil, err
+		select {
+		case <-done:
+			// 可能只确定了真实来源，尚未到达；重新解析绑定链，不能返回 pending。
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
-		st, v = s.snapshot()
-		if st == slotSkipped {
-			return nil, ErrSkipped
-		}
-		return v, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
 	}
 }
 

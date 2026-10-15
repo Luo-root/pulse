@@ -44,9 +44,10 @@ import (
 // 再各挂一步，环就进去了，此后递归展开是爆栈或互等锁。装配是一次性动作、临界区里没有用户
 // 代码，这把全局锁的代价是零。递归本身还有一道兜底判环（见 problemsSubAtLocked）。
 //
-// 运行语义与手写嵌套逐条一致（糖不改语义）：别名额（这一步不吃名额，见 WithMaxRunning）、
-// 子图失败即本节点失败且首错原样冒泡、输出按槽位桥回（就绪 → `Set`、跳过 → `Skip`，全部跳过
-// = 本节点 `NoValue()`）。三处要记住：
+// Sub 是结构组合，不等待推导的全部父 Requires，也不因父输入全 skip 而跳过整张子图。
+// In 保留真实来源，内部节点各自按自己的 Requires 等待和判 skip；实时流 Out 在子执行启动前
+// 建立稳定槽位别名，普通值仍在 child.Wait 成功后桥回。失败与取消原样冒泡，全部实际出口
+// 都 skipped 时本节点以 NoValue 收尾。Sub 自身不吃运行名额。三处要记住：
 //
 //  1. **每个挂载位置一份子执行**：挂在这里的每一步为子图建一份**自己的**子执行
 //     （自己的 ctx / 槽位 / 状态 / 首错），所以同一张子图挂两处时两处都能跑，各自的
@@ -55,9 +56,9 @@ import (
 //  2. **取消域**：子执行的 ctx 从父节点这一层的 ctx 派生，所以取消天然传下去（含这一步
 //     上的 `Timeout` 切面）。不派生的话子图会跑满整段、把父图的取消吞掉——实测过：父图
 //     耗时 300ms 且报成功。取消**只影响这一次运行**：子图定义与别处的运行不受影响。
-//  3. **`Retry` 可以装在这一步上**：每一次尝试各建一份**新的子执行**（子图是定义，能跑
-//     很多次），而尝试级的写暂存由 `Retry` 提供（见 aspect.go）——第一次尝试的桥回随
-//     它那条暂存一起作废，父侧只拿得到成功那一次的输出版本。**没有边界的重入仍然被拒**：
+//  3. **普通值出口的 Sub 可重试**：每次尝试各建一份新的子执行，第一次尝试的桥回随
+//     Retry 的暂存一起作废，父侧只拿到成功那次的普通值。内部流最终只向外给普通值也合法；
+//     直接向外暴露实时流时，发布无法撤回，写暂存会在子执行启动前被拒。**没有边界的重入仍然被拒**：
 //     判据在最内层的推进闸上（所有节点共用一处，见 `RunCtx.beginAdvance`），用户自己写的
 //     重试切面开不了边界，第二次推进会连第一次的失败原因一起报出来。`pulse/yaml` 对
 //     `graph:` 节点上的 `retry:` 是**照装**（与 Go 侧同一个语义），不再在 `Load` 期拒。
@@ -367,8 +368,7 @@ type SubBind struct {
 	// 要用 `SeedByName` 做类型对齐（`coerceSeedValue`），而那个函数写的就是 `Inputs`。
 	fix *fixBind
 
-	pull func(*RunCtx) (any, error) // In：读父侧（跳过 → *SkipError）
-	push func(*RunCtx, any) error   // Out：把子侧的值写回父侧
+	push func(*RunCtx, any) error // 普通值 Out：把子侧的值写回父侧；In / 实时 Out 直接绑定槽位
 }
 
 // fixBind 是一条（批）固定值绑定的载荷。`bad` 兜住「值本身就不合法」的那条路
@@ -451,7 +451,7 @@ func FixSkipByName(reg *Registry, name, typeTag string) (SubBind, error) {
 	return SubBind{child: ref, fix: &b}, nil
 }
 
-// In 声明一条父 → 子的绑定：父图读 `parent`，把它种进子图的 `child`。
+// In 声明一条父 → 子的绑定：子图的 child 沿父侧 parent 的真实槽位等待到达。
 //
 // 两条绑定都是**箭头读法**：来源在前、去向在后——`In(父, 子)`、`Out(子, 父)`。
 //
@@ -464,7 +464,8 @@ func In[T any](parent, child Key[T]) SubBind {
 	return InRef(parent.asRef(), child.asRef())
 }
 
-// Out 声明一条子 → 父的绑定：子图产出 `child`，跑完之后写回父图的 `parent`。
+// Out 声明一条子 → 父的绑定：实时流 child 到达即向父侧 parent 可见；
+// 普通值在子执行成功完成后写回。绑定只传递端点身份，不消费或确认消息。
 //
 // 与 `In` 同一条箭头读法（来源在前、去向在后）：`Out(子, 父)`。
 func Out[T any](child, parent Key[T]) SubBind {
@@ -483,7 +484,6 @@ func InRef(parent, child keyRef) SubBind {
 		parent: parent,
 		child:  child,
 		in:     true,
-		pull:   func(rc *RunCtx) (any, error) { return getRef(rc, parent) },
 	}
 }
 
