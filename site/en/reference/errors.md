@@ -74,7 +74,7 @@ Read all static problems from Topology.Problems before confirming with Validate.
 
 A real node error latches the first error and cancels the execution. Wait returns that cause after every node ends. Other concurrent nodes may complete or cancel without overwriting the first captured error. A business-body panic becomes a node error.
 
-When Timeout handles expiry itself, it creates an error naming the node and limit, with failed status and no context.DeadlineExceeded wrapper. If the inner result is received first, its original error is retained. Inner completion and deadline expiry can be ready together, allowing context.DeadlineExceeded to return directly with canceled status. A canceled state alone therefore does not prove host cancellation; check the host context, node deadlines, and actual cause.
+Timeout checks its own context after the inner function exits on either completion path. An expired deadline produces an error naming the node and limit, with failed status and no context.DeadlineExceeded wrapper, including when both paths are ready together. Before cancellation or expiry it retains the original inner error; parent cancellation retains the context cancellation cause. Interpret canceled status together with the host context, node deadlines, and actual cause.
 
 Host cancellation, host deadline expiry, or cancellation caused by another node's failure can also produce canceled status. Cancellation is cooperative: an unresponsive body may delay Wait. Timeout likewise waits for the inner function and does not forcibly terminate a business goroutine.
 

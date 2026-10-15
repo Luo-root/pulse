@@ -28,6 +28,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	nodeTimeout := pulse.WithStreamAspects(pulse.Timeout(time.Second))
 	if err := pulse.Produce(g, "source", "Produce a number stream", stream,
 		func(rc *pulse.RunCtx, send func(int) error) error {
 			for _, value := range []int{1, 2, 3} {
@@ -36,10 +37,10 @@ func run() error {
 				}
 			}
 			return nil
-		}); err != nil {
+		}, pulse.WithBuffer(1), nodeTimeout); err != nil {
 		return err
 	}
-	if err := pulse.Tee(g, "broadcast", "Broadcast the number stream", stream, pulse.Keys(left, right)); err != nil {
+	if err := pulse.Tee(g, "broadcast", "Broadcast the number stream", stream, pulse.Keys(left, right), nodeTimeout); err != nil {
 		return err
 	}
 	var leftSum, rightSum int
@@ -47,7 +48,7 @@ func run() error {
 		func(rc *pulse.RunCtx, value int) error {
 			leftSum += value
 			return nil
-		}); err != nil {
+		}, nodeTimeout); err != nil {
 		return err
 	}
 	if err := pulse.Consume(g, "right-sink", "Sum the right stream", right,
@@ -97,7 +98,7 @@ The producer, Tee, and two consumers need four shared quota slots. Each sum has 
 | Function | Arguments | Callback responsibility |
 |---|---|---|
 | `Produce` | `g, id, description, out, fn, opts...` | `fn(*RunCtx, func(T) error) error`; check every `send` error |
-| `Consume` | `g, id, description, in, fn` | `fn(*RunCtx, T) error`; handle one element |
+| `Consume` | `g, id, description, in, fn, opts...` | `fn(*RunCtx, T) error`; handle one element |
 | `Tee` | `g, id, description, in, outs, opts...` | `outs` is `[]Key[<-chan T]`; no business callback; copy every element to all outputs |
 | `FanOut` | `g, id, description, in, outs, fn, aspects...` | `fn(*RunCtx, int, I) (O, error)`; ordinary inputs are shared, channel inputs explicitly compete |
 
@@ -105,13 +106,21 @@ The producer, Tee, and two consumers need four shared quota slots. Each sum has 
 
 Tee copies the `outs` wiring list during assembly. Changing the caller's slice afterward does not change the graph's output declarations or broadcast destinations. This copies Key wiring only; business values in the stream are not deep-copied.
 
-Produce and Tee accept `StreamOption` values such as `pulse.WithBuffer(8)`. Consume accepts no buffer or aspect arguments. FanOut's final arguments are `Aspect`, not `StreamOption`.
+Produce, Consume, and Tee all accept `StreamOption` values. `pulse.WithStreamAspects(aspects ...Aspect)` appends aspects to this node only; `pulse.WithBuffer(8)` configures send buffers created by Produce/Tee. Consume creates no channel: a positive WithBuffer fails during assembly without leaving a node, while zero and negative sizes do not change configuration. FanOut's final arguments remain `Aspect`.
 
 Produce creates and publishes the channel, invokes the callback inside the node, and closes the channel on return. Success, errors, and cancellation all take the close path. Do not retain `send` for a background goroutine that outlives the callback.
 
 Consume waits for elements or cancellation and ends after normal channel close. Callback errors become node errors and cancel the execution. Producer failures remain execution failures; consumers seeing close do not convert them into success.
 
 An empty stream is distinct from a skip. A producer returning normally without sending still publishes a ready channel; the consumer completes with zero callbacks. A skipped upstream slot instead skips the consumer without entering its body.
+
+## Local aspects and timeouts
+
+The example reuses `nodeTimeout` on Produce, Tee, and the left Consume. Each node has its own one-second deadline; the right Consume has no local deadline. Graph and execution aspects can still wrap all nodes. Composition matches ordinary NewNode: graph aspects are outermost, execution aspects follow, and local aspects are innermost. Repeated WithStreamAspects options append in declaration order, with earlier aspects wrapping later ones.
+
+WithStreamAspects copies the slice when the option is created, so later caller mutations do not change it. Each application and node assembly also keeps an independent list, allowing option reuse. Business state captured by aspect closures is not deep-copied and still needs caller synchronization. Empty configurations are valid, and nil StreamOption values are ignored.
+
+Timeout, timing, and ordinary wrappers work on all three helpers. Timeout covers input waiting and execution, cancels managed sends, receives, or input waits at expiry, and waits for inner work to exit. Blocking callback operations must also honor `rc.Context()`. Producer channels close on exit, but the execution retains the timeout failure; a consumer seeing close cannot report the truncated execution as successful. Already sent or processed data is not withdrawn, and these are individual node deadlines rather than one shared pipeline deadline.
 
 ## Broadcast versus competition
 

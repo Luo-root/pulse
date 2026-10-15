@@ -28,6 +28,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	nodeTimeout := pulse.WithStreamAspects(pulse.Timeout(time.Second))
 	if err := pulse.Produce(g, "source", "生成数字流", stream,
 		func(rc *pulse.RunCtx, send func(int) error) error {
 			for _, value := range []int{1, 2, 3} {
@@ -36,10 +37,10 @@ func run() error {
 				}
 			}
 			return nil
-		}); err != nil {
+		}, pulse.WithBuffer(1), nodeTimeout); err != nil {
 		return err
 	}
-	if err := pulse.Tee(g, "broadcast", "广播数字流", stream, pulse.Keys(left, right)); err != nil {
+	if err := pulse.Tee(g, "broadcast", "广播数字流", stream, pulse.Keys(left, right), nodeTimeout); err != nil {
 		return err
 	}
 	var leftSum, rightSum int
@@ -47,7 +48,7 @@ func run() error {
 		func(rc *pulse.RunCtx, value int) error {
 			leftSum += value
 			return nil
-		}); err != nil {
+		}, nodeTimeout); err != nil {
 		return err
 	}
 	if err := pulse.Consume(g, "right-sink", "计算右路总和", right,
@@ -97,7 +98,7 @@ left=6 right=6
 | 函数 | 调用参数 | 回调职责 |
 |---|---|---|
 | `Produce` | `g, id, description, out, fn, opts...` | `fn(*RunCtx, func(T) error) error`，检查每次 `send` 的错误 |
-| `Consume` | `g, id, description, in, fn` | `fn(*RunCtx, T) error`，处理一个元素 |
+| `Consume` | `g, id, description, in, fn, opts...` | `fn(*RunCtx, T) error`，处理一个元素 |
 | `Tee` | `g, id, description, in, outs, opts...` | `outs` 为 `[]Key[<-chan T]`；无业务回调，复制每个元素到全部出口 |
 | `FanOut` | `g, id, description, in, outs, fn, aspects...` | `fn(*RunCtx, int, I) (O, error)`，普通输入共享；channel 输入显式竞争 |
 
@@ -105,13 +106,21 @@ left=6 right=6
 
 Tee 在装配时复制 `outs` 接线列表；之后修改原切片，不会改变图的输出声明或广播出口。这只复制 Key 接线，不深拷贝流中的业务值。
 
-Produce 与 Tee 的可选参数类型是 `StreamOption`，例如 `pulse.WithBuffer(8)`。Consume 没有缓冲或切面参数。FanOut 的末尾参数是 `Aspect`，不是 `StreamOption`。
+Produce、Consume、Tee 的可选参数类型都是 `StreamOption`。`pulse.WithStreamAspects(aspects ...Aspect)` 只给本节点追加切面；`pulse.WithBuffer(8)` 只配置 Produce/Tee 创建的发送缓冲。Consume 不创建 channel，传正数 WithBuffer 会在装配时返回错误且不留下节点，零和负数不改变配置。FanOut 的末尾参数仍是 `Aspect`。
 
 Produce 创建并发布 channel，回调在节点内发送，节点返回时负责关闭；成功、错误和取消都会走关闭路径。不要保留 `send` 交给后台 goroutine，在回调结束后继续发送。
 
 Consume 等待元素或取消信号，channel 正常关闭后结束。回调错误成为节点错误并取消本次执行；生产者失败也保留为执行失败，不会因消费者读到关闭而变成成功。
 
 空流与跳过不同：生产者正常返回但一次未发送，channel 仍是 ready，消费者执行零次回调后完成。上游槽位为 skipped 时，消费者不进入业务体并正常跳过。
+
+## 节点级切面与超时
+
+示例将同一份 `nodeTimeout` 选项用于 Produce、Tee 和左路 Consume，每个节点各自有一秒时限；右路没有本地时限。图级、执行级切面仍可包裹所有节点。组合顺序与普通 NewNode 相同：图级在外，执行级其次，本地切面在内；多次 WithStreamAspects 按选项声明顺序追加，先声明的在外层。
+
+创建 WithStreamAspects 时就复制切片，之后修改原切片不会改变选项。每次应用和节点装配也隔离列表，所以选项可复用；切面闭包捕获的业务状态不会深拷贝，仍需调用方保证并发安全。空配置合法，nil StreamOption 忽略。
+
+Timeout、计时和普通包装均可用于三个糖。Timeout 覆盖等输入与执行整段，到期会取消受管发送、接收或输入等待，再等内层退出；回调内的阻塞操作也应响应 `rc.Context()`。生产端的 channel 会在退出时关闭，但本次执行保留超时失败，不能因消费者看见关闭就把截断报成功。它不会撤回已经发送或处理的数据，也不是整条流水线共享的一份时限。
 
 ## 广播与竞争消费
 

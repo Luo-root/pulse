@@ -55,17 +55,22 @@ func Timeout(d time.Duration) Aspect {
 		child.ctx = ctx
 		errCh := make(chan error, 1)
 		go func() { errCh <- next(child) }()
+		var err error
 		select {
-		case err := <-errCh:
-			return err
+		case err = <-errCh:
 		case <-ctx.Done():
 			child.Cancel()
 			<-errCh // 等内层收干净：收尾不与它并发
-			if ctx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
-			}
+		}
+		// 内层可能已观察到 deadline 却返回 nil；两个分支同时就绪时，
+		// select 选中结果不代表没有超时。两条退出路径共用最终取消判据。
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
+		}
+		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		return err
 	}
 }
 

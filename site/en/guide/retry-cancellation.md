@@ -61,7 +61,7 @@ Use business idempotency keys, database transactions, deduplication, an outbox, 
 
 `Timeout(d)` sets an inner deadline. Expiry cancels that context, and the aspect always waits for the inner function to return. If the body ignores context and runs for 300 ms, a 40 ms limit may still return only after that body exits. Timeout limits permission to continue work; it does not forcibly terminate a goroutine. Waiting prevents node finalization from racing with a still-running body on the same outputs.
 
-The returned error depends on the completion path observed. When Timeout handles deadline expiry itself, it creates an error naming the node and limit; that error is `failed` and does not wrap `context.DeadlineExceeded`. If the inner result is received first, its original error is retained. When inner completion and expiry are both ready, `context.DeadlineExceeded` can be returned directly, classifying the node and execution as `canceled` even though the host context remains active.
+After the inner function exits, Timeout checks its own context on both completion paths. An expired deadline produces an error naming the node and limit, classified as `failed` without wrapping `context.DeadlineExceeded`. Inner code returning nil after observing expiry, or completion and expiry becoming ready together, cannot turn the timeout into success. Before cancellation or expiry, the original inner error is retained; parent cancellation returns the context cancellation cause.
 
 Do not infer host interruption from a context sentinel or `canceled` status alone. Check the host context and the installed deadlines as well. `Timeout(0)` creates an already-expired deadline; it does not disable the timeout. Omit the aspect when no limit is needed.
 
@@ -93,7 +93,9 @@ Timeout on a mounting step limits the whole child graph, including child quota w
 
 Graph aspects declared with `WithAspects` wrap every node at that layer and are inherited by child nodes. The same Timeout may limit ordinary nodes, whole subgraph mounting steps, and individual child nodes. Put different limits on the relevant nodes or mounts when their scales differ. `WithoutAspects` cuts inheritance inside the child; it does not remove aspects from the parent-side mounting step.
 
-`Produce`, `Consume`, and `Tee` accept no node aspect arguments. A stream position cannot be rewound and sent data cannot be withdrawn. Graph Retry or another write-staging layer on Produce/Tee is rejected at runtime: the channel must be published before the producer finishes, but staging publishes only when the attempt ends, causing mutual waiting. Graph Retry on a consumer does not recover the already consumed first part of the stream and cannot replay the entire stream. Use the host context to limit stream duration. See [streams](./streams.md).
+`Produce`, `Consume`, and `Tee` accept node-local aspects through `WithStreamAspects(aspects...)` and use the ordinary node execution chain. Logging, observation, and cooperative `Timeout` work at this scope. A timeout waits for the inner operation to exit and preserves failure; it does not withdraw an already sent prefix. The host context still limits the whole execution.
+
+Graph, execution, or node Retry and other actual write staging on Produce/Tee remain rejected at runtime: the channel must be published before the producer finishes, but staging publishes only when the attempt ends, causing mutual waiting. Ordinary Retry on a consumer reruns the whole loop and cannot rewind the message already taken; it is not a message retry. To redo a finite pipeline, retry a Sub that bridges only ordinary results back to its parent. See [streams](./streams.md).
 
 ## Common errors and next steps
 
