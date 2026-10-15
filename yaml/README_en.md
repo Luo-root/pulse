@@ -164,6 +164,8 @@ Named types retain their package and type names. A type alias uses the actual ty
 
 These fields match the current [Document / NodeSpec / SeedSpec](load.go) and [GraphSpec](subgraph.go). Node declaration order does not determine execution order; data dependencies determine when Run can begin.
 
+Load and Analyze accept exactly one YAML document. Appending another with `---`, including an empty document, returns an error. Trailing whitespace, comments, and a single document's end marker remain valid. Unknown configuration fields also return an error, including misspelled `timeuot` or `retry.attmpts`, so important settings cannot silently disappear. Custom `from.kind` values and arbitrary business fields inside `from.value` remain host-defined and are not restricted by the configuration field list.
+
 ### Document and graph declarations
 
 | Location / field | Syntax | Meaning |

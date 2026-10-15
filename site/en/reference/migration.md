@@ -88,6 +88,8 @@ YAML Load returns a definition and SeedPlan, with no execution context in assemb
 
 Analyze takes YAML bytes and LoadOptions without Registry. Its types are document labels; Load and Inputs still verify actual types and values. Install observers and per-run configuration through definition or Execution entries. Declaration preview does not execute those callbacks.
 
+Load and Analyze now reject unknown configuration fields and additional YAML documents. Put custom business data inside `from.value`, or interpret custom `from.kind` values in a host resolver; do not add undeclared fields to configuration structures. Load separate documents separately instead of depending on the previous first-document-only behavior.
+
 Recovery uses explicit WithExecCheckpoint and RestoreNodes. Snapshot is not a persistent recovery interface. Stable RunIDs, versions, codecs, storage, and ownership belong to Durable. Ordinary executions need no reliable hooks. See [checkpoints](./checkpoint.md).
 
 ## Validate after upgrading
