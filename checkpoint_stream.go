@@ -465,28 +465,37 @@ func checkpointManagedStream[T any](capacity int) *managedStream[T] {
 		done: make(chan struct{}), capacity: capacity, pending: make(map[uint64]*managedMessage[T])}
 }
 
-func (s *managedStream[T]) installCheckpointRecord(record CheckpointStreamRecord) error {
+// normalizeCheckpointStreamRecord 在安装前按声明类型赋值，不原地改钩子的 Pending。
+// 整批成功才返回可安装记录；复制消息容器，但保留业务值的共享引用。
+func normalizeCheckpointStreamRecord[T any](record CheckpointStreamRecord) (CheckpointStreamRecord, error) {
 	if record.Stream.Element != reflect.TypeFor[T]() {
-		return fmt.Errorf("checkpoint stream %q: element type does not match %s", record.Stream.ID.Key, reflect.TypeFor[T]())
+		return CheckpointStreamRecord{}, fmt.Errorf("checkpoint stream %q: element type does not match %s", record.Stream.ID.Key, reflect.TypeFor[T]())
 	}
-	// Open 已全量校验；安装前构造自己的消息容器，按声明类型赋值，保留业务引用。
-	// 不原地改钩子的 Pending，也不让原始 any 的类型断言在持锁后才失败。
-	messages := make([]*managedMessage[T], len(record.Pending))
-	for i, saved := range record.Pending {
-		assigned, ok := valueForType(reflect.ValueOf(saved.Value), record.Stream.Element)
+	record.Pending = append([]CheckpointStreamMessage(nil), record.Pending...)
+	for i := range record.Pending {
+		assigned, ok := valueForType(reflect.ValueOf(record.Pending[i].Value), record.Stream.Element)
 		if !ok {
-			return fmt.Errorf("checkpoint stream %q: payload type does not match %s", record.Stream.ID.Key, record.Stream.Element)
+			return CheckpointStreamRecord{}, fmt.Errorf("checkpoint stream %q: payload type does not match %s", record.Stream.ID.Key, record.Stream.Element)
 		}
-		var value T
-		if raw := assigned.Interface(); raw != nil { // nil 接口元素是合法值。
-			value = raw.(T)
-		}
-		messages[i] = &managedMessage[T]{value: value, sequence: saved.Sequence}
+		record.Pending[i].Value = assigned.Interface()
+	}
+	return record, nil
+}
+
+func (s *managedStream[T]) installCheckpointRecord(record CheckpointStreamRecord) error {
+	record, err := normalizeCheckpointStreamRecord[T](record)
+	if err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.last, s.frontier, s.stopped = record.LastSequence, record.AckedThrough, record.Stream.Stopped
-	for _, message := range messages {
+	for _, saved := range record.Pending {
+		var value T
+		if saved.Value != nil { // nil 接口元素是合法值。
+			value = saved.Value.(T)
+		}
+		message := &managedMessage[T]{value: value, sequence: saved.Sequence}
 		s.pending[message.sequence] = message
 		s.enqueueLocked(message)
 	}
