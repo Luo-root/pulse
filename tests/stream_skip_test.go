@@ -24,8 +24,8 @@ func skipStreamGraph(t *testing.T, id string, opts ...p.Option) *p.Graph {
 	return g
 }
 
-// 输入还未决定的完成等待环：Tee 的 A 出口等待 A 开始，A 的挂载门
-// 等 B 的 done 桥回，B 的消费节点正常完成又要等 Tee 关闭 B 出口。
+// 输入还未决定的完成等待环：Tee 的 A 出口等待 A 的真实消费节点开始，
+// 该节点自己 Requires B 的 done；B 的 done 桥回又等消费节点看到 Tee 关闭。
 func skipStreamFlow(t *testing.T, opts ...p.Option) (*p.Graph, p.Key[<-chan int], *atomic.Int32) {
 	t.Helper()
 	flow := skipStreamGraph(t, "flow", opts...)
@@ -35,18 +35,29 @@ func skipStreamFlow(t *testing.T, opts ...p.Option) (*p.Graph, p.Key[<-chan int]
 	A, B := skipStreamGraph(t, "A"), skipStreamGraph(t, "B")
 	skipStreamMust(t, flow.DeclareInput(p.NewPort(src)))
 	skipStreamMust(t, A.DeclareInput(p.NewPort(in), p.NewPort(trigger)))
-	skipStreamMust(t, B.DeclareInput(p.NewPort(in)))
+	skipStreamMust(t, B.DeclareInput(p.NewPort(in), p.NewPort(done)))
 	skipStreamMust(t, B.DeclareOutput(p.NewPort(done)))
-	for _, child := range []*p.Graph{A, B} {
-		skipStreamMust(t, p.Consume(child, "consume", "", in, func(*p.RunCtx, int) error { count.Add(1); return nil }))
-	}
-	skipStreamMust(t, B.Add(p.NewNode("earlyDone", "", nil, p.Provides(done), func(rc *p.RunCtx) error {
-		count.Add(1)
-		return p.Set(rc, done, true)
+	skipStreamMust(t, A.Add(p.NewNode("consume", "", p.Deps(p.Requires(in), p.Requires(trigger)), nil, func(rc *p.RunCtx) error {
+		ch, err := p.Get(rc, in)
+		if err != nil {
+			return err
+		}
+		for {
+			select {
+			case _, ok := <-ch:
+				if !ok {
+					return nil
+				}
+				count.Add(1)
+			case <-rc.Context().Done():
+				return rc.Context().Err()
+			}
+		}
 	})))
-	skipStreamMust(t, A.Add(p.NewNode("gate", "", p.Requires(trigger), nil, func(*p.RunCtx) error { count.Add(1); return nil })))
+	skipStreamMust(t, p.Consume(B, "consume", "", in, func(*p.RunCtx, int) error { count.Add(1); return nil }))
+	// 固定普通出口仍等 B 的整体完成才桥回；不额外声明第二个流读取者。
 	skipStreamMust(t, p.Tee(flow, "tee", "", src, p.Keys(a, b)))
-	skipStreamMust(t, p.Sub(flow, "B", "", []p.SubBind{p.In(b, in), p.Out(done, done)}, B))
+	skipStreamMust(t, p.Sub(flow, "B", "", []p.SubBind{p.In(b, in), p.Fix(done, true), p.Out(done, done)}, B))
 	skipStreamMust(t, p.Sub(flow, "A", "", []p.SubBind{p.In(a, in), p.In(done, trigger)}, A))
 	return flow, src, count
 }

@@ -57,7 +57,21 @@ func (g *Graph) problemsWithStreamsAtLocked(at string, chain mountChain, capacit
 	var out []error
 	out = append(out, g.problemsSourcesLocked()...)
 	out = append(out, g.problemsOutputsLocked()...)
-	out = append(out, g.problemsCycleLocked()...)
+	// 结构组合已在事件图中展开。把 Sub 的全部父 Requires 压成一个原子
+	// 节点，会误拒实时流反馈，或把可选且无人读取的 In 变成整个 child 的门。
+	// 没有挂载的简单图保留原 DAG 判据、顺序与报文。
+	expanded := false
+	if streams != nil {
+		for _, n := range g.nodes {
+			if n.child != nil {
+				expanded = true
+				break
+			}
+		}
+	}
+	if !expanded {
+		out = append(out, g.problemsCycleLocked()...)
+	}
 	out = append(out, streams[at]...)
 	out = append(out, g.problemsSubAtLocked(at, chain, capacity, streams)...)
 	if len(out) == 0 {

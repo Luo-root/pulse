@@ -62,12 +62,23 @@ type CheckpointCommit struct {
 	Node           NodeCheckpoint
 }
 
-// CheckpointChild 打开静态子图。Attempt 是当前最内层持久尝试，也是子图作用域；
-// 集成层须持久核对 Graph/Path 和实际绑定输入，返回这一作用域的完整节点成果。
+// CheckpointChild 打开静态子图。Attempt 是当前最内层持久尝试，也是子图作用域。
+// Inputs 包含 Fix/FixSkip 及此刻已到达的 In，后者仅保留旧桥接层的观察兼容性。
+// Bindings 完整描述 In 的稳定来源，允许入口仍 pending；其中列出的键不参与值指纹。
+// 集成层结合根输入指纹、静态拓扑/Version、固定值和绑定身份核验，不能等待全部 In。
 type CheckpointChild struct {
 	Site                   Site
 	Attempt, NodeID, Graph string
 	Inputs                 []CheckpointOutput
+	Bindings               []CheckpointBinding
+}
+
+// CheckpointBinding 描述一次静态 In 绑定；Source.Execution 仅用于观察，不参与持久身份。
+// Scope 是父图作用域，Attempt 是此次挂载的有效持久尝试，Parent/Child 是真实键声明。
+type CheckpointBinding struct {
+	Source         Site
+	Scope, Attempt string
+	Parent, Child  CheckpointKey
 }
 
 // CheckpointHooks 是显式检查点模式的同步可靠边界，四个函数都必须提供。
@@ -198,8 +209,10 @@ func (e *Execution) CheckpointInputs() []CheckpointOutput {
 		e.slotsMu.Lock()
 		s := e.slots[ref.name]
 		e.slotsMu.Unlock()
-		st, v := s.snapshot() // 输入在创建时就已到达，定义不能改写其类型或来源。
-		out = append(out, CheckpointOutput{Key: CheckpointKey{Name: ref.name, Type: ref.typ}, State: publicSlotState(st), Value: v})
+		st, v := s.snapshot()
+		if st != slotPending { // 子图 In 可已绑定但尚未到达；它由 CheckpointChild.Bindings 表达。
+			out = append(out, CheckpointOutput{Key: CheckpointKey{Name: ref.name, Type: ref.typ}, State: publicSlotState(st), Value: v})
+		}
 	}
 	return out
 }

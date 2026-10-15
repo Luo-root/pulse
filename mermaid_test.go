@@ -337,7 +337,7 @@ func TestMermaidRealExecutionChildStates(t *testing.T) {
 	if len(misplaced.classes) != 2 {
 		t.Fatalf("错挂的子执行不应给内部 work 着色：%v", misplaced.classes)
 	}
-	// 另一轮的一个挂载点全跳过：子执行尚未建出，静态子树仍完整而无子状态。
+	// 另一轮的全部入口跳过：仍创建 child，各内部节点按自己的输入门跳过。
 	var skipped Inputs
 	if err := Seed(&skipped, leftIn, "go"); err != nil {
 		t.Fatal(err)
@@ -346,13 +346,13 @@ func TestMermaidRealExecutionChildStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	s2 := mermaidRun(t, root, skipped).Snapshot()
-	if s2.Nodes[1].Child != nil {
-		t.Fatal("全跳过的挂载点不应创建子执行")
+	if s2.Nodes[1].Child == nil {
+		t.Fatal("跳过入口不应阻止创建子执行")
 	}
 	doc2 := parseMermaid(t, top.Mermaid(WithMermaidSnapshot(s2)))
-	work := doc2.vertex(t, "leaf @ right", "work")
-	if _, exists := doc2.classes[work]; exists || len(doc2.graphs) != 3 {
-		t.Fatal("未建子执行时只保留完整静态子树")
+	work := doc2.vertex(t, "leaf @ right", "work · skipped")
+	if doc2.classes[work] != "skipped" || len(doc2.graphs) != 3 {
+		t.Fatal("子节点应保留真实跳过状态和完整静态子树")
 	}
 }
 

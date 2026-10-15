@@ -460,10 +460,9 @@ func TestSubSkippedInputStaysSkipped(t *testing.T) {
 	if err := runOn(g); err != nil {
 		t.Fatalf("跳过是到达、不是失败：%v", err)
 	}
-	// 全部输入跳过时本节点不该进入 Run——静态形态下子图是**提前建好**的，所以这里
-	// 钉「这一步根本没碰过它」：没为它建过执行（跑了就一定有一对带 step1 的图级事件）。
-	if obs.pathSeen("step1") {
-		t.Fatal("全部输入跳过时本节点不该进入 Run，子图也就不该被建执行 / 启动")
+	// Sub 始终创建结构组合；跳过只由 inner 自己的输入门判定，整轮仍成功。
+	if !obs.pathSeen("step1") {
+		t.Fatal("全 skip 的父输入不能跳过整个 child，子执行仍应启动并完成")
 	}
 
 	// —— 混合：一条有值、一条跳过 ——
@@ -535,7 +534,7 @@ func TestSubSkippedInputStaysSkipped(t *testing.T) {
 	if bridged != "有值" {
 		t.Fatalf("桥回父侧的是 %q，want 有值", bridged)
 	}
-	// 对照组：这一侧确实建了子执行并跑起来（上面那句「没碰过它」才不是空话）。
+	// 混合输入也创建子执行；内部节点只把实际 skipped 的那条视作无值。
 	if !obs2.pathSeen("step1") {
 		t.Fatal("一条有值一条跳过时，子图该照常跑")
 	}

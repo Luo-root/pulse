@@ -2,7 +2,6 @@ package pulse
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync/atomic"
 )
@@ -68,20 +67,20 @@ func (e *Execution) runNode(n *Node) {
 		}
 		defer func() { rc.endAdvance(err) }()
 		emitWaiting()
-		skipped, err := awaitAll(rc, n.requires)
-		if err != nil {
-			return err
+		// Sub 是结构组合，父 Requires 只声明接线来源；每个子节点用自己的门
+		// 等待相应输入。无关晚输入或全 skip 都不能阻止其它子节点启动。
+		if !n.sub {
+			skipped, err := awaitAll(rc, n.requires)
+			if err != nil {
+				return err
+			}
+			// 到几个收几个：全输入都 skip 才跳过；源节点照常执行。
+			if len(n.requires) > 0 && len(skipped) == len(n.requires) {
+				return skipErr(skipped...)
+			}
 		}
 		if rc.ctx.Err() != nil {
 			return rc.ctx.Err()
-		}
-		// 到几个收几个：**只要有一条输入真的到了值**，就带着到了的那些进入
-		// Run；一条值都没到才轮到本节点自己跳过。判据是「有没有值」，不是
-		// 「有没有跳过」——上游某一路没有值，不该让手里还有数据的下游跟着停，
-		// 也不该让已经到达的值作废。一条 Requires 都没有的源节点不适用此
-		// 判据，照常执行。
-		if len(n.requires) > 0 && len(skipped) == len(n.requires) {
-			return skipErr(skipped...)
 		}
 		// 挂子图那一步**不吃名额**：它整段（取值 + 子图 + 桥回）都在等子图跑完，
 		// 占着名额就等于把父侧额度锁在「等」上——名额共享之后那就是死锁
@@ -201,7 +200,7 @@ func (l *limiter) capacity() int {
 	return cap(l.sem)
 }
 
-// runStaticSub 是挂子图那一步的运行体：取值 → 建一份子执行 → 跑 → 桥回。
+// runStaticSub 是挂子图那一步的运行体：绑定来源 → 建一份子执行 → 跑 → 桥回普通值。
 //
 // **每个挂载位置一份子执行**：子图是**定义**，挂在这里的这一次运行要一份自己的
 // ctx / 槽位 / 状态（`newChildExecution`）。于是同一张子图挂在两处时两处都能跑，
@@ -216,9 +215,25 @@ func (l *limiter) capacity() int {
 //   - **转发取消的那条 goroutine**：子执行的 ctx 从父节点这一层的 ctx 派生，
 //     父侧取消天然传下去（实测过旧版本不转发时父图会跑满整段并报成功）。
 func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
-	// 1) 先取父侧的全部输入：跳过是**到达**，照跳（用 SkipSeed 表达）；其它错误
-	//    （取消、未声明）直接返回。`Fix` / `FixSkip` 那条不读父侧，直接写进这一次的输入。
+	// 实时端点无法随普通尝试回滚；在子执行创建前明确拒绝。
+	for _, bind := range binds {
+		ports := []keyRef{bind.child}
+		if bind.fix != nil {
+			ports = bind.fixKeys()
+		}
+		for _, port := range ports {
+			if rc.writes != nil && isLiveStreamType(port.typ) {
+				kind, name := "input", port.name
+				if !bind.intoChild() {
+					kind, name = "output", bind.parent.name
+				}
+				return fmt.Errorf("pulse: Sub %q: live stream %s %q cannot run inside a per-attempt write set", id, kind, name)
+			}
+		}
+	}
+	// In 绑定真实父槽，允许 pending；Fix / FixSkip 仍是本挂载这次执行的输入。
 	var in Inputs
+	bound := make(map[keyRef]*slot)
 	for _, b := range binds {
 		if b.fix != nil {
 			if b.fix.bad != nil {
@@ -235,13 +250,7 @@ func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 		if !b.in {
 			continue
 		}
-		v, skip, err := readParentInput(rc, b)
-		if err != nil {
-			return err
-		}
-		if err := in.setArrived(b.child, v, skip); err != nil {
-			return fmt.Errorf("pulse: Sub %q: %w", id, err)
-		}
+		bound[b.child] = rc.exec.slotOf(b.parent)
 	}
 
 	// 2) 为这个挂载位置建一份子执行。父节点这一层的 ctx 是它的取消域：父侧被取消
@@ -249,14 +258,27 @@ func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 	//
 	//    这一步还会判子图那侧的启动条件（每条被 `Requires` 的进口都要有交代）：
 	//    父图没绑、子图里也没人产出的进口在这里报，而不是让子图跑起来之后挂死。
-	sub, err := child.newChildExecution(rc.exec, rc.Context(), rc.node.id, in)
+	sub, err := child.newChildExecution(rc.exec, rc.Context(), rc.node.id, in, bound)
 	if err != nil {
 		return fmt.Errorf("pulse: Sub %q: %w", id, err)
 	}
+	defer sub.Cancel()
 	rc.exec.recordChild(rc.node, sub)
 	if err := rc.prepareChildCheckpoint(sub); err != nil {
-		sub.Cancel()
 		return err
+	}
+
+	// 实时出口先把父侧稳定句柄接到子槽；不读取消息，也不等待 child.Wait。
+	for _, b := range binds {
+		if b.intoChild() || !isLiveStreamType(b.child.typ) {
+			continue
+		}
+		if rc.writes != nil {
+			continue // 守卫只放行了确定缺失的流出口，仍随尝试暂存 Skip，不安装永久别名。
+		}
+		if err := rc.exec.slotOf(b.parent).bindTo(sub.slotOf(b.child)); err != nil {
+			return fmt.Errorf("pulse: Sub %q: bind live output %q: %w", id, b.parent.name, err)
+		}
 	}
 
 	// 3) 跑子执行：Start + Wait。失败原样冒泡（首错就是子图的首错）。
@@ -271,19 +293,6 @@ func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 	return bridgeOutputs(rc, id, binds, sub)
 }
 
-// readParentInput 取父侧一条绑定的输入：**跳过是到达**，照跳种（skip=true）；
-// 其它错误（取消、未声明）原样返回。
-func readParentInput(rc *RunCtx, b SubBind) (any, bool, error) {
-	v, err := b.pull(rc)
-	if err != nil {
-		if errors.Is(err, ErrSkipped) {
-			return nil, true, nil
-		}
-		return nil, false, err
-	}
-	return v, false, nil
-}
-
 // bridgeOutputs 把子执行跑完之后的结果桥回父侧：就绪 → `Set`，跳过 → `Skip`；
 // **全部**输出都以跳过收尾 → 这一步以节点级跳过收尾（`NoValue()`，未发布的输出由引擎自动跳过）。
 //
@@ -296,7 +305,16 @@ func bridgeOutputs(rc *RunCtx, id string, binds []SubBind, sub *Execution) error
 			continue // `In` 与 `Fix` / `FixSkip` 都是「往子图送」，不是输出
 		}
 		hasOut = true
-		st, _ := sub.slotOf(b.child).snapshot()
+		s := sub.slotOf(b.child)
+		st, _ := s.snapshot()
+		if st == slotPending {
+			// 无节点的透传 child 可以先完成，而所绑定的来源仍在运行。
+			// Wait 的清理已取消 child.ctx，故这里用挂载节点的取消域等真实来源。
+			if _, err := s.wait(rc.Context()); err != nil && !isSkipped(err) {
+				return err
+			}
+			st, _ = s.snapshot()
+		}
 		switch st {
 		case slotReady:
 			allSkipped = false
@@ -312,6 +330,14 @@ func bridgeOutputs(rc *RunCtx, id string, binds []SubBind, sub *Execution) error
 	for _, b := range binds {
 		if b.intoChild() {
 			continue
+		}
+		if isLiveStreamType(b.child.typ) {
+			if rc.writes != nil {
+				if err := skipRef(rc, b.parent); err != nil {
+					return err
+				}
+			}
+			continue // 真正实时流已绑定；确定缺失的尝试输出则仅暂存 Skip。
 		}
 		st, v := sub.slotOf(b.child).snapshot()
 		if st == slotSkipped {

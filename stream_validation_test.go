@@ -415,9 +415,9 @@ func TestStreamSubCountsHandwrittenReader(t *testing.T) {
 	streamTestReject(t, g, Inputs{}, "needs 3 slots", "sub/manual")
 }
 
-// 对应公开 API 复现：B 的 done 在内部提前 Set，但 Out 仍须等 B 的消费
-// 节点收尾。A 的 mount gate 等父 done；Tee 又要 A 开始消费才能结束发送。
-func streamTestCompletion(t *testing.T, gated, nested, pass bool, buf int, aFirst bool) (*Graph, *streamTestValues) {
+// B 的 done 在内部提前 Set，但普通 Out 仍须等 B 的消费节点收尾。
+// A 的无关触发入口不妨碍流消费者；只有消费者自己 Requires(done) 才形成真环。
+func streamTestCompletion(t *testing.T, gated, nested, pass bool, buf int, aFirst bool, readerGate ...bool) (*Graph, *streamTestValues) {
 	t.Helper()
 	g := streamTestGraph(t, "completion-unlimited")
 	values := &streamTestValues{}
@@ -443,6 +443,24 @@ func streamTestCompletion(t *testing.T, gated, nested, pass bool, buf int, aFirs
 	streamTestMust(t, A.DeclareInput(NewPort(ain)))
 	if pass {
 		streamTestMust(t, A.DeclareOutput(NewPort(ain)))
+	} else if len(readerGate) != 0 && readerGate[0] {
+		streamTestMust(t, A.Add(NewNode("consumeA", "", Deps(Requires(ain), Requires(trigger)), nil, func(rc *RunCtx) error {
+			ch, err := Get(rc, ain)
+			if err != nil {
+				return err
+			}
+			for {
+				select {
+				case <-rc.Context().Done():
+					return rc.Context().Err()
+				case value, ok := <-ch:
+					if !ok {
+						return nil
+					}
+					values.add("a", value)
+				}
+			}
+		})))
 	} else {
 		streamTestConsume(t, A, "consumeA", ain, values, "a")
 	}
@@ -489,7 +507,7 @@ func streamTestCompletion(t *testing.T, gated, nested, pass bool, buf int, aFirs
 	return g, values
 }
 
-func TestStreamLifecycleRejectsCompletionGate(t *testing.T) {
+func TestStreamLifecycleUnrelatedCompletionInputDoesNotGateChild(t *testing.T) {
 	for _, c := range []struct {
 		name         string
 		nested, pass bool
@@ -505,15 +523,9 @@ func TestStreamLifecycleRejectsCompletionGate(t *testing.T) {
 		{name: "nested-pass-through", nested: true, pass: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			g, _ := streamTestCompletion(t, true, c.nested, c.pass, c.buf, c.aFirst)
-			// 普通 Requires/Provides DAG 没有环；必须由关闭/完成关系拒绝。
-			g.mu.Lock()
-			ordinary := g.problemsCycleLocked()
-			g.mu.Unlock()
-			if len(ordinary) != 0 {
-				t.Fatalf("fixture has an ordinary dependency cycle: %v", ordinary)
-			}
-			streamTestReject(t, g, Inputs{}, "stream lifecycle cycle", "close", "B", "A", "child Wait", "input gate")
+			g, values := streamTestCompletion(t, true, c.nested, c.pass, c.buf, c.aFirst)
+			streamTestRun(t, g)
+			values.full(t, 20, "a", "b")
 		})
 	}
 }
@@ -528,7 +540,7 @@ func TestStreamLifecycleLegalTeeWithoutGate(t *testing.T) {
 	}
 }
 
-func TestStreamLifecycleRejectsChildStreamExport(t *testing.T) {
+func TestStreamLifecycleLiveChildStreamExport(t *testing.T) {
 	for _, buf := range []int{0, 64} {
 		t.Run(fmt.Sprintf("buffer-%d", buf), func(t *testing.T) {
 			g := streamTestGraph(t, "export-parent")
@@ -536,25 +548,12 @@ func TestStreamLifecycleRejectsChildStreamExport(t *testing.T) {
 			inside, outside := NewKey[<-chan int]("inside"), NewKey[<-chan int]("outside")
 			streamTestProduce(t, child, "produceInside", inside, 20, buf)
 			streamTestMust(t, child.DeclareOutput(NewPort(inside)))
-			// 未挂载的子定义暂时缺真实读取者，不单独 Validate；允许 Sub
-			// 先挂上，整树校验才知道最终读取者在父层且桥回要等子图完成。
+			// 整树校验识别父层真实读取者，child.Start 复用这一挂载环境。
 			streamTestMust(t, Sub(g, "export", "", []SubBind{Out(inside, outside)}, child))
-			streamTestConsume(t, g, "consumeOutside", outside, &streamTestValues{}, "outside")
-			problems := g.Topology().Problems
-			if len(problems) != 1 || !strings.Contains(problems[0].Error(), "stream lifecycle cycle") {
-				t.Fatalf("missing export completion cycle: %v", problems)
-			}
-			if err := g.Validate(); err == nil || !strings.Contains(err.Error(), "child Wait") {
-				t.Fatalf("Validate must explain delayed bridge: %v", err)
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			defer cancel()
-			e, err := g.NewExecution(ctx, Inputs{})
-			streamTestMust(t, err)
-			defer e.Cancel()
-			if err := e.Start(); err == nil || err.Error() != problems[0].Error() {
-				t.Fatalf("Start = %v; want %v", err, problems[0])
-			}
+			values := &streamTestValues{}
+			streamTestConsume(t, g, "consumeOutside", outside, values, "outside")
+			streamTestRun(t, g)
+			values.full(t, 20, "outside")
 		})
 	}
 }
@@ -619,7 +618,7 @@ func TestStreamLifecyclePartialInputInterface(t *testing.T) {
 }
 
 func TestStreamLifecycleDiagnosticsAreOnePerCycle(t *testing.T) {
-	g, _ := streamTestCompletion(t, true, true, false, 0, false)
+	g, _ := streamTestCompletion(t, true, true, false, 0, false, true)
 	problems := g.Topology().Problems
 	if len(problems) != 1 {
 		t.Fatalf("one wait SCC must produce one diagnostic: %v", problems)
@@ -798,7 +797,7 @@ func TestStreamSkipWorkBindingsLinear(t *testing.T) {
 	}
 }
 
-func TestStreamSkipWorkAncestorSkipsEachBodyOnce(t *testing.T) {
+func TestStreamSkipWorkSubKeepsItsOwnInputGates(t *testing.T) {
 	root, middle, leaf := streamSkipWorkGraph(t, "root"), streamSkipWorkGraph(t, "middle"), streamSkipWorkGraph(t, "leaf")
 	trigger, fixed := NewKey[bool]("trigger"), NewKey[bool]("fixed")
 	streamSkipWorkMust(t, root.DeclareInput(NewPort(trigger)))
@@ -816,16 +815,16 @@ func TestStreamSkipWorkAncestorSkipsEachBodyOnce(t *testing.T) {
 	tree := streamSkipWorkTree(root)
 	work := tree.propagateSkips(map[string]bool{trigger.Name(): true})
 	streamSkipWorkBound(t, tree, work)
-	if work.mounts != len(tree.nodes)-1 || work.provides != 0 {
-		t.Fatalf("ancestor skip did not visit each descendant once without inventing arrival: %+v", work)
+	if work.mounts != 0 || work.provides != 16*128 {
+		t.Fatalf("Sub must propagate bindings and let each ordinary node decide its own skip: %+v", work)
 	}
 	for _, n := range tree.nodes {
-		if !n.bodySkipped {
-			t.Fatalf("ancestor skip did not reach %q", n.at)
+		if n.bodySkipped == n.def.sub {
+			t.Fatalf("node %q skipped=%t; structural Sub must start, ordinary all-skip node must skip", n.at, n.bodySkipped)
 		}
 		for _, ref := range n.def.provides {
-			if n.site.keys[ref.name].skipped {
-				t.Fatalf("uncreated child published output %q", ref.name)
+			if !n.site.keys[ref.name].skipped {
+				t.Fatalf("skipped child node did not settle output %q", ref.name)
 			}
 		}
 	}

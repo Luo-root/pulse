@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 )
@@ -124,6 +125,9 @@ func (e *Execution) checkCheckpointInputsLocked() error {
 		s := e.slots[ref.name]
 		e.slotsMu.Unlock()
 		st, value := s.snapshot()
+		if st == slotPending { // 合法 In 绑定尚未到达，由稳定 Bindings 表达。
+			continue
+		}
 		if err := checkCheckpointOutput(CheckpointOutput{Key: CheckpointKey{Name: ref.name, Type: ref.typ}, State: publicSlotState(st), Value: value}); err != nil {
 			return fmt.Errorf("pulse: checkpoint input: %w", err)
 		}
@@ -244,8 +248,10 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 		return err
 	}
 	// 切面即使短路业务体，成功检查点也等声明依赖到达，保证恢复集合依赖闭合。
-	if _, werr := awaitAll(rc, n.requires); werr != nil {
-		return werr
+	if !n.sub {
+		if _, werr := awaitAll(rc, n.requires); werr != nil {
+			return werr
+		}
 	}
 	e.settleUnwritten(n, rc)
 	r := NodeCheckpoint{NodeID: n.id, Reason: finishReason(err), Outputs: make([]CheckpointOutput, 0, len(n.provides))}
@@ -281,10 +287,34 @@ func (rc *RunCtx) prepareChildCheckpoint(sub *Execution) error {
 	c := *rc.exec.checkpoint
 	c.scope = rc.checkpointAttempt.Scope
 	sub.checkpoint = &c
+	request := CheckpointChild{Site: sub.site, Attempt: c.scope, NodeID: rc.node.id, Graph: sub.site.Graph}
+	for _, bind := range rc.node.binds {
+		if bind.fix != nil {
+			for _, ref := range bind.fixKeys() {
+				entry := bind.fix.in.entries[ref.name]
+				state := slotReady
+				if entry.skip {
+					state = slotSkipped
+				}
+				output := CheckpointOutput{Key: CheckpointKey{Name: ref.name, Type: ref.typ}, State: publicSlotState(state), Value: entry.value}
+				if err := checkCheckpointOutput(output); err != nil {
+					return rc.exec.stopCheckpoint("child fixed input", err)
+				}
+				request.Inputs = append(request.Inputs, output)
+			}
+		} else if bind.in {
+			request.Bindings = append(request.Bindings, CheckpointBinding{Source: rc.exec.site,
+				Scope: rc.exec.checkpoint.scope, Attempt: c.scope, Parent: CheckpointKey{Name: bind.parent.name, Type: bind.parent.typ}, Child: CheckpointKey{Name: bind.child.name, Type: bind.child.typ}})
+			if state, value := rc.readTarget(bind.parent).snapshot(); state != slotPending {
+				request.Inputs = append(request.Inputs, CheckpointOutput{Key: CheckpointKey{Name: bind.child.name, Type: bind.child.typ}, State: publicSlotState(state), Value: value})
+			}
+		}
+	}
+	sort.Slice(request.Inputs, func(i, j int) bool { return request.Inputs[i].Key.Name < request.Inputs[j].Key.Name })
 	var records []NodeCheckpoint
 	if err := rc.exec.callCheckpoint("open child", func() error {
 		var err error
-		records, err = c.hooks.OpenChild(rc.ctx, CheckpointChild{Site: sub.site, Attempt: c.scope, NodeID: rc.node.id, Graph: sub.site.Graph, Inputs: sub.CheckpointInputs()})
+		records, err = c.hooks.OpenChild(rc.ctx, request)
 		return err
 	}); err != nil {
 		return err

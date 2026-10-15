@@ -2,7 +2,6 @@ package pulse
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 )
 
@@ -31,7 +30,7 @@ type streamNode struct {
 	at          string
 	site        *streamSite
 	child       *streamSite
-	bodySkipped bool // 全输入确定 skip，或挂载它的祖先不会进入 Sub body
+	bodySkipped bool // 普通节点的全输入确定 skip；结构 Sub 始终可进入
 }
 
 type streamKey struct {
@@ -59,7 +58,7 @@ type streamGroup struct {
 // 来源 → 出口 → 普通依赖环 → 流式 → 子树的既有顺序。根 capacity 已解析
 // ExecOption > 定义声明；子层有声明就新建池，否则继承同一池（不能按数值合并）。
 func (g *Graph) problemsStreamLocked(at string, chain mountChain, capacity int, known ...streamKnownInputs) map[string][]error {
-	if !g.hasStreamsLocked(chain) {
+	if !g.needsWaitTreeLocked() {
 		return nil
 	}
 	t := &streamTree{}
@@ -80,23 +79,23 @@ func (g *Graph) problemsStreamLocked(at string, chain mountChain, capacity int, 
 	return out
 }
 
-// 没有已知流糖就沿用普通检查，不为大量未使用端口建流模型。仍逐层取锁，
-// 判定不承诺跨层原子快照；Validate / Start 的 assemblyMu 保证其版本一致。
-func (g *Graph) hasStreamsLocked(chain mountChain) bool {
+// 没有流声明且没有 Sub 的普通图沿用原 DAG 快路；结构 Sub 的实际输入依赖
+// 即便都是普通值也必须展开（可选、未读取的 In 不是整个 child 的启动门）。
+// 不复制未使用端口；Validate / Start 的 assemblyMu 保证整个检查版本一致。
+func (g *Graph) needsWaitTreeLocked() bool {
 	for _, n := range g.nodes {
-		if n.streamKind != "" {
+		if n.child != nil || n.streamKind != "" {
 			return true
 		}
-	}
-	for _, n := range g.nodes {
-		if n.child == nil || chain.has(n.child) {
-			continue
+		for _, ref := range n.requires {
+			if isLiveStreamType(ref.typ) {
+				return true
+			}
 		}
-		n.child.mu.Lock()
-		has := n.child.hasStreamsLocked(chain.push(n.child))
-		n.child.mu.Unlock()
-		if has {
-			return true
+		for _, ref := range n.provides {
+			if isLiveStreamType(ref.typ) {
+				return true
+			}
 		}
 	}
 	return false
@@ -168,7 +167,7 @@ func (t *streamTree) key(s *streamSite, ref keyRef) *streamKey {
 }
 
 func streamChannel(k *streamKey) bool {
-	return k != nil && k.ref.typ != nil && k.ref.typ.Kind() == reflect.Chan
+	return k != nil && isLiveStreamType(k.ref.typ)
 }
 
 func (k *streamKey) root() *streamKey {
@@ -189,7 +188,11 @@ func (t *streamTree) connectAliases() {
 			}
 			p, c := n.site.keys[b.parent.name], n.child.keys[b.child.name]
 			if streamChannel(p) && streamChannel(c) && p.ref.typ == c.ref.typ {
-				c.root().parent = p.root()
+				// 透传和多层出口可能已经属于同组，不能给并查集制造自引用。
+				pr, cr := p.root(), c.root()
+				if pr != cr {
+					cr.parent = pr
+				}
 			}
 		}
 	}
@@ -206,7 +209,7 @@ func (t *streamTree) connectAliases() {
 			t.groups = append(t.groups, gr)
 		}
 		k.group = gr
-		if w := k.writer; w != nil && streamSender(w) {
+		if w := k.writer; w != nil && streamSender(w) && w.def.streamKind != "" {
 			gr.source, gr.key, gr.known = k, k, true
 		}
 	}
@@ -239,7 +242,10 @@ func (t *streamTree) collectReaders() {
 			if gr == nil || !gr.known || seen[gr] {
 				continue
 			}
-			seen[gr], live = true, true
+			seen[gr] = true
+			// 原生 channel 糖整段持额，保留并发保护；受管端点的消息等待由
+			// 运行期归还名额，不能把它与原生 channel 混成同一套保守计数。
+			live = true
 			gr.readers = append(gr.readers, n)
 		}
 		if live {
@@ -263,7 +269,10 @@ func (t *streamTree) problemsSlots(out map[string][]error) {
 
 func (t *streamTree) problemsReaders(out map[string][]error) {
 	for _, gr := range t.groups {
-		if !gr.known || (gr.source != nil && gr.source.writer.bodySkipped) {
+		if !gr.known {
+			continue
+		}
+		if gr.source != nil && gr.source.writer.bodySkipped {
 			continue
 		}
 		if len(gr.readers) == 0 && gr.source != nil {
@@ -358,8 +367,10 @@ func (t *streamTree) propagateSkips(rootSkipped map[string]bool) streamSkipWork 
 		remaining[n] = len(n.def.requires)
 		for _, ref := range n.def.requires {
 			work.requires++
-			k := n.site.keys[ref.name]
-			readers[k] = append(readers[k], n)
+			if !n.def.sub {
+				k := n.site.keys[ref.name]
+				readers[k] = append(readers[k], n)
+			}
 		}
 		if n.child == nil {
 			continue
@@ -408,22 +419,14 @@ func (t *streamTree) propagateSkips(rootSkipped map[string]bool) streamSkipWork 
 				markBody(n)
 			}
 		}
-		// 先传递 body 不进入的事实，再判断桥接；祖先跳过意味着根本不创建
-		// child execution，不为其内部节点凭空推导一次输出到达。
+		// Sub 不设整体输入门；只传播真实普通节点按自己 Requires 得到的 skip。
 		for ; bodyAt < len(bodies); bodyAt++ {
 			n := bodies[bodyAt]
 			work.nodes++
-			ancestorSkipped := n.site.mount != nil && n.site.mount.bodySkipped
-			if remaining[n] == 0 && len(n.def.requires) != 0 && !ancestorSkipped && !n.site.hasAspects && len(n.def.aspects) == 0 {
+			if remaining[n] == 0 && len(n.def.requires) != 0 && !n.site.hasAspects && len(n.def.aspects) == 0 {
 				for _, ref := range n.def.provides {
 					work.provides++
 					markKey(n.site.keys[ref.name])
-				}
-			}
-			if n.child != nil {
-				for _, child := range n.child.nodes {
-					work.mounts++
-					markBody(child)
 				}
 			}
 		}

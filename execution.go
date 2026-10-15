@@ -45,10 +45,13 @@ type Execution struct {
 
 	slots   map[string]*slot
 	slotsMu sync.Mutex
-	// seeded 是**创建这份执行时收下的输入键名**（含 `SkipSeed` 标成跳过的那几条）。
+	// seeded 是创建时收下的输入来源键名：Seed / SkipSeed，以及合法静态 In 的 pending 承诺。
 	// 它在创建那一刻一次写完、此后只读，`Start` 拿它按「就要封口的那张定义」再判一次
 	// 启动条件（见 checkStartInputsLocked）。
 	seeded map[string]struct{}
+	// mounted 的定义已由父执行在整树装配边界内检查并封口；不能把它从挂载环境
+	// 拆出来重判流读者，否则父侧真实消费者会在 child.Start 时凭空消失。
+	mounted bool
 
 	mu      sync.Mutex
 	started bool
@@ -93,7 +96,7 @@ func (g *Graph) NewExecution(ctx context.Context, in Inputs, opts ...ExecOption)
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return g.newExecution(ctx, "", "", nil, cfg, in, true)
+	return g.newExecution(ctx, "", "", nil, cfg, in, nil)
 }
 
 // newChildExecution 为挂载点建一份**子执行**：ctx 从父节点那一层的 ctx 派生
@@ -101,28 +104,29 @@ func (g *Graph) NewExecution(ctx context.Context, in Inputs, opts ...ExecOption)
 //
 // `parentObserver` / `parentLim` / `parentAspects` 是**父执行环境**的有效值：子图没声明
 // 什么就继承什么（切面切不切由子图自己的 `WithoutAspects` 决定）。
-func (g *Graph) newChildExecution(parent *Execution, ctx context.Context, nodeID string, in Inputs) (*Execution, error) {
+func (g *Graph) newChildExecution(parent *Execution, ctx context.Context, nodeID string, in Inputs, bound map[keyRef]*slot) (*Execution, error) {
 	path := nodeID
 	if parent.site.Path != "" {
 		path = parent.site.Path + "/" + nodeID
 	}
-	return g.newExecution(ctx, parent.site.Execution, path, parent, execConfig{}, in, false)
+	return g.newExecution(ctx, parent.site.Execution, path, parent, execConfig{}, in, bound)
 }
 
 // newExecution 是两条入口的共用本体。`parent` 为 nil 表示这是根执行（没有可继承的
 // 执行环境，也没有「被谁喂」这回事）。
-func (g *Graph) newExecution(ctx context.Context, parentID, path string, parent *Execution, cfg execConfig, in Inputs, root bool) (*Execution, error) {
+func (g *Graph) newExecution(ctx context.Context, parentID, path string, parent *Execution, cfg execConfig, in Inputs, bound map[keyRef]*slot) (*Execution, error) {
 	if g == nil {
 		return nil, fmt.Errorf("pulse: nil graph")
 	}
 	c, cancel := context.WithCancel(ctx)
 
 	e := &Execution{
-		graph:  g,
-		site:   Site{Graph: g.id, Execution: nextExecID(g.id, parentID, path), Path: path},
-		ctx:    c,
-		cancel: cancel,
-		slots:  make(map[string]*slot),
+		graph:   g,
+		site:    Site{Graph: g.id, Execution: nextExecID(g.id, parentID, path), Path: path},
+		ctx:     c,
+		cancel:  cancel,
+		slots:   make(map[string]*slot),
+		mounted: parent != nil,
 	}
 	if parent != nil {
 		e.observer = parent.observer
@@ -137,12 +141,19 @@ func (g *Graph) newExecution(ctx context.Context, parentID, path string, parent 
 
 	// 定义只读：拿一次锁把要用的东西读完（同一时刻别人正在 Add 的话，读到的是
 	// 「要么全是新的、要么全是旧的」——不会撕成两半）。
-	entries, err := g.prepareExecution(e, cfg, in)
+	entries, err := g.prepareExecution(e, cfg, in, bound)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	e.seeded = make(map[string]struct{}, len(entries))
+	e.seeded = make(map[string]struct{}, len(entries)+len(bound))
+	for ref, source := range bound {
+		if err := e.slotOf(ref).bindTo(source); err != nil {
+			cancel()
+			return nil, fmt.Errorf("pulse: input %s: %w", ref, err)
+		}
+		e.seeded[ref.name] = struct{}{}
+	}
 	for _, en := range entries {
 		e.seeded[en.ref.name] = struct{}{}
 		s := e.slotOf(en.ref)
@@ -168,7 +179,7 @@ func nextExecID(graphID, parentID, path string) string {
 
 // prepareExecution 在 `g.mu` 里做三件事：算有效配置、判这一次的输入、建槽位表。
 // 返回可以种进槽位的那批输入（已经按 key 名排序，报文才确定）。
-func (g *Graph) prepareExecution(e *Execution, cfg execConfig, in Inputs) ([]inputEntry, error) {
+func (g *Graph) prepareExecution(e *Execution, cfg execConfig, in Inputs, bound map[keyRef]*slot) ([]inputEntry, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -218,34 +229,57 @@ func (g *Graph) prepareExecution(e *Execution, cfg execConfig, in Inputs) ([]inp
 	entries := make([]inputEntry, 0, len(names))
 	for _, name := range names {
 		en := in.entries[name]
-		if err := g.keys.check(en.ref); err != nil {
+		if err := g.checkExecutionInputLocked(en.ref); err != nil {
 			return nil, err
-		}
-		// 「图内已有来源」这条**先判**，且与端口无关：一条键既有内部产出、又在
-		// 端口表里时，喂进来的值会抢先占住槽位、那个节点的 `Set` 被幂等首写静默
-		// 丢掉——「值不见了而没人报错」。声明成进口不改变「一个键一个来源」。
-		if src, provided := g.producer[name]; provided && src.kind == sourceNode {
-			return nil, fmt.Errorf("pulse: input %s: this key is provided by %s inside graph %q, "+
-				"so a value fed from outside would be silently ignored (a key has exactly one "+
-				"source)", en.ref, src, g.id)
-		}
-		if _, ok := g.inPorts[name]; !ok {
-			if _, ok := g.outPorts[name]; ok {
-				return nil, fmt.Errorf("pulse: input %s: this key is declared as an output, not an "+
-					"input: declare it with DeclareInput if it should also come from outside", en.ref)
-			}
-			return nil, fmt.Errorf("pulse: input %s: not a declared input of graph %q: "+
-				"declare it with DeclareInput before feeding it (an undeclared key would otherwise "+
-				"look like \"no source\" to Validate)", en.ref, g.id)
 		}
 		seeded[name] = struct{}{}
 		entries = append(entries, en)
 	}
 
+	// 静态 In 是来源承诺，可以尚未到达；端口、类型和双源仍用与 Seed 相同的判据。
+	refs := make([]keyRef, 0, len(bound))
+	for ref := range bound {
+		refs = append(refs, ref)
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].name < refs[j].name })
+	for _, ref := range refs {
+		if err := g.checkExecutionInputLocked(ref); err != nil {
+			return nil, err
+		}
+		if bound[ref] == nil {
+			return nil, fmt.Errorf("pulse: input %s: nil binding source", ref)
+		}
+		if _, duplicate := seeded[ref.name]; duplicate {
+			return nil, fmt.Errorf("pulse: input %s is supplied twice: %w", ref, ErrDuplicateSource)
+		}
+		seeded[ref.name] = struct{}{}
+	}
 	if err := g.missingInputErrorLocked(required, seeded); err != nil {
 		return nil, err
 	}
 	return entries, nil
+}
+
+// checkExecutionInputLocked 只核输入声明，不要求绑定来源已经到达。调用方持 g.mu。
+func (g *Graph) checkExecutionInputLocked(ref keyRef) error {
+	if err := g.keys.check(ref); err != nil {
+		return err
+	}
+	if src, provided := g.producer[ref.name]; provided && src.kind == sourceNode {
+		return fmt.Errorf("pulse: input %s: this key is provided by %s inside graph %q, "+
+			"so a value fed from outside would be silently ignored (a key has exactly one "+
+			"source)", ref, src, g.id)
+	}
+	if _, ok := g.inPorts[ref.name]; !ok {
+		if _, ok := g.outPorts[ref.name]; ok {
+			return fmt.Errorf("pulse: input %s: this key is declared as an output, not an "+
+				"input: declare it with DeclareInput if it should also come from outside", ref)
+		}
+		return fmt.Errorf("pulse: input %s: not a declared input of graph %q: "+
+			"declare it with DeclareInput before feeding it (an undeclared key would otherwise "+
+			"look like \"no source\" to Validate)", ref, g.id)
+	}
+	return nil
 }
 
 // requiredInputsLocked 是「这一次运行**必须交代**的进口」：被某个节点 `Requires`、图内没人
@@ -366,11 +400,17 @@ func (e *Execution) Start() error {
 	// 与 Validate 同一条边界，见 assemblyMu。
 	assemblyMu.Lock()
 	g.mu.Lock()
-	known := streamKnownInputs{skipped: e.streamInputSkips(), hasAspects: len(e.aspects) != 0}
-	if err := g.validateRunLocked(e.lim.capacity(), known); err != nil {
-		g.mu.Unlock()
-		assemblyMu.Unlock()
-		return err
+	known := streamKnownInputs{
+		skipped: e.streamInputSkips(), hasAspects: len(e.aspects) != 0,
+	}
+	// 子执行来自已通过整树检查并封口的挂载位置。流的父侧消费者和兄弟池都属于
+	// 那次检查的上下文，不能在这里把子树当作独立根重新判。每次运行的输入仍在下方核验。
+	if !e.mounted {
+		if err := g.validateRunLocked(e.lim.capacity(), known); err != nil {
+			g.mu.Unlock()
+			assemblyMu.Unlock()
+			return err
+		}
 	}
 	// 启动条件再判一眼（与创建那一刻同一份判据、同一句报文）：这份执行的输入是**创建时**
 	// 按当时那张定义收下的，而从那之后定义还长得进去——这一眼之后紧接着就是封口，于是
@@ -408,7 +448,7 @@ func (e *Execution) Start() error {
 	g.sealTreeLocked(mountChain{g})
 	nodes := append([]*Node(nil), g.nodes...)
 	e.started = true
-	e.wg.Add(len(nodes) + 1) // +1：started 那一发落地前，其他 goroutine 的 Wait 不该溜过去
+	e.wg.Add(len(nodes) + 1) // +1：started 那一发落地前，Wait 不该溜过去
 	e.mu.Unlock()
 	g.mu.Unlock()
 	assemblyMu.Unlock()
@@ -442,7 +482,7 @@ func (e *Execution) streamInputSkips() map[string]bool {
 	return skipped
 }
 
-// Wait 等待 Start 提交的节点全部终止，并释放这次运行的 ctx。
+// Wait 等待 Start 提交的全部节点终止，然后确定整轮终态并释放这次运行的 ctx。
 //
 // 返回前发出一次 `Observer.OnGraphFinished`（reason 取运行终态，err 即本次
 // 返回值）——在**全部**节点终止之后，所以它晚于本轮的全部节点事件。

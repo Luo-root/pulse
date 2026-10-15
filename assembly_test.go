@@ -39,9 +39,14 @@ func subContractReadyValue[T any](t *testing.T, value T) {
 				hooks := coreContractHooks(&commits)
 				hooks.OpenChild = func(_ context.Context, request CheckpointChild) ([]NodeCheckpoint, error) {
 					opened.Add(1)
-					if len(request.Inputs) != 1 || request.Inputs[0].State != SlotStateReady ||
-						request.Inputs[0].Key.Type != reflect.TypeFor[T]() || !reflect.DeepEqual(request.Inputs[0].Value, value) {
-						return nil, fmt.Errorf("child checkpoint inputs lost ready value: %+v", request.Inputs)
+					if len(request.Bindings) != 1 || request.Bindings[0].Parent.Name != p.Name() ||
+						request.Bindings[0].Child.Name != c.Name() || request.Bindings[0].Child.Type != reflect.TypeFor[T]() {
+						return nil, fmt.Errorf("child checkpoint lost stable input binding: %+v", request.Bindings)
+					}
+					// In 可以尚未到达；若已附带快照，ready nil 仍必须原样保留。
+					if len(request.Inputs) > 1 || (len(request.Inputs) == 1 && (request.Inputs[0].State != SlotStateReady ||
+						request.Inputs[0].Key.Type != reflect.TypeFor[T]() || !reflect.DeepEqual(request.Inputs[0].Value, value))) {
+						return nil, fmt.Errorf("child checkpoint changed an arrived value: %+v", request.Inputs)
 					}
 					return nil, nil
 				}

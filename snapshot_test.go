@@ -331,7 +331,7 @@ func TestSnapshotSubChildIsLiveAndRetainsFailure(t *testing.T) {
 	}
 }
 
-func TestSnapshotSubNeverBuiltAndLastAttempt(t *testing.T) {
+func TestSnapshotSubCreatedAndLastAttempt(t *testing.T) {
 	t.Run("all-skipped", func(t *testing.T) {
 		inKey, childIn := NewKey[int]("snap.parent-in"), NewKey[int]("snap.child-in")
 		child := mustNew(t, context.Background(), "snap.unbuilt-child")
@@ -353,8 +353,12 @@ func TestSnapshotSubNeverBuiltAndLastAttempt(t *testing.T) {
 		if err := e.Wait(); err != nil {
 			t.Fatal(err)
 		}
-		if n := e.Snapshot().Nodes[0]; n.Status != NodeStatusSkipped || n.Child != nil || e.Snapshot().Graph.Status != GraphStatusCompleted {
-			t.Fatalf("没建子执行/正常跳过: %+v", n)
+		n := e.Snapshot().Nodes[0]
+		if n.Status != NodeStatusCompleted || n.Child == nil || e.Snapshot().Graph.Status != GraphStatusCompleted {
+			t.Fatalf("挂载点完成并保留子执行: %+v", n)
+		}
+		if inner := n.Child.Snapshot().Nodes[0]; inner.Status != NodeStatusSkipped {
+			t.Fatalf("只有依赖缺值的内部节点跳过: %+v", inner)
 		}
 	})
 	t.Run("last-attempt", func(t *testing.T) {
