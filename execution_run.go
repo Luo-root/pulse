@@ -11,16 +11,21 @@ func (e *Execution) fail(err error) error {
 		return err
 	}
 	e.mu.Lock()
-	// 必须在本次 fail 自行 cancel 之前归因：独立 RPC 的 context 错误
-	// 不代表执行域已取消。把这个事实随错误锁存，供节点、图与快照共用。
-	if !isCheckpointFailure(err) && isCanceled(err) && e.ctx.Err() == nil {
-		err = &executionFailure{cause: err}
-	}
+	err = e.classifyFailure(err)
 	if e.err == nil {
 		e.err = err
 		e.cancel()
 	}
 	e.mu.Unlock()
+	return err
+}
+
+// classifyFailure 在向流读取者或可靠钩子传播前锁存归因。不能等 fail 自行
+// cancel 后才判断，也不能先发布裸 context cause 让下游先取消整张图。
+func (e *Execution) classifyFailure(err error) error {
+	if !isCheckpointFailure(err) && isCanceled(err) && e.ctx.Err() == nil {
+		return &executionFailure{cause: err}
+	}
 	return err
 }
 
@@ -120,7 +125,7 @@ func (e *Execution) runNode(n *Node) {
 	if e.checkpoint != nil {
 		err = e.runCheckpointChain(n, rc, chain)
 	} else {
-		err = chain(rc)
+		err = e.classifyFailure(chain(rc))
 	}
 	// 流归实际写端的完整链所有，必须在 Aspect / checkpoint 返回后终结；
 	// 子写端不能拖到祖先 Sub.Wait 才结束，否则下游无法把完成信号送回子图。

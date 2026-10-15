@@ -2,7 +2,6 @@ package pulse
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -737,7 +736,7 @@ func (s *managedStream[T]) checkpointFinish(err error) (CheckpointStreamFinish, 
 	defer s.mu.Unlock()
 	terminal := StreamCompleted
 	switch {
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case isCanceled(err):
 		terminal = StreamCanceled
 	case err != nil && !isSkipped(err):
 		terminal = StreamFailed

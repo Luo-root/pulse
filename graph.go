@@ -460,7 +460,7 @@ func isSkipped(err error) bool {
 // 锁存的 RPC 失败也不能因原始 cause 恰好含 context 错误而降格为 canceled。
 func isCanceled(err error) bool {
 	var failure *executionFailure
-	return !errors.As(err, &failure) && !isPanicFailure(err) &&
+	return !isCheckpointFailure(err) && !errors.As(err, &failure) && !isPanicFailure(err) &&
 		(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 }
 

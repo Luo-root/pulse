@@ -547,7 +547,7 @@ func (s *managedStream[T]) finish(err error) {
 	s.err = err
 	s.finished = true
 	switch {
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case isCanceled(err):
 		s.terminal = StreamCanceled
 	case err != nil:
 		s.terminal = StreamFailed
