@@ -54,13 +54,12 @@ func TestLifecycleTimeoutReleasesFinishedFork(t *testing.T) {
 func TestLifecycleTimeoutStillWaitsForInnerExit(t *testing.T) {
 	ctx := checkpointTestContext(t)
 	g := mustNew(t, ctx, "timeout-cooperation")
-	canceled, release := make(chan struct{}), make(chan struct{})
-	exited := false
+	canceled, release, exited := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	mustAdd(t, g, NewNode("n", "取消之后仍须等业务退出", nil, nil, func(rc *RunCtx) error {
+		defer close(exited)
 		<-rc.Context().Done()
 		close(canceled)
 		<-release
-		exited = true
 		return nil
 	}, Timeout(time.Millisecond)))
 	e, err := g.NewExecution(ctx, Inputs{})
@@ -83,13 +82,19 @@ func TestLifecycleTimeoutStillWaitsForInnerExit(t *testing.T) {
 	case err := <-finished:
 		close(release)
 		t.Fatalf("Wait returned before the canceled body exited: %v", err)
-	default:
+	case <-time.After(20 * time.Millisecond):
+		// 给超时调用方运行机会，不能用立即 default 掩盖提前返回的变异。
 	}
 	close(release)
 	select {
 	case err := <-finished:
-		if err == nil || !strings.Contains(err.Error(), "timeout") || !exited {
-			t.Fatalf("timeout completion err=%v exited=%v", err, exited)
+		if err == nil || !strings.Contains(err.Error(), "timeout") {
+			t.Fatalf("timeout completion err=%v", err)
+		}
+		select {
+		case <-exited:
+		default:
+			t.Fatal("Wait returned without the body's exit signal")
 		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
