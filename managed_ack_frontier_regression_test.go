@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -14,7 +15,7 @@ func TestManagedAckRestoredSparseFrontierAndSequenceBoundary(t *testing.T) {
 			_, stream, _, rc := managedTestEndpoint[int](t, 3)
 			// 巨大的已确认区间来自恢复记录，不应该逐个序号遍历空白。
 			stream.state.installCheckpointRecord(CheckpointStreamRecord{
-				Stream:       CheckpointStreamDescriptor{Terminal: StreamCompleted},
+				Stream:       CheckpointStreamDescriptor{Element: reflect.TypeFor[int](), Terminal: StreamCompleted},
 				LastSequence: last, AckedThrough: 0,
 				Pending: []CheckpointStreamMessage{{Sequence: 1, Value: 11}, {Sequence: last - 1, Value: 22}, {Sequence: last, Value: 33}},
 			})
