@@ -269,13 +269,15 @@ Flush / Err 的 panic 不会把已经交给 inner.Write 的记录计为 Dropped�
 | 原语 | 用途与边界 |
 |---|---|
 | `AppendDuration(dst, d)` | 追加带单位耗时；ns、µs、ms、s 按量级选，µs 一位小数，ms / s 两位；零值原语输出 `0ns`，内置缺耗时占位由版式另行处理 |
-| `AppendTextValue(dst, text)` | 对空字符串、空格、等号、引号和控制字符按需加 Go 字符串引号；空字符串为 `""`，不是缺值 |
+| `AppendTextValue(dst, text)` | 对空字符串、空白、等号、引号、不可打印字符和非法 UTF-8 按需加 Go 字符串引号；非 ASCII 判据与 slog.TextHandler 一致，也保守地为 U+FFFD 加引号；空字符串为 `""`，不是缺值 |
 | `AppendAttrs(dst, attrs)` | 按插入序追加 `k=v`，组内单空格分隔，无前导分隔符；空组输出零字节 |
 | `AppendAttrsExcept(dst, attrs, keys...)` | 同一编码规则，跳过已放进固定列的键；不存在的键无影响，全被跳过时输出零字节 |
 | `AppendPadding(dst, n)` | 追加 n 个空格；n <= 0 不追加 |
 | `DisplayWidth(text)` | 计算近似终端显示列数，配合 Padding；常见东亚字符按两列、组合与零宽字符按零列 |
 
 这些原语保证相应片段与内置版式逐字节一致。DisplayWidth 使用常见 Unicode 区段的近似表，罕用宽字符或 emoji 与实际终端可能存在宽度差异。
+
+非 ASCII 文本的引号修正会改变冻结编码面的输出字节，必须随 minor 发布；解析日志或比较固定输出的调用方应按[迁移说明](../site/reference/migration.md#文本日志的-unicode-与-utf-8-引号规则)更新预期。普通中文与可打印 emoji 保持原样。
 
 渲染器在 Sink 的内部锁内调用，必须避免回调该 Sink 的 Write / Flush / Err，也不应阻塞。`Get[T]` 的 ok 位用于区分缺属性与真实零值。Attrs 分隔符由宿主版式添加；使用 AppendAttrsExcept 时，按实际追加长度判定是否为空，不能仅看 Attrs.Len()。单列标量可复用字符串原语或 `strconv.AppendInt` / `AppendFloat(..., 'g', -1, 64)` / `AppendBool`，保持与属性段同形。
 
