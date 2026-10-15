@@ -38,8 +38,8 @@ type checkpointFailure struct {
 	mu      sync.Mutex
 	err     error
 	root    *Execution
-	streams map[CheckpointStreamID]any    // 恢复别名共用一个本地端点，属于本执行树。
-	values  map[*writeSet]map[string]bool // 完整节点帧中已随消息确认的普通键。
+	streams map[CheckpointStreamID]*checkpointStreamCache // 索引只用逻辑身份，Generation 由权威记录核验。
+	values  map[*writeSet]map[string]bool                 // 完整节点帧中已随消息确认的普通键。
 }
 
 func (e *Execution) checkpointErr() error {
@@ -134,25 +134,58 @@ func (e *Execution) checkCheckpointInputsLocked() error {
 
 // applyRestoreLocked 在全量验证以后灌入；输入不能占输出，且每条输出只有一个节点来源。
 // 调用方持装配锁、Graph.mu 和 Execution.mu，还未发任何事件或提交 goroutine。
-func (e *Execution) applyRestoreLocked() {
-	e.restored = make(map[*Node]NodeCheckpoint, len(e.restore))
-	nodes := make(map[string]*Node, len(e.graph.nodes))
-	for _, n := range e.graph.nodes {
-		nodes[n.id] = n
-	}
-	// 整批已预检：先合并同一来源的历史快照，再建唯一端点，避免记录顺序
-	// 决定使用过早的空终态或过旧的读取状态；真正终态仍须锁外 Open 认回。
+func (e *Execution) applyRestoreLocked() error {
+	// 本作用域已整批预检；跨作用域缓存也须先整批核验，失败不能安装任何槽位
+	// 或改变已有端点。树锁保护缓存和 Open 结果安装，不在这里调用可靠钩子。
+	f := e.checkpoint.failure
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	descriptors := make(map[CheckpointStreamID]CheckpointStreamDescriptor)
+	var order []CheckpointStreamID
 	for _, r := range e.restore {
 		for _, o := range r.Outputs {
 			if o.Stream != nil {
 				descriptor := *o.Stream
-				if previous, exists := descriptors[descriptor.ID]; exists {
+				logical := checkpointStreamLogicalID(descriptor.ID)
+				if previous, exists := descriptors[logical]; exists {
 					descriptor, _ = mergeCheckpointStreamReference(previous, descriptor)
+				} else {
+					order = append(order, logical)
 				}
-				descriptors[descriptor.ID] = descriptor
+				descriptors[logical] = descriptor
 			}
 		}
+	}
+	for _, logical := range order {
+		if cached := f.streams[logical]; cached != nil {
+			descriptor := descriptors[logical]
+			if cached.opened {
+				if err := checkCheckpointStreamReference(*cached.endpoint.pulseCheckpointDescriptor(), descriptor); err != nil {
+					return err
+				}
+			} else {
+				var err error
+				descriptors[logical], err = mergeCheckpointStreamConstraints(cached.reference, descriptor)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if len(order) != 0 && f.streams == nil {
+		f.streams = make(map[CheckpointStreamID]*checkpointStreamCache)
+	}
+	for _, logical := range order {
+		if cached := f.streams[logical]; cached == nil {
+			f.streams[logical] = &checkpointStreamCache{reference: descriptors[logical]}
+		} else if !cached.opened {
+			cached.reference = descriptors[logical]
+		}
+	}
+	e.restored = make(map[*Node]NodeCheckpoint, len(e.restore))
+	nodes := make(map[string]*Node, len(e.graph.nodes))
+	for _, n := range e.graph.nodes {
+		nodes[n.id] = n
 	}
 	for _, r := range e.restore {
 		e.restored[nodes[r.NodeID]] = r
@@ -161,25 +194,18 @@ func (e *Execution) applyRestoreLocked() {
 			if o.State == SlotStateSkipped {
 				_ = s.resolveSkip()
 			} else if o.Stream != nil {
-				// 只建本地端点；首次受管访问在锁外 Open，装回 completed 来源的尾部。
-				f := e.checkpoint.failure
-				f.mu.Lock()
-				if f.streams == nil {
-					f.streams = make(map[CheckpointStreamID]any)
-				}
-				endpoint := f.streams[o.Stream.ID]
-				if endpoint == nil {
+				cached := f.streams[checkpointStreamLogicalID(o.Stream.ID)]
+				if cached.endpoint == nil {
 					factory := reflect.Zero(o.Key.Type).Interface().(checkpointStreamFactory)
-					endpoint = factory.pulseRestoreCheckpoint(e, descriptors[o.Stream.ID])
-					f.streams[o.Stream.ID] = endpoint
+					cached.endpoint = factory.pulseRestoreCheckpoint(e, descriptors[checkpointStreamLogicalID(o.Stream.ID)], cached).(checkpointEndpoint)
 				}
-				f.mu.Unlock()
-				_ = s.resolveValue(endpoint)
+				_ = s.resolveValue(cached.endpoint)
 			} else {
 				_ = s.resolveValue(o.Value)
 			}
 		}
 	}
+	return nil
 }
 
 func (rc *RunCtx) openCheckpointAttempt(parent, boundary string, limit int) (CheckpointAttempt, error) {
