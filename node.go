@@ -133,6 +133,8 @@ type RunCtx struct {
 	streams *nodeStreams
 	// lease 是本节点实际业务额度，Fork 与协作 Timeout 共享；流等待可暂时让位。
 	lease *runLease
+	// host 的等待上下文只活到一次 Receive；确认仍归这份 Execution 的活跃读取义务。
+	host bool
 	// checkpointAttempt 是当前持久尝试，Fork 复制其视图；Retry 只在自己的层次换它。
 	checkpointAttempt CheckpointAttempt
 	aspectIndex       int

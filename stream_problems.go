@@ -2,6 +2,7 @@ package pulse
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -48,10 +49,13 @@ type streamPool struct {
 }
 
 type streamGroup struct {
-	key     *streamKey
-	source  *streamKey // Produce / Tee 的真实 channel 来源；每条出口独立
-	readers []*streamNode
-	known   bool
+	key      *streamKey
+	source   *streamKey // Produce / Tee 的真实 channel 来源；每条出口独立
+	readers  []*streamNode
+	known    bool
+	host     bool
+	outlet   bool     // 定义检查允许受管根出口稍后登记宿主；不算真实读者，Start 仍严查。
+	hostKeys []string // 同一实际流上的根出口名，按名字排序；两个别名订阅也算两个读者
 }
 
 // problemsStreamLocked 展开整个检查范围，再把诊断放回最小共同图层，保持
@@ -68,9 +72,23 @@ func (g *Graph) problemsStreamLocked(at string, chain mountChain, capacity int, 
 	if len(known) != 0 {
 		facts = known[0]
 	}
-	t.collectLocked(g, at, chain, pool, nil, facts.hasAspects)
+	root := t.collectLocked(g, at, chain, pool, nil, facts.hasAspects)
+	var hostOutlets []*streamKey
+	if len(known) == 0 {
+		// 定义尚无这轮宿主的注册事实，只接受声明出口的连接可能。
+		// 不把它算成一次订阅；Start 总会以本轮 known 重新严格核查。
+		for _, ref := range g.outPortOrder {
+			if isManagedStreamType(ref.typ) {
+				hostOutlets = append(hostOutlets, t.key(root, ref))
+			}
+		}
+	}
 	t.propagateSkips(facts.skipped)
 	t.connectAliases()
+	for _, outlet := range hostOutlets {
+		outlet.group.outlet = true
+	}
+	t.collectHostReaders(facts.hostReads)
 	t.collectReaders()
 	out := make(map[string][]error)
 	t.problemsSlots(out)
@@ -215,6 +233,25 @@ func (t *streamTree) connectAliases() {
 	}
 }
 
+// 宿主注册在 Start 前完成；沿真实别名组计数，不能把两个根出口当作两份广播。
+func (t *streamTree) collectHostReaders(reads map[string]bool) {
+	names := make([]string, 0, len(reads))
+	for name, registered := range reads {
+		if registered {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		k := t.sites[0].keys[name]
+		if k == nil || !isManagedStreamType(k.ref.typ) || k.group == nil {
+			continue // 公开注册入口已核方向和类型；这里不推测未声明的宿主消费。
+		}
+		k.group.host = true
+		k.group.hostKeys = append(k.group.hostKeys, name)
+	}
+}
+
 func streamSender(n *streamNode) bool {
 	if n.def.streamKind == "produce" || n.def.streamKind == "tee" {
 		return true
@@ -282,10 +319,23 @@ func (t *streamTree) problemsReaders(out map[string][]error) {
 		if !gr.known {
 			continue
 		}
+		if gr.host && len(gr.readers)+len(gr.hostKeys) > 1 {
+			ids := make([]string, 0, len(gr.readers)+len(gr.hostKeys))
+			for _, name := range gr.hostKeys {
+				ids = append(ids, fmt.Sprintf("host output %q", name))
+			}
+			for _, n := range gr.readers {
+				ids = append(ids, fmt.Sprintf("node %q", n.at))
+			}
+			out[t.sites[0].at] = append(out[t.sites[0].at], fmt.Errorf("pulse: stream output %q is read by %d readers (%s), "+
+				"so its values would be split between them: a host subscription and graph readers, or two subscribed outlet aliases, "+
+				"must use separate Tee outputs", gr.key.ref.name, len(ids), strings.Join(ids, ", ")))
+			continue
+		}
 		if gr.source != nil && gr.source.writer.bodySkipped {
 			continue
 		}
-		if len(gr.readers) == 0 && gr.source != nil {
+		if len(gr.readers) == 0 && !gr.host && !gr.outlet && gr.source != nil {
 			n := gr.source.writer
 			out[n.site.at] = append(out[n.site.at], fmt.Errorf("pulse: node %q provides %q but nothing consumes it: "+
 				"a stream output nobody reads blocks the sender forever", n.at, gr.source.ref.name))
@@ -342,6 +392,7 @@ func streamCommonPath(a, b string) string {
 type streamKnownInputs struct {
 	skipped    map[string]bool
 	hasAspects bool
+	hostReads  map[string]bool
 }
 
 // streamSkipWork 记录建索引和传播实际访问的声明数，供包内回归校验线性工作量。

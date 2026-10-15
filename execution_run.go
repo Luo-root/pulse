@@ -218,20 +218,35 @@ func (l *limiter) capacity() int {
 //   - **转发取消的那条 goroutine**：子执行的 ctx 从父节点这一层的 ctx 派生，
 //     父侧取消天然传下去（实测过旧版本不转发时父图会跑满整段并报成功）。
 func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
-	// 实时端点无法随普通尝试回滚；在子执行创建前明确拒绝。
-	for _, bind := range binds {
-		ports := []keyRef{bind.child}
-		if bind.fix != nil {
-			ports = bind.fixKeys()
+	// 外接流既不能撤回已经发布的出口，也不能倒带已经消费的入口。
+	// 仅可靠完整链的外帧使用独立增量协议，不能借它放行 Retry 的内层新帧。
+	var streamBoundary *subStreamBoundary
+	for _, b := range binds {
+		ports := []keyRef{b.child}
+		if b.fix != nil {
+			ports = b.fixKeys()
 		}
 		for _, port := range ports {
-			if rc.writes != nil && isLiveStreamType(port.typ) {
-				kind, name := "input", port.name
-				if !bind.intoChild() {
-					kind, name = "output", bind.parent.name
-				}
-				return fmt.Errorf("pulse: Sub %q: live stream %s %q cannot run inside a per-attempt write set", id, kind, name)
+			if rc.writes == nil || !isLiveStreamType(port.typ) {
+				continue
 			}
+			if streamBoundary == nil {
+				var err error
+				streamBoundary, err = child.subStreamBoundary(rc, binds)
+				if err != nil {
+					return err
+				}
+			}
+			if streamBoundary.absent(b, port) {
+				continue // 没有消息的正常缺失不需要倒带，未使用入口也没有流 I/O。
+			}
+			kind, name := "input", port.name
+			if !b.intoChild() {
+				kind, name = "output", b.parent.name
+			}
+			return fmt.Errorf("pulse: Sub %q: live stream %s %q cannot run inside a per-attempt write set: "+
+				"a Retry or another write-staging aspect cannot retract published messages or rewind an external stream; "+
+				"use message attempts, an explicit resumable source, or keep the whole finite stream inside the retried child", id, kind, name)
 		}
 	}
 	// In 绑定真实父槽，允许 pending；Fix / FixSkip 仍是本挂载这次执行的输入。

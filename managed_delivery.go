@@ -121,6 +121,9 @@ func (a *managedAck[T]) operationContextLocked() *RunCtx {
 		return nil
 	}
 	copy := *a.rc
+	if copy.host {
+		copy.ctx = copy.exec.ctx
+	}
 	// 显式确认与取消不自动确认是两件事；本地交付仍可由业务明确处置。
 	copy.ctx = context.WithoutCancel(copy.ctx)
 	return &copy

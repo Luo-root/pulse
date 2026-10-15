@@ -51,7 +51,8 @@ type Execution struct {
 	seeded map[string]struct{}
 	// mounted 的定义已由父执行在整树装配边界内检查并封口；不能把它从挂载环境
 	// 拆出来重判流读者，否则父侧真实消费者会在 child.Start 时凭空消失。
-	mounted bool
+	mounted     bool
+	hostReaders map[string]keyRef // 仅在 assemblyMu + graph.mu + e.mu 内登记根宿主读取者
 
 	mu      sync.Mutex
 	started bool
@@ -402,6 +403,7 @@ func (e *Execution) Start() error {
 	g.mu.Lock()
 	known := streamKnownInputs{
 		skipped: e.streamInputSkips(), hasAspects: len(e.aspects) != 0,
+		hostReads: e.hostStreamReads(),
 	}
 	// 子执行来自已通过整树检查并封口的挂载位置。流的父侧消费者和兄弟池都属于
 	// 那次检查的上下文，不能在这里把子树当作独立根重新判。每次运行的输入仍在下方核验。
@@ -416,6 +418,11 @@ func (e *Execution) Start() error {
 	// 按当时那张定义收下的，而从那之后定义还长得进去——这一眼之后紧接着就是封口，于是
 	// 「判过的定义」与「封上的定义」是同一个版本（见 checkStartInputsLocked）。
 	if err := g.checkStartInputsLocked(e.seeded); err != nil {
+		g.mu.Unlock()
+		assemblyMu.Unlock()
+		return err
+	}
+	if err := e.checkHostStreamInputsLocked(); err != nil {
 		g.mu.Unlock()
 		assemblyMu.Unlock()
 		return err
@@ -447,8 +454,13 @@ func (e *Execution) Start() error {
 	// 全部校验通过才封整棵树；临界区内不运行 Store/Codec 或宿主回调。
 	g.sealTreeLocked(mountChain{g})
 	nodes := append([]*Node(nil), g.nodes...)
+	hostReaders := make([]keyRef, 0, len(e.hostReaders))
+	for _, ref := range e.hostReaders {
+		hostReaders = append(hostReaders, ref)
+	}
 	e.started = true
-	e.wg.Add(len(nodes) + 1) // +1：started 那一发落地前，Wait 不该溜过去
+	// 宿主读取组的必需义务也属于执行终态；尾部未确认时不能提前成功并关闭持久会话。
+	e.wg.Add(len(nodes) + len(hostReaders) + 1) // +1：started 那一发落地前，Wait 不该溜过去
 	e.mu.Unlock()
 	g.mu.Unlock()
 	assemblyMu.Unlock()
@@ -456,6 +468,9 @@ func (e *Execution) Start() error {
 	e.notify(func(o Observer) { o.OnGraphStarted(e.site) })
 	e.wg.Done()
 
+	for _, ref := range hostReaders {
+		go e.runHostStreamReader(ref) // 只等待义务终结，不消费消息，也不产生节点事件。
+	}
 	for _, n := range nodes {
 		n := n
 		go e.runNode(n)
@@ -482,7 +497,8 @@ func (e *Execution) streamInputSkips() map[string]bool {
 	return skipped
 }
 
-// Wait 等待 Start 提交的全部节点终止，然后确定整轮终态并释放这次运行的 ctx。
+// Wait 等待 Start 提交的节点全部终止、已登记的必需宿主读取组完成或显式停止，
+// 然后确定整轮终态并释放这次运行的 ctx。
 //
 // 返回前发出一次 `Observer.OnGraphFinished`（reason 取运行终态，err 即本次
 // 返回值）——在**全部**节点终止之后，所以它晚于本轮的全部节点事件。
