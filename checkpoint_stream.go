@@ -371,10 +371,6 @@ func checkCheckpointStreamRecord(request CheckpointStreamOpen, record Checkpoint
 		(len(record.Pending) != 0 && record.Pending[0].Sequence != record.AckedThrough+1)) {
 		return fmt.Errorf("stream Open returned a non-contiguous confirmation frontier")
 	}
-	if !descriptor.Stopped && ((len(record.Pending) == 0 && record.AckedThrough != record.LastSequence) ||
-		(len(record.Pending) != 0 && record.Pending[0].Sequence != record.AckedThrough+1)) {
-		return fmt.Errorf("stream Open returned a confirmation frontier inconsistent with its pending messages")
-	}
 	previous := record.AckedThrough
 	for _, message := range record.Pending {
 		if message.Sequence <= previous || message.Sequence > record.LastSequence {
