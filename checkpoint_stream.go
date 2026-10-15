@@ -790,20 +790,7 @@ func checkpointChainResult(rc *RunCtx, err error) error {
 			}
 		}
 	}
-	if !rc.node.sub {
-		seen := make(map[managedReaderLifecycle]bool)
-		for _, ref := range rc.node.requires {
-			state, value := rc.exec.slotOf(ref).snapshot()
-			reader, ok := value.(managedReaderLifecycle)
-			if state == slotReady && ok && !seen[reader] {
-				seen[reader] = true
-				if cause := reader.pulseReaderFinished(rc, err); cause != nil && (err == nil || isSkipped(err)) {
-					err = cause
-				}
-			}
-		}
-	}
-	return err
+	return rc.finishStreamReaders(err)
 }
 
 // checkpointMessage 是 HandleMessage 一次持久尝试的状态视图，不与节点 Retry 共用预算。
