@@ -591,7 +591,7 @@ func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 // 退出可能发生在确认之后，此时消息已经接纳，按显式 Stop 清理而不伪装发送失败。
 func (w *StreamWriter[T]) sendCheckpointValue(value T, cursor any) error {
 	if err := checkManagedRunCtx(w.rc, "Send"); err != nil {
-		return w.state.recordFailure(err)
+		return w.recordFailure(err)
 	}
 	s := w.state
 	if err := checkCheckpointPayload(reflect.TypeFor[T](), value); err != nil {
@@ -602,23 +602,23 @@ func (w *StreamWriter[T]) sendCheckpointValue(value T, cursor any) error {
 	}
 	for {
 		if err := w.rc.Context().Err(); err != nil {
-			return s.recordFailure(err)
+			return w.recordFailure(err)
 		}
 		s.mu.Lock()
 		changed, err := s.checkpointSendReadyLocked()
 		s.mu.Unlock()
 		if err != nil {
-			return s.recordFailure(err)
+			return w.recordFailure(err)
 		}
 		if changed != nil {
 			if err := waitMessageCapacity(w.rc, changed); err != nil {
-				return s.recordFailure(err)
+				return w.recordFailure(err)
 			}
 			continue
 		}
 		// 等待操作门会让出额度，不能持流锁，也不能占着门等 Ack 释放容量。
 		if err := s.operation.lock(w.rc); err != nil {
-			return s.recordFailure(err)
+			return w.recordFailure(err)
 		}
 		s.mu.Lock()
 		changed, err = s.checkpointSendReadyLocked()
@@ -629,10 +629,10 @@ func (w *StreamWriter[T]) sendCheckpointValue(value T, cursor any) error {
 			s.mu.Unlock()
 			s.operation.unlock()
 			if err != nil {
-				return s.recordFailure(err)
+				return w.recordFailure(err)
 			}
 			if err := waitMessageCapacity(w.rc, changed); err != nil {
-				return s.recordFailure(err)
+				return w.recordFailure(err)
 			}
 			continue
 		}
@@ -789,6 +789,7 @@ func checkpointChainResult(rc *RunCtx, err error) error {
 			}
 		}
 	}
+	err = rc.streams.classifyFailure(err)
 	if !rc.node.sub {
 		seen := make(map[managedReaderLifecycle]bool)
 		for _, ref := range rc.node.requires {
@@ -797,7 +798,7 @@ func checkpointChainResult(rc *RunCtx, err error) error {
 			if state == slotReady && ok && !seen[reader] {
 				seen[reader] = true
 				if cause := reader.pulseReaderFinished(rc, err); cause != nil && (err == nil || isSkipped(err)) {
-					err = cause
+					err = rc.streams.classifyFailure(cause)
 				}
 			}
 		}

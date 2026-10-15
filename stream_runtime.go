@@ -34,15 +34,32 @@ type managedReaderLifecycle interface {
 }
 
 type nodeStreams struct {
+	// 归因用实际节点的取消域；Fork 共享此账，它的局部取消不等于节点取消。
+	exec       *Execution
+	ctx        context.Context
 	mu         sync.Mutex
 	outputs    []streamLifecycle
 	messageErr error
+}
+
+func (s *nodeStreams) classifyFailure(err error) error {
+	if s == nil || !isCanceled(err) || isExecutionCancellation(err) {
+		return err
+	}
+	if s.ctx != nil && s.ctx.Err() != nil {
+		return &executionCancellation{cause: err}
+	}
+	if s.exec != nil {
+		return s.exec.classifyFailure(err)
+	}
+	return err
 }
 
 func (s *nodeStreams) failMessage(err error) {
 	if err == nil || isSkipped(err) {
 		return
 	}
+	err = s.classifyFailure(err)
 	s.mu.Lock()
 	if s.messageErr == nil {
 		s.messageErr = err
@@ -75,6 +92,8 @@ func (rc *RunCtx) finishStreams(err error) error {
 			}
 		}
 	}
+	// messageErr / output.failure 可能补回被链吞掉的错误；在向读取端传播前归因。
+	err = rc.streams.classifyFailure(err)
 	// Sub 只是接线代理，不是读取者；只有声明 Requires 的实际业务节点
 	// 履行读取义务。同一端点可经不同名称出现，按端点幂等收尾。
 	if rc.node != nil && !rc.node.sub {
@@ -94,7 +113,7 @@ func (rc *RunCtx) finishStreams(err error) error {
 					return waitErr
 				})
 				if cause != nil && !isSkipped(cause) {
-					err = cause
+					err = rc.streams.classifyFailure(cause)
 				}
 				st, value = input.snapshot()
 			}
@@ -104,7 +123,7 @@ func (rc *RunCtx) finishStreams(err error) error {
 			}
 			seen[reader] = true
 			if cause := reader.pulseReaderFinished(rc, err); cause != nil && (err == nil || isSkipped(err)) {
-				err = cause
+				err = rc.streams.classifyFailure(cause)
 			}
 		}
 	}
