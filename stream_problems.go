@@ -93,7 +93,7 @@ func (g *Graph) problemsStreamLocked(at string, chain mountChain, capacity int, 
 	out := make(map[string][]error)
 	t.problemsSlots(out)
 	t.problemsReaders(out)
-	t.problemsLifecycle(out)
+	t.problemsLifecycle(out, facts.checkpoint)
 	return out
 }
 
@@ -389,10 +389,12 @@ func streamCommonPath(a, b string) string {
 // streamKnownInputs 只为流检查补充本次已供给的确定事实，不改 Graph 定义。
 // Validate / Topology 没有这份执行事实，只能从 FixSkip 推导。Start 的
 // hasAspects 已包含 ExecOption 和继承环境，不能只看定义自己的声明。
+// checkpoint 同样只属于这次检查，完整链普通值的提交边界适用于整棵执行树。
 type streamKnownInputs struct {
 	skipped    map[string]bool
 	hasAspects bool
 	hostReads  map[string]bool
+	checkpoint bool
 }
 
 // streamSkipWork 记录建索引和传播实际访问的声明数，供包内回归校验线性工作量。

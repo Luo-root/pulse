@@ -214,6 +214,7 @@ func TestCheckpointStreamFailedAspectConfirmsTerminalBeforeFinish(t *testing.T) 
 			g := mustNew(t, ctx, "failed-stream-terminal")
 			key := NewKey[Stream[int]]("stream")
 			business := errors.New("outer aspect failed after sending")
+			acked := make(chan struct{}, 1)
 			outer := func(rc *RunCtx, next func(*RunCtx) error) error {
 				if err := next(rc); err != nil {
 					return err
@@ -243,11 +244,33 @@ func TestCheckpointStreamFailedAspectConfirmsTerminalBeforeFinish(t *testing.T) 
 					if err := delivery.Ack(); err != nil {
 						return err
 					}
+					acked <- struct{}{}
 				}
 			}))
 			entered, release := make(chan CheckpointStreamFinish, 1), make(chan struct{})
 			probe := &checkpointProbe{}
 			hooks := checkpointStreamTestHooks(probe)
+			sourceOpened := make(chan CheckpointAttempt, 1)
+			baseOpen := hooks.OpenAttempt
+			hooks.OpenAttempt = func(ctx context.Context, request CheckpointAttemptRequest) (CheckpointAttempt, error) {
+				attempt, err := baseOpen(ctx, request)
+				if request.NodeID == "source" && request.Boundary == "" {
+					sourceOpened <- attempt
+				}
+				return attempt, err
+			}
+			type failureEvent struct {
+				scope     string
+				confirmed bool
+			}
+			failed := make(chan failureEvent, 2)
+			var finishConfirmed atomic.Bool
+			baseFail := hooks.FailAttempt
+			hooks.FailAttempt = func(ctx context.Context, scope string) error {
+				err := baseFail(ctx, scope)
+				failed <- failureEvent{scope: scope, confirmed: finishConfirmed.Load()}
+				return err
+			}
 			var calls atomic.Int32
 			hooks.StreamHooks.Finish = func(ctx context.Context, finish CheckpointStreamFinish) error {
 				calls.Add(1)
@@ -257,6 +280,7 @@ func TestCheckpointStreamFailedAspectConfirmsTerminalBeforeFinish(t *testing.T) 
 					if uncertain {
 						return fmt.Errorf("terminal may be saved: %w", ErrSkipped)
 					}
+					finishConfirmed.Store(true)
 					return nil
 				case <-ctx.Done():
 					return ctx.Err()
@@ -277,18 +301,42 @@ func TestCheckpointStreamFailedAspectConfirmsTerminalBeforeFinish(t *testing.T) 
 			if raw.(Stream[int]).Snapshot().Terminal != "" {
 				t.Fatal("failure terminal published before reliable Finish confirmation")
 			}
-			close(release)
+			source := waitCheckpointSignal(t, ctx, sourceOpened)
+			waitCheckpointSignal(t, ctx, acked)
+			if uncertain {
+				close(release)
+			} else {
+				// 等 sink 已进入读取后，暂缓 e.fail 的执行域取消：source 的真实
+				// 终态先开放，sink 因同一业务错误退出并合法确认自己的失败尝试。
+				// 这把锁不覆盖流终结和可靠钩子，故两个 FailAttempt 都能结束。
+				func() {
+					e.mu.Lock()
+					defer e.mu.Unlock()
+					close(release)
+					first := waitCheckpointSignal(t, ctx, failed)
+					second := waitCheckpointSignal(t, ctx, failed)
+					if first.scope != source.Scope || !first.confirmed || second.scope == source.Scope {
+						t.Fatalf("source failure must follow Finish, then sink may fail: source=%s failures=%+v %+v", source.Scope, first, second)
+					}
+				}()
+			}
 			err = e.Wait()
 			if calls.Load() != 1 {
 				t.Fatalf("Finish retried %d times", calls.Load())
 			}
+			sourceFailures := 0
+			for _, scope := range probe.failures {
+				if scope == source.Scope {
+					sourceFailures++
+				}
+			}
 			if uncertain {
 				var failure *CheckpointError
-				if !errors.As(err, &failure) || isSkipped(err) || len(probe.failures) != 0 {
+				if !errors.As(err, &failure) || isSkipped(err) || sourceFailures != 0 {
 					t.Fatalf("uncertain Finish invalidated source attempt: err=%v failures=%v", err, probe.failures)
 				}
-			} else if !errors.Is(err, business) || len(probe.failures) != 1 {
-				t.Fatalf("confirmed terminal lost real failure: err=%v failures=%v", err, probe.failures)
+			} else if !errors.Is(err, business) || sourceFailures != 1 {
+				t.Fatalf("confirmed terminal lost real failure: err=%v source=%s failures=%v", err, source.Scope, probe.failures)
 			}
 		})
 	}
