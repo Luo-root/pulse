@@ -87,6 +87,7 @@ func isPanicFailure(err error) bool {
 func Timeout(d time.Duration) Aspect {
 	return func(rc *RunCtx, next func(*RunCtx) error) error {
 		child := rc.Fork()
+		defer child.Cancel() // deadline 子层结束不等于释放 Fork 在父 ctx 上的注册
 		ctx, cancel := context.WithTimeout(child.ctx, d)
 		defer cancel()
 		child.ctx = ctx
