@@ -38,7 +38,8 @@ type checkpointFailure struct {
 	mu      sync.Mutex
 	err     error
 	root    *Execution
-	streams map[CheckpointStreamID]any // 恢复别名共用一个本地端点，属于本执行树。
+	streams map[CheckpointStreamID]any    // 恢复别名共用一个本地端点，属于本执行树。
+	values  map[*writeSet]map[string]bool // 完整节点帧中已随消息确认的普通键。
 }
 
 func (e *Execution) checkpointErr() error {
@@ -139,6 +140,20 @@ func (e *Execution) applyRestoreLocked() {
 	for _, n := range e.graph.nodes {
 		nodes[n.id] = n
 	}
+	// 整批已预检：先合并同一来源的历史快照，再建唯一端点，避免记录顺序
+	// 决定使用过早的空终态或过旧的读取状态；真正终态仍须锁外 Open 认回。
+	descriptors := make(map[CheckpointStreamID]CheckpointStreamDescriptor)
+	for _, r := range e.restore {
+		for _, o := range r.Outputs {
+			if o.Stream != nil {
+				descriptor := *o.Stream
+				if previous, exists := descriptors[descriptor.ID]; exists {
+					descriptor, _ = mergeCheckpointStreamReference(previous, descriptor)
+				}
+				descriptors[descriptor.ID] = descriptor
+			}
+		}
+	}
 	for _, r := range e.restore {
 		e.restored[nodes[r.NodeID]] = r
 		for _, o := range r.Outputs {
@@ -155,7 +170,7 @@ func (e *Execution) applyRestoreLocked() {
 				endpoint := f.streams[o.Stream.ID]
 				if endpoint == nil {
 					factory := reflect.Zero(o.Key.Type).Interface().(checkpointStreamFactory)
-					endpoint = factory.pulseRestoreCheckpoint(e, *o.Stream)
+					endpoint = factory.pulseRestoreCheckpoint(e, descriptors[o.Stream.ID])
 					f.streams[o.Stream.ID] = endpoint
 				}
 				f.mu.Unlock()
@@ -257,6 +272,8 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 		}
 	}
 	rc.writes, rc.checkpointWrites = ws, ws
+	rc.confirmCheckpointValues(root.Values)
+	defer rc.forgetCheckpointValues()
 	err = invokeCheckpointChain(chain, rc)
 	err = checkpointChainResult(rc, err)
 	if failure := e.checkpointErr(); failure != nil {

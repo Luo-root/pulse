@@ -1,6 +1,7 @@
 package pulse
 
 import (
+	"context"
 	"reflect"
 	"sync"
 )
@@ -79,7 +80,24 @@ func (rc *RunCtx) finishStreams(err error) error {
 	if rc.node != nil && !rc.node.sub {
 		seen := make(map[managedReaderLifecycle]bool)
 		for _, ref := range rc.node.requires {
-			st, value := rc.exec.slotOf(ref).snapshot()
+			if !isManagedStreamType(ref.typ) {
+				continue
+			}
+			input := rc.exec.slotOf(ref)
+			st, value := input.snapshot()
+			// 切面可以不推进 next 就成功或跳过。此时真实读取者已经退出，
+			// 但端点可能尚未发布；在本栈等待到达后记退出账，不能漏掉义务。
+			// 正常缺失不产生端点，也不产生读取义务；失败时不再等新输入。
+			if st == slotPending && (err == nil || isSkipped(err)) {
+				cause := rc.waitStream(func(ctx context.Context) error {
+					_, waitErr := input.wait(ctx)
+					return waitErr
+				})
+				if cause != nil && !isSkipped(cause) {
+					err = cause
+				}
+				st, value = input.snapshot()
+			}
 			reader, ok := value.(managedReaderLifecycle)
 			if st != slotReady || !ok || seen[reader] {
 				continue

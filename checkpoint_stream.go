@@ -122,9 +122,11 @@ type CheckpointMessageCommit struct {
 	Scope, Attempt string
 	Inputs         []CheckpointStreamAcknowledgement
 	State          []CheckpointState
-	Values         []CheckpointOutput
-	Outputs        []CheckpointStreamAppend
-	Stops          []CheckpointStreamID
+	// Values 仅含本完整节点帧尚未随消息确认的普通键，载荷是合并后生效的首写。
+	// 已确认键在后续消息中省略；普通槽位仍待完整节点 Commit 后发布。
+	Values  []CheckpointOutput
+	Outputs []CheckpointStreamAppend
+	Stops   []CheckpointStreamID
 }
 
 // CheckpointStreamFinish 记录实际完整 Aspect 链确定的写端终态。
@@ -271,6 +273,22 @@ func checkCheckpointStreamDescriptor(key CheckpointKey, descriptor CheckpointStr
 	return nil
 }
 
+// 历史 Sub 别名可能早于写端完成或读取组 Stop；这些快照仍引用同一来源。
+// 稳定来源（含代际）必须完全一致，已知写端终态不能互相矛盾；Stop 只向前累积。
+func mergeCheckpointStreamReference(previous, next CheckpointStreamDescriptor) (CheckpointStreamDescriptor, error) {
+	left, right := previous, next
+	left.Terminal, right.Terminal = "", ""
+	left.Stopped, right.Stopped = false, false
+	if left != right || (previous.Terminal != "" && next.Terminal != "" && previous.Terminal != next.Terminal) {
+		return previous, fmt.Errorf("pulse: restore stream %q: aliases contain conflicting source descriptors", previous.ID.Key)
+	}
+	if previous.Terminal == "" {
+		previous.Terminal = next.Terminal
+	}
+	previous.Stopped = previous.Stopped || next.Stopped
+	return previous, nil
+}
+
 func checkCheckpointStreamRecord(request CheckpointStreamOpen, record CheckpointStreamRecord) error {
 	descriptor := record.Stream
 	if err := checkCheckpointStreamDescriptor(request.Key, descriptor); err != nil {
@@ -282,8 +300,12 @@ func checkCheckpointStreamRecord(request CheckpointStreamOpen, record Checkpoint
 		descriptor.Source != request.Source || descriptor.Capacity != request.Capacity {
 		return fmt.Errorf("stream Open returned a different persistent source")
 	}
-	if request.Restore != nil {
-		if id.Generation < request.Restore.ID.Generation || descriptor.Terminal != request.Restore.Terminal || !record.Resumed {
+	if history := request.Restore; history != nil {
+		// Sub 完成不是写端完成证明；历史空终态只能由权威的成功终态补全。
+		if id.Generation < history.ID.Generation || !record.Resumed ||
+			(descriptor.Terminal != StreamCompleted && descriptor.Terminal != StreamStopped) ||
+			(history.Terminal != "" && descriptor.Terminal != history.Terminal) ||
+			(history.Stopped && !descriptor.Stopped) {
 			return fmt.Errorf("stream Open did not restore the completed source reference")
 		}
 	}
@@ -378,10 +400,16 @@ func (s *managedStream[T]) installCheckpointRecord(record CheckpointStreamRecord
 		s.pending[message.sequence] = message
 		s.enqueueLocked(message)
 	}
-	s.mu.Unlock()
+	// 持久写端终态与读取组 Stop 是独立事实；不能重新按当前 stopped 推导终态。
 	if record.Stream.Terminal != "" {
-		s.finish(nil)
+		s.finished, s.terminal = true, record.Stream.Terminal
+		close(s.done)
 	}
+	if s.stopped || (s.finished && len(s.pending) == 0) {
+		s.closeQueueLocked()
+	}
+	s.signalLocked()
+	s.mu.Unlock()
 }
 
 func (Stream[T]) pulseRestoreCheckpoint(e *Execution, descriptor CheckpointStreamDescriptor) any {
@@ -795,8 +823,15 @@ func (m *messageAttempt) checkpointCommit(rc *RunCtx, input CheckpointStreamAckn
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ref.name < entries[j].ref.name })
 	for _, entry := range entries {
 		state, value := entry.slot.snapshot()
-		if state == slotPending {
+		if state == slotPending || rc.checkpointValueConfirmed(entry.ref.name) {
 			continue
+		}
+		// 同状态合并是幂等首写：真正生效的值可能早已在完整节点帧中，
+		// 不能把本消息里稍后的写保存为来源。相反状态已由整批预检拒绝。
+		if target := m.writes.outer.peek(entry.ref); target != nil {
+			if previous, first := target.snapshot(); previous != slotPending {
+				state, value = previous, first
+			}
 		}
 		output := checkpointOutput(entry.ref, state, value)
 		if err := checkCheckpointOutput(output); err != nil {
@@ -812,7 +847,11 @@ func (m *messageAttempt) checkpointCommit(rc *RunCtx, input CheckpointStreamAckn
 			return rc.exec.stopCheckpoint("finalize message output", err)
 		}
 	}
-	return rc.exec.commitCheckpointMessage(rc.ctx, commit)
+	if err := rc.exec.commitCheckpointMessage(rc.ctx, commit); err != nil {
+		return err
+	}
+	rc.confirmCheckpointValues(commit.Values)
+	return nil
 }
 
 // checkpointAppends 在本地流锁下取序号/身份快照，不调用宿主代码；业务值不深复制。
