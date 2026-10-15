@@ -101,7 +101,7 @@ The YAML decoder produces a generic list, which Inputs converts to the registere
 | `Analyze(data, opts)` | `(*pulse.Topology, error)` | Inspect the document and static structure without a host Registry |
 | `plan.Inputs(resolve)` | `(pulse.Inputs, error)` | Obtain this run's inputs before each execution |
 
-Load requires a non-nil Registry. GraphID is required by both Load and Analyze. Load creates no Execution, runs no factories or aspects, and resolves no root-level external seeds. On failure it returns `nil, nil, err`; check the error before using either result.
+Load requires a non-nil Registry. GraphID is required by both Load and Analyze. Load creates no Execution, runs no factories or aspects, and resolves no root-level external seeds. On failure it returns `nil, nil, err`; check the error before using either result. A root seed conflicting with a node's output is rejected in the check tree, before the real tree constructs ObserverFor instances.
 
 | Stage | Main checks |
 |---|---|
