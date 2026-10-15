@@ -193,6 +193,10 @@ func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 	switch target.Kind() {
 	case reflect.Slice:
 		if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
+			// 只在支持的形状转换中保留 nil；非 nil 空切片仍要分配。
+			if v.Kind() == reflect.Slice && v.IsNil() {
+				return reflect.Zero(target), nil
+			}
 			out := reflect.MakeSlice(target, v.Len(), v.Len())
 			for i := 0; i < v.Len(); i++ {
 				ev, err := convertValue(v.Index(i), target.Elem())
@@ -217,6 +221,10 @@ func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 		}
 	case reflect.Map:
 		if v.Kind() == reflect.Map {
+			// nil map 不能在逐键值转换前被分配成非 nil 空 map。
+			if v.IsNil() {
+				return reflect.Zero(target), nil
+			}
 			out := reflect.MakeMapWithSize(target, v.Len())
 			iter := v.MapRange()
 			for iter.Next() {
