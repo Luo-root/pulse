@@ -320,7 +320,13 @@ func (g *Graph) checkRestoreLocked(records []NodeCheckpoint) error {
 		}
 	}
 	for _, r := range records {
-		for _, k := range nodes[r.NodeID].requires {
+		n := nodes[r.NodeID]
+		// Sub 的 Requires 只是 In 绑定，不是整体完成门；Aspect 也可在进入子图前
+		// 正常短路。实际业务节点的普通依赖仍在各自作用域按完整成果核验。
+		if n.sub {
+			continue
+		}
+		for _, k := range n.requires {
 			if p := g.producer[k.name]; p.kind == sourceNode && !seen[p.nodeID] && !isManagedStreamType(k.typ) {
 				return fmt.Errorf("pulse: restore node %q: required producer %q has no checkpoint", r.NodeID, p.nodeID)
 			}

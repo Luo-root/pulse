@@ -54,7 +54,7 @@ func WithMessageLimit(n int) MessageOption {
 // 多流输出不承诺同一瞬间可见；取消发生在提交之前则不发布、不自动确认，已提交不改报失败。
 func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) error, opts ...MessageOption) (err error) {
 	defer func() {
-		if err == nil || rc == nil {
+		if err == nil || err == errTeeOutputsStopped || rc == nil {
 			return
 		}
 		if rc.message != nil {
@@ -153,6 +153,8 @@ type messageAttempt struct {
 	batches []messageBatch
 	// 仅显式广播使用：已 Stop 的分支不再有交付义务，其它分支继续。
 	allowStoppedOutputs bool
+	// Tee 至少要有一支接纳才可确认输入；普通零输出处理仍可正常确认。
+	requireActiveOutput bool
 }
 
 func (m *messageAttempt) fail(err error) error {
@@ -232,6 +234,7 @@ type messageBatch interface {
 	mutex() *sync.Mutex
 	operation() *streamOperation
 	readyLocked() (<-chan struct{}, error)
+	acceptsMessageLocked() bool
 	publishLocked()
 }
 
@@ -282,6 +285,10 @@ func (b *messageOutput[T]) readyLocked() (<-chan struct{}, error) {
 		return s.changed, nil
 	}
 	return nil, nil
+}
+
+func (b *messageOutput[T]) acceptsMessageLocked() bool {
+	return !b.ignoreStopped || !b.stream.stopped
 }
 
 func (b *messageOutput[T]) publishLocked() {
@@ -445,10 +452,15 @@ func (m *messageAttempt) preflightLocked(rc *RunCtx, input messageConfirmation) 
 	if !input.activeLocked() {
 		return nil, ErrDeliveryExpired
 	}
+	activeOutputs := false
 	for _, batch := range m.batches {
 		if changed, err := batch.readyLocked(); changed != nil || err != nil {
 			return changed, err
 		}
+		activeOutputs = activeOutputs || batch.acceptsMessageLocked()
+	}
+	if m.requireActiveOutput && !activeOutputs {
+		return nil, errTeeOutputsStopped
 	}
 	m.writes.mu.Lock()
 	entries := make([]stagedWrite, 0, len(m.writes.staged))
