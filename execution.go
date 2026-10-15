@@ -596,6 +596,8 @@ func (g *Graph) Run(ctx context.Context, in Inputs, opts ...ExecOption) error {
 	if err != nil {
 		return err
 	}
+	// Run 独占这份执行；Start 拒绝时调用方拿不到它，也必须解除宿主取消注册。
+	defer e.Cancel()
 	if err := e.Start(); err != nil {
 		return err
 	}
