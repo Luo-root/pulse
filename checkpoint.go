@@ -307,15 +307,20 @@ func (g *Graph) checkRestoreLocked(records []NodeCheckpoint) error {
 				return fmt.Errorf("pulse: restore node %q: %w", r.NodeID, err)
 			}
 			if o.Stream != nil {
-				if o.Stream.Terminal != StreamCompleted && o.Stream.Terminal != StreamStopped {
+				if o.Stream.Terminal != StreamCompleted && o.Stream.Terminal != StreamStopped && !(n.sub && o.Stream.Terminal == "") {
 					return fmt.Errorf("pulse: restore node %q: stream %q is not a completed source reference", r.NodeID, o.Key.Name)
 				}
 				id := o.Stream.ID
 				logical := [4]string{id.Scope, id.NodeID, id.Key, id.Group}
-				if previous, exists := descriptors[logical]; exists && previous != *o.Stream {
-					return fmt.Errorf("pulse: restore stream %q: aliases contain conflicting source descriptors", id.Key)
+				descriptor := *o.Stream
+				if previous, exists := descriptors[logical]; exists {
+					var err error
+					descriptor, err = mergeCheckpointStreamReference(previous, descriptor)
+					if err != nil {
+						return err
+					}
 				}
-				descriptors[logical] = *o.Stream
+				descriptors[logical] = descriptor
 			}
 		}
 	}
