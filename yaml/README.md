@@ -101,7 +101,7 @@ YAML 解码器将列表解为通用容器，Inputs 再按登记类型转换为 `
 | `Analyze(data, opts)` | `(*pulse.Topology, error)` | 无宿主 Registry，检查文档并查看静态结构 |
 | `plan.Inputs(resolve)` | `(pulse.Inputs, error)` | 在每轮执行前获取本轮输入 |
 
-Load 要求非 nil Registry；GraphID 对 Load 和 Analyze 都必填。Load 不创建 Execution，不执行工厂或切面，也不解析顶层外部 seed。失败时返回 `nil, nil, err`，调用方应先检查错误再使用产物。
+Load 要求非 nil Registry；GraphID 对 Load 和 Analyze 都必填。Load 不创建 Execution，不执行工厂或切面，也不解析顶层外部 seed。失败时返回 `nil, nil, err`，调用方应先检查错误再使用产物。根 seed 与节点产出同一键的来源冲突，会在校验树阶段拒绝，先于真图的 ObserverFor 构造。
 
 | 阶段 | 主要检查 |
 |---|---|

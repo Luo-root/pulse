@@ -269,6 +269,11 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 	if err := a.addNodes(checkRoot, doc.Nodes, mount{id: opts.GraphID}); err != nil {
 		return nil, nil, err
 	}
+	// 根 seed 的来源声明也先对账：与节点产出冲突时，不能先调用真图的 ObserverFor。
+	// 这里只声明入口，不取值，也不扩大成根图的完整 Validate。
+	if err := declareSeedInputs(checkRoot, doc.Seeds, reg); err != nil {
+		return nil, nil, fmt.Errorf("pulse/yaml: seeds: %w", err)
+	}
 	// 谁也引用不到的 spec：它**没有挂载点**，因此**没有接口面**——里面那些「没人提供」的键
 	// 究竟是「等将来挂上去时由那一处的 `in:` 喂」还是「名字写错了」，装配期判不了。按闭合图
 	// 去校验会把前者一律报成后者（正常的模板库只要有一张暂时没接上，整份文档就 `Load` 不过）。
