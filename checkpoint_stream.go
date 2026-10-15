@@ -474,7 +474,7 @@ func (s *managedStream[T]) installCheckpointRecord(record CheckpointStreamRecord
 			value = saved.Value.(T)
 		}
 		message := &managedMessage[T]{value: value, sequence: saved.Sequence}
-		s.pending[message.sequence] = message
+		s.addPendingLocked(message)
 		s.enqueueLocked(message)
 	}
 	// 持久写端终态与读取组 Stop 是独立事实；不能重新按当前 stopped 推导终态。
@@ -650,7 +650,7 @@ func (w *StreamWriter[T]) sendCheckpointValue(value T, cursor any) error {
 		s.mu.Lock()
 		s.last, checkpoint.cursor = sequence, cursor
 		message := &managedMessage[T]{value: value, sequence: sequence}
-		s.pending[sequence] = message
+		s.addPendingLocked(message)
 		s.enqueueLocked(message)
 		s.mu.Unlock()
 		s.operation.unlock()

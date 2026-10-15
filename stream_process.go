@@ -319,7 +319,7 @@ func (b *messageOutput[T]) publishLocked() {
 	for _, value := range b.values {
 		s.last++
 		message := &managedMessage[T]{value: value, sequence: s.last}
-		s.pending[message.sequence] = message
+		s.addPendingLocked(message)
 		s.enqueueLocked(message)
 	}
 }

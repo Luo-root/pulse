@@ -64,6 +64,8 @@ type managedStream[T any] struct {
 	done        chan struct{}
 	capacity    int
 	pending     map[uint64]*managedMessage[T]
+	pendingHead *managedMessage[T]
+	pendingTail *managedMessage[T]
 	last        uint64
 	frontier    uint64
 	finished    bool
@@ -179,7 +181,7 @@ func (w *StreamWriter[T]) Send(value T) error {
 			}
 			s.last++
 			message := &managedMessage[T]{value: value, sequence: s.last}
-			s.pending[message.sequence] = message
+			s.addPendingLocked(message)
 			s.enqueueLocked(message)
 			s.mu.Unlock()
 			// 接纳已发生，之后的取消不能把它改报为“没有发送”。
@@ -329,8 +331,10 @@ func (s Stream[T]) Stop(rc *RunCtx) error {
 		message.current.state = deliveryExpired
 		var zero T
 		message.value = zero
+		message.prev, message.next = nil, nil
 		delete(state.pending, sequence)
 	}
+	state.pendingHead, state.pendingTail = nil, nil
 	for {
 		select {
 		case _, ok := <-state.queue:
