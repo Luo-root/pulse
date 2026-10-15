@@ -13,6 +13,8 @@
 | `ErrGraphNotStarted` | 成功 Start 之前调用 Wait | 检查 Start 错误；只有成功启动后才 Wait |
 | `ErrNextCalledTwice` | 切面重叠推进，或没有新尝试边界的再次推进 | 不并发调用 next；重试使用内置 Retry |
 | `ErrSkipped` | 正常无值到达或节点主动无值 | 按缺值策略处理，不能当作普通故障重试 |
+| `ErrStreamStopped` | 读取组显式 Stop 的生产停止信号 | 手写生产者明确处理；ProduceStream 仅在实际 stopped 且回调返回精确哨兵时正常结束 |
+| `ErrDeliveryExpired` | Nack/Stop 已使该交付失效 | 使用新的 Delivery，不以旧凭据推进确认 |
 
 `ErrNextCalledTwice` 的两种触发共用哨兵，报文说明具体原因。再次运行同一定义不属于节点重入；每个 Execution 都有独立推进状态。
 
@@ -63,12 +65,18 @@ CheckpointError 保留 Operation 与原始原因。钩子返回错误或 panic �
 | Requires 无来源、出口无人生产 | 添加生产者或正确端口声明；修正键名 |
 | 依赖环或子图组合环 | 调整结构；无 Remove API，已装入的环需要重建定义 |
 | 子入口漏绑、重复绑定或方向/类型错误 | 核对 In/Out/Fix 与子端口 |
-| 流无人消费、多独立读取者、容量不足或生命周期环 | 补真实消费者，使用 Tee/FanOut，调整额度或跨图完成依赖 |
+| 流无人消费、多独立读取者、原生额度不足或生命周期环 | 补真实消费者/启动前宿主订阅，使用 TeeStream/FanOut，按原生或受管边界调整额度与完成依赖 |
 | ReadOutput 未收尾 | 成功 Start 后 Wait；该错误不是 ErrGraphNotStarted |
 | YAML 装配、注册表或输入解析错误 | 先检查 GraphID、uses、name/type，再检查 resolver 和值类型 |
 | 检查点模式缺 scope/钩子，含 channel，恢复计划不合法 | 修正集成配置、值或恢复集合；启动失败不会部分恢复 |
 
 静态问题可先从 Topology.Problems 查看全部，再用 Validate 确认。Validate 成功会封闭定义；不要为了查询问题而忽略封闭边界。
+
+## 受管流的具体错误
+
+Messages 只支持单读取者；FanOut 多 worker 用 Receive。未打开端点、未声明读取、提前退出却未履行读取义务、缺少完整 StreamHooks、活跃来源没有续读承诺，以及 HandleMessage 输出超限，均给出具体错误。超限立即失败，不等自己的回调；消息耗尽或提交失败会锁存，吞错也不成功。
+
+ConsumeStream 回调返回精确 ErrStreamStopped 时先成功 Ack 当前条再 Stop；包装后的停止错误仍失败。普通 Retry 不能撤回实际流输出或倒带输入，确定 skip 无数据仍正常。仅宿主消费的流先登记 SubscribeStream，再 Start；Graph.Validate/Topology 允许声明的 managed 根出口等待宿主连接，仅省略其缺读者诊断，不改变未导出流或原生 channel 检查。Start 仍按实际订阅严格查缺读者与分流，定义通过不替代启动检查。订阅透传入口缺 Seed/SkipSeed 会在 Start 前报错。
 
 ## 运行失败、取消与输出
 

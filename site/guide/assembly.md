@@ -153,7 +153,7 @@ report=about Pulse state=ready
 | `nodes[].retry` | attempts 和 delay；装为内层 Retry |
 | `observer` | 文档提示字段，Load 忽略；观察者通过选项配置 |
 
-`type` 是注册键的 `reflect.Type.String()`，不是任意类型别名。使用 `Registry.TypeTagOf` 可以查询期望标签；同名跨类型、缺标签、未注册键与未注册 uses 都会报错。YAML 不提供 Produce/Consume/Tee 声明语法；普通工厂中的隐藏 channel 行为无法靠拓扑推断。
+`type` 是注册键的 `reflect.Type.String()`，不是任意类型别名。使用 `Registry.TypeTagOf` 可以查询期望标签；同名跨类型、缺标签、未注册键与未注册 uses 都会报错。YAML 没有独立流 runner 或专用流糖语法。登记同一 `Key[pulse.Stream[T]]`，工厂只返回 Run，在 Run 内用 OpenStream、Receive、HandleMessage 等 core API；Requires/Provides 仍由 YAML 显式声明，子图 in/out 复用实时绑定契约。不能把 channel 藏进工厂后声称拓扑已声明齐全，Analyze 也不会执行工厂推断它。
 
 ## 外部输入由宿主解析
 
