@@ -803,3 +803,59 @@ func TestStreamProducerAcceptsNonStagingAspect(t *testing.T) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 }
+
+// 配置应用彼此隔离；即使包内还持有装配配置，三个 NewNode 也应各自复制切面列表。
+func TestStreamAspectsConfigIsolation(t *testing.T) {
+	var calls atomic.Int32
+	good := Aspect(func(rc *RunCtx, next func(*RunCtx) error) error { calls.Add(1); return next(rc) })
+	bad := Aspect(func(*RunCtx, func(*RunCtx) error) error { return errors.New("mutated aspect") })
+	caller := make([]Aspect, 1, 8)
+	caller[0] = good
+	opt := WithStreamAspects(caller...)
+	caller[0] = bad
+
+	base := streamConfig{aspects: make([]Aspect, 1, 8)}
+	base.aspects[0] = good
+	first, second := base, base
+	opt(&first)
+	opt(&second)
+	first.aspects[0], first.aspects[1] = bad, bad
+	third := newStreamConfig([]StreamOption{opt})
+	for _, cfg := range []streamConfig{second, third} {
+		for _, a := range cfg.aspects {
+			if err := a(nil, func(*RunCtx) error { return nil }); err != nil {
+				t.Fatal("option applications share mutable storage: ", err)
+			}
+		}
+	}
+	calls.Store(0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	g := mustNew(t, ctx, "stream-config-copy")
+	in, out := NewKey[<-chan int]("in"), NewKey[<-chan int]("out")
+	var saved []*streamConfig
+	capture := func(c *streamConfig) { saved = append(saved, c) }
+	if err := Produce(g, "produce", "", in, func(_ *RunCtx, send func(int) error) error { return send(7) }, opt, capture); err != nil {
+		t.Fatal(err)
+	}
+	if err := Tee(g, "tee", "", in, Keys(out), opt, capture); err != nil {
+		t.Fatal(err)
+	}
+	var got int
+	if err := Consume(g, "consume", "", out, func(_ *RunCtx, v int) error { got = v; return nil }, opt, capture); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) != 3 {
+		t.Fatalf("captured %d configs, want 3", len(saved))
+	}
+	for _, cfg := range saved {
+		cfg.aspects[0] = bad
+	}
+	if err := runOn(g); err != nil {
+		t.Fatal("assembled node shares its configuration: ", err)
+	}
+	if got != 7 || calls.Load() != 3 {
+		t.Fatalf("value=%d aspect calls=%d, want 7 / 3", got, calls.Load())
+	}
+}

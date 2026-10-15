@@ -74,7 +74,7 @@ CheckpointError 保留 Operation 与原始原因。钩子返回错误或 panic �
 
 节点真实错误会锁存首错并取消执行，Wait 等所有节点结束后返回该原因。其他并发节点可能完成或取消，不会覆盖已捕获首错。业务体 panic 会转换为节点错误。
 
-Timeout 自行处理截止时间时，返回包含节点名与时限的错误，该错误为 failed 且不包装 context.DeadlineExceeded。先取得内层结果时，保留内层原错误；内层退出与截止时间同时就绪时，可能直接返回 context.DeadlineExceeded，并呈现 canceled。因此 canceled 不能单独证明宿主取消，应结合宿主上下文、节点时限与实际错误原因判断。
+Timeout 等内层退出后统一复查自己的上下文：截止时间已到时返回包含节点名与时限的错误，状态为 failed，且不包装 context.DeadlineExceeded；两条结束路径同时就绪也遵守这一判据。未到期且未取消时保留内层原错误，父侧取消则保留上下文取消原因。canceled 仍应结合宿主上下文、节点时限与实际错误原因判断。
 
 宿主取消、宿主截止时间到期或执行首错导致的取消，也可以表现为 canceled。取消是协作式的，不响应上下文的业务体可能延迟 Wait 返回；Timeout 同样等内层退出，不会强制终止业务 goroutine。
 

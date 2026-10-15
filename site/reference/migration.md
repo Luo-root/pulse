@@ -21,13 +21,21 @@ go list -m github.com/Luo-root/pulse
 Join(g, id, description, ins, out, fn, aspects...)
 FanOut(g, id, description, in, outs, fn, aspects...)
 Produce(g, id, description, out, fn, opts...)
-Consume(g, id, description, in, fn)
+Consume(g, id, description, in, fn, opts...)
 Tee(g, id, description, in, outs, opts...)
 ```
 
 这些是参数形状示意。`FanOut` 的所有 worker 使用同一份说明，仍以原有的 `id-1` 至 `id-N` 区分。说明只作为静态元数据出现在 Topology / Snapshot；没有运行时 Setter。
 
 这是公开签名变更，按 0.x 约定随 minor 发布，不能随 patch 发布。旧公开快照 `1f67045d6c42` 使用旧签名；试用尚未合并的修改时使用[对应本地源码](../guide/installation.md)，不要仅更改示例而继续安装旧快照。
+
+## 流节点增加本地切面选项
+
+`Produce`、`Consume`、`Tee` 统一通过 `WithStreamAspects(aspects ...Aspect) StreamOption` 配置本节点的切面。Produce/Tee 可与已有 `WithBuffer` 混用；Consume 新增 `opts ...StreamOption`，原有不传选项的直接调用仍可用。若把实例化后的 Consume 函数存为固定函数类型，需将函数类型同步改为带可变 StreamOption，或通过包装函数适配。
+
+多次 `WithStreamAspects` 按声明顺序追加；图级、执行级切面依次在本地切面之外。选项创建时复制切片，每次应用与节点装配继续隔离；选项可复用，切面闭包内的业务状态仍由调用方同步。空配置合法，nil StreamOption 忽略。
+
+Consume 不创建发送缓冲，正数 `WithBuffer` 会在装配时返回错误且不留下节点；零和负数沿用不改变配置的规则。节点级 Timeout 覆盖等输入、收发及回调，到期取消后等待内层退出，流被截断仍是本次执行失败。Produce/Tee 的 Retry 写暂存拒绝保留；Consume 的整节点 Retry 不能倒带或重放已消费元素。完整示例见[流式处理](../guide/streams.md)。
 
 ## 先迁移对象职责
 

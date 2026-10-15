@@ -21,13 +21,21 @@ The project requires Go 1.25+. Retain the concrete pseudo-version resolved from 
 Join(g, id, description, ins, out, fn, aspects...)
 FanOut(g, id, description, in, outs, fn, aspects...)
 Produce(g, id, description, out, fn, opts...)
-Consume(g, id, description, in, fn)
+Consume(g, id, description, in, fn, opts...)
 Tee(g, id, description, in, outs, opts...)
 ```
 
 These show argument shapes. Every FanOut worker shares the description and retains its existing `id-1` through `id-N` identity. The description is static metadata in Topology / Snapshot, with no runtime setter.
 
 This public signature change requires a minor release during 0.x, never a patch. The older public snapshot `1f67045d6c42` uses the old signatures. Use [matching local source](../guide/installation.md) when trying unmerged changes; updating examples while retaining that older dependency does not work.
+
+## Local aspect options for stream nodes
+
+`Produce`, `Consume`, and `Tee` accept `WithStreamAspects(aspects ...Aspect) StreamOption` for local aspects. Produce/Tee can combine it with existing `WithBuffer` options. Consume gains `opts ...StreamOption`; existing direct calls without options still work. Code storing an instantiated Consume function as a fixed function type must update that type to include variadic StreamOption or adapt it through a wrapper.
+
+Repeated `WithStreamAspects` options append in declaration order. Graph aspects wrap execution aspects, which wrap local aspects. The option copies the input slice at creation, and applications and assembled nodes keep independent lists. Options are reusable; callers still synchronize business state captured by aspect closures. Empty configurations are valid, and nil StreamOption values are ignored.
+
+Consume creates no send buffer: a positive `WithBuffer` fails during assembly without leaving a node. Zero and negative sizes retain the existing no-change rule. Local Timeout covers input waits, channel operations, and callbacks; expiry cancels and waits for inner work to exit, and a truncated stream remains an execution failure. Produce/Tee still reject Retry write staging. Whole-node Retry on Consume cannot rewind or replay consumed elements. See the complete [streams example](../guide/streams.md).
 
 ## Migrate object responsibilities first
 
