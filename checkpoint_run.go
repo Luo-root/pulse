@@ -38,7 +38,8 @@ type checkpointFailure struct {
 	mu      sync.Mutex
 	err     error
 	root    *Execution
-	streams map[CheckpointStreamID]any // 恢复别名共用一个本地端点，属于本执行树。
+	streams map[CheckpointStreamID]any    // 恢复别名共用一个本地端点，属于本执行树。
+	values  map[*writeSet]map[string]bool // 完整节点帧中已随消息确认的普通键。
 }
 
 func (e *Execution) checkpointErr() error {
@@ -271,6 +272,8 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 		}
 	}
 	rc.writes, rc.checkpointWrites = ws, ws
+	rc.confirmCheckpointValues(root.Values)
+	defer rc.forgetCheckpointValues()
 	err = invokeCheckpointChain(chain, rc)
 	err = checkpointChainResult(rc, err)
 	if failure := e.checkpointErr(); failure != nil {

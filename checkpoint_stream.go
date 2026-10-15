@@ -122,9 +122,11 @@ type CheckpointMessageCommit struct {
 	Scope, Attempt string
 	Inputs         []CheckpointStreamAcknowledgement
 	State          []CheckpointState
-	Values         []CheckpointOutput
-	Outputs        []CheckpointStreamAppend
-	Stops          []CheckpointStreamID
+	// Values 仅含本完整节点帧尚未随消息确认的普通键，载荷是合并后生效的首写。
+	// 已确认键在后续消息中省略；普通槽位仍待完整节点 Commit 后发布。
+	Values  []CheckpointOutput
+	Outputs []CheckpointStreamAppend
+	Stops   []CheckpointStreamID
 }
 
 // CheckpointStreamFinish 记录实际完整 Aspect 链确定的写端终态。
@@ -821,8 +823,15 @@ func (m *messageAttempt) checkpointCommit(rc *RunCtx, input CheckpointStreamAckn
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ref.name < entries[j].ref.name })
 	for _, entry := range entries {
 		state, value := entry.slot.snapshot()
-		if state == slotPending {
+		if state == slotPending || rc.checkpointValueConfirmed(entry.ref.name) {
 			continue
+		}
+		// 同状态合并是幂等首写：真正生效的值可能早已在完整节点帧中，
+		// 不能把本消息里稍后的写保存为来源。相反状态已由整批预检拒绝。
+		if target := m.writes.outer.peek(entry.ref); target != nil {
+			if previous, first := target.snapshot(); previous != slotPending {
+				state, value = previous, first
+			}
 		}
 		output := checkpointOutput(entry.ref, state, value)
 		if err := checkCheckpointOutput(output); err != nil {
@@ -838,7 +847,11 @@ func (m *messageAttempt) checkpointCommit(rc *RunCtx, input CheckpointStreamAckn
 			return rc.exec.stopCheckpoint("finalize message output", err)
 		}
 	}
-	return rc.exec.commitCheckpointMessage(rc.ctx, commit)
+	if err := rc.exec.commitCheckpointMessage(rc.ctx, commit); err != nil {
+		return err
+	}
+	rc.confirmCheckpointValues(commit.Values)
+	return nil
 }
 
 // checkpointAppends 在本地流锁下取序号/身份快照，不调用宿主代码；业务值不深复制。
