@@ -264,6 +264,9 @@ func checkCheckpointStreamDescriptor(key CheckpointKey, descriptor CheckpointStr
 		descriptor.Terminal != StreamFailed && descriptor.Terminal != StreamCanceled {
 		return fmt.Errorf("checkpoint stream %q has an invalid terminal", key.Name)
 	}
+	if descriptor.Terminal == StreamStopped && !descriptor.Stopped {
+		return fmt.Errorf("checkpoint stream %q has a stopped writer without a stopped reading group", key.Name)
+	}
 	if checkpointChannelType(element, nil) {
 		return fmt.Errorf("checkpoint stream %q element contains a channel", key.Name)
 	}
