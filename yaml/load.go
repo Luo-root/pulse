@@ -13,7 +13,7 @@ import (
 
 // Document 是声明式流程图的解码形态。
 type Document struct {
-	// Version 缺省或 1 接受；其它值拒绝。
+	// Version 缺省、0 或 1 接受；显式数值须为 YAML 整数，浮点与越界值拒绝。
 	Version int `yaml:"version"`
 	// Description 是人可读的说明，落到**根图**的 `Description()`（`""` = 没写）。
 	// 它不参与任何语义、校验与拓扑结果，只出现在 `Topology()` / `Snapshot()` 这类
@@ -205,10 +205,46 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	return loadDocument(doc, reg, opts)
 }
 
+// configInteger 只校验配置整数，不改变公开 Document / RetrySpec 的 int 字段。
+// yaml.v3 直接解码 int 会截断浮点；必须先看原标量的标签，再按本机 int 范围对账。
+// null 仍沿用 yaml.v3 的未设置语义，不调用这个方法。
+type configInteger struct{}
+
+func (*configInteger) UnmarshalYAML(n *goyaml.Node) error {
+	if n.Kind != goyaml.ScalarNode || n.Tag != "!!int" {
+		return fmt.Errorf("line %d: %q must be a YAML integer in the Go int range", n.Line, n.Value)
+	}
+	var value int
+	if err := n.Decode(&value); err != nil {
+		return fmt.Errorf("line %d: invalid or out-of-range YAML integer %q: %w", n.Line, n.Value, err)
+	}
+	return nil
+}
+
 // decodeDocument 是 Load / Analyze 共用的解码与文档级检查，顺序与 Load 一致。
 func decodeDocument(data []byte, opts LoadOptions) (Document, error) {
-	var doc Document
+	// 先只对配置里的整数位置做标量检查；别名与 merge 仍由同一个 YAML 解码器处理。
+	// 不遍历 seeds.from.value，那里即使有同名字段，也仍是任意业务数据。
+	type integerNode struct {
+		Retry *struct {
+			Attempts configInteger `yaml:"attempts"`
+		} `yaml:"retry"`
+	}
+	type integerGraph struct {
+		Nodes []integerNode `yaml:"nodes"`
+	}
+	var integers struct {
+		Version configInteger           `yaml:"version"`
+		Graphs  map[string]integerGraph `yaml:"graphs"`
+		Nodes   []integerNode           `yaml:"nodes"`
+	}
 	decoder := goyaml.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&integers); err != nil && err != io.EOF {
+		return Document{}, fmt.Errorf("pulse/yaml: decode: %w", err)
+	}
+
+	var doc Document
+	decoder = goyaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&doc); err != nil && err != io.EOF {
 		return Document{}, fmt.Errorf("pulse/yaml: decode: %w", err)

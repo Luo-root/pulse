@@ -153,6 +153,8 @@ report=about Pulse state=ready
 | `nodes[].retry` | attempts 和 delay；装为内层 Retry |
 | `observer` | 文档提示字段，Load 忽略；观察者通过选项配置 |
 
+`version` 和各层节点的 `retry.attempts` 填写数值时，必须是本机 Go `int` 范围内的 YAML 整数；`1.9`、`1.0`、`2e0`、数字字符串和越界值都会报错。省略或 `null` 按未设置处理；version 的 0 / 1、attempts <= 0 按一次尝试的规则不变。业务 `from.value` 不受配置整数限制。
+
 `type` 是注册键的 `reflect.Type.String()`，不是任意类型别名。使用 `Registry.TypeTagOf` 可以查询期望标签；同名跨类型、缺标签、未注册键与未注册 uses 都会报错。YAML 没有独立流 runner 或专用流糖语法。登记同一 `Key[pulse.Stream[T]]`，工厂只返回 Run，在 Run 内用 OpenStream、Receive、HandleMessage 等 core API；Requires/Provides 仍由 YAML 显式声明，子图 in/out 复用实时绑定契约。不能把 channel 藏进工厂后声称拓扑已声明齐全，Analyze 也不会执行工厂推断它。
 
 ## 外部输入由宿主解析

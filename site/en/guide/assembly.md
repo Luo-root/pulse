@@ -153,6 +153,8 @@ Load resolves registry entries and assembles definitions; it runs no body and re
 | `nodes[].retry` | attempts and delay; becomes inner Retry |
 | `observer` | Documentation hint ignored by Load; use options for observers |
 
+Numeric `version` and `retry.attempts` values at every node level must be YAML integers within the host Go `int` range. `1.9`, `1.0`, `2e0`, numeric strings, and out-of-range values return errors. Omitted fields and `null` remain unset; version 0 / 1 and the one-attempt default for attempts <= 0 are unchanged. Business `from.value` data is not subject to this configuration integer restriction.
+
 A type tag is the registered key's `reflect.Type.String()`, not an arbitrary alias. Query the expected tag with `Registry.TypeTagOf`. Same-name type conflicts, missing tags, unregistered keys, and unregistered uses are errors. YAML has no separate stream runner or specialized stream-helper syntax. Register the same `Key[pulse.Stream[T]]`; factories return only Run, which uses core OpenStream, Receive, and HandleMessage APIs. YAML still explicitly declares Requires/Provides, and subgraph in/out uses the live-binding contract. A channel hidden inside a factory does not establish a complete topology declaration; Analyze never executes factories to infer it.
 
 ## Resolve external inputs in the host

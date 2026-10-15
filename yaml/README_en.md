@@ -166,6 +166,8 @@ These fields match the current [Document / NodeSpec / SeedSpec](load.go) and [Gr
 
 Load and Analyze accept exactly one YAML document. Appending another with `---`, including an empty document, returns an error. Trailing whitespace, comments, and a single document's end marker remain valid. Unknown configuration fields also return an error, including misspelled `timeuot` or `retry.attmpts`, so important settings cannot silently disappear. Custom `from.kind` values and arbitrary business fields inside `from.value` remain host-defined and are not restricted by the configuration field list.
 
+Numeric values for `version` and `retry.attempts` at every node level must be YAML integer scalars within the host Go `int` range. Fractions, integral floats such as `1.0` or `2e0`, numeric strings, and out-of-range values return errors rather than being truncated. Omitted fields and `null` remain unset; version 0 / 1 and the default for attempts <= 0 keep their existing rules. This restriction does not apply to business `from.value` data, whose numbers follow the literal conversion rules below.
+
 ### Document and graph declarations
 
 | Location / field | Syntax | Meaning |

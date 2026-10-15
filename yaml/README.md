@@ -166,6 +166,8 @@ Load 要求 KeySpec 的 `type` 与登记键的 `reflect.Type.String()` 完全一
 
 Load 与 Analyze 都只接受一份 YAML 文档；用 `---` 追加第二份（包括空文档）会报错。尾随空白、注释和单份文档的结束标记可以保留。配置结构中的未知字段也会报错，例如把 `timeout` 写成 `timeuot`、把 `retry.attempts` 写成 `attmpts`，避免重要设置静默失效。`from.kind` 的自定义值与 `from.value` 内的任意业务字段仍由宿主解释，不受配置字段白名单限制。
 
+`version` 与各层节点的 `retry.attempts` 填写数值时，只接受本机 Go `int` 范围内的 YAML 整数标量；小数、整数形浮点（如 `1.0`、`2e0`）、数字字符串及越界数值都报错，不会截断。省略或 `null` 沿用未设置语义；version 的 0 / 1 与 attempts <= 0 的默认规则不变。此限制不作用于业务 `from.value`，其数值仍按下方的字面量形状对齐规则处理。
+
 ### 文档与子图声明
 
 | 位置 / 字段 | 语法 | 含义 |
