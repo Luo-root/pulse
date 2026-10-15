@@ -46,12 +46,12 @@ func hookupRace(t *testing.T, read func(*Graph) error) {
 	if err := child.DeclareOutput(NewPort(childOut)); err != nil {
 		t.Fatalf("DeclareOutput = %v", err)
 	}
-	if err := Produce(child, "p", stream, func(rc *RunCtx, send func(int) error) error {
+	if err := Produce(child, "p", "", stream, func(rc *RunCtx, send func(int) error) error {
 		return send(1)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Consume(child, "c", stream, func(rc *RunCtx, v int) error { return nil }); err != nil {
+	if err := Consume(child, "c", "", stream, func(rc *RunCtx, v int) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	mustAdd(t, child, NewNode("pass", "", nil, Provides(childOut), func(rc *RunCtx) error {

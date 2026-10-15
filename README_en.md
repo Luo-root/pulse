@@ -29,12 +29,12 @@ To continue after a process exits, use the separate [pulse-durable](https://gith
 
 Requires **Go 1.25.0 or later**.
 
-> This README and the documentation site describe the current development API. The latest released tag, **v0.4.1**, has a different API. The command below pins a public commit merged into main so that the examples use matching code. See [installation and versions](site/en/guide/installation.md).
+> This README and the documentation site describe the development API. The latest released tag, **v0.4.1**, has a different API. The command below installs merged interfaces and records the resolved pseudo-version in go.mod. For unmerged changes, use matching local source as described in [installation and versions](site/en/guide/installation.md).
 
 Run this in a Go module:
 
 ```sh
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 ```
 
 ## Your first workflow

@@ -10,10 +10,10 @@ The dependency direction is `pulse` ← `yaml`. This package depends on the root
 
 ## Version and installation
 
-Requires Go 1.25.0 or later. This page describes the current `main` API; some interfaces have not yet shipped in a release tag. The latest release tag is `v0.4.1`. To run these examples, pin a commit containing the documented interfaces:
+Requires Go 1.25.0 or later. This page describes the development API; the latest release tag remains `v0.4.1`. Install merged interfaces from main and retain the resolved pseudo-version. For unmerged changes, use matching local source as described in [installation](../site/en/guide/installation.md):
 
 ```bash
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 ```
 
 ## Complete example

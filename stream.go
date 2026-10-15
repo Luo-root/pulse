@@ -89,7 +89,9 @@ func checkStreamSlots(g *Graph, id, kind string, need int) error {
 // 整轮挂到 ctx 到期（实测：图级 `Retry` 套在 `Produce` 上，3s 到期时
 // `produced=1, consumed_sum=0`）——所以那是**运行期当场报错**，不是静默挂死
 // （见 checkChannelVisibleNow）。根子上说，重试会**重开一条流**，已经发出去的值收不回来。
-func Produce[T any](g *Graph, id string, out Key[<-chan T],
+//
+// description 原样保留为节点说明，空串合法。
+func Produce[T any](g *Graph, id, description string, out Key[<-chan T],
 	fn func(rc *RunCtx, send func(T) error) error, opts ...StreamOption) error {
 	if g == nil {
 		return fmt.Errorf("pulse: Produce %q: nil graph", id)
@@ -104,7 +106,7 @@ func Produce[T any](g *Graph, id string, out Key[<-chan T],
 		return err
 	}
 	cfg := newStreamConfig(opts)
-	n := NewNode(id, "", nil, Provides(out), func(rc *RunCtx) error {
+	n := NewNode(id, description, nil, Provides(out), func(rc *RunCtx) error {
 		if err := checkChannelVisibleNow(rc, "Produce", id, out.asRef()); err != nil {
 			return err
 		}
@@ -172,7 +174,9 @@ func checkChannelVisibleNow(rc *RunCtx, sugar, nodeID string, out keyRef) error 
 // 消费端也不开切面：`Retry` 对流的语义说不通——流的位置不可回退，重试只会拿到
 // 后半段。它不写 channel，所以不会撞上生产端那条互等（见 checkChannelVisibleNow），
 // 也就没有被拒。（要限时就把 ctx 交给调用方，或在上游节点上装 `Timeout`。）
-func Consume[T any](g *Graph, id string, in Key[<-chan T],
+//
+// description 原样保留为节点说明，空串合法。
+func Consume[T any](g *Graph, id, description string, in Key[<-chan T],
 	fn func(rc *RunCtx, v T) error) error {
 	if g == nil {
 		return fmt.Errorf("pulse: Consume %q: nil graph", id)
@@ -183,7 +187,7 @@ func Consume[T any](g *Graph, id string, in Key[<-chan T],
 	if fn == nil {
 		return fmt.Errorf("pulse: Consume %q: nil fn", id)
 	}
-	n := NewNode(id, "", Requires(in), nil, func(rc *RunCtx) error {
+	n := NewNode(id, description, Requires(in), nil, func(rc *RunCtx) error {
 		ch, err := Get(rc, in)
 		if err != nil {
 			return err // 跳过到达 → 本节点跳过（级联），不是失败
@@ -246,7 +250,10 @@ func Consume[T any](g *Graph, id string, in Key[<-chan T],
 //     的生产端，有尝试边界时通道只有等这次尝试提交才发布，与消费端互等（同
 //     `Produce`，见 checkChannelVisibleNow）。这一条是运行期判的——判据是「有没有
 //     写暂存」，因为 `Aspect` 是裸函数类型，装配期认不出哪个切面开了边界。
-func Tee[T any](g *Graph, id string, in Key[<-chan T], outs []Key[<-chan T],
+//
+// description 原样保留为节点说明，空串合法。outs 在装配时复制，声明与发送
+// 共用这份内部接线；调用方后续修改切片不改变广播出口。
+func Tee[T any](g *Graph, id, description string, in Key[<-chan T], outs []Key[<-chan T],
 	opts ...StreamOption) error {
 	if g == nil {
 		return fmt.Errorf("pulse: Tee %q: nil graph", id)
@@ -260,8 +267,9 @@ func Tee[T any](g *Graph, id string, in Key[<-chan T], outs []Key[<-chan T],
 	if err := checkStreamSlots(g, id, "Tee", len(outs)+1); err != nil {
 		return err
 	}
+	outs = append([]Key[<-chan T](nil), outs...)
 	cfg := newStreamConfig(opts)
-	n := NewNode(id, "", Requires(in), Provides(outs...), func(rc *RunCtx) error {
+	n := NewNode(id, description, Requires(in), Provides(outs...), func(rc *RunCtx) error {
 		src, err := Get(rc, in)
 		if err != nil {
 			return err // 上游跳过 → 整批一起跳过（级联）

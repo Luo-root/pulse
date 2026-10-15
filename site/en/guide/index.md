@@ -47,6 +47,6 @@ The core uses only the standard library. Import the optional `observe` and `yaml
 
 ## Documentation version
 
-These pages describe the current main development API. The latest released tag remains v0.4.1 and does not include the complete object model used here. [Installation](installation.md) provides a pinned public commit and explains how to check your local version.
+These pages describe the development API. The latest released tag remains v0.4.1 and does not include the complete object model used here. [Installation](installation.md) explains how to select a main-branch version, try unmerged local source, and check the selected dependency.
 
 Next: [Install Pulse](installation.md).

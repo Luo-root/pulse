@@ -111,7 +111,7 @@ func (v *streamTestValues) full(t *testing.T, count int, ids ...string) {
 
 func streamTestProduce(t *testing.T, g *Graph, id string, out Key[<-chan int], count, buf int) {
 	t.Helper()
-	streamTestMust(t, Produce(g, id, out, func(rc *RunCtx, send func(int) error) error {
+	streamTestMust(t, Produce(g, id, "", out, func(rc *RunCtx, send func(int) error) error {
 		for i := 1; i <= count; i++ {
 			if err := send(i); err != nil {
 				return err
@@ -123,7 +123,7 @@ func streamTestProduce(t *testing.T, g *Graph, id string, out Key[<-chan int], c
 
 func streamTestConsume(t *testing.T, g *Graph, id string, in Key[<-chan int], values *streamTestValues, label string) {
 	t.Helper()
-	streamTestMust(t, Consume(g, id, in, func(rc *RunCtx, value int) error {
+	streamTestMust(t, Consume(g, id, "", in, func(rc *RunCtx, value int) error {
 		values.add(label, value)
 		return nil
 	}))
@@ -146,7 +146,7 @@ func streamTestBroadcastSub(t *testing.T, capacity int, childOpts []Option, nest
 		child = outer
 	}
 	streamTestProduce(t, g, "produce", src, count, buf)
-	streamTestMust(t, Tee(g, "tee", src, Keys(a, b), WithBuffer(buf)))
+	streamTestMust(t, Tee(g, "tee", "", src, Keys(a, b), WithBuffer(buf)))
 	streamTestMust(t, Sub(g, "sub", "", []SubBind{In(a, ca), In(b, cb)}, child))
 	return g, values
 }
@@ -265,13 +265,13 @@ func TestStreamSubRepeatedDefinition(t *testing.T) {
 				in := NewKey[<-chan int]("in")
 				streamTestMust(t, child.DeclareInput(NewPort(in)))
 				values := &streamTestValues{}
-				streamTestMust(t, Consume(child, "read", in, func(rc *RunCtx, value int) error {
+				streamTestMust(t, Consume(child, "read", "", in, func(rc *RunCtx, value int) error {
 					values.add(rc.exec.Site().Path, value)
 					return nil
 				}))
 				src, a, b := NewKey[<-chan int]("src"), NewKey[<-chan int]("a"), NewKey[<-chan int]("b")
 				streamTestProduce(t, g, "produce", src, 20, 0)
-				streamTestMust(t, Tee(g, "tee", src, Keys(a, b)))
+				streamTestMust(t, Tee(g, "tee", "", src, Keys(a, b)))
 				streamTestMust(t, Sub(g, "left", "", []SubBind{In(a, in)}, child))
 				streamTestMust(t, Sub(g, "right", "", []SubBind{In(b, in)}, child))
 				if !own && capacity == 3 {
@@ -292,7 +292,7 @@ func TestStreamSubFanOutCompetition(t *testing.T) {
 			child := streamTestGraph(t, "fanout-child")
 			src, in := NewKey[<-chan int]("src"), NewKey[<-chan int]("in")
 			streamTestMust(t, child.DeclareInput(NewPort(in)))
-			streamTestMust(t, FanOut(child, "workers", in, Keys(NewKey[int]("one"), NewKey[int]("two")),
+			streamTestMust(t, FanOut(child, "workers", "", in, Keys(NewKey[int]("one"), NewKey[int]("two")),
 				func(rc *RunCtx, shard int, ch <-chan int) (int, error) {
 					count := 0
 					for {
@@ -384,7 +384,7 @@ func TestStreamSubSiblingStreamsSharePool(t *testing.T) {
 			src, done := NewKey[<-chan int]("src"), NewKey[bool]("done")
 			streamTestProduce(t, child, "produce", src, 20, 0)
 			values := &streamTestValues{}
-			streamTestMust(t, Consume(child, "consume", src, func(rc *RunCtx, value int) error {
+			streamTestMust(t, Consume(child, "consume", "", src, func(rc *RunCtx, value int) error {
 				values.add(rc.exec.Site().Path, value)
 				return nil
 			}))
@@ -410,7 +410,7 @@ func TestStreamSubCountsHandwrittenReader(t *testing.T) {
 	streamTestMust(t, child.DeclareInput(NewPort(in)))
 	streamTestMust(t, child.Add(NewNode("manual", "", Requires(in), nil, func(*RunCtx) error { return nil })))
 	streamTestProduce(t, g, "produce", src, 1, 0)
-	streamTestMust(t, Tee(g, "tee", src, Keys(branch)))
+	streamTestMust(t, Tee(g, "tee", "", src, Keys(branch)))
 	streamTestMust(t, Sub(g, "sub", "", []SubBind{In(branch, in)}, child))
 	streamTestReject(t, g, Inputs{}, "needs 3 slots", "sub/manual")
 }
@@ -477,7 +477,7 @@ func streamTestCompletion(t *testing.T, gated, nested, pass bool, buf int, aFirs
 	if aFirst {
 		outs = Keys(a, b)
 	}
-	streamTestMust(t, Tee(g, "tee", src, outs, WithBuffer(buf)))
+	streamTestMust(t, Tee(g, "tee", "", src, outs, WithBuffer(buf)))
 	streamTestMust(t, Sub(g, "B", "", []SubBind{In(b, bin), Out(bdone, done)}, B))
 	if pass {
 		out := NewKey[<-chan int]("A.returned")
@@ -691,8 +691,8 @@ func TestStreamSkipWorkDeclarationOrderLinear(t *testing.T) {
 				streamSkipWorkMust(t, g.DeclareInput(NewPort(keys[0])))
 				terminal := func() {
 					streamSkipWorkMust(t, g.Add(NewNode("channel", "", Requires(keys[size]), Provides(src), func(*RunCtx) error { return nil })))
-					streamSkipWorkMust(t, Tee(g, "tee", src, Keys(out)))
-					streamSkipWorkMust(t, Consume(g, "consume", out, func(*RunCtx, int) error { return nil }))
+					streamSkipWorkMust(t, Tee(g, "tee", "", src, Keys(out)))
+					streamSkipWorkMust(t, Consume(g, "consume", "", out, func(*RunCtx, int) error { return nil }))
 				}
 				if reverse {
 					terminal()
@@ -766,8 +766,8 @@ func TestStreamSkipWorkBindingsLinear(t *testing.T) {
 			// 第二个未知/ready 入口使每处 Sub body 保持可能执行，必须实际沿 In/Out
 			// 推导 skip，不能用整步跳过绕过绑定链。挂载和节点均倒序声明。
 			src, out := NewKey[<-chan int]("src"), NewKey[<-chan int]("out")
-			streamSkipWorkMust(t, Consume(g, "consume", out, func(*RunCtx, int) error { return nil }))
-			streamSkipWorkMust(t, Tee(g, "tee", src, Keys(out)))
+			streamSkipWorkMust(t, Consume(g, "consume", "", out, func(*RunCtx, int) error { return nil }))
+			streamSkipWorkMust(t, Tee(g, "tee", "", src, Keys(out)))
 			streamSkipWorkMust(t, g.Add(NewNode("channel", "", Requires(keys[size]), Provides(src), func(*RunCtx) error { return nil })))
 			for i := size - 1; i >= 0; i-- {
 				streamSkipWorkMust(t, Sub(g, fmt.Sprint("pass", i), "", []SubBind{In(keys[i], port), In(warm, warm), Out(port, keys[i+1])}, pass))

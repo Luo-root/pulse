@@ -33,7 +33,7 @@ func TestSugarMatchesHandwrittenRecords(t *testing.T) {
 	sg := mustGraph(t, "equiv", pulse.WithObserver(sugarObs))
 	var sugarInputs pulse.Inputs
 	feedIn(t, sg, &sugarInputs, in, "doc")
-	if err := pulse.FanOut(sg, "worker", in, []pulse.Key[string]{r1, r2},
+	if err := pulse.FanOut(sg, "worker", "", in, []pulse.Key[string]{r1, r2},
 		func(rc *pulse.RunCtx, shard int, v string) (string, error) {
 			if shard == 2 {
 				return "", pulse.NoValue()
@@ -42,7 +42,7 @@ func TestSugarMatchesHandwrittenRecords(t *testing.T) {
 		}); err != nil {
 		t.Fatal(err)
 	}
-	if err := pulse.Join(sg, "collect", []pulse.Key[string]{r1, r2}, joined,
+	if err := pulse.Join(sg, "collect", "", []pulse.Key[string]{r1, r2}, joined,
 		func(rc *pulse.RunCtx, b pulse.Batch[string]) (string, error) {
 			return fmt.Sprintf("%d/%d", b.Len(), len(b.Missing())), nil
 		}); err != nil {
@@ -228,7 +228,7 @@ func TestStreamSugarMatchesHandwrittenRecords(t *testing.T) {
 	}
 	sugarGot := map[string][]int{}
 	sg := mustGraph(t, "st", pulse.WithObserver(sugarObs))
-	if err := pulse.Produce(sg, "src", stream, func(rc *pulse.RunCtx, send func(int) error) error {
+	if err := pulse.Produce(sg, "src", "", stream, func(rc *pulse.RunCtx, send func(int) error) error {
 		for _, v := range values {
 			if err := send(v); err != nil {
 				return err
@@ -238,12 +238,12 @@ func TestStreamSugarMatchesHandwrittenRecords(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := pulse.Tee(sg, "fan", stream, pulse.Keys(sA, sB)); err != nil {
+	if err := pulse.Tee(sg, "fan", "", stream, pulse.Keys(sA, sB)); err != nil {
 		t.Fatal(err)
 	}
 	var sugarMu sync.Mutex
 	consume := func(id string, k pulse.Key[<-chan int]) error {
-		return pulse.Consume(sg, id, k, func(rc *pulse.RunCtx, v int) error {
+		return pulse.Consume(sg, id, "", k, func(rc *pulse.RunCtx, v int) error {
 			sugarMu.Lock()
 			sugarGot[id] = append(sugarGot[id], v)
 			sugarMu.Unlock()

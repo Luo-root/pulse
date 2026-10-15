@@ -4,14 +4,30 @@ This page is for maintainers upgrading from published v0.4.1 or transitional dev
 
 ## Published releases and development documentation
 
-The latest published tag is **v0.4.1**. The object model and checkpoint bridge on current main have not been released. This site describes the development model; it does not announce v0.5.0. Released-version users should use documentation for v0.4.1. To try site examples, pin the public commit already merged into main that matches current production source:
+The latest published tag is **v0.4.1**. The new object model, checkpoint bridge, and sugar signatures below have not shipped in a new tag. This site describes the development model; it does not announce v0.5.0. Released-version users should follow v0.4.1 documentation. Install merged development interfaces from main; for unmerged branches use the matching local source as described in [installation](../guide/installation.md):
 
 ```sh
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 go list -m github.com/Luo-root/pulse
 ```
 
-The project requires Go 1.25+. Go reports the corresponding pseudo-version. Verify its commit rather than inventing a pseudo-version manually, and do not expect development APIs from an unversioned installation. Select a published tag from release notes when the next release becomes available.
+The project requires Go 1.25+. Retain the concrete pseudo-version resolved from main and check that it contains the changes you need; do not invent a commit or pseudo-version. For a local replacement, verify the source directory instead. Select a published tag from release notes when the next release becomes available.
+
+## Node sugar constructors gain a description
+
+`Join`, `FanOut`, `Produce`, `Consume`, and `Tee` now take `description string` after `g, id`. Add a business description or `""` after the node ID; shift the remaining arguments one position to the right. Callbacks, aspects, and stream options keep their meanings.
+
+```go
+Join(g, id, description, ins, out, fn, aspects...)
+FanOut(g, id, description, in, outs, fn, aspects...)
+Produce(g, id, description, out, fn, opts...)
+Consume(g, id, description, in, fn)
+Tee(g, id, description, in, outs, opts...)
+```
+
+These show argument shapes. Every FanOut worker shares the description and retains its existing `id-1` through `id-N` identity. The description is static metadata in Topology / Snapshot, with no runtime setter.
+
+This public signature change requires a minor release during 0.x, never a patch. The older public snapshot `1f67045d6c42` uses the old signatures. Use [matching local source](../guide/installation.md) when trying unmerged changes; updating examples while retaining that older dependency does not work.
 
 ## Migrate object responsibilities first
 

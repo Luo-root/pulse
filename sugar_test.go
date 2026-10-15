@@ -32,7 +32,7 @@ func TestJoinCollectsWhatArrives(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got Batch[string]
-	if err := Join(g, "collect", Keys(a, b, c), out, func(rc *RunCtx, batch Batch[string]) (string, error) {
+	if err := Join(g, "collect", "", Keys(a, b, c), out, func(rc *RunCtx, batch Batch[string]) (string, error) {
 		got = batch
 		return strings.Join(batch.Values(), "+"), nil
 	}); err != nil {
@@ -77,7 +77,7 @@ func TestBatchCarriesSourceNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got Batch[string]
-	if err := Join(g, "collect", Keys(a, b, c), out, func(rc *RunCtx, batch Batch[string]) (string, error) {
+	if err := Join(g, "collect", "", Keys(a, b, c), out, func(rc *RunCtx, batch Batch[string]) (string, error) {
 		got = batch
 		return "ok", nil
 	}); err != nil {
@@ -135,7 +135,7 @@ func TestJoinAllSkippedNeverRuns(t *testing.T) {
 	if err := skipSeedOn(g, b); err != nil {
 		t.Fatal(err)
 	}
-	if err := Join(g, "collect", Keys(a, b), out, func(rc *RunCtx, batch Batch[string]) (string, error) {
+	if err := Join(g, "collect", "", Keys(a, b), out, func(rc *RunCtx, batch Batch[string]) (string, error) {
 		t.Fatal("一条值都没到，fn 不该执行")
 		return "", nil
 	}); err != nil {
@@ -163,7 +163,7 @@ func TestJoinWaitAllStrictOptOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	ran := false
-	if err := Join(g, "strict", Keys(a, b), out, func(rc *RunCtx, batch Batch[string]) (string, error) {
+	if err := Join(g, "strict", "", Keys(a, b), out, func(rc *RunCtx, batch Batch[string]) (string, error) {
 		ran = true
 		if err := batch.WaitAll(); err != nil {
 			return "", err
@@ -199,7 +199,7 @@ func TestFanOutPartialValueIsMissingNotFailure(t *testing.T) {
 	if err := seedOn(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
-	if err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
+	if err := FanOut(g, "worker", "", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
 		if shard == 2 {
 			return "", NoValue() // 第 2 份没有产出：这正是「部分产出」的正常表达
 		}
@@ -208,7 +208,7 @@ func TestFanOutPartialValueIsMissingNotFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got Batch[string]
-	if err := Join(g, "collect", outs, joined, func(rc *RunCtx, batch Batch[string]) (string, error) {
+	if err := Join(g, "collect", "", outs, joined, func(rc *RunCtx, batch Batch[string]) (string, error) {
 		got = batch
 		return strings.Join(batch.Values(), ","), nil
 	}); err != nil {
@@ -249,13 +249,13 @@ func TestFanOutNamesWorkersByShard(t *testing.T) {
 	if err := seedOn(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
-	if err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
+	if err := FanOut(g, "worker", "", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
 		return v + "#" + strconv.Itoa(shard), nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
-	if err := Join(g, "collect", outs, joined, func(rc *RunCtx, b Batch[string]) (string, error) {
+	if err := Join(g, "collect", "", outs, joined, func(rc *RunCtx, b Batch[string]) (string, error) {
 		got = append(got, b.Values()...)
 		return strings.Join(b.Values(), ","), nil
 	}); err != nil {
@@ -286,7 +286,7 @@ func TestFanOutFailureCancelsGraph(t *testing.T) {
 	if err := seedOn(g, in, "doc"); err != nil {
 		t.Fatal(err)
 	}
-	if err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
+	if err := FanOut(g, "worker", "", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
 		if shard == 2 {
 			return "", boom
 		}
@@ -315,7 +315,7 @@ func TestFanOutAssemblyIsAtomic(t *testing.T) {
 	mustAdd(t, g, NewNode("taken", "", nil, Provides(outs[2]), func(rc *RunCtx) error {
 		return Set(rc, outs[2], "taken")
 	}))
-	err := FanOut(g, "worker", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
+	err := FanOut(g, "worker", "", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
 		return v, nil
 	})
 	if !errors.Is(err, ErrDuplicateSource) {
@@ -363,7 +363,7 @@ func TestFanOutCallbackSeesCancellation(t *testing.T) {
 		sawNode   string
 		sawNode2  string
 	)
-	if err := FanOut(g, "ctx", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
+	if err := FanOut(g, "ctx", "", in, outs, func(rc *RunCtx, shard int, v string) (string, error) {
 		if shard == 2 {
 			<-entered // 等实例 1 确实进了 fn，再制造失败
 			sawNode2 = rc.NodeID()
@@ -449,28 +449,28 @@ func TestSugarRejectsBadArgs(t *testing.T) {
 	g := mustNew(t, context.Background(), "sugar-bad")
 	join := func(rc *RunCtx, b Batch[string]) (string, error) { return "", nil }
 	work := func(rc *RunCtx, shard int, v string) (string, error) { return v, nil }
-	if err := Join(nil, "j", Keys(k), out, join); err == nil {
+	if err := Join(nil, "j", "", Keys(k), out, join); err == nil {
 		t.Fatal("nil graph 应当报错")
 	}
-	if err := Join(g, "", Keys(k), out, join); err == nil {
+	if err := Join(g, "", "", Keys(k), out, join); err == nil {
 		t.Fatal("空 id 应当报错")
 	}
-	if err := Join(g, "j", nil, out, join); err == nil {
+	if err := Join(g, "j", "", nil, out, join); err == nil {
 		t.Fatal("空输入应当报错")
 	}
-	if err := Join(g, "j", Keys(k), out, nil); err == nil {
+	if err := Join(g, "j", "", Keys(k), out, nil); err == nil {
 		t.Fatal("nil fn 应当报错")
 	}
-	if err := FanOut(nil, "s", k, Keys(out), work); err == nil {
+	if err := FanOut(nil, "s", "", k, Keys(out), work); err == nil {
 		t.Fatal("nil graph 应当报错")
 	}
-	if err := FanOut(g, "", k, Keys(out), work); err == nil {
+	if err := FanOut(g, "", "", k, Keys(out), work); err == nil {
 		t.Fatal("空 id 应当报错")
 	}
-	if err := FanOut(g, "s", k, nil, work); err == nil {
+	if err := FanOut(g, "s", "", k, nil, work); err == nil {
 		t.Fatal("空输出应当报错")
 	}
-	if err := FanOut(g, "s", k, Keys(out), nil); err == nil {
+	if err := FanOut(g, "s", "", k, Keys(out), nil); err == nil {
 		t.Fatal("nil fn 应当报错")
 	}
 	// 上面每一次都必须什么都没留下：`-1` 这种名字只有空 id 被放行才会出现。

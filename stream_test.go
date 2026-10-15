@@ -16,7 +16,7 @@ func TestProduceConsumeRoundTrip(t *testing.T) {
 	in := NewKey[<-chan int]("s.rt")
 	g := mustNew(t, context.Background(), "roundtrip")
 
-	if err := Produce(g, "src", in, func(rc *RunCtx, send func(int) error) error {
+	if err := Produce(g, "src", "", in, func(rc *RunCtx, send func(int) error) error {
 		for i := 1; i <= 5; i++ {
 			if err := send(i); err != nil {
 				return err
@@ -28,7 +28,7 @@ func TestProduceConsumeRoundTrip(t *testing.T) {
 	}
 
 	var got []int
-	if err := Consume(g, "sink", in, func(rc *RunCtx, v int) error {
+	if err := Consume(g, "sink", "", in, func(rc *RunCtx, v int) error {
 		got = append(got, v)
 		return nil
 	}); err != nil {
@@ -47,7 +47,7 @@ func TestWithBufferKeepsOrder(t *testing.T) {
 	in := NewKey[<-chan string]("s.buf")
 	g := mustNew(t, context.Background(), "buffered")
 
-	if err := Produce(g, "src", in, func(rc *RunCtx, send func(string) error) error {
+	if err := Produce(g, "src", "", in, func(rc *RunCtx, send func(string) error) error {
 		for _, v := range []string{"a", "b", "c"} {
 			if err := send(v); err != nil {
 				return err
@@ -59,7 +59,7 @@ func TestWithBufferKeepsOrder(t *testing.T) {
 	}
 
 	var got []string
-	if err := Consume(g, "sink", in, func(rc *RunCtx, v string) error {
+	if err := Consume(g, "sink", "", in, func(rc *RunCtx, v string) error {
 		got = append(got, v)
 		return nil
 	}); err != nil {
@@ -80,13 +80,13 @@ func TestConsumeEmptyStreamEntersRun(t *testing.T) {
 	obs := &recordingObserver{}
 	g := mustNew(t, context.Background(), "empty", WithObserver(obs))
 
-	if err := Produce(g, "src", in, func(rc *RunCtx, send func(int) error) error {
+	if err := Produce(g, "src", "", in, func(rc *RunCtx, send func(int) error) error {
 		return nil // 一次都不发
 	}); err != nil {
 		t.Fatal(err)
 	}
 	calls := 0
-	if err := Consume(g, "sink", in, func(rc *RunCtx, v int) error {
+	if err := Consume(g, "sink", "", in, func(rc *RunCtx, v int) error {
 		calls++
 		return nil
 	}); err != nil {
@@ -112,7 +112,7 @@ func TestProduceRejectsSingleSlot(t *testing.T) {
 	in := NewKey[<-chan int]("s.one")
 	g := mustNew(t, context.Background(), "oneslot", WithMaxRunning(1))
 
-	err := Produce(g, "src", in, func(rc *RunCtx, send func(int) error) error { return nil })
+	err := Produce(g, "src", "", in, func(rc *RunCtx, send func(int) error) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "WithMaxRunning") {
 		t.Fatalf("maxRun=1 应在装配期被拒，got %v", err)
 	}
@@ -122,7 +122,7 @@ func TestProduceRejectsSingleSlot(t *testing.T) {
 
 	// 名额够（或不设）就装得下
 	g2 := mustNew(t, context.Background(), "twoslot", WithMaxRunning(2))
-	if err := Produce(g2, "src", in, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
+	if err := Produce(g2, "src", "", in, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
 		t.Fatalf("maxRun=2 应当装得下: %v", err)
 	}
 }
@@ -135,12 +135,12 @@ func TestTeeNeedsSlotForEveryDownstream(t *testing.T) {
 	c := NewKey[<-chan int]("s.teec")
 
 	g := mustNew(t, context.Background(), "tee2", WithMaxRunning(3))
-	if err := Tee(g, "fan", in, Keys(a, b)); err != nil {
+	if err := Tee(g, "fan", "", in, Keys(a, b)); err != nil {
 		t.Fatalf("两个下游 + 名额 3 应当装得下: %v", err)
 	}
 
 	g2 := mustNew(t, context.Background(), "tee3", WithMaxRunning(3))
-	err := Tee(g2, "fan", in, Keys(a, b, c))
+	err := Tee(g2, "fan", "", in, Keys(a, b, c))
 	if err == nil || !strings.Contains(err.Error(), "WithMaxRunning") {
 		t.Fatalf("三个下游 + 名额 3 应在装配期被拒，got %v", err)
 	}
@@ -157,7 +157,7 @@ func TestConsumeSeesCancellation(t *testing.T) {
 	in := NewKey[<-chan int]("s.cancel")
 	g := mustNew(t, ctx, "cancel")
 
-	if err := Produce(g, "src", in, func(rc *RunCtx, send func(int) error) error {
+	if err := Produce(g, "src", "", in, func(rc *RunCtx, send func(int) error) error {
 		for i := 0; ; i++ {
 			if err := send(i); err != nil {
 				return err
@@ -168,7 +168,7 @@ func TestConsumeSeesCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got int32
-	if err := Consume(g, "sink", in, func(rc *RunCtx, v int) error {
+	if err := Consume(g, "sink", "", in, func(rc *RunCtx, v int) error {
 		atomic.AddInt32(&got, 1)
 		return nil
 	}); err != nil {
@@ -195,7 +195,7 @@ func TestTeeBroadcastsEveryValue(t *testing.T) {
 	s2 := NewKey[<-chan int]("s.bc2")
 	g := mustNew(t, context.Background(), "broadcast")
 
-	if err := Produce(g, "src", in, func(rc *RunCtx, send func(int) error) error {
+	if err := Produce(g, "src", "", in, func(rc *RunCtx, send func(int) error) error {
 		for i := 1; i <= 4; i++ {
 			if err := send(i); err != nil {
 				return err
@@ -205,7 +205,7 @@ func TestTeeBroadcastsEveryValue(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Tee(g, "fan", in, Keys(s1, s2)); err != nil {
+	if err := Tee(g, "fan", "", in, Keys(s1, s2)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -216,7 +216,7 @@ func TestTeeBroadcastsEveryValue(t *testing.T) {
 		k  Key[<-chan int]
 	}{{"a", s1}, {"b", s2}} {
 		id, k := c.id, c.k
-		if err := Consume(g, id, k, func(rc *RunCtx, v int) error {
+		if err := Consume(g, id, "", k, func(rc *RunCtx, v int) error {
 			mu.Lock()
 			got[id] = append(got[id], v)
 			mu.Unlock()
@@ -248,7 +248,7 @@ func TestConsumeSkipsWhenUpstreamSkips(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	if err := Consume(g, "sink", in, func(rc *RunCtx, v int) error {
+	if err := Consume(g, "sink", "", in, func(rc *RunCtx, v int) error {
 		called = true
 		return nil
 	}); err != nil {
@@ -352,15 +352,15 @@ func TestStreamSlotsCheckedAtStart(t *testing.T) {
 
 	build := func(g *Graph) {
 		t.Helper()
-		if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error {
+		if err := Produce(g, "src", "", src, func(rc *RunCtx, send func(int) error) error {
 			return nil // 空流：只为验证装配，不真的发
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := Tee(g, "tee", src, Keys(a)); err != nil {
+		if err := Tee(g, "tee", "", src, Keys(a)); err != nil {
 			t.Fatal(err)
 		}
-		if err := Consume(g, "sink", a, func(rc *RunCtx, v int) error { return nil }); err != nil {
+		if err := Consume(g, "sink", "", a, func(rc *RunCtx, v int) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -389,13 +389,13 @@ func TestStreamOutputNeedsConsumer(t *testing.T) {
 
 	// 1) Tee 的一条出口没人接
 	g := mustNew(t, context.Background(), "nc-tee")
-	if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
+	if err := Produce(g, "src", "", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := Tee(g, "tee", src, Keys(a, b)); err != nil {
+	if err := Tee(g, "tee", "", src, Keys(a, b)); err != nil {
 		t.Fatal(err)
 	}
-	if err := Consume(g, "sink", a, func(rc *RunCtx, v int) error { return nil }); err != nil {
+	if err := Consume(g, "sink", "", a, func(rc *RunCtx, v int) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	err := startOn(g)
@@ -405,7 +405,7 @@ func TestStreamOutputNeedsConsumer(t *testing.T) {
 
 	// 2) Produce 的出口没人接
 	g2 := mustNew(t, context.Background(), "nc-produce")
-	if err := Produce(g2, "src", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
+	if err := Produce(g2, "src", "", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	err = startOn(g2)
@@ -441,7 +441,7 @@ func TestStreamSlotsCountHandWrittenReader(t *testing.T) {
 	}
 	build := func(g *Graph) {
 		t.Helper()
-		if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error {
+		if err := Produce(g, "src", "", src, func(rc *RunCtx, send func(int) error) error {
 			for i := 0; i < 5; i++ {
 				if err := send(i); err != nil {
 					return err
@@ -451,7 +451,7 @@ func TestStreamSlotsCountHandWrittenReader(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := Tee(g, "tee", src, Keys(a)); err != nil {
+		if err := Tee(g, "tee", "", src, Keys(a)); err != nil {
 			t.Fatal(err)
 		}
 		if err := g.Add(NewNode("sink", "", Requires(a), nil, sink)); err != nil {
@@ -497,14 +497,14 @@ func TestStreamOutputRejectsSplitReaders(t *testing.T) {
 		src := NewKey[<-chan int]("s.split1.src")
 		a := NewKey[<-chan int]("s.split1.a")
 		g := mustNew(t, ctx, "split-tee")
-		if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
+		if err := Produce(g, "src", "", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
-		if err := Tee(g, "tee", src, Keys(a)); err != nil {
+		if err := Tee(g, "tee", "", src, Keys(a)); err != nil {
 			t.Fatal(err)
 		}
 		for _, id := range []string{"sink-1", "sink-2"} {
-			if err := Consume(g, id, a, func(rc *RunCtx, v int) error { return nil }); err != nil {
+			if err := Consume(g, id, "", a, func(rc *RunCtx, v int) error { return nil }); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -521,7 +521,7 @@ func TestStreamOutputRejectsSplitReaders(t *testing.T) {
 	{
 		src := NewKey[<-chan int]("s.split2.src")
 		g := mustNew(t, ctx, "split-produce")
-		if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
+		if err := Produce(g, "src", "", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
 		for _, id := range []string{"r1", "r2"} {
@@ -551,7 +551,7 @@ func TestStreamOutputRejectsSplitReaders(t *testing.T) {
 		o3 := NewKey[int]("s.split3.o3")
 		o4 := NewKey[int]("s.split3.o4")
 		g := mustNew(t, ctx, "split-two-fanout")
-		if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
+		if err := Produce(g, "src", "", src, func(rc *RunCtx, send func(int) error) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
 		drain := func(rc *RunCtx, shard int, in <-chan int) (int, error) {
@@ -559,10 +559,10 @@ func TestStreamOutputRejectsSplitReaders(t *testing.T) {
 			}
 			return shard, nil
 		}
-		if err := FanOut(g, "w", src, Keys(o1, o2), drain); err != nil {
+		if err := FanOut(g, "w", "", src, Keys(o1, o2), drain); err != nil {
 			t.Fatal(err)
 		}
-		if err := FanOut(g, "v", src, Keys(o3, o4), drain); err != nil {
+		if err := FanOut(g, "v", "", src, Keys(o3, o4), drain); err != nil {
 			t.Fatal(err)
 		}
 		err := startOn(g)
@@ -582,7 +582,7 @@ func TestFanOutCompetesOnStreamOutput(t *testing.T) {
 	o2 := NewKey[int]("s.fanout.o2")
 	g := mustNew(t, context.Background(), "fanout-stream")
 
-	if err := Produce(g, "src", src, func(rc *RunCtx, send func(int) error) error {
+	if err := Produce(g, "src", "", src, func(rc *RunCtx, send func(int) error) error {
 		for i := 0; i < 10; i++ {
 			if err := send(i); err != nil {
 				return err
@@ -593,7 +593,7 @@ func TestFanOutCompetesOnStreamOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	var counts [2]atomic.Int32
-	if err := FanOut(g, "w", src, Keys(o1, o2),
+	if err := FanOut(g, "w", "", src, Keys(o1, o2),
 		func(rc *RunCtx, shard int, in <-chan int) (int, error) {
 			for range in {
 				counts[shard-1].Add(1)
@@ -635,7 +635,7 @@ func TestConsumeStopsCallingAfterCancel(t *testing.T) {
 	var cancelled atomic.Bool
 	var afterCancel atomic.Int32
 	calls := 0
-	if err := Consume(g, "sink", in, func(rc *RunCtx, v int) error {
+	if err := Consume(g, "sink", "", in, func(rc *RunCtx, v int) error {
 		calls++
 		if cancelled.Load() {
 			afterCancel.Add(1)
@@ -664,19 +664,19 @@ func TestStreamAssemblyErrors(t *testing.T) {
 	in := NewKey[<-chan int]("s.args")
 	g := mustNew(t, context.Background(), "args")
 
-	if err := Produce(nil, "src", in, func(rc *RunCtx, send func(int) error) error { return nil }); err == nil {
+	if err := Produce(nil, "src", "", in, func(rc *RunCtx, send func(int) error) error { return nil }); err == nil {
 		t.Fatal("nil graph 应当报错")
 	}
-	if err := Produce(g, "", in, func(rc *RunCtx, send func(int) error) error { return nil }); err == nil {
+	if err := Produce(g, "", "", in, func(rc *RunCtx, send func(int) error) error { return nil }); err == nil {
 		t.Fatal("空 id 应当报错")
 	}
-	if err := Produce(g, "src", in, nil); err == nil {
+	if err := Produce(g, "src", "", in, nil); err == nil {
 		t.Fatal("nil fn 应当报错")
 	}
-	if err := Consume(g, "sink", in, nil); err == nil {
+	if err := Consume(g, "sink", "", in, nil); err == nil {
 		t.Fatal("nil fn 应当报错")
 	}
-	if err := Tee(g, "fan", in, nil); err == nil {
+	if err := Tee(g, "fan", "", in, nil); err == nil {
 		t.Fatal("没有出口应当报错")
 	}
 	if n := len(g.nodes); n != 0 {
@@ -703,14 +703,14 @@ func TestStreamProducerRejectsAttemptWriteSet(t *testing.T) {
 		out := NewKey[<-chan int]("s.txn.src")
 		g := mustNew(t, ctx, "txn-produce", WithAspects(Retry(2, 0)))
 		var produced atomic.Int32
-		if err := Produce(g, "src", out, func(rc *RunCtx, send func(int) error) error {
+		if err := Produce(g, "src", "", out, func(rc *RunCtx, send func(int) error) error {
 			produced.Add(1)
 			return send(1)
 		}); err != nil {
 			t.Fatal(err)
 		}
 		var got []int
-		if err := Consume(g, "sink", out, func(rc *RunCtx, v int) error {
+		if err := Consume(g, "sink", "", out, func(rc *RunCtx, v int) error {
 			got = append(got, v)
 			return nil
 		}); err != nil {
@@ -749,11 +749,11 @@ func TestStreamProducerRejectsAttemptWriteSet(t *testing.T) {
 		if err := seedOn(g, in, (<-chan int)(src)); err != nil {
 			t.Fatal(err)
 		}
-		if err := Tee(g, "fan", in, Keys(o1, o2)); err != nil {
+		if err := Tee(g, "fan", "", in, Keys(o1, o2)); err != nil {
 			t.Fatal(err)
 		}
 		for _, k := range []Key[<-chan int]{o1, o2} {
-			if err := Consume(g, "r-"+k.Name(), k, func(rc *RunCtx, v int) error { return nil }); err != nil {
+			if err := Consume(g, "r-"+k.Name(), "", k, func(rc *RunCtx, v int) error { return nil }); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -779,7 +779,7 @@ func TestStreamProducerAcceptsNonStagingAspect(t *testing.T) {
 	out := NewKey[<-chan int]("s.txn.ok.src")
 	g := mustNew(t, context.Background(), "txn-stream-timeout", WithAspects(Timeout(time.Second)))
 
-	if err := Produce(g, "src", out, func(rc *RunCtx, send func(int) error) error {
+	if err := Produce(g, "src", "", out, func(rc *RunCtx, send func(int) error) error {
 		for i := 1; i <= 3; i++ {
 			if err := send(i); err != nil {
 				return err
@@ -790,7 +790,7 @@ func TestStreamProducerAcceptsNonStagingAspect(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got []int
-	if err := Consume(g, "sink", out, func(rc *RunCtx, v int) error {
+	if err := Consume(g, "sink", "", out, func(rc *RunCtx, v int) error {
 		got = append(got, v)
 		return nil
 	}); err != nil {

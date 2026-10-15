@@ -831,7 +831,7 @@ func quotaStreamChild(t *testing.T, ctx context.Context, id string, opts ...Opti
 	branch := NewKey[<-chan int](id + ".branch")
 	g := mustNew(t, ctx, id, opts...)
 	declareOut(t, g, NewPort(total))
-	if err := Produce(g, "gen", items, func(rc *RunCtx, send func(int) error) error {
+	if err := Produce(g, "gen", "", items, func(rc *RunCtx, send func(int) error) error {
 		for i := 0; i < 3; i++ {
 			if err := send(i); err != nil {
 				return err
@@ -841,7 +841,7 @@ func quotaStreamChild(t *testing.T, ctx context.Context, id string, opts ...Opti
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Tee(g, "tee", items, []Key[<-chan int]{branch}); err != nil {
+	if err := Tee(g, "tee", "", items, []Key[<-chan int]{branch}); err != nil {
 		t.Fatal(err)
 	}
 	mustAdd(t, g, NewNode("sink", "", Requires(branch), Provides(total), func(rc *RunCtx) error {

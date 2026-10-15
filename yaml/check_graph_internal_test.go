@@ -22,11 +22,11 @@ func TestCheckGraphCarriesCapacity(t *testing.T) {
 			return nil, err
 		}
 		out := pulse.NewKey[<-chan int]("chk.out")
-		if err := pulse.Produce(g, "prod", out,
+		if err := pulse.Produce(g, "prod", "", out,
 			func(rc *pulse.RunCtx, send func(int) error) error { return nil }); err != nil {
 			return nil, err
 		}
-		if err := pulse.Consume(g, "cons", out,
+		if err := pulse.Consume(g, "cons", "", out,
 			func(rc *pulse.RunCtx, v int) error { return nil }); err != nil {
 			return nil, err
 		}

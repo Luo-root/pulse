@@ -28,7 +28,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err := pulse.Produce(g, "source", stream,
+	if err := pulse.Produce(g, "source", "Produce a number stream", stream,
 		func(rc *pulse.RunCtx, send func(int) error) error {
 			for _, value := range []int{1, 2, 3} {
 				if err := send(value); err != nil {
@@ -39,18 +39,18 @@ func run() error {
 		}); err != nil {
 		return err
 	}
-	if err := pulse.Tee(g, "broadcast", stream, pulse.Keys(left, right)); err != nil {
+	if err := pulse.Tee(g, "broadcast", "Broadcast the number stream", stream, pulse.Keys(left, right)); err != nil {
 		return err
 	}
 	var leftSum, rightSum int
-	if err := pulse.Consume(g, "left-sink", left,
+	if err := pulse.Consume(g, "left-sink", "Sum the left stream", left,
 		func(rc *pulse.RunCtx, value int) error {
 			leftSum += value
 			return nil
 		}); err != nil {
 		return err
 	}
-	if err := pulse.Consume(g, "right-sink", right,
+	if err := pulse.Consume(g, "right-sink", "Sum the right stream", right,
 		func(rc *pulse.RunCtx, value int) error {
 			rightSum += value
 			return nil
@@ -76,11 +76,11 @@ func main() {
 }
 ```
 
-Run in that directory:
+Run in that directory. For examples from an unmerged branch, use the matching source checkout with the [installation page's local replacement steps](./installation.md); `@main` below only installs APIs already merged into main.
 
 ```sh
 go mod init example.com/pulse-streams
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 go run .
 ```
 
@@ -96,10 +96,14 @@ The producer, Tee, and two consumers need four shared quota slots. Each sum has 
 
 | Function | Arguments | Callback responsibility |
 |---|---|---|
-| `Produce` | `g, id, out, fn, opts...` | `fn(*RunCtx, func(T) error) error`; check every `send` error |
-| `Consume` | `g, id, in, fn` | `fn(*RunCtx, T) error`; handle one element |
-| `Tee` | `g, id, in, []Key[<-chan T], opts...` | No business callback; copy every element to all outputs |
-| `FanOut` | `g, id, in, outs, fn, aspects...` | `fn(*RunCtx, int, I) (O, error)`; ordinary inputs are shared, channel inputs explicitly compete |
+| `Produce` | `g, id, description, out, fn, opts...` | `fn(*RunCtx, func(T) error) error`; check every `send` error |
+| `Consume` | `g, id, description, in, fn` | `fn(*RunCtx, T) error`; handle one element |
+| `Tee` | `g, id, description, in, outs, opts...` | `outs` is `[]Key[<-chan T]`; no business callback; copy every element to all outputs |
+| `FanOut` | `g, id, description, in, outs, fn, aspects...` | `fn(*RunCtx, int, I) (O, error)`; ordinary inputs are shared, channel inputs explicitly compete |
+
+`description` is preserved as the node description, and an empty string is valid. All FanOut workers share that description and remain distinguished by `id-1` through `id-N`.
+
+Tee copies the `outs` wiring list during assembly. Changing the caller's slice afterward does not change the graph's output declarations or broadcast destinations. This copies Key wiring only; business values in the stream are not deep-copied.
 
 Produce and Tee accept `StreamOption` values such as `pulse.WithBuffer(8)`. Consume accepts no buffer or aspect arguments. FanOut's final arguments are `Aspect`, not `StreamOption`.
 
@@ -116,7 +120,7 @@ Tee creates one independent channel per downstream, and every downstream receive
 When each element should be handled by one worker, use one FanOut group competing for the same channel. This fragment replaces the complete example's Tee and both Consume calls. It needs existing `g`, the producer's `stream`, and `r1`, `r2` (`Key[int]`), inside an assembly function returning `error`:
 
 ```go
-if err := pulse.FanOut(g, "worker", stream, pulse.Keys(r1, r2),
+if err := pulse.FanOut(g, "worker", "Sum assigned numbers", stream, pulse.Keys(r1, r2),
 	func(rc *pulse.RunCtx, shard int, ch <-chan int) (int, error) {
 		sum := 0
 		for {

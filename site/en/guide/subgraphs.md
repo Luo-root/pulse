@@ -79,7 +79,7 @@ func run() error {
 	}, child); err != nil {
 		return err
 	}
-	if err := pulse.Join(parent, "collect", pulse.Keys(first, second), report,
+	if err := pulse.Join(parent, "collect", "Combine both labels", pulse.Keys(first, second), report,
 		func(rc *pulse.RunCtx, batch pulse.Batch[string]) (string, error) {
 			if err := batch.WaitAll(); err != nil {
 				return "", err
@@ -129,11 +129,11 @@ func main() {
 }
 ```
 
-Run in that directory:
+Run in that directory. For examples from an unmerged branch, use the matching source checkout with the [installation page's local replacement steps](./installation.md); `@main` below only installs APIs already merged into main.
 
 ```sh
 go mod init example.com/pulse-subgraphs
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 go run .
 ```
 
