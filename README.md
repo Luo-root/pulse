@@ -24,13 +24,13 @@ Pulse 将一组 Go 函数组合为可复用的工作流。每个节点声明需�
 - **连续数据处理**：用受管流逐条发送、确认、广播，跨子图实时传递，并在运行中向宿主交付。
 - **需要可观测的执行过程**：查看结构、运行快照与节点事件，定位等待、执行、失败和取消。
 
-需要在进程退出后继续工作时，使用独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable)。它在 Pulse 的检查点桥上提供存储、编码和 Run / Resume；受管流的存储与进程恢复也由 Durable 提供，集成跟踪见 [Durable #21](https://github.com/Luo-root/pulse-durable/issues/21)，使用匹配本地检出，发布以实际 tag/release 为准。未确认步骤可能重新执行，外部副作用仍需业务提供幂等或事务。
+需要在进程退出后继续工作时，使用独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable)。它在 Pulse 的检查点桥上提供存储、编码和 Run / Resume；受管流的存储与进程恢复也由 Durable 提供。按 [Durable 安装说明](https://github.com/Luo-root/pulse-durable/blob/main/site/guide/installation.md)使用已验证的依赖组合，发布以实际 tag/release 为准。未确认步骤可能重新执行，外部副作用仍需业务提供幂等或事务。
 
 ## 安装
 
 需要 **Go 1.25.0 或更新版本**。
 
-> 本 README 和文档站描述开发版 API。最新正式 tag 为 **v0.4.1**，其 API 与本文不同。以下命令只安装已合入主线的接口，并在 go.mod 固定解析出的伪版本；本文链接中的受管 Stream、实时 Sub 和增量检查点需使用与文档匹配的检出，按[安装与版本](site/guide/installation.md)配置本地替换，不能假定 `@main` 已包含尚未合并的 API。
+> 本 README 和文档站描述 `main` 的开发版 API，包含受管 Stream、实时 Sub 和增量检查点。最新正式 tag 为 **v0.4.1**，其 API 与本文不同。以下命令安装主线并在 go.mod 固定解析出的伪版本；试用尚未合并的修改时，按[安装与版本](site/guide/installation.md)使用对应本地源码。
 
 在 Go 模块中执行：
 

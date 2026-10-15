@@ -22,7 +22,7 @@ The core package's dependency closure contains only the standard library. `pulse
 
 **This site describes the development API, not v0.4.1.** `go get …@main` resolves the current main branch to a concrete pseudo-version in `go.mod`. Once that file is committed, teammates use that resolved version; running the application does not automatically update it.
 
-Unmerged branches are not installed by `@main`. Managed Stream, live Sub, message-attempt, and incremental-checkpoint examples require the checkout matching these docs; use the local replacement below. The older public snapshot `1f67045d6c42` lacks the sugar constructors' `description` argument and cannot compile the updated sugar examples.
+`main` includes managed Stream, live Sub, message attempts, and incremental checkpoints, so you can install it directly to run the corresponding examples. Use the local replacement below when trying an unmerged change. The older public snapshot `1f67045d6c42` lacks the sugar constructors' `description` argument and cannot compile the updated sugar examples.
 
 Unreleased target versions become available only when the maintainer creates their tags / releases. During 0.x, breaking changes require a minor release. Read the [migration notes](../reference/migration.md) before upgrading.
 

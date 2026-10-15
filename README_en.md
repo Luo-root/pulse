@@ -24,13 +24,13 @@ A `Graph` defines the workflow; an `Execution` holds one run. Reuse the same def
 - **Continuous data processing**: send, acknowledge, and broadcast managed messages; pass live streams across subgraphs and deliver them to the host during execution.
 - **Observable execution**: inspect structure, execution snapshots, and node events to locate waiting, running, failed, and canceled steps.
 
-To continue after a process exits, use the separate [pulse-durable](https://github.com/Luo-root/pulse-durable) library. It provides storage, encoding, and Run / Resume through Pulse's checkpoint bridge. Durable also provides managed-stream storage and process recovery, tracked in [Durable #21](https://github.com/Luo-root/pulse-durable/issues/21). Use matching local checkouts; actual tags/releases determine release status. Unconfirmed steps may execute again; application code still needs idempotency or transactions for external side effects.
+To continue after a process exits, use the separate [pulse-durable](https://github.com/Luo-root/pulse-durable) library. It provides storage, encoding, Run / Resume, and managed-stream process recovery through Pulse's checkpoint bridge. Use the tested dependency combination in the [Durable installation guide](https://github.com/Luo-root/pulse-durable/blob/main/site/en/guide/installation.md); actual tags/releases determine release status. Unconfirmed steps may execute again; application code still needs idempotency or transactions for external side effects.
 
 ## Installation
 
 Requires **Go 1.25.0 or later**.
 
-> This README and the documentation site describe the development API. The latest released tag, **v0.4.1**, has a different API. The command below only installs merged interfaces and records the resolved pseudo-version in go.mod. Managed Stream, live Sub, and incremental checkpoint examples need a matching checkout and the local replacement in [installation and versions](site/en/guide/installation.md); do not assume `@main` contains unmerged APIs.
+> This README and the documentation site describe the development API on `main`, including managed Stream, live Sub, and incremental checkpoints. The latest released tag, **v0.4.1**, has a different API. The command below installs main and records the resolved pseudo-version in go.mod. To try an unmerged change, use the matching local source as described in [installation and versions](site/en/guide/installation.md).
 
 Run this in a Go module:
 
