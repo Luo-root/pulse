@@ -451,7 +451,12 @@ func (e *Execution) Start() error {
 			assemblyMu.Unlock()
 			return err
 		}
-		e.applyRestoreLocked()
+		if err := e.applyRestoreLocked(); err != nil {
+			e.mu.Unlock()
+			g.mu.Unlock()
+			assemblyMu.Unlock()
+			return e.stopCheckpoint("restore streams", err)
+		}
 	}
 	// 全部校验通过才封整棵树；临界区内不运行 Store/Codec 或宿主回调。
 	g.sealTreeLocked(mountChain{g})
