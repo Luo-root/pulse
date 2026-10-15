@@ -358,6 +358,7 @@ func (s *AsyncSink) worker() {
 		}
 		if s.forceDrop {
 			s.dropped.Add(uint64(s.count))
+			s.ring = nil // 已停收且即将退出，释放丢弃记录的 Attrs/Err 引用。
 			s.count, s.head = 0, 0
 			for s.flush != nil {
 				s.finishFlushLocked(s.flush, s.closeResult)
