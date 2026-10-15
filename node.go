@@ -129,6 +129,8 @@ type RunCtx struct {
 	// ——「这一步推进过没有」是那一次运行的事实。`Fork` 浅拷贝，所以 `Timeout` 里面
 	// 那层看到的是同一份账。
 	advance *advanceLedger
+	// lease 是本节点实际业务额度，Fork 与协作 Timeout 共享；流等待可暂时让位。
+	lease *runLease
 	// checkpointAttempt 是当前持久尝试，Fork 复制其视图；Retry 只在自己的层次换它。
 	checkpointAttempt CheckpointAttempt
 	aspectIndex       int
@@ -167,6 +169,7 @@ func newRunCtx(e *Execution, n *Node, parent context.Context) *RunCtx {
 		cancel:  cancel,
 		allowed: allowed,
 		advance: &advanceLedger{},
+		lease:   &runLease{pool: e.lim},
 	}
 }
 

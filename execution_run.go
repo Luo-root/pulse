@@ -87,10 +87,10 @@ func (e *Execution) runNode(n *Node) {
 		// 占着名额就等于把父侧额度锁在「等」上——名额共享之后那就是死锁
 		// （限额 ≤ 嵌套深度时必现，实测见 .workbase/probe-sharedsem）。
 		if !n.sub {
-			if err := e.acquire(rc.ctx); err != nil {
+			if err := rc.lease.acquire(rc.ctx); err != nil {
 				return err
 			}
-			defer e.release()
+			defer rc.lease.release()
 		}
 		emitRunning()
 		defer func() {
