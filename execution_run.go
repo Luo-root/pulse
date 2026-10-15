@@ -28,6 +28,11 @@ func (e *Execution) release() { e.lim.release() }
 func (e *Execution) runNode(n *Node) {
 	defer e.wg.Done()
 	if r, ok := e.restored[n]; ok {
+		if err := e.restoreCheckpointStreams(n); err != nil {
+			e.fail(err)
+			e.finishNode(n, finishReason(err), err)
+			return
+		}
 		var err error
 		if r.Reason == NodeSkipped {
 			err = NoValue()

@@ -45,6 +45,8 @@ type Execution struct {
 
 	slots   map[string]*slot
 	slotsMu sync.Mutex
+	// 已恢复的同一逻辑流只建一个端点，多个 Out 别名不能各造一份确认账。
+	checkpointStreams map[CheckpointStreamID]any // 受 slotsMu 保护
 	// seeded 是创建时收下的输入来源键名：Seed / SkipSeed，以及合法静态 In 的 pending 承诺。
 	// 它在创建那一刻一次写完、此后只读，`Start` 拿它按「就要封口的那张定义」再判一次
 	// 启动条件（见 checkStartInputsLocked）。

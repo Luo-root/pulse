@@ -298,10 +298,6 @@ func (g *Graph) checkRestoreLocked(records []NodeCheckpoint) error {
 			keys[k.name] = k.typ
 		}
 		for _, o := range r.Outputs {
-			if o.Stream != nil {
-				return fmt.Errorf("pulse: RestoreNodes: completed stream descriptors are not supported in this layer")
-			}
-
 			typ, ok := keys[o.Key.Name]
 			if !ok || typ != o.Key.Type {
 				return fmt.Errorf("pulse: restore node %q: undeclared, duplicate or mistyped output %q", r.NodeID, o.Key.Name)

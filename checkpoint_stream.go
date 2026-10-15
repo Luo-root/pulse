@@ -197,6 +197,12 @@ func (w *StreamWriter[T]) SendAt(value T, cursor any) error {
 	return w.sendCheckpointValue(value, cursor)
 }
 
+// 由端点提供泛型 factory。这里只认包内标记，普通 channel 和藏在普通值里的端点
+// 仍走递归拒绝；applyRestoreLocked 只建本地结构，不在装配锁内调用可靠钩子。
+type checkpointStreamFactory interface {
+	pulseRestoreCheckpoint(*Execution, CheckpointStreamDescriptor) any
+}
+
 type checkpointEndpoint interface {
 	pulseCheckpointDescriptor() *CheckpointStreamDescriptor
 	pulseEnsureCheckpoint() error
@@ -377,6 +383,22 @@ func (s *managedStream[T]) installCheckpointRecord(record CheckpointStreamRecord
 	}
 }
 
+func (Stream[T]) pulseRestoreCheckpoint(e *Execution, descriptor CheckpointStreamDescriptor) any {
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	if endpoint, exists := e.checkpointStreams[descriptor.ID]; exists {
+		return endpoint
+	}
+	s := checkpointManagedStream[T](descriptor.Capacity)
+	s.checkpoint = &checkpointStream{exec: e, descriptor: descriptor, restore: true}
+	endpoint := Stream[T]{state: s}
+	if e.checkpointStreams == nil {
+		e.checkpointStreams = make(map[CheckpointStreamID]any)
+	}
+	e.checkpointStreams[descriptor.ID] = endpoint
+	return endpoint
+}
+
 func (s Stream[T]) pulseCheckpointDescriptor() *CheckpointStreamDescriptor {
 	if s.state == nil || s.state.checkpoint == nil {
 		return nil
@@ -392,6 +414,25 @@ func (s Stream[T]) pulseCheckpointDescriptor() *CheckpointStreamDescriptor {
 }
 
 func (s Stream[T]) pulseEnsureCheckpoint() error { return s.state.ensureCheckpoint() }
+
+// restoreCheckpointStreams 由 restored 节点的运行分支在锁外调用，早于完成事件。
+// 完整源不重跑业务体，但 Done/Snapshot 和未确认尾部必须已恢复；竞争访问由 once 汇合。
+func (e *Execution) restoreCheckpointStreams(n *Node) error {
+	for _, output := range e.restored[n].Outputs {
+		if output.Stream == nil {
+			continue
+		}
+		_, value := e.slotOf(keyRef{name: output.Key.Name, typ: output.Key.Type}).snapshot()
+		endpoint, ok := value.(checkpointEndpoint)
+		if !ok {
+			return e.stopCheckpoint("restore stream", fmt.Errorf("restored stream %q has no local endpoint factory", output.Key.Name))
+		}
+		if err := endpoint.pulseEnsureCheckpoint(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // ensureCheckpoint 必须在 Receive/Messages/Stop 使用恢复端点之前调用，且不持流锁。
 // 多个竞争读者只做一次 Open；completed 来源照样装回未确认尾部，之后再开放 EOF。

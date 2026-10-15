@@ -294,6 +294,181 @@ func TestCheckpointStreamFailedAspectConfirmsTerminalBeforeFinish(t *testing.T) 
 	}
 }
 
+func TestCheckpointCompletedStreamRestoresTailAndFencesGeneration(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "restore-tail")
+	key := NewKey[Stream[int]]("stream")
+	var sourceCalls atomic.Int32
+	var got []int
+	mustAdd(t, g, NewNode("source", "completed 来源不再重跑", nil, Provides(key), func(*RunCtx) error { sourceCalls.Add(1); return nil }))
+	mustAdd(t, g, NewNode("sink", "仍须重建尾部", Requires(key), nil, func(rc *RunCtx) error {
+		stream, err := Get(rc, key)
+		if err != nil {
+			return err
+		}
+		select {
+		case <-stream.Done(): // restored 分支必须先重建，不依赖 Receive 的懒打开。
+		case <-rc.Context().Done():
+			return rc.Context().Err()
+		}
+		if snapshot := stream.Snapshot(); snapshot.Terminal != StreamCompleted || snapshot.InFlight != 2 {
+			return fmt.Errorf("completed source was not reconstructed before reading: %+v", snapshot)
+		}
+		for {
+			delivery, err := stream.Receive(rc)
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			got = append(got, delivery.Value)
+			if err := delivery.Ack(); err != nil {
+				return err
+			}
+		}
+	}))
+	descriptor := CheckpointStreamDescriptor{ID: CheckpointStreamID{Scope: "root", NodeID: "source", Key: key.Name(), Group: "default", Generation: 4},
+		Graph: "restore-tail", Attempt: "confirmed-source", Element: reflect.TypeFor[int](), Source: CheckpointStreamSource{ID: "finite", Resumable: false},
+		Capacity: 2, Terminal: StreamCompleted}
+	probe := &checkpointProbe{}
+	hooks := checkpointStreamTestHooks(probe)
+	var opened atomic.Int32
+	hooks.StreamHooks.Open = func(_ context.Context, request CheckpointStreamOpen) (CheckpointStreamRecord, error) {
+		opened.Add(1)
+		if request.Restore == nil || request.Attempt != "confirmed-source" || request.Restore.ID.Generation != 4 {
+			return CheckpointStreamRecord{}, errors.New("lost completed source identity")
+		}
+		restored := descriptor
+		restored.ID.Generation = 5
+		return CheckpointStreamRecord{Stream: restored, Resumed: true, LastSequence: 3, AckedThrough: 1,
+			Pending: []CheckpointStreamMessage{{Sequence: 2, Value: 20}, {Sequence: 3, Value: 30}}, Cursor: "end"}, nil
+	}
+	var acknowledged []uint64
+	hooks.StreamHooks.Commit = func(_ context.Context, commit CheckpointMessageCommit) error {
+		for _, input := range commit.Inputs {
+			if input.Stream.Generation != 5 {
+				return ErrDeliveryExpired
+			}
+			acknowledged = append(acknowledged, input.Sequence)
+		}
+		return nil
+	}
+	e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := []NodeCheckpoint{{NodeID: "source", Reason: NodeCompleted, Outputs: []CheckpointOutput{{Key: checkpointKey(key.asRef()), State: SlotStateReady, Stream: &descriptor}}}}
+	if err := e.RestoreNodes(plan); err != nil {
+		t.Fatal(err)
+	}
+	plan[0].Outputs[0].Stream.ID.Generation = 99 // RestoreNodes 必须复制 descriptor 容器。
+	if err := e.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if sourceCalls.Load() != 0 || opened.Load() != 1 || !reflect.DeepEqual(got, []int{20, 30}) || !reflect.DeepEqual(acknowledged, []uint64{2, 3}) {
+		t.Fatalf("tail lost: source=%d opens=%d values=%v ack=%v", sourceCalls.Load(), opened.Load(), got, acknowledged)
+	}
+	// 旧代际确认由可靠边界拒绝，不能污染已恢复的代际。
+	old := CheckpointMessageCommit{Site: e.site, Scope: "root", Inputs: []CheckpointStreamAcknowledgement{{Stream: descriptor.ID, Sequence: 2}}}
+	old.Inputs[0].Stream.Generation = 4
+	if err := hooks.StreamHooks.Commit(ctx, old); !errors.Is(err, ErrDeliveryExpired) {
+		t.Fatalf("old generation advanced progress: %v", err)
+	}
+}
+
+func TestCheckpointOldExecutionDeliveryCannotConfirmRestoredGeneration(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "generation-fence")
+	key := NewKey[Stream[int]]("stream")
+	mustAdd(t, g, NewNode("source", "旧执行遗留交付", nil, Provides(key), func(rc *RunCtx) error {
+		writer, err := OpenStream(rc, key, WithStreamSource("source", true))
+		if err != nil {
+			return err
+		}
+		return writer.Send(6)
+	}))
+	declareOut(t, g, NewPort(key))
+	probe := &checkpointProbe{}
+	hooks := checkpointStreamTestHooks(probe)
+	completed := make(chan NodeCheckpoint, 1)
+	hooks.Commit = func(_ context.Context, commit CheckpointCommit) error {
+		completed <- commit.Node
+		return nil
+	}
+	var confirmations atomic.Int32
+	hooks.StreamHooks.Commit = func(_ context.Context, commit CheckpointMessageCommit) error {
+		if commit.Inputs[0].Stream.Generation != 2 {
+			return ErrDeliveryExpired
+		}
+		confirmations.Add(1)
+		return nil
+	}
+	first, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldReader, err := SubscribeStream(first, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Start(); err != nil {
+		t.Fatal(err)
+	}
+	old, err := oldReader.Receive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := waitCheckpointSignal(t, ctx, completed)
+	first.Cancel()
+	if err := first.Wait(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("old execution did not stop: %v", err)
+	}
+	descriptor := *saved.Outputs[0].Stream
+	hooks.StreamHooks.Open = func(_ context.Context, request CheckpointStreamOpen) (CheckpointStreamRecord, error) {
+		if request.Restore == nil {
+			return CheckpointStreamRecord{}, errors.New("completed source was reexecuted")
+		}
+		restored := descriptor
+		restored.ID.Generation = 2
+		return CheckpointStreamRecord{Stream: restored, Resumed: true, LastSequence: 1,
+			Pending: []CheckpointStreamMessage{{Sequence: 1, Value: 6}}}, nil
+	}
+	second, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.RestoreNodes([]NodeCheckpoint{saved}); err != nil {
+		t.Fatal(err)
+	}
+	newReader, err := SubscribeStream(second, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Start(); err != nil {
+		t.Fatal(err)
+	}
+	current, err := newReader.Receive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Ack(); err == nil || confirmations.Load() != 0 {
+		t.Fatalf("old delivery confirmed a new generation: err=%v confirmations=%d", err, confirmations.Load())
+	}
+	if err := current.Ack(); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if confirmations.Load() != 1 {
+		t.Fatalf("current generation confirmations=%d", confirmations.Load())
+	}
+}
+
 func TestCheckpointChildBindingsDoNotAwaitPendingInputs(t *testing.T) {
 	ctx := checkpointTestContext(t)
 	parent, child := mustNew(t, ctx, "parent-bindings"), mustNew(t, ctx, "child-bindings")
@@ -342,6 +517,139 @@ func TestCheckpointChildBindingsDoNotAwaitPendingInputs(t *testing.T) {
 	}
 	if err := e.Wait(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCheckpointSubCompletedSourceKeepsActiveConfirmationContext(t *testing.T) {
+	for _, mode := range []string{"live-ack", "restored-ack", "host-ack", "live-stop"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			child, parent := mustNew(t, ctx, "child-source"), mustNew(t, ctx, "parent-reader")
+			inside, outside := NewKey[Stream[int]]("inside"), NewKey[Stream[int]]("outside")
+			var sourceCalls atomic.Int32
+			mustAdd(t, child, NewNode("source", "完整源成功后保留尾部", nil, Provides(inside), func(rc *RunCtx) error {
+				sourceCalls.Add(1)
+				writer, err := OpenStream(rc, inside, WithBuffer(2), WithStreamSource("child-data", false))
+				if err != nil {
+					return err
+				}
+				return writer.Send(8)
+			}))
+			declareOut(t, child, NewPort(inside))
+			if err := Sub(parent, "mount", "子图成功清理不能作废尾部", []SubBind{Out(inside, outside)}, child); err != nil {
+				t.Fatal(err)
+			}
+			childFinished := make(chan struct{})
+			if mode == "host-ack" {
+				declareOut(t, parent, NewPort(outside))
+			} else {
+				mustAdd(t, parent, NewNode("sink", "来源 child.Wait 后再确认", Requires(outside), nil, func(rc *RunCtx) error {
+					stream, err := Get(rc, outside)
+					if err != nil {
+						return err
+					}
+					select {
+					case <-childFinished:
+					case <-rc.Context().Done():
+						return rc.Context().Err()
+					}
+					if stream.state.checkpoint.exec.ctx.Err() == nil {
+						return errors.New("test did not cross normal child.Wait cleanup")
+					}
+					if mode == "live-stop" {
+						return stream.Stop(rc)
+					}
+					delivery, err := stream.Receive(rc)
+					if err != nil || delivery.Value != 8 {
+						return fmt.Errorf("tail was lost: value=%d error=%v", delivery.Value, err)
+					}
+					if err := delivery.Ack(); err != nil {
+						return err
+					}
+					if _, err := stream.Receive(rc); err != io.EOF {
+						return fmt.Errorf("expected tail EOF, got %v", err)
+					}
+					return nil
+				}))
+			}
+			probe := &checkpointProbe{}
+			hooks := checkpointStreamTestHooks(probe)
+			baseCommit := hooks.Commit
+			hooks.Commit = func(ctx context.Context, commit CheckpointCommit) error {
+				if err := baseCommit(ctx, commit); err != nil {
+					return err
+				}
+				if commit.Node.NodeID == "mount" {
+					close(childFinished) // runStaticSub 已经过 child.Wait，子执行 ctx 已取消。
+				}
+				return nil
+			}
+			if mode == "restored-ack" {
+				hooks.OpenChild = func(_ context.Context, request CheckpointChild) ([]NodeCheckpoint, error) {
+					descriptor := CheckpointStreamDescriptor{ID: CheckpointStreamID{Scope: request.Attempt, NodeID: "source", Key: inside.Name(), Group: "default", Generation: 3},
+						Graph: request.Site.Graph, Path: request.Site.Path, Attempt: request.Attempt + "/confirmed-source", Element: reflect.TypeFor[int](),
+						Source: CheckpointStreamSource{ID: "child-data"}, Capacity: 2, Terminal: StreamCompleted}
+					return []NodeCheckpoint{{NodeID: "source", Reason: NodeCompleted, Outputs: []CheckpointOutput{{Key: checkpointKey(inside.asRef()), State: SlotStateReady, Stream: &descriptor}}}}, nil
+				}
+				hooks.StreamHooks.Open = func(ctx context.Context, request CheckpointStreamOpen) (CheckpointStreamRecord, error) {
+					if err := ctx.Err(); err != nil {
+						return CheckpointStreamRecord{}, fmt.Errorf("restore used cleaned source context: %w", err)
+					}
+					if request.Restore == nil {
+						return CheckpointStreamRecord{}, errors.New("completed source body was reentered")
+					}
+					return CheckpointStreamRecord{Stream: *request.Restore, Resumed: true, LastSequence: 1, Pending: []CheckpointStreamMessage{{Sequence: 1, Value: 8}}}, nil
+				}
+			}
+			var confirmed atomic.Int32
+			hooks.StreamHooks.Commit = func(ctx context.Context, commit CheckpointMessageCommit) error {
+				if err := ctx.Err(); err != nil {
+					return fmt.Errorf("confirmation used source/temporary host context: %w", err)
+				}
+				if commit.Scope == "root" || len(commit.Inputs)+len(commit.Stops) != 1 {
+					return fmt.Errorf("source identity changed with actor context: %+v", commit)
+				}
+				confirmed.Add(1)
+				return nil
+			}
+			e, err := parent.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var subscription *StreamSubscription[int]
+			if mode == "host-ack" {
+				subscription, err = SubscribeStream(e, outside)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := e.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if subscription != nil {
+				waitCheckpointSignal(t, ctx, childFinished)
+				_, raw := e.slotOf(outside.asRef()).snapshot()
+				if raw.(Stream[int]).state.checkpoint.exec.ctx.Err() == nil {
+					t.Fatal("source child execution has not completed cleanup")
+				}
+				delivery, err := subscription.Receive(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := delivery.Ack(); err != nil { // Receive 的临时 ctx 此时已经取消。
+					t.Fatal(err)
+				}
+				if _, err := subscription.Receive(ctx); err != io.EOF {
+					t.Fatalf("expected host EOF, got %v", err)
+				}
+			}
+			if err := e.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			if confirmed.Load() != 1 || (mode == "restored-ack" && sourceCalls.Load() != 0) {
+				t.Fatalf("tail not confirmed exactly once: confirmations=%d source calls=%d", confirmed.Load(), sourceCalls.Load())
+			}
+		})
 	}
 }
 

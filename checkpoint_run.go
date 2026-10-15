@@ -35,9 +35,10 @@ type checkpointConfig struct {
 
 // 整棵执行树共享可靠失败，不受 Aspect 的错误吞并、Retry 或子图取消域截断。
 type checkpointFailure struct {
-	mu   sync.Mutex
-	err  error
-	root *Execution
+	mu      sync.Mutex
+	err     error
+	root    *Execution
+	streams map[CheckpointStreamID]any // 恢复别名共用一个本地端点，属于本执行树。
 }
 
 func (e *Execution) checkpointErr() error {
@@ -144,6 +145,21 @@ func (e *Execution) applyRestoreLocked() {
 			s := e.slotOf(keyRef{name: o.Key.Name, typ: o.Key.Type})
 			if o.State == SlotStateSkipped {
 				_ = s.resolveSkip()
+			} else if o.Stream != nil {
+				// 只建本地端点；首次受管访问在锁外 Open，装回 completed 来源的尾部。
+				f := e.checkpoint.failure
+				f.mu.Lock()
+				if f.streams == nil {
+					f.streams = make(map[CheckpointStreamID]any)
+				}
+				endpoint := f.streams[o.Stream.ID]
+				if endpoint == nil {
+					factory := reflect.Zero(o.Key.Type).Interface().(checkpointStreamFactory)
+					endpoint = factory.pulseRestoreCheckpoint(e, *o.Stream)
+					f.streams[o.Stream.ID] = endpoint
+				}
+				f.mu.Unlock()
+				_ = s.resolveValue(endpoint)
 			} else {
 				_ = s.resolveValue(o.Value)
 			}
