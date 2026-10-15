@@ -432,6 +432,11 @@ func (s *managedStream[T]) registerReader(rc *RunCtx) (managedReaderID, int, err
 	if rc.node.compete != "" {
 		rc.exec.graph.mu.Lock()
 		for _, node := range rc.exec.graph.nodes {
+			// 已恢复节点只报告 Finished，不再执行读取或收尾，不能登记成仍会接手的成员。
+			// restored 按本次 Execution 的节点指针核验，其他挂载的同名 worker 不受影响。
+			if _, restored := rc.exec.restored[node]; restored {
+				continue
+			}
 			if node.compete == rc.node.compete && node.id != id.node {
 				members = append(members, managedReaderID{exec: rc.exec, node: node.id})
 			}
