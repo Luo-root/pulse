@@ -251,7 +251,7 @@ func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 				}
 				ev, err := convertValue(iter.Value(), target.Elem())
 				if err != nil {
-					return reflect.Value{}, fmt.Errorf("map key %v: %w", iter.Key().Interface(), err)
+					return reflect.Value{}, fmt.Errorf("map value of %s: %w", target, err)
 				}
 				out.SetMapIndex(k, ev)
 			}

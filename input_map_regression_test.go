@@ -62,6 +62,35 @@ func inputMapCollision[T any](t *testing.T, raw any) {
 	}
 }
 
+func TestInputNestedMapCollisionPrivacy(t *testing.T) {
+	reg := NewRegistry()
+	key := NewKey[map[string]map[int]string]("mapping")
+	MustRegisterKey(reg, key)
+	tag, _ := reg.TypeTagOf(key.Name())
+	raw := map[string]any{"business-customer-123": map[any]any{int(1): "value-a", float64(1): "value-b"}}
+	for _, fixed := range []bool{false, true} {
+		var in Inputs
+		var err error
+		if fixed {
+			_, err = FixByName(reg, key.Name(), tag, raw)
+		} else {
+			err = SeedByName(&in, reg, key.Name(), tag, raw)
+		}
+		if err == nil || !strings.Contains(err.Error(), "collides") || !strings.Contains(err.Error(), key.Name()) {
+			t.Fatalf("fixed=%t: nested collision lost its input context: %v", fixed, err)
+		}
+		for _, private := range []string{"business-customer-123", "value-a", "value-b"} {
+			if strings.Contains(err.Error(), private) {
+				t.Fatalf("fixed=%t: nested map error exposed business data: %v", fixed, err)
+			}
+		}
+		if len(in.entries) != 0 {
+			t.Fatal("nested map rejection left a partial input")
+		}
+	}
+	namedDynamicInputs(t, map[string]any{"business-customer-123": map[any]any{int(1): "a", float64(2): "b"}}, map[string]map[int]string{"business-customer-123": {1: "a", 2: "b"}})
+}
+
 func TestInputMapDistinctKeys(t *testing.T) {
 	want := map[float64]string{1: "integer", 2: "float"}
 	namedDynamicInputs(t, map[any]any{int(1): "integer", float64(2): "float"}, want)
