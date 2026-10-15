@@ -2,6 +2,7 @@ package pulse
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -27,17 +28,53 @@ func buildChain(aspects []Aspect, core func(*RunCtx) error) func(*RunCtx) error 
 			// 「有没有新的尝试边界」由最内层的推进闸判（见 RunCtx.beginAdvance），
 			// 所以 `Retry` 与用户自写的重试切面在那里被分开。
 			var depth atomic.Int32
-			return a(rc, func(nextRC *RunCtx) error {
-				if depth.Add(1) > 1 {
-					depth.Add(-1)
-					return ErrNextCalledTwice
-				}
-				defer depth.Add(-1)
-				return next(nextRC)
+			return invokeNode(rc, func(rc *RunCtx) error {
+				return a(rc, func(nextRC *RunCtx) error {
+					if depth.Add(1) > 1 {
+						depth.Add(-1)
+						return ErrNextCalledTwice
+					}
+					defer depth.Add(-1)
+					return next(nextRC)
+				})
 			})
 		}
 	}
 	return invoker
+}
+
+// invokeNode 把业务体与每层切面的 panic 就地转成失败。边界随调用进入
+// Timeout 的工作 goroutine，外层 Retry / checkpoint 才能收到同一条错误。
+func invokeNode(rc *RunCtx, run func(*RunCtx) error) (err error) {
+	returned := false
+	defer func() {
+		if rec := recover(); !returned {
+			// returned 也覆盖 GODEBUG=panicnil=1 下 recover 返回 nil 的 panic。
+			err = &nodePanicError{nodeID: rc.NodeID(), value: rec}
+		}
+	}()
+	err = run(rc)
+	returned = true
+	return err
+}
+
+type nodePanicError struct {
+	nodeID string
+	value  any
+}
+
+func (e *nodePanicError) Error() string {
+	return fmt.Sprintf("pulse: panic in node %s: %v", e.nodeID, e.value)
+}
+
+func (e *nodePanicError) Unwrap() error {
+	cause, _ := e.value.(error)
+	return cause
+}
+
+func isPanicFailure(err error) bool {
+	var failure *nodePanicError
+	return errors.As(err, &failure)
 }
 
 // Timeout 限制节点（含等数据）的总时长；超时取消本层 ctx。

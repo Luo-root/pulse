@@ -253,7 +253,7 @@ func finishReason(err error) NodeFinishReason {
 	switch {
 	case err == nil:
 		return NodeCompleted
-	case isCheckpointFailure(err):
+	case isCheckpointFailure(err), isPanicFailure(err):
 		return NodeFailed
 	case isSkipped(err):
 		return NodeSkipped

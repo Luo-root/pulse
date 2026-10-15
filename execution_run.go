@@ -97,13 +97,8 @@ func (e *Execution) runNode(n *Node) {
 			defer rc.lease.release()
 		}
 		emitRunning()
-		defer func() {
-			if rec := recover(); rec != nil {
-				err = fmt.Errorf("pulse: panic in node %s: %v", n.id, rec)
-			}
-		}()
 		if n.run != nil {
-			return n.run(rc)
+			return invokeNode(rc, n.run)
 		}
 		return nil
 	})
