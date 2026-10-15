@@ -328,7 +328,7 @@ func TestCheckpointHistoricalAliasesRejectSourceConflicts(t *testing.T) {
 	}
 }
 
-func TestCheckpointHistoricalReferenceRequiresAuthoritativeCompletion(t *testing.T) {
+func TestCheckpointHistoricalReferenceRequiresCompatibleAuthority(t *testing.T) {
 	key := NewKey[Stream[int]]("source")
 	for _, field := range []string{"active", "failed", "canceled", "regressed-terminal", "regressed-stop", "regressed-generation", "scope", "node", "key", "group", "graph", "path", "attempt", "source", "capacity", "not-resumed"} {
 		t.Run(field, func(t *testing.T) {
@@ -338,6 +338,7 @@ func TestCheckpointHistoricalReferenceRequiresAuthoritativeCompletion(t *testing
 			record := CheckpointStreamRecord{Stream: descriptor, Resumed: true}
 			switch field {
 			case "active":
+				history.Terminal = StreamCompleted
 				record.Stream.Terminal = ""
 			case "failed":
 				record.Stream.Terminal = StreamFailed
@@ -374,7 +375,7 @@ func TestCheckpointHistoricalReferenceRequiresAuthoritativeCompletion(t *testing
 				NodeID: descriptor.ID.NodeID, Key: checkpointKey(key.asRef()), Group: descriptor.ID.Group,
 				Source: descriptor.Source, Capacity: descriptor.Capacity, Restore: &history}
 			if err := checkCheckpointStreamRecord(request, record); err == nil {
-				t.Fatal("historical reference accepted without consistent authoritative completion")
+				t.Fatal("historical reference accepted without compatible authoritative state")
 			}
 		})
 	}

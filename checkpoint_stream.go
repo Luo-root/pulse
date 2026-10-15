@@ -28,6 +28,7 @@ type CheckpointStreamSource struct {
 // CheckpointStreamDescriptor 是完整节点成果里的流引用，不携带本地 channel。
 // Attempt 是实际写端的完整节点尝试，祖先 Sub 不能替换它或冒充写端终态。
 // Element 为消息元素的真实 Go 类型；消息内容与读取进度由独立记录保存。
+// Sub 历史引用的 Terminal 可为空；它不终结实际写端，只能认回可续读 active 或成功终态。
 type CheckpointStreamDescriptor struct {
 	ID          CheckpointStreamID
 	Graph, Path string
@@ -214,9 +215,11 @@ type checkpointEndpoint interface {
 // 树缓存共用逻辑来源的一份端点。reference 在 Open 前累积约束（不等于授权）；
 // opened 后每条新引用对已安装的权威状态核验。字段由 checkpointFailure.mu 保护。
 type checkpointStreamCache struct {
-	endpoint  checkpointEndpoint
-	reference CheckpointStreamDescriptor
-	opened    bool
+	endpoint     checkpointEndpoint
+	reference    CheckpointStreamDescriptor
+	hasReference bool
+	opened       bool
+	resumed      bool
 }
 
 func checkpointStreamLogicalID(id CheckpointStreamID) CheckpointStreamID {
@@ -229,6 +232,7 @@ type checkpointStream struct {
 	descriptor CheckpointStreamDescriptor
 	cursor     any // 由所属 managedStream.mu 保护
 	restore    bool
+	request    *CheckpointStreamOpen // 实际写端先创建时的首次 Open；与恢复路径共用 once。
 	cached     *checkpointStreamCache
 	once       sync.Once
 	err        error
@@ -313,16 +317,22 @@ func mergeCheckpointStreamConstraints(previous, next CheckpointStreamDescriptor)
 	return mergeCheckpointStreamReference(previous, next)
 }
 
-// 已知权威来源允许旧引用认回当前端点，但拒绝未来代际、矛盾终态和 Stop 回退。
-func checkCheckpointStreamReference(authoritative, reference CheckpointStreamDescriptor) error {
-	left, right := authoritative, reference
+func sameCheckpointStreamSource(left, right CheckpointStreamDescriptor) bool {
 	left.ID.Generation, right.ID.Generation = 0, 0
 	left.Terminal, right.Terminal = "", ""
 	left.Stopped, right.Stopped = false, false
-	if left != right {
+	return left == right
+}
+
+// 历史空终态只引用来源身份，允许认回可续读的 active 来源；已知写端终态不能回退。
+// 是否 Resumed 是权威 Open 的事实，热缓存同样核验，不能借缓存冒充一次恢复。
+func checkCheckpointStreamReference(authoritative, reference CheckpointStreamDescriptor, resumed bool) error {
+	if !sameCheckpointStreamSource(authoritative, reference) {
 		return fmt.Errorf("checkpoint stream %q reference names a different persistent source", reference.ID.Key)
 	}
-	if (authoritative.Terminal != StreamCompleted && authoritative.Terminal != StreamStopped) ||
+	active := authoritative.Terminal == ""
+	if !resumed || (active && (!authoritative.Source.Resumable || reference.Terminal != "")) ||
+		(!active && authoritative.Terminal != StreamCompleted && authoritative.Terminal != StreamStopped) ||
 		reference.ID.Generation > authoritative.ID.Generation ||
 		(reference.Terminal != "" && reference.Terminal != authoritative.Terminal) ||
 		(reference.Stopped && !authoritative.Stopped) {
@@ -343,12 +353,8 @@ func checkCheckpointStreamRecord(request CheckpointStreamOpen, record Checkpoint
 		return fmt.Errorf("stream Open returned a different persistent source")
 	}
 	if history := request.Restore; history != nil {
-		// Sub 完成不是写端完成证明；历史空终态只能由权威的成功终态补全。
-		if id.Generation < history.ID.Generation || !record.Resumed ||
-			(descriptor.Terminal != StreamCompleted && descriptor.Terminal != StreamStopped) ||
-			(history.Terminal != "" && descriptor.Terminal != history.Terminal) ||
-			(history.Stopped && !descriptor.Stopped) {
-			return fmt.Errorf("stream Open did not restore the completed source reference")
+		if err := checkCheckpointStreamReference(descriptor, *history, record.Resumed); err != nil {
+			return fmt.Errorf("stream Open did not restore the source reference: %w", err)
 		}
 	}
 	if record.Resumed && descriptor.Terminal == "" && !descriptor.Source.Resumable {
@@ -415,13 +421,42 @@ func openManagedStreamCheckpoint[T any](rc *RunCtx, ref keyRef, cfg streamConfig
 	}
 	request := CheckpointStreamOpen{Site: rc.exec.site, Scope: rc.exec.checkpoint.scope, Attempt: rc.checkpointAttempt.Scope,
 		NodeID: rc.NodeID(), Key: checkpointKey(ref), Group: "default", Source: cfg.checkpointSource, Capacity: cfg.buf}
-	record, err := rc.exec.openCheckpointStream(rc.ctx, request)
+	declaration := CheckpointStreamDescriptor{
+		ID:    CheckpointStreamID{Scope: request.Scope, NodeID: request.NodeID, Key: ref.name, Group: request.Group},
+		Graph: request.Site.Graph, Path: request.Site.Path, Attempt: request.Attempt, Element: request.Key.Element,
+		Source: request.Source, Capacity: request.Capacity,
+	}
+	failure := rc.exec.checkpoint.failure
+	failure.mu.Lock()
+	logical := checkpointStreamLogicalID(declaration.ID)
+	cached := failure.streams[logical]
+	var s *managedStream[T]
+	var err error
+	if cached != nil {
+		endpoint, ok := cached.endpoint.(Stream[T])
+		if !ok || !sameCheckpointStreamSource(*cached.endpoint.pulseCheckpointDescriptor(), declaration) {
+			err = fmt.Errorf("OpenStream %q does not match the restored persistent source", ref.name)
+		} else {
+			s = endpoint.state
+		}
+	} else {
+		cached = &checkpointStreamCache{}
+		s = checkpointManagedStream[T](cfg.buf)
+		s.checkpoint = &checkpointStream{exec: rc.exec, descriptor: declaration, request: &request, cached: cached}
+		cached.endpoint = Stream[T]{state: s}
+		if failure.streams == nil {
+			failure.streams = make(map[CheckpointStreamID]*checkpointStreamCache)
+		}
+		failure.streams[logical] = cached
+	}
+	failure.mu.Unlock()
 	if err != nil {
+		return nil, rc.exec.stopCheckpoint("open stream", err)
+	}
+	// 与历史别名共用一次 Open 和一次尾部安装；等待时不持树锁或状态锁。
+	if err := s.ensureCheckpoint(rc.ctx); err != nil {
 		return nil, err
 	}
-	s := checkpointManagedStream[T](record.Stream.Capacity)
-	s.checkpoint = &checkpointStream{exec: rc.exec, descriptor: record.Stream, cursor: record.Cursor}
-	s.installCheckpointRecord(record)
 	return s, nil
 }
 
@@ -487,7 +522,7 @@ func (s Stream[T]) pulseCheckpointDescriptor() *CheckpointStreamDescriptor {
 func (s Stream[T]) pulseEnsureCheckpoint() error { return s.state.ensureCheckpoint() }
 
 // restoreCheckpointStreams 由 restored 节点的运行分支在锁外调用，早于完成事件。
-// 完整源不重跑业务体，但 Done/Snapshot 和未确认尾部必须已恢复；竞争访问由 once 汇合。
+// 已完成来源不重跑；历史 active 别名与续跑写端共享尾部和进度，不代替写端终结 Done。
 func (e *Execution) restoreCheckpointStreams(n *Node) error {
 	for _, output := range e.restored[n].Outputs {
 		if output.Stream == nil {
@@ -506,10 +541,10 @@ func (e *Execution) restoreCheckpointStreams(n *Node) error {
 }
 
 // ensureCheckpoint 必须在 Receive/Messages/Stop 使用恢复端点之前调用，且不持流锁。
-// 多个竞争读者只做一次 Open；completed 来源照样装回未确认尾部，之后再开放 EOF。
+// 恢复别名和实际写端共用一次 Open；active 来源保留 Done，真正写端结束后才开放 EOF。
 func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 	checkpoint := s.checkpoint
-	if checkpoint == nil || !checkpoint.restore {
+	if checkpoint == nil || (!checkpoint.restore && checkpoint.request == nil) {
 		return nil
 	}
 	checkpoint.once.Do(func() {
@@ -519,6 +554,9 @@ func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 		request := CheckpointStreamOpen{Site: site, Scope: descriptor.ID.Scope, Attempt: descriptor.Attempt,
 			NodeID: descriptor.ID.NodeID, Key: CheckpointKey{Name: descriptor.ID.Key, Type: reflect.TypeFor[Stream[T]](), Element: descriptor.Element},
 			Group: descriptor.ID.Group, Source: descriptor.Source, Capacity: descriptor.Capacity, Restore: &descriptor}
+		if checkpoint.request != nil {
+			request = *checkpoint.request
+		}
 		ctx := checkpoint.exec.checkpoint.failure.root.ctx
 		if len(contexts) != 0 && contexts[0] != nil {
 			ctx = contexts[0]
@@ -527,8 +565,8 @@ func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 		if err == nil {
 			failure := checkpoint.exec.checkpoint.failure
 			failure.mu.Lock()
-			if checkpoint.cached != nil {
-				err = checkCheckpointStreamReference(record.Stream, checkpoint.cached.reference)
+			if checkpoint.cached != nil && checkpoint.cached.hasReference {
+				err = checkCheckpointStreamReference(record.Stream, checkpoint.cached.reference, record.Resumed)
 			}
 			if err == nil {
 				s.mu.Lock()
@@ -536,7 +574,7 @@ func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 				s.mu.Unlock()
 				s.installCheckpointRecord(record)
 				if checkpoint.cached != nil {
-					checkpoint.cached.opened = true
+					checkpoint.cached.opened, checkpoint.cached.resumed = true, record.Resumed
 				}
 			}
 			failure.mu.Unlock()
@@ -724,6 +762,7 @@ func checkpointFinishes(rc *RunCtx, err error) []CheckpointStreamFinish {
 			checkpointFinish(error) (CheckpointStreamFinish, bool)
 		}); ok {
 			if finish, present := stream.checkpointFinish(err); present {
+				finish.Site = rc.exec.site // 缓存可能由历史别名创建，写端归属始终取实际拥有者。
 				records = append(records, finish)
 			}
 		}
