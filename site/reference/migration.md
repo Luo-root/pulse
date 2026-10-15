@@ -88,6 +88,8 @@ YAML Load 返回定义和 SeedPlan，装配选项不绑定执行上下文。每�
 
 Analyze 接收 YAML 字节与 LoadOptions，不需要 Registry；类型只是文档标签，仍需 Load 和 Inputs 核对真实类型与值。运行中的观察者与 per-run 配置通过定义或 Execution 入口安装，不能依赖声明预览执行这些回调。
 
+Load 与 Analyze 现在拒绝未知配置字段和额外 YAML 文档。将自定义业务数据放在 `from.value` 中，或由自定义 `from.kind` 的宿主 resolver 解释；不要把它作为配置结构上的未知字段。多份文档应分别调用入口，不能再依赖只读取第一份的旧行为。
+
 恢复集成使用显式 WithExecCheckpoint 与 RestoreNodes；Snapshot 不承担持久恢复。稳定 RunID、版本、Codec、存储与所有权属于 Durable。普通执行不必提供可靠钩子，参考[检查点](./checkpoint.md)。
 
 ## 升级后验证

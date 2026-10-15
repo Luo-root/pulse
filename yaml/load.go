@@ -1,7 +1,9 @@
 package yaml
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -206,8 +208,17 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 // decodeDocument 是 Load / Analyze 共用的解码与文档级检查，顺序与 Load 一致。
 func decodeDocument(data []byte, opts LoadOptions) (Document, error) {
 	var doc Document
-	if err := goyaml.Unmarshal(data, &doc); err != nil {
+	decoder := goyaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&doc); err != nil && err != io.EOF {
 		return Document{}, fmt.Errorf("pulse/yaml: decode: %w", err)
+	}
+	var extra goyaml.Node
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return Document{}, fmt.Errorf("pulse/yaml: decode: %w", err)
+		}
+		return Document{}, fmt.Errorf("pulse/yaml: decode: multiple documents are not supported")
 	}
 	if doc.Version != 0 && doc.Version != 1 {
 		return Document{}, fmt.Errorf("pulse/yaml: unsupported version %d (want 0 or 1)", doc.Version)
