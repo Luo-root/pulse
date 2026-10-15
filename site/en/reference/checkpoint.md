@@ -12,7 +12,7 @@ A node that is not restored follows this sequence:
 
 1. Synchronously open or reclaim the persistent attempt for the complete node chain.
 2. Create an output write set outside the entire aspect chain; body and aspect Set/Skip calls stage there.
-3. After complete-chain success or normal skipping, settle unwritten Provides as skipped. Successful short-circuiting also waits for declared dependencies to arrive.
+3. After complete-chain success or normal skipping, settle unwritten Provides as skipped. Successful short-circuiting of ordinary business nodes also waits for declared dependencies; Sub commits follow live In wiring rules.
 4. Validate the complete terminal result, every output, and publication targets.
 5. Call Commit synchronously for persistent confirmation of the complete node record.
 6. Publish outputs key by key only after confirmation, making them available downstream.
@@ -61,7 +61,7 @@ Persistent Retry boundaries are distinguished by effective aspect-chain position
 
 NodeCheckpoint Reason accepts completed or skipped only. Outputs must exactly cover all of that node's Provides, including implicit skipped outputs. States are ready/skipped only, with matching names, real types, and assignable values. Pending is not a confirmed result. Valid nil interfaces and typed nil values remain ready.
 
-Recovery sets must also be closed over internal dependencies: the producers required by a restored node need their own results in the set. RestoreNodes validates and replaces the entire plan, retaining the previous plan on failure. Start revalidates against the actual definition within the validation/sealing boundary. Only a fully valid plan installs outputs, seals, and starts; an invalid last record cannot partially restore earlier records.
+Recovery sets must be closed over ordinary-value dependencies: internal ordinary producers required by a restored business node need their own results in the set. Managed streams recover through independent source records without requiring the writer's complete node to have finished. A Sub's Requires describes In wiring rather than a completion gate for the whole mount; unused inlets may remain pending. RestoreNodes validates and replaces the entire plan, retaining the previous plan on failure. Start revalidates against the actual definition within the validation/sealing boundary. Only a fully valid plan installs outputs, seals, and starts; an invalid last record cannot partially restore earlier records.
 
 This integration fragment assumes host-supplied `g`, `ctx`, `in`, `scope`, complete `hooks`, and decoded `records`, inside a function returning `error`:
 
@@ -103,7 +103,7 @@ The ordinary four-hook configuration remains valid. `Key[Stream[T]]` additionall
 | `Commit` | Confirm input Ack, explicit state, ordinary results, output messages, or Stop together |
 | `Finish` | Confirm the actual writer's complete-chain failure; success is atomic with the complete node Commit |
 
-Messages, cursors, acknowledgements, state, and outputs have independent records. Local channels are never serialized. Complete NodeCheckpoint stream outputs use a `CheckpointOutput.Stream` descriptor, mutually exclusive with Value. `CheckpointCommit.Streams` contains only actual owned writers' terminal results and confirms them atomically with the node. Sub aliases do not own the writer and cannot publish EOF early.
+Messages, cursors, acknowledgements, state, and outputs have independent records. Local channels are never serialized. Complete NodeCheckpoint stream outputs use a `CheckpointOutput.Stream` descriptor, mutually exclusive with Value. `CheckpointCommit.Streams` contains only actual owned writers' terminal results and confirms them atomically with the node. Sub aliases do not own the writer and cannot publish EOF early. A stream-only pass-through Sub may complete before its actual source; an empty terminal in its historical reference does not mean production has ended. Recovery must reclaim the authoritative source through Open: known successful terminals cannot regress, and active sources require Resumed plus a declaration that they can continue from Position. Restored aliases and a continuing writer share one endpoint across the execution tree, with a single Open, tail installation, and delivery ledger. Every later alias still validates the stable source, generation, and known terminal.
 
 HandleMessage is an explicit finite transaction. Failed outputs remain unpublished; exhausted failure cannot be swallowed into success. Defaults are one attempt and 64 staged outputs, with each output batch no larger than its stream capacity. One reliable Commit confirms input acknowledgement, explicit `GetMessageState` / `SetMessageState` state, ordinary results, and output messages before local stream publication and Ack. Ordinary Set/Skip results also join the complete-chain outer frame and remain unpublished until that chain is confirmed. Closures, referenced-object mutations, and external effects are outside the rollback boundary. State APIs work only inside persistent HandleMessage callbacks; construct replacement values and Set them explicitly.
 

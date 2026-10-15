@@ -16,7 +16,7 @@ Retry 每轮开 attempt 写集，失败丢弃，成功交给外层写集。显�
 
 Core 先核验整批输出与发布目标，再同步调用 Commit；只有存储确认成功才逐键发布。检查点作为一份完整记录原子保存，不代表多个内存槽位在同一瞬间可见。未启用模式时，普通 Set/Skip 的即时发布路径保持不变。
 
-成功短路的切面也要等声明输入到达后才提交检查点，保证恢复集合对依赖闭合。这不会伪造 Waiting/Running；它是可靠提交的要求，普通模式的短路行为不变。
+普通业务节点成功短路的切面也要等声明输入到达后才提交检查点，保证普通依赖的恢复集合闭合。Sub 的 Requires 是实时 In 接线，不是整节点完成门；未使用入口或切面正常短路不能额外要求入口生产者先完成。这不会伪造 Waiting/Running；普通模式的短路行为不变。
 
 ## Core 的公开桥接面
 
@@ -85,7 +85,7 @@ Start 在校验与封口同一临界区按实际定义再次核验计划，全�
 | Commit | 原子确认 Inputs、State、Values、Outputs 与显式 Stops |
 | Finish | 同步确认实际写端完整链的真实失败；成功随完整节点 Commit 原子确认 |
 
-本地端点不交给普通 Codec 编码。消息、来源 Cursor、确认前沿、显式状态与输出有独立记录；完整 NodeCheckpoint 中 `CheckpointOutput.Stream` 与 Value 互斥，仅保存 descriptor。成功的实际写端终态通过 `CheckpointCommit.Streams` 与完整节点成果一次确认，之后才开放本地终态。祖先 Sub 只绑定别名，既不是写端也不是 EOF 边界。
+本地端点不交给普通 Codec 编码。消息、来源 Cursor、确认前沿、显式状态与输出有独立记录；完整 NodeCheckpoint 中 `CheckpointOutput.Stream` 与 Value 互斥，仅保存 descriptor。成功的实际写端终态通过 `CheckpointCommit.Streams` 与完整节点成果一次确认，之后才开放本地终态。祖先 Sub 只绑定别名，既不是写端也不是 EOF 边界。纯流透传 Sub 可以在实际来源仍活跃时保存空终态引用；恢复必须向权威 Open 认回来源，已知终态不倒退，active 来源必须 Resumed 且声明可续读。恢复别名与继续生产的实际写端共用整树中一份端点、代际、Position、尾部及确认账，只 Open 和安装一次。缓存冷、热及 Open 期间到来的每条引用都核稳定来源与已知进度，不能因命中缓存免检。
 
 HandleMessage 在有限回调内暂存 Set/Skip/Send，默认一次、总计最多 64 条且每输出批次不超过容量，超限 Send 当场失败，不等待自身提交。一次可靠 Commit 确认输入 Ack、显式 GetMessageState/SetMessageState 状态、普通值成果和输出消息，之后才发布流消息和本地 Ack；普通值也并入完整链外帧，仍待完整链确认才发布。失败尝试不发布，耗尽或提交失败锁存为失败，吞错无效。任意闭包、引用修改和外部副作用不回滚；显式状态修改应构造新值再 Set。
 

@@ -12,7 +12,7 @@ Durable 提供检查点 Run/Resume、本机 filestore，以及受管流的存储
 
 1. 同步打开或认回完整节点链的持久尝试。
 2. 在整个切面链之外创建输出写集，体与切面的 Set/Skip 都先暂存。
-3. 完整链成功或正常跳过后，补齐所有未写 Provides 为 skipped；成功短路也等待声明依赖到达。
+3. 完整链成功或正常跳过后，补齐所有未写 Provides 为 skipped；普通业务节点成功短路也等待声明依赖到达；Sub 按实时 In 接线规则提交。
 4. 核验完整终态、每条输出及发布目标。
 5. 同步调用 Commit，由持久层确认完整节点记录已经保存。
 6. 确认成功后逐键发布输出，允许下游看到成果。
@@ -61,7 +61,7 @@ Retry 的持久边界由有效切面链位置和父 Scope 区分，不能从函�
 
 NodeCheckpoint 的 Reason 只能是 completed 或 skipped。Outputs 必须恰好覆盖该节点全部 Provides，含隐式 skipped；状态只能为 ready/skipped，键名、真实类型和值可赋值性必须匹配。pending 不是已确认成果。合法 nil 接口与 typed nil 保持 ready。
 
-恢复集合还必须对图内依赖闭合：恢复节点所依赖的内部生产者也要有恢复成果。RestoreNodes 核验并替换整份计划，失败保留原计划；Start 在校验与封闭同一边界按实际定义复验。全部通过才安装输出、封闭与启动，末条记录非法也不会部分恢复前面记录。
+恢复集合必须对普通值依赖闭合：普通业务节点所依赖的内部普通生产者也要有恢复成果。受管流通过独立的来源记录恢复，不要求写端完整节点先完成；Sub 的 Requires 表达 In 接线，不是整个挂载点的完成门，未使用入口仍可 pending。RestoreNodes 核验并替换整份计划，失败保留原计划；Start 在校验与封闭同一边界按实际定义复验。全部通过才安装输出、封闭与启动，末条记录非法也不会部分恢复前面记录。
 
 以下是供集成层使用的调用顺序；`g`、`ctx`、`in`、`scope`、完整 `hooks` 与已读取解码的 `records` 均由宿主提供，函数返回 `error`：
 
@@ -103,7 +103,7 @@ return e.Wait()
 | `Commit` | 一次确认输入 Ack、显式状态、普通值成果、输出消息或 Stop |
 | `Finish` | 确认实际写端完整链的失败终态；成功终态随完整节点 Commit 原子保存 |
 
-流消息、游标、确认、状态与输出分别记录，本地 channel 永不序列化。完整 NodeCheckpoint 的流输出使用 `CheckpointOutput.Stream` descriptor，与 Value 互斥；`CheckpointCommit.Streams` 只含实际写端终态，并与完整节点成果原子确认。Sub 的别名不拥有写端，不能提前发布 EOF。
+流消息、游标、确认、状态与输出分别记录，本地 channel 永不序列化。完整 NodeCheckpoint 的流输出使用 `CheckpointOutput.Stream` descriptor，与 Value 互斥；`CheckpointCommit.Streams` 只含实际写端终态，并与完整节点成果原子确认。Sub 的别名不拥有写端，不能提前发布 EOF。纯流透传 Sub 可以早于实际来源完成，历史引用的空终态不表示来源已经结束。恢复时必须通过权威 Open 认回来源：已知成功终态不能倒退，活跃来源必须 Resumed 且声明可按 Position 续读。恢复别名和继续生产的写端共用整树中同一端点，Open、尾部安装及交付账只建立一次；后到的每条别名仍核验稳定来源、代际及已知终态。
 
 HandleMessage 是显式有限事务：失败输出不发布，耗尽失败不能被吞成成功。默认一次、最多 64 条暂存，每个输出批次不超过流容量。输入确认、`GetMessageState` / `SetMessageState` 的显式状态、普通值成果和输出消息经一次可靠 Commit 后，才发布流消息并本地 Ack；普通 Set/Skip 仍并入完整链外帧，待完整链确认才发布。闭包与引用修改不回滚，外部副作用不在事务内。状态 API 仅用于持久 HandleMessage 回调，修改时构造新值并显式 Set。
 
