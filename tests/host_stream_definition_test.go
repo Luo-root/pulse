@@ -9,13 +9,9 @@ import (
 
 func TestHostStreamDefinitionCanBeValidatedBeforeSubscription(t *testing.T) {
 	g, key, ctx := hostStreamGraph(t)
-	streamAspectsMust(t, g.Add(p.NewNode("source", "", nil, p.Provides(key), func(rc *p.RunCtx) error {
-		writer, err := p.OpenStream(rc, key)
-		if err != nil {
-			return err
-		}
+	streamAspectsMust(t, p.ProduceStream(g, "source", "", key, func(_ *p.RunCtx, writer *p.StreamWriter[int]) error {
 		return writer.Send(42)
-	})))
+	}))
 	streamAspectsMust(t, g.Validate())
 	execution, err := g.NewExecution(ctx, p.Inputs{})
 	streamAspectsMust(t, err)
