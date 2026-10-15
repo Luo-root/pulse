@@ -21,15 +21,16 @@ A `Graph` defines the workflow; an `Execution` holds one run. Reuse the same def
 - **Multi-step processing**: compose downloading, parsing, validation, and generation by data dependency, allowing independent steps to execute concurrently.
 - **Branches and aggregation**: distinguish a result from a normal skip, then collect available results or explicitly require all of them.
 - **Reusable workflow modules**: compose subgraphs through declared ports while keeping internal data separate from external wiring.
+- **Continuous data processing**: send, acknowledge, and broadcast managed messages; pass live streams across subgraphs and deliver them to the host during execution.
 - **Observable execution**: inspect structure, execution snapshots, and node events to locate waiting, running, failed, and canceled steps.
 
-To continue after a process exits, use the separate [pulse-durable](https://github.com/Luo-root/pulse-durable) library. It provides storage, encoding, and Run / Resume through Pulse's checkpoint bridge. Unconfirmed steps may execute again; application code still needs idempotency or transactions for external side effects.
+To continue after a process exits, use the separate [pulse-durable](https://github.com/Luo-root/pulse-durable) library. It provides storage, encoding, and Run / Resume through Pulse's checkpoint bridge. Durable also provides managed-stream storage and process recovery, tracked in [Durable #21](https://github.com/Luo-root/pulse-durable/issues/21). Use matching local checkouts; actual tags/releases determine release status. Unconfirmed steps may execute again; application code still needs idempotency or transactions for external side effects.
 
 ## Installation
 
 Requires **Go 1.25.0 or later**.
 
-> This README and the documentation site describe the development API. The latest released tag, **v0.4.1**, has a different API. The command below installs merged interfaces and records the resolved pseudo-version in go.mod. For unmerged changes, use matching local source as described in [installation and versions](site/en/guide/installation.md).
+> This README and the documentation site describe the development API. The latest released tag, **v0.4.1**, has a different API. The command below only installs merged interfaces and records the resolved pseudo-version in go.mod. Managed Stream, live Sub, and incremental checkpoint examples need a matching checkout and the local replacement in [installation and versions](site/en/guide/installation.md); do not assume `@main` contains unmerged APIs.
 
 Run this in a Go module:
 
@@ -108,6 +109,8 @@ Expected output:
 A `Key[T]` identifies typed data. A `Node` declares read/write permissions and a function. The `Graph` holds the definition; the `Execution` holds this run's state. `DeclareInput` / `DeclareOutput` define the host-facing interface, `Seed` supplies this run's input, and `ReadOutput` reads a declared outlet after `Wait` finalizes the execution.
 
 Use `g.Run(ctx, in)` when you only need to wait for completion. Use `NewExecution`, `Start`, and `Wait` as above when you need the execution handle, output values, or lifecycle control. See the [quick start](site/en/guide/quickstart.md) for the full walkthrough.
+
+For continuous data, use `Key[pulse.Stream[T]]` and `ProduceStream` / `ConsumeStream` / `TeeStream`. Managed waits temporarily release business quota; explicit Ack releases in-flight capacity. The [complete stream example](site/en/guide/streams.md) broadcasts to two consumers with one quota slot, each summing to 6. For live host consumption, call `SubscribeStream` after `NewExecution` and before `Start`, then consume and acknowledge. `Wait` also waits for registered reading groups to complete or Stop. Sub connects live stream outputs early; ordinary values still bridge after successful child completion. Existing `Key[<-chan T]` and Produce/Consume/Tee keep native compatibility semantics without message acknowledgement, automatic rewind, or persistent-stream guarantees.
 
 ## Documentation
 

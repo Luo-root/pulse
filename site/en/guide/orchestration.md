@@ -20,7 +20,7 @@ A node waits until every declared input has arrived before entering its body. Ar
 | Select a route and combine partial or complete results | [Branches and joins](./branching.md) | `Only`, `Skip`, `FanOut`, `Join`, `WaitAll` |
 | Retry a failed step and set execution time limits | [Retry, timeout, and cancellation](./retry-cancellation.md) | `Retry`, `Timeout`, `Execution.Cancel` |
 | Use one flow as a step in another | [Static subgraphs](./subgraphs.md) | `Sub`, `In`, `Out`, `Fix` |
-| Produce and consume data continuously | [Streams](./streams.md) | `Produce`, `Consume`, `Tee` |
+| Produce and consume data continuously | [Streams](./streams.md) | `ProduceStream`, `ConsumeStream`, `TeeStream`, `SubscribeStream` |
 | Move topology into a declaration file | [YAML assembly](./assembly.md) | `Registry`, `Load`, `SeedPlan`, `Analyze` |
 | Inspect progress, record lifecycle events, or draw the graph | [Observation and diagnostics](./observability.md) | `Observer`, `Snapshot`, `Topology.Mermaid` |
 
@@ -32,13 +32,13 @@ A node waits until every declared input has arrived before entering its body. Ar
 4. Prepare `Inputs` for this run, then create and start an `Execution`.
 5. Call `Wait` until every node has terminated, then read declared outputs.
 
-A `Graph` stores a reusable definition. An `Execution` stores one run's inputs, slots, states, error, and cancellation domain. Every `g.Run(ctx, in)` creates a fresh execution. Use `NewExecution`, `Start`, and `Wait` separately when you need results or progress inspection.
+A `Graph` stores a reusable definition. An `Execution` stores one run's inputs, slots, states, error, and cancellation domain. Every `g.Run(ctx, in)` creates a fresh execution. Use `NewExecution`, `Start`, and `Wait` separately for results or progress. For host-only root streams, you may Validate to freeze the definition, then create the execution, SubscribeStream, and Start. Validate/Topology omit only missing-reader diagnostics for declared managed root outlets, without counting actual host readers, allowing unexported streams, or changing native-channel rules. Start still strictly checks missing readers and splitting against actual subscriptions. Read and acknowledge before Wait, or explicitly Stop. Wait includes required host reading obligations.
 
 A successful `Validate` or `Start` seals the entire definition tree, preventing changes to nodes and ports. A sealed definition can still run repeatedly or be mounted as a child elsewhere. Failed validation seals no layer. `Validate` is therefore not a query without side effects; use `Topology` to inspect structure and problems without sealing.
 
 ## Concurrency and configuration
 
-Different nodes may run concurrently once their inputs arrive. `WithMaxRunning(n)` limits how many nodes are inside their bodies at once. Waiting for inputs consumes no quota, and a subgraph mounting step consumes no quota itself. `n <= 0` means unlimited.
+Different nodes may run concurrently once inputs arrive. `WithMaxRunning(n)` limits nodes holding business quota. Input waits and Sub mounts consume none; blocked managed Send/Receive and related waits temporarily release it and reacquire before business resumes, cancellation returns, or panic unwinds. A purely managed pipeline can therefore progress with quota 1. Native channel helpers still hold quota throughout and retain conservative capacity checks. Arbitrary business I/O does not release quota automatically. `n <= 0` means unlimited.
 
 A child without its own quota declaration inherits the parent's quota pool. A child that declares a quota uses an independent pool for that branch, replacing the inherited pool. It is not constrained by both parent and child limits. Each root execution has its own pool; multiple root executions have no automatic shared global limit.
 

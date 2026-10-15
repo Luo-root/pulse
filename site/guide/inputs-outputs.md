@@ -104,6 +104,8 @@ case pulse.SlotStatePending:
 
 `ReadOutput` 不等待、不创建槽位、不产生观测事件。必须在 `Wait` 完成收尾后读取；`OnGraphFinished` 回调也可以读取已经确定的结果。未收尾、失败或真实取消的执行不提供部分业务结果。返回的可变对象仍是原业务对象，宿主负责它的后续同步。
 
+运行中读取受管流用 `SubscribeStream(e, key)`，必须在 NewExecution 后、Start 前登记。它是真实读取者，宿主需 Receive 并 Ack，或明确 Stop/Cancel；Wait 不替宿主排空。Graph.Validate/Topology 允许声明的 managed 根出口等待宿主连接，仅省略其缺读者诊断，便于提前冻结 schema；未导出流和原生 channel 不变，Start 仍以实际订阅严格校验缺读者和分流。输入输出透传被订阅后，本轮必须 Seed 或 SkipSeed。ReadOutput 继续只读 Wait 后结果；实时完整片段见[流指南](./streams.md)。
+
 ## 常见错误
 
 - 仅调用 `Seed`，没有声明入口：先 `DeclareInput`，再创建执行。

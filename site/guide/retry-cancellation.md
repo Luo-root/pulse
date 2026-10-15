@@ -93,9 +93,11 @@ return e.Wait()
 
 `WithAspects` 的图级切面会包裹本层每个节点，也会继承到子图节点。相同 Timeout 会同时限制普通节点、整个子图挂载步骤和子图内部节点；需要不同尺度的时限时，应分别放在节点或挂载点。`WithoutAspects` 只截断子图内部的继承，不移除父侧挂载步骤上的切面。
 
-`Produce`、`Consume`、`Tee` 都通过 `WithStreamAspects(aspects...)` 接收节点级切面，使用与普通节点相同的执行链。可以放日志、观测或协作式 `Timeout`；到期后等待内层退出，执行保留失败，已经发送的前缀不会撤回。宿主上下文仍控制整轮总时长。
+`ProduceStream`、`ConsumeStream`、`TeeStream` 及旧原生流糖都通过 `WithStreamAspects(aspects...)` 使用普通节点切面链。日志、观测与协作式 Timeout 可用；到期等内层退出，真实失败保留，已经发送的前缀不会撤回。
 
-图级、执行级或节点级 Retry 等实际写暂存作用于 Produce/Tee 时，仍在运行期拒绝：channel 必须在生产者结束前发布，而写集只能在尝试结束后发布，两者互相等待。消费者上的普通 Retry 重跑整段循环，无法倒带已经取走的当前消息，不能代替消息级重试。需要重做有限流水线时，可在只向父侧桥回普通结果的 Sub 边界重试。详见[流式处理](./streams.md)。
+受管流用 `HandleMessage` 显式重试当前条，或给 ConsumeStream/TeeStream 配置 `WithMessageHandling(WithMessageRetry(...))`。一条失败只重做这一条，暂存的失败输出不发布；默认一次、最多 64 条，每个批次不得超过输出容量，超限立即失败。耗尽失败不能吞掉，闭包、引用与外部副作用不回滚。逐 token 需在此有限边界外逐条 Send/SendAt，按显式来源游标续读或新建 Execution，不自动拼接两次生成。
+
+普通 Retry 的写集不能倒带实际外接流输入或撤销已发布出口，在 I/O 前拒绝；确定 skip 没有数据仍正常。完整有限流水线全部封在 Sub 内、只桥普通结果时可整体重试，但内部节点不能继承该 Retry。旧 Produce/Tee 仍拒绝延迟发布 channel 的写暂存；旧 Consume 的整节点重跑不提供 Ack 或倒带保证。完整例子和迁移矩阵见[流式处理](./streams.md)。
 
 ## 常见错误与下一步
 
