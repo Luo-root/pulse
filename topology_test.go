@@ -413,16 +413,16 @@ func TestTopologyStreamProblems(t *testing.T) {
 	g := mustNew(t, context.Background(), "stream", WithMaxRunning(4))
 	send := func(rc *RunCtx, send func(int) error) error { return nil }
 	sink := func(rc *RunCtx, v int) error { return nil }
-	if err := Produce(g, "p", src, send); err != nil {
+	if err := Produce(g, "p", "", src, send); err != nil {
 		t.Fatal(err)
 	}
-	if err := Tee(g, "t", src, Keys(o1, o2)); err != nil {
+	if err := Tee(g, "t", "", src, Keys(o1, o2)); err != nil {
 		t.Fatal(err)
 	}
-	if err := Consume(g, "c1", o1, sink); err != nil {
+	if err := Consume(g, "c1", "", o1, sink); err != nil {
 		t.Fatal(err)
 	}
-	if err := Consume(g, "c2", o1, sink); err != nil {
+	if err := Consume(g, "c2", "", o1, sink); err != nil {
 		t.Fatal(err)
 	}
 
@@ -456,13 +456,13 @@ func TestTopologyStreamCapacityProblem(t *testing.T) {
 	g := mustNew(t, context.Background(), "cap", WithMaxRunning(2))
 	send := func(rc *RunCtx, send func(int) error) error { return nil }
 	sink := func(rc *RunCtx, v int) error { return nil }
-	if err := Produce(g, "src", in, send); err != nil {
+	if err := Produce(g, "src", "", in, send); err != nil {
 		t.Fatal(err)
 	}
-	if err := Tee(g, "tee", in, Keys(out)); err != nil {
+	if err := Tee(g, "tee", "", in, Keys(out)); err != nil {
 		t.Fatal(err)
 	}
-	if err := Consume(g, "sink", out, sink); err != nil {
+	if err := Consume(g, "sink", "", out, sink); err != nil {
 		t.Fatal(err)
 	}
 

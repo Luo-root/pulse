@@ -49,7 +49,7 @@ func run() error {
 		})); err != nil {
 		return err
 	}
-	if err := pulse.Join(g, "collect", pulse.Keys(left, right), report,
+	if err := pulse.Join(g, "collect", "收集分支结果", pulse.Keys(left, right), report,
 		func(rc *pulse.RunCtx, batch pulse.Batch[string]) (string, error) {
 			return strings.Join(batch.Values(), ", "), nil
 		}); err != nil {
@@ -88,11 +88,11 @@ func main() {
 }
 ```
 
-在保存文件的目录中执行：
+在保存文件的目录中执行。运行未合并分支的示例时，按[安装页的本地替换步骤](./installation.md#试用尚未合并的源码)使用对应源码；以下 `@main` 命令只获取已合入主线的 API。
 
 ```sh
 go mod init example.com/pulse-branches
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 go run .
 ```
 
@@ -131,6 +131,10 @@ func(rc *pulse.RunCtx, batch pulse.Batch[string]) (string, error) {
 
 ## 读取 Batch 与选择分支方式
 
+`Join` 的调用参数依次是 `g, id, description, ins, out, fn, aspects...`。`description` 原样作为节点说明，空串合法。
+
+`Join` 在装配时复制 `ins` 接线列表；之后替换或重排原切片，不会改变图的输入声明或回调中的批次顺序。这只复制 Key 接线，不深拷贝运行时的业务值。
+
 `Batch.Items` 按输入声明顺序保留每一项，包括 `Present=false` 的缺值项。`Len` 统计有值项，`Values` 返回有值项的值，`Missing` 返回跳过项的键名。需要特定来源时用 `batch.Get(key)`，避免用切片位置猜测同类型结果的来源。
 
 `Batch.Get` 对跳过项返回 `*SkipError`；把它返回出去会让本节点跳过。传入不属于该批次的键返回 `ErrUndeclared`，这是调用错误。不同类型的输入应使用 `NewNode` 与 `Deps`，而不是强行放入同一个 `Batch[T]`。
@@ -145,12 +149,12 @@ func(rc *pulse.RunCtx, batch pulse.Batch[string]) (string, error) {
 
 ## 并行实例：FanOut
 
-`FanOut` 在装配期按输出数量创建 `id-1` 至 `id-N` 节点，分片号从 1 开始。普通值输入由每个实例完整读取，函数自己按分片号选择工作。它不会自动把切片拆成几份。
+`FanOut` 的调用参数依次是 `g, id, description, in, outs, fn, aspects...`。它在装配期按输出数量创建 `id-1` 至 `id-N` 节点，分片号从 1 开始。所有实例共用传入的 `description`，空串合法，仍由各自的 ID 区分。普通值输入由每个实例完整读取，函数自己按分片号选择工作。它不会自动把切片拆成几份。
 
 以下片段放在返回 `error` 的装配函数内，已有 `g`、`docs`（`Key[[]string]`）与 `r1`、`r2`（`Key[string]`）：
 
 ```go
-if err := pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2),
+if err := pulse.FanOut(g, "worker", "处理文档分片", docs, pulse.Keys(r1, r2),
 	func(rc *pulse.RunCtx, shard int, values []string) (string, error) {
 		if shard > len(values) {
 			return "", pulse.NoValue()

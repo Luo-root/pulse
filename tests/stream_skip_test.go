@@ -38,14 +38,14 @@ func skipStreamFlow(t *testing.T, opts ...p.Option) (*p.Graph, p.Key[<-chan int]
 	skipStreamMust(t, B.DeclareInput(p.NewPort(in)))
 	skipStreamMust(t, B.DeclareOutput(p.NewPort(done)))
 	for _, child := range []*p.Graph{A, B} {
-		skipStreamMust(t, p.Consume(child, "consume", in, func(*p.RunCtx, int) error { count.Add(1); return nil }))
+		skipStreamMust(t, p.Consume(child, "consume", "", in, func(*p.RunCtx, int) error { count.Add(1); return nil }))
 	}
 	skipStreamMust(t, B.Add(p.NewNode("earlyDone", "", nil, p.Provides(done), func(rc *p.RunCtx) error {
 		count.Add(1)
 		return p.Set(rc, done, true)
 	})))
 	skipStreamMust(t, A.Add(p.NewNode("gate", "", p.Requires(trigger), nil, func(*p.RunCtx) error { count.Add(1); return nil })))
-	skipStreamMust(t, p.Tee(flow, "tee", src, p.Keys(a, b)))
+	skipStreamMust(t, p.Tee(flow, "tee", "", src, p.Keys(a, b)))
 	skipStreamMust(t, p.Sub(flow, "B", "", []p.SubBind{p.In(b, in), p.Out(done, done)}, B))
 	skipStreamMust(t, p.Sub(flow, "A", "", []p.SubBind{p.In(a, in), p.In(done, trigger)}, A))
 	return flow, src, count

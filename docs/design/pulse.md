@@ -282,7 +282,7 @@ nodes:
 
 ```go
 // fan-in：N 条同类型输入 → 一束
-err := pulse.Join(g, "collect", pulse.Keys(a, b, c), out,
+err := pulse.Join(g, "collect", "汇总多路结果", pulse.Keys(a, b, c), out,
     func(rc *pulse.RunCtx, m pulse.Batch[string]) (Report, error) {
         headline, err := m.Get(a) // 单路严格：缺 a 就让本节点跳过
         if err != nil {
@@ -292,7 +292,7 @@ err := pulse.Join(g, "collect", pulse.Keys(a, b, c), out,
     })
 
 // fan-out：一个输入 → N 个并行实例，各自一条输出槽（节点名 id-1 … id-N）
-err = pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2, r3),
+err = pulse.FanOut(g, "worker", "处理文档分片", docs, pulse.Keys(r1, r2, r3),
     func(rc *pulse.RunCtx, shard int, doc string) (Result, error) {
         if nothingFor(shard) {
             return Result{}, pulse.NoValue() // 这一份没有产出：整个实例跳过，不是失败
@@ -300,6 +300,10 @@ err = pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2, r3),
         return work(shard, doc)
     })
 ```
+
+`Join` 和 `FanOut` 的 `description` 位于 `id` 之后，原样作为节点说明，空串合法。`FanOut` 的所有实例共用这份说明，仍由 `id-1` 至 `id-N` 区分。
+
+`Join` 在装配时复制 `ins` 接线列表；后续替换或重排原切片，不会改变图的输入声明或回调中的批次顺序。这里复制的是 Key 接线，不深拷贝运行时的业务值。
 
 名字叫 `FanOut` 而不是 `Spread`，是因为它**不切分数据**：N 个实例看到的是同一条输入，「各做一份」靠 `shard` 自己挑。
 
@@ -372,7 +376,7 @@ func main() {
 		if swapped {
 			ins = pulse.Keys(b, a) // 只是换了声明顺序：照样编译
 		}
-		if err := pulse.Join(g, "collect", ins, out, func(rc *pulse.RunCtx, m pulse.Batch[string]) (string, error) {
+		if err := pulse.Join(g, "collect", "按输入来源收集结果", ins, out, func(rc *pulse.RunCtx, m pulse.Batch[string]) (string, error) {
 			byPos = m.Values()[0] // 按位置读：写反了这里就错
 			v, err := m.Get(a)    // 按来源 Key 取：与声明顺序无关
 			byKey = fmt.Sprintf("%q, %v", v, err)
@@ -407,7 +411,7 @@ func main() {
 
 ```go
 // 生产：channel 的创建 / 发布 / 关闭 / 取消都在这次 Run 里，节点活着发完
-err := pulse.Produce(g, "src", stream, func(rc *pulse.RunCtx, send func(int) error) error {
+err := pulse.Produce(g, "src", "生成数据流", stream, func(rc *pulse.RunCtx, send func(int) error) error {
     for _, v := range values {
         if err := send(v); err != nil { // 取消能从堵住的发送里出来
             return err
@@ -418,18 +422,22 @@ err := pulse.Produce(g, "src", stream, func(rc *pulse.RunCtx, send func(int) err
 
 // 最简单的形状是 Produce + Consume 一对（一个出口接一个消费端）。
 // 消费：循环是 select（收到值 / ctx 取消），不是 for range
-err = pulse.Consume(g, "sink", stream, func(rc *pulse.RunCtx, v int) error {
+err = pulse.Consume(g, "sink", "处理流元素", stream, func(rc *pulse.RunCtx, v int) error {
     return handle(v)
 })
 
 // 广播：一根流复制给 N 个下游，每个都拿到完整、同序的数据。
 // 注意 Tee 的输入是**另一条**流：一条出口只喂一个下游，要 N 个下游
 // 就得让 Tee 提供 N 条出口，再一条接一个消费端（装配校验见下表最后一行）
-err = pulse.Tee(g, "fan", otherStream, pulse.Keys(sA, sB, sC))
-err = pulse.Consume(g, "sinkA", sA, func(rc *pulse.RunCtx, v int) error { return handle(v) })
-err = pulse.Consume(g, "sinkB", sB, func(rc *pulse.RunCtx, v int) error { return archive(v) })
-err = pulse.Consume(g, "sinkC", sC, func(rc *pulse.RunCtx, v int) error { return audit(v) })
+err = pulse.Tee(g, "fan", "广播数据流", otherStream, pulse.Keys(sA, sB, sC))
+err = pulse.Consume(g, "sinkA", "处理流元素", sA, func(rc *pulse.RunCtx, v int) error { return handle(v) })
+err = pulse.Consume(g, "sinkB", "归档流元素", sB, func(rc *pulse.RunCtx, v int) error { return archive(v) })
+err = pulse.Consume(g, "sinkC", "审计流元素", sC, func(rc *pulse.RunCtx, v int) error { return audit(v) })
 ```
+
+`Produce`、`Consume`、`Tee` 也在 `id` 后接收 `description`，原样作为节点说明，空串合法。
+
+`Tee` 在装配时复制 `outs` 接线列表；后续修改原切片不会改变图的输出声明或广播出口。这里复制的是 Key 接线，不深拷贝流中的业务值。
 
 | 件 | 展开成 | 语义来源 |
 |---|---|---|

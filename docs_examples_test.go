@@ -2,6 +2,7 @@ package pulse
 
 import (
 	"fmt"
+	"go/parser"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,8 +11,9 @@ import (
 	"testing"
 )
 
-// TestDocsExamplesUseCurrentSignatures 扫全仓 Markdown 与站点 Vue 里 `New(` / `NewNode(` / `Sub(` 的
-// 调用，对照当前签名看两件事：**实参够不够**、**描述位上放的是不是描述**。
+// TestDocsExamplesUseCurrentSignatures 扫全仓 Markdown 与站点 Vue 的构造调用，
+// 包括 Join / FanOut / Produce / Consume / Tee（#359），对照当前签名看两件事：
+// **实参够不够**、**描述位上放的是不是描述**。
 //
 // 为什么需要它：**文档里的代码块不参与编译**，所以签名一变，漏迁移的示例不会被
 // `go test ./...` 发现——阶段一给这三个构造函数加 `description` 时，Go 侧 235 处调用点
@@ -32,7 +34,7 @@ import (
 // 正反两面的控制组在 TestDocsExampleGateNegativeControls，反例只活在用例里（写进文档
 // 会把闸门自己弄红）。
 //
-// 带裸 `...` / `…` 的调用是教科书式的省略写法，跳过——它们本来就不打算被复制。
+// 带裸 `...` / `…` 的不完整调用是教科书式省略，跳过；真实 opts... 展开仍检查签名。
 //
 // 阶段 2 又把扫描面扩到**本阶段改动的入口**——五条新判据，都尽量**精确**（宁少报、不多报）：
 //
@@ -150,10 +152,11 @@ func TestDocsExampleScanIncludesHomepage(t *testing.T) {
 // 反例只活在这里：写进仓库文档的话，闸门当场就红了（这正是它要拦的东西）。
 func TestDocsExampleGateNegativeControls(t *testing.T) {
 	cases := []struct {
-		name  string
-		doc   string // 合成的示例片段
-		want  string // 期望命中的判据片段；空串表示这段合规、不许报
-		count int    // 默认一处；嵌套的视图调用各自计数
+		name   string
+		doc    string // 合成的示例片段
+		want   string // 期望命中的判据片段；空串表示这段合规、不许报
+		count  int    // 默认一处；嵌套的视图调用各自计数
+		elided int    // 只有语法不完整的示例省略才计入
 	}{
 		// —— 正例：描述位确实给得出 string ——
 		{name: "字符串字面量", doc: `pulse.New("demo", "演示图")`},
@@ -163,6 +166,40 @@ func TestDocsExampleGateNegativeControls(t *testing.T) {
 		{name: "限定变量", doc: `pulse.NewNode("load", cfg.Desc, pulse.Provides(k), run)`},
 		{name: "描述里带括号", doc: `pulse.New("demo", "演示 (v2) 图")`},
 		{name: "子图组合的描述变量", doc: `pulse.Sub(g, "child", desc, binds, child)`},
+		{name: "Join 描述", doc: `pulse.Join(g, "join", "收集结果", ins, out, fn)`},
+		{name: "FanOut 描述变量", doc: `pulse.FanOut(g, "workers", cfg.Desc, in, outs, fn)`},
+		{name: "Produce 空描述", doc: `pulse.Produce(g, "source", "", out, fn)`},
+		{name: "Consume 描述", doc: `pulse.Consume(g, "sink", "消费结果", in, fn)`},
+		{name: "Tee 描述", doc: `pulse.Tee(g, "tee", desc, in, outs)`},
+		{name: "显式复杂类型参数", doc: `pulse.Join[[]string, map[string]int](g, "join", "汇聚", ins, out, fn)`},
+		{name: "跨行类型参数新签名", doc: "pulse.Consume[\n int,\n](g, \"sink\", \"消费\", in, fn)"},
+		{name: "跨行类型参数旧签名", doc: "pulse.Consume[\n int,\n](g, \"sink\", in, fn)", want: "只给了 4 个实参"},
+		{name: "构造名与类型参数间空格", doc: `pulse.Join [int, int] (g, "join", "汇聚", ins, out, fn)`},
+		{name: "Join 真实变参展开", doc: `pulse.Join(g, "join", "汇聚", ins, out, fn, aspects...)`},
+		{name: "FanOut 真实变参展开", doc: `pulse.FanOut(g, "workers", "处理", in, outs, fn, aspects...)`},
+		{name: "Produce 真实变参展开", doc: `pulse.Produce(g, "source", "生成", out, fn, opts...)`},
+		{name: "Tee 真实变参展开", doc: `pulse.Tee(g, "tee", "广播", in, outs, opts...)`},
+		{name: "Join 旧签名变参展开", doc: `pulse.Join(g, "join", ins, out, fn, aspects...)`, want: "description 位"},
+		{name: "FanOut 旧签名变参展开", doc: `pulse.FanOut(g, "workers", in, outs, fn, aspects...)`, want: "description 位"},
+		{name: "Produce 旧签名变参展开", doc: `pulse.Produce(g, "source", out, fn, opts...)`, want: "description 位"},
+		{name: "Tee 旧签名变参展开", doc: `pulse.Tee(g, "tee", in, outs, opts...)`, want: "description 位"},
+		{name: "描述中的省略符是字符串", doc: `pulse.Consume(g, "sink", "处理中 ... …", in, fn)`},
+		{name: "裸英文省略符", doc: `pulse.Join(g, "join", ...)`, count: -1, elided: 1},
+		{name: "裸中文省略符", doc: `pulse.Join(g, "join", …)`, count: -1, elided: 1},
+		{name: "Join 旧签名", doc: `pulse.Join(g, "join", ins, out, fn)`, want: "只给了 5 个实参"},
+		{name: "FanOut 旧签名", doc: `pulse.FanOut(g, "workers", in, outs, fn)`, want: "只给了 5 个实参"},
+		{name: "Produce 旧签名", doc: `pulse.Produce(g, "source", out, fn)`, want: "只给了 4 个实参"},
+		{name: "Consume 旧签名", doc: `pulse.Consume(g, "sink", in, fn)`, want: "只给了 4 个实参"},
+		{name: "Tee 旧签名", doc: `pulse.Tee(g, "tee", in, outs)`, want: "只给了 4 个实参"},
+		{name: "Join 旧签名含切面", doc: `pulse.Join(g, "join", ins, out, fn, aspect)`, want: "description 位"},
+		{name: "Produce 旧签名含选项", doc: `pulse.Produce(g, "source", out, fn, option)`, want: "description 位"},
+		{name: "Tee 旧签名含选项", doc: `pulse.Tee(g, "tee", in, outs, option)`, want: "description 位"},
+		{name: "显式类型的旧签名", doc: `pulse.Consume[int](g, "sink", in, fn)`, want: "只给了 4 个实参"},
+		{name: "语法糖描述不能是 nil", doc: `pulse.Join(g, "join", nil, ins, out, fn)`, want: "description 位"},
+		{name: "非 Pulse 的 strings.Join", doc: `strings.Join(values, ",")`, count: -1},
+		{name: "非 Pulse 的 errors.Join", doc: `errors.Join(err, other)`, count: -1},
+		{name: "非 Pulse 的 filepath.Join", doc: `filepath.Join(dir, "state")`, count: -1},
+		{name: "前缀相同的长名字", doc: `myJoin(g, "join", ins, out, fn)`, count: -1},
 
 		// —— 反例：像标识符，却给不出 string ——
 		{name: "整数", doc: `pulse.New("demo", 123)`, want: "description 位"},
@@ -252,7 +289,10 @@ func TestDocsExampleGateNegativeControls(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			found, checked, _, _ := docExampleFindings("synthetic.md", tc.doc)
+			found, checked, elided, _ := docExampleFindings("synthetic.md", tc.doc)
+			if elided != tc.elided {
+				t.Fatalf("省略计数=%d，期望 %d：%s", elided, tc.elided, tc.doc)
+			}
 			wantCount := tc.count
 			if wantCount == 0 {
 				wantCount = 1
@@ -274,14 +314,17 @@ func TestDocsExampleGateNegativeControls(t *testing.T) {
 	}
 }
 
-// ctorCall 只认**恰好**跟着左括号的那几个名字：`NewKey(` / `NewRecordObserver(` 这类
-// 前缀相同的构造函数不会被误伤。
-var ctorCall = regexp.MustCompile(`(pulse\.)?(New|NewNode|Sub)\(`)
+// ctorCall 支持显式类型参数；名字必须完整匹配，不能把 NewKey 当作 New。
+var ctorCall = regexp.MustCompile(`(pulse\.)?(New|NewNode|Sub|Join|FanOut|Produce|Consume|Tee)[ \t]*(\[[\s\S]+?\])?[ \t]*\(`)
 
-// ctorDescAt = 三个构造函数里 description 的下标（0 起）：
-// `New(id, description, opts…)` / `NewNode(id, description, …)` / `Sub(g, id, description, …)`。
-// `New` 那一项从 2 变成 1 是阶段 2 的事：ctx 从它的参数表里拿掉了（见文件头）。
-var ctorDescAt = map[string]int{"New": 1, "NewNode": 1, "Sub": 2}
+// ctorDescAt 是 description 的下标（0 起）：普通构造器在 id 后，语法糖在 g、id 后。
+var ctorDescAt = map[string]int{
+	"New": 1, "NewNode": 1, "Sub": 2,
+	"Join": 2, "FanOut": 2, "Produce": 2, "Consume": 2, "Tee": 2,
+}
+
+// 糖的旧调用可能仍在描述位放了一个变量；同时检查固定参数个数，不能只看它像不像字符串。
+var sugarMinArgs = map[string]int{"Join": 6, "FanOut": 6, "Produce": 5, "Consume": 5, "Tee": 5}
 
 // 阶段 2 的三类新判据（来历见文件头）。
 var (
@@ -323,10 +366,10 @@ func docExampleFindings(path, text string) (findings []string, checked, elided, 
 		ignored++
 	}
 
-	// —— 一、三个构造函数的 description 位 ——
+	// —— 一、构造函数的 description 位 ——
 	for _, loc := range ctorCall.FindAllStringSubmatchIndex(text, -1) {
-		if loc[0] > 0 && isIdentByte(text[loc[0]-1]) {
-			continue // 长标识符的一部分（`xNew(`），不是这三个构造函数
+		if loc[0] > 0 && (isIdentByte(text[loc[0]-1]) || text[loc[0]-1] == '.') {
+			continue // 长名字或别的包：strings.Join / errors.Join / filepath.Join 不属于 Pulse。
 		}
 		call := text[loc[4]:loc[5]]
 		args, frag, why := parseCall(text, loc[0], loc[1]-1)
@@ -336,11 +379,15 @@ func docExampleFindings(path, text string) (findings []string, checked, elided, 
 		}
 		checked++
 		line, at := lineAt(text, loc[0]), ctorDescAt[call]
+		minimum := at + 1
+		if n := sugarMinArgs[call]; n > minimum {
+			minimum = n
+		}
 		switch {
-		case len(args) <= at:
+		case len(args) < minimum:
 			findings = append(findings, fmt.Sprintf(
 				"%s:%d：%s 只给了 %d 个实参（当前签名要求至少 %d 个，第 %d 个是 description）"+
-					"——照抄这段示例会编译不过：%s", path, line, call, len(args), at+1, at+1, oneLine(frag)))
+					"——照抄这段示例会编译不过：%s", path, line, call, len(args), minimum, at+1, oneLine(frag)))
 		case call == "New" && looksLikeContext(args[0]):
 			findings = append(findings, fmt.Sprintf(
 				"%s:%d：New 的第一个实参是 %s——ctx 已经不在这里了（第一个参数是 graphID）："+
@@ -528,7 +575,7 @@ func docExampleFindings(path, text string) (findings []string, checked, elided, 
 // parseCall 解析 start 处那一次调用的实参表，并按「该不该判」分三类：
 //
 //   - `why == ""`：正常调用，照判，实参与**整段调用文本**（含接收者，报文里要引它）都给出来；
-//   - `why == "elided"`：教科书式省略写法（`…` / `...`），本来就不打算被复制；
+//   - `why == "elided"`：带裸 `…` / `...` 的不完整示例；真实变参展开仍正常检查；
 //   - `why == "ignored"`：括号不闭合——那是**散文里的罗列**（“ `New(` “ 这种），
 //     不是调用。真示例的括号一定闭得上；代价是把「示例真的漏了右括号」也一起放过，
 //     那不是这条闸门要管的事。
@@ -539,7 +586,11 @@ func parseCall(text string, start, open int) (args []string, frag, why string) {
 		return nil, frag, "ignored"
 	}
 	if strings.Contains(inner, "...") || strings.Contains(inner, "…") {
-		return nil, frag, "elided"
+		// 只判语法，不解析名字或类型。f(opts...)、字符串中的省略符、数组的 [...]
+		// 都可能是完整 Go；f(...) / f(…) 才是不能直接复制的省略片段。
+		if _, err := parser.ParseExpr("f" + inner); err != nil {
+			return nil, frag, "elided"
+		}
 	}
 	return args, frag, ""
 }
@@ -591,6 +642,7 @@ func looksLikeDescription(arg string) bool {
 
 var paramNames = map[string]bool{
 	"requires": true, "provides": true, "run": true, "binds": true,
+	"in": true, "ins": true, "out": true, "outs": true, "fn": true,
 	// 签名表里的形参写法（`pulse.NewNode(id, Requires, Provides, run)`）也是同一类占位。
 	"Requires": true, "Provides": true, "Run": true,
 }

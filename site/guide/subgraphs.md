@@ -79,7 +79,7 @@ func run() error {
 	}, child); err != nil {
 		return err
 	}
-	if err := pulse.Join(parent, "collect", pulse.Keys(first, second), report,
+	if err := pulse.Join(parent, "collect", "汇总两份标签", pulse.Keys(first, second), report,
 		func(rc *pulse.RunCtx, batch pulse.Batch[string]) (string, error) {
 			if err := batch.WaitAll(); err != nil {
 				return "", err
@@ -129,11 +129,11 @@ func main() {
 }
 ```
 
-在该目录运行：
+在该目录运行。运行未合并分支的示例时，按[安装页的本地替换步骤](./installation.md)使用对应源码；以下 `@main` 命令只获取已合入主线的 API。
 
 ```sh
 go mod init example.com/pulse-subgraphs
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 go run .
 ```
 

@@ -8,10 +8,10 @@
 
 ## 版本与安装
 
-需要 Go 1.25.0 或更高版本。本页描述当前 `main` 的 API，其中部分接口尚未随正式 tag 发布。最新正式 tag 为 `v0.4.1`；要运行本页示例，请固定到包含这些接口的提交：
+需要 Go 1.25.0 或更高版本。本页描述开发 API，最新正式 tag 仍为 `v0.4.1`。已合入的接口可从主线安装并记录解析出的伪版本；尚未合并的修改应按[安装说明](../site/guide/installation.md)使用对应本地源码：
 
 ```bash
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 ```
 
 ## 完整示例

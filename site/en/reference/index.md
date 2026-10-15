@@ -4,7 +4,7 @@ This section is for developers already using Pulse who need exact behavior or in
 
 ## Version scope
 
-These documents describe the development object model on current main. The latest published version is **v0.4.1**; the next release has not been published. To run site examples, use the fixed development commit in the [migration reference](./migration.md). Do not mix the released API from an unversioned installation with this reference.
+These documents describe the development object model. The latest published version is **v0.4.1**; the next release has not been published. Follow [installation](../guide/installation.md) to select a main-branch version or local source containing the documented interfaces. See [migration](./migration.md) for upgrade differences.
 
 ## Find a contract
 

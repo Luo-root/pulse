@@ -4,14 +4,30 @@
 
 ## 正式版本与开发文档
 
-最新正式 tag 是 **v0.4.1**。当前 main 的新对象模型与检查点桥接尚未发布；本站描述该开发模型，不表示 v0.5.0 已发布。正式用户应按 v0.4.1 对应的版本文档使用；试用本站示例可固定安装已公开并入 main、与当前生产源码一致的提交：
+最新正式 tag 是 **v0.4.1**。新对象模型、检查点桥与下列语法糖签名尚未随新 tag 发布；本站描述开发模型，不表示 v0.5.0 已发布。正式用户应按 v0.4.1 对应文档使用。已合并的开发接口可从主线安装；尚未合并的分支必须按[安装页](../guide/installation.md)使用对应本地源码：
 
 ```sh
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 go list -m github.com/Luo-root/pulse
 ```
 
-项目需要 Go 1.25+。Go 会显示该提交对应的伪版本；以提交是否对应为准，不要手工编造伪版本，也不要使用无版本命令期待开发 API。后续正式发布时再按发布说明选择 tag。
+项目需要 Go 1.25+。从 main 安装后保留 Go 解析出的具体伪版本，并确认它包含所需改动；不要手工编造提交或伪版本。使用本地替换时则核对源码目录。后续正式发布时再按发布说明选择 tag。
+
+## 节点语法糖增加说明参数
+
+`Join`、`FanOut`、`Produce`、`Consume`、`Tee` 现在统一在 `g, id` 后接 `description string`。已有调用在节点 ID 后补业务说明或 `""`，原来的后续参数整体右移一位；回调、切面和流选项的含义不变。
+
+```go
+Join(g, id, description, ins, out, fn, aspects...)
+FanOut(g, id, description, in, outs, fn, aspects...)
+Produce(g, id, description, out, fn, opts...)
+Consume(g, id, description, in, fn)
+Tee(g, id, description, in, outs, opts...)
+```
+
+这些是参数形状示意。`FanOut` 的所有 worker 使用同一份说明，仍以原有的 `id-1` 至 `id-N` 区分。说明只作为静态元数据出现在 Topology / Snapshot；没有运行时 Setter。
+
+这是公开签名变更，按 0.x 约定随 minor 发布，不能随 patch 发布。旧公开快照 `1f67045d6c42` 使用旧签名；试用尚未合并的修改时使用[对应本地源码](../guide/installation.md)，不要仅更改示例而继续安装旧快照。
 
 ## 先迁移对象职责
 

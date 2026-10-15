@@ -29,12 +29,12 @@ Pulse 将一组 Go 函数组合为可复用的工作流。每个节点声明需�
 
 需要 **Go 1.25.0 或更新版本**。
 
-> 本 README 和文档站描述当前开发版 API。最新正式 tag 为 **v0.4.1**，其 API 与本文不同。以下命令固定到已合入 main 的公开提交，确保示例使用同一套 API；版本差异见[安装与版本](site/guide/installation.md)。
+> 本 README 和文档站描述开发版 API。最新正式 tag 为 **v0.4.1**，其 API 与本文不同。以下命令安装已合入主线的接口，并在 go.mod 固定解析出的伪版本；尚未合并的修改请按[安装与版本](site/guide/installation.md)使用对应本地源码。
 
 在 Go 模块中执行：
 
 ```sh
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 ```
 
 ## 第一个工作流

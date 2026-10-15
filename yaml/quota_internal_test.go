@@ -46,7 +46,7 @@ func TestLoadOptionsQuotaPrecedence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: checkGraph: %v", c.name, err)
 		}
-		err = pulse.Produce(g, "p", src, need2)
+		err = pulse.Produce(g, "p", "", src, need2)
 		if rejected := err != nil; rejected != c.wantRejected {
 			t.Fatalf("%s: 装配期 %v，want rejected=%v（err=%v）", c.name, rejected, c.wantRejected, err)
 		}

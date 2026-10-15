@@ -28,7 +28,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err := pulse.Produce(g, "source", stream,
+	if err := pulse.Produce(g, "source", "生成数字流", stream,
 		func(rc *pulse.RunCtx, send func(int) error) error {
 			for _, value := range []int{1, 2, 3} {
 				if err := send(value); err != nil {
@@ -39,18 +39,18 @@ func run() error {
 		}); err != nil {
 		return err
 	}
-	if err := pulse.Tee(g, "broadcast", stream, pulse.Keys(left, right)); err != nil {
+	if err := pulse.Tee(g, "broadcast", "广播数字流", stream, pulse.Keys(left, right)); err != nil {
 		return err
 	}
 	var leftSum, rightSum int
-	if err := pulse.Consume(g, "left-sink", left,
+	if err := pulse.Consume(g, "left-sink", "计算左路总和", left,
 		func(rc *pulse.RunCtx, value int) error {
 			leftSum += value
 			return nil
 		}); err != nil {
 		return err
 	}
-	if err := pulse.Consume(g, "right-sink", right,
+	if err := pulse.Consume(g, "right-sink", "计算右路总和", right,
 		func(rc *pulse.RunCtx, value int) error {
 			rightSum += value
 			return nil
@@ -76,11 +76,11 @@ func main() {
 }
 ```
 
-在该目录运行：
+在该目录运行。运行未合并分支的示例时，按[安装页的本地替换步骤](./installation.md#试用尚未合并的源码)使用对应源码；以下 `@main` 命令只获取已合入主线的 API。
 
 ```sh
 go mod init example.com/pulse-streams
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 go run .
 ```
 
@@ -96,10 +96,14 @@ left=6 right=6
 
 | 函数 | 调用参数 | 回调职责 |
 |---|---|---|
-| `Produce` | `g, id, out, fn, opts...` | `fn(*RunCtx, func(T) error) error`，检查每次 `send` 的错误 |
-| `Consume` | `g, id, in, fn` | `fn(*RunCtx, T) error`，处理一个元素 |
-| `Tee` | `g, id, in, []Key[<-chan T], opts...` | 无业务回调，复制每个元素到全部出口 |
-| `FanOut` | `g, id, in, outs, fn, aspects...` | `fn(*RunCtx, int, I) (O, error)`，普通输入共享；channel 输入显式竞争 |
+| `Produce` | `g, id, description, out, fn, opts...` | `fn(*RunCtx, func(T) error) error`，检查每次 `send` 的错误 |
+| `Consume` | `g, id, description, in, fn` | `fn(*RunCtx, T) error`，处理一个元素 |
+| `Tee` | `g, id, description, in, outs, opts...` | `outs` 为 `[]Key[<-chan T]`；无业务回调，复制每个元素到全部出口 |
+| `FanOut` | `g, id, description, in, outs, fn, aspects...` | `fn(*RunCtx, int, I) (O, error)`，普通输入共享；channel 输入显式竞争 |
+
+`description` 原样作为节点说明，空串合法。FanOut 的所有 worker 共用这份说明，仍由 `id-1` 至 `id-N` 区分。
+
+Tee 在装配时复制 `outs` 接线列表；之后修改原切片，不会改变图的输出声明或广播出口。这只复制 Key 接线，不深拷贝流中的业务值。
 
 Produce 与 Tee 的可选参数类型是 `StreamOption`，例如 `pulse.WithBuffer(8)`。Consume 没有缓冲或切面参数。FanOut 的末尾参数是 `Aspect`，不是 `StreamOption`。
 
@@ -116,7 +120,7 @@ Tee 为每个下游创建一条独立 channel，每个下游获得完整、同�
 若每个元素只需要由一个 worker 处理，用一组 FanOut 竞争读取同一条 channel。以下片段用于替换完整示例的 Tee 与两个 Consume；需要已有 `g`、生产者的 `stream` 和 `r1`、`r2`（`Key[int]`），放在返回 `error` 的装配函数内：
 
 ```go
-if err := pulse.FanOut(g, "worker", stream, pulse.Keys(r1, r2),
+if err := pulse.FanOut(g, "worker", "汇总分配的数字", stream, pulse.Keys(r1, r2),
 	func(rc *pulse.RunCtx, shard int, ch <-chan int) (int, error) {
 		sum := 0
 		for {

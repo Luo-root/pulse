@@ -17,10 +17,12 @@ The core package's dependency closure contains only the standard library. `pulse
 | Version | When to choose it | Documentation |
 | --- | --- | --- |
 | Released tag `v0.4.1` | You require a released version and will use that version's API | [v0.4.1 source and README](https://github.com/Luo-root/pulse/tree/v0.4.1) |
-| Public commit `1f67045d6c42` | You want to follow these guides for reusable Graphs, Executions, static subgraphs, and the checkpoint bridge | This site's guides and reference |
-| `main` | You are contributing and accept subsequent changes | [main source](https://github.com/Luo-root/pulse) |
+| `main` | You want the development API already merged into the main branch | [main source](https://github.com/Luo-root/pulse) |
+| Local source checked out with these docs | You are trying unmerged fixes or contributing | These guides and reference; use the local replacement below |
 
-**This site describes the development API, not v0.4.1.** Tutorials pin a public commit already merged into main, rather than allowing an unversioned install to select the older tag. Go resolves the commit to a pseudo-version in `go.mod`; that is a normal module version format.
+**This site describes the development API, not v0.4.1.** `go get …@main` resolves the current main branch to a concrete pseudo-version in `go.mod`. Once that file is committed, teammates use that resolved version; running the application does not automatically update it.
+
+Unmerged branches are not installed by `@main`. When reading a local repair branch, use the matching source checkout as described below. The older public snapshot `1f67045d6c42` lacks the sugar constructors' `description` argument and cannot compile the updated sugar examples.
 
 Unreleased target versions become available only when the maintainer creates their tags / releases. During 0.x, breaking changes require a minor release. Read the [migration notes](../reference/migration.md) before upgrading.
 
@@ -32,7 +34,7 @@ In the directory where you want the example:
 mkdir pulse-example
 cd pulse-example
 go mod init example.com/pulse-example
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 ```
 
 Save the [quick-start program](quickstart.md) as `main.go`, then run:
@@ -43,15 +45,36 @@ go run .
 
 Commit your application's `go.mod` and `go.sum` so that teammates and CI use the same dependencies.
 
+## Try unmerged source
+
+Obtain a checkout containing the changes you need and provided with these docs. The following assumes its directory is named `pulse`, next to the `pulse-example` module. Set a local replacement inside the example module:
+
+```sh
+go mod edit -replace=github.com/Luo-root/pulse=../pulse
+```
+
+After saving the example's `main.go`, run:
+
+```sh
+go mod tidy
+go list -m github.com/Luo-root/pulse
+go run .
+```
+
+An output containing `=> ../pulse` confirms that this local source is selected. Even if the left-hand version in `go.mod` is older, the replacement determines the implementation. Adjust the relative path for your layout. Do not commit a personal-machine path into a production application. After the changes merge, remove the replacement, select a public commit containing them, and commit the resolved version:
+
+```sh
+go mod edit -dropreplace=github.com/Luo-root/pulse
+go get github.com/Luo-root/pulse@main
+```
+
 ## Check the dependency
 
 ```sh
-go list -m github.com/Luo-root/pulse
+go list -m -json github.com/Luo-root/pulse
 ```
 
-The output should contain the pseudo-version for `1f67045d6c42`. If it shows v0.4.1, run the pinned installation command above again.
-
-An output containing `=>` indicates a local replacement in the module or `go.work`. Inspect the application's module and workspace configuration to check whether it intentionally selects another source tree. To test public dependencies independently, set `GOWORK=off` for that process rather than changing global Go settings; environment-variable syntax depends on your shell.
+Without a local replacement, inspect the public commit selected by Version. With a replacement, check that Replace.Dir points to the checkout matching the docs. Also inspect `go.work` for intentional overrides. To test public dependencies independently, set `GOWORK=off` for that process; this does not remove a replace from `go.mod`, so check both. Do not change global Go settings for a one-off check.
 
 ## Optional packages
 
@@ -65,11 +88,11 @@ import (
 )
 ```
 
-This is a list of available imports. Keep only the packages your program uses, because Go rejects unused imports. See the [package reference](../packages/index.md) to choose and use the optional packages.
+Keep only the packages your program uses, because Go rejects unused imports. See the [package reference](../packages/index.md) to choose and use the optional packages.
 
 ## Troubleshooting
 
-**The compiler reports mismatched `New` or `Run` arguments.** Check the version with `go list -m`. Older tags and this development API have different object models; mixing their documentation produces signature errors.
+**The compiler reports mismatched constructor or `Run` arguments.** Check the selected source first. Older tags, earlier development snapshots, and this API differ. All five node sugar constructors now take `description` after `id`, with an empty string allowed. Unmerged changes require the corresponding local checkout.
 
 **The toolchain cannot be downloaded.** Install or select Go 1.25+, or configure toolchain and module download access for your environment. Running Pulse itself requires no online service or credentials.
 

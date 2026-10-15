@@ -12,7 +12,7 @@ Initialize a module in a new directory:
 mkdir pulse-quickstart
 cd pulse-quickstart
 go mod init example.com/pulse-quickstart
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 ```
 
 Run all subsequent commands in that directory.

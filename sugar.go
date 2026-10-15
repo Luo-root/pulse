@@ -144,7 +144,10 @@ func NoValue(keys ...string) error { return skipErr(keys...) }
 //
 // 严格有两种粒度：`return b.WaitAll()` 是「缺一条就别跑我」；`v, err := b.Get(a)`
 // 之后把 err 返回出去是「这一条缺了就别跑我」。
-func Join[T, O any](g *Graph, id string, ins []Key[T], out Key[O],
+//
+// description 原样保留为节点说明，空串合法。ins 在装配时复制，声明与回调
+// 共用这份内部接线；调用方后续修改切片不改变输入顺序或来源。
+func Join[T, O any](g *Graph, id, description string, ins []Key[T], out Key[O],
 	fn func(rc *RunCtx, b Batch[T]) (O, error), aspects ...Aspect) error {
 	if g == nil {
 		return fmt.Errorf("pulse: Join %q: nil graph", id)
@@ -158,11 +161,12 @@ func Join[T, O any](g *Graph, id string, ins []Key[T], out Key[O],
 	if fn == nil {
 		return fmt.Errorf("pulse: Join %q: nil fn", id)
 	}
+	ins = append([]Key[T](nil), ins...)
 	requires := make([]keyRef, len(ins))
 	for i, k := range ins {
 		requires[i] = k.asRef()
 	}
-	err := g.Add(NewNode(id, "", requires, Provides(out), func(rc *RunCtx) error {
+	err := g.Add(NewNode(id, description, requires, Provides(out), func(rc *RunCtx) error {
 		b, err := collectBatch(rc, ins)
 		if err != nil {
 			return err
@@ -204,7 +208,9 @@ func Join[T, O any](g *Graph, id string, ins []Key[T], out Key[O],
 //
 // 编译期锁住的是**元素类型**（in / outs / fn 的参数与返回是同一组 I、O）；
 // 实例个数是运行期长度。
-func FanOut[I, O any](g *Graph, id string, in Key[I], outs []Key[O],
+//
+// description 原样保留为所有 worker 的共同说明，空串合法；节点 id 仍按分片号命名。
+func FanOut[I, O any](g *Graph, id, description string, in Key[I], outs []Key[O],
 	fn func(rc *RunCtx, shard int, in I) (O, error), aspects ...Aspect) error {
 	if g == nil {
 		return fmt.Errorf("pulse: FanOut %q: nil graph", id)
@@ -224,7 +230,7 @@ func FanOut[I, O any](g *Graph, id string, in Key[I], outs []Key[O],
 	for i, out := range outs {
 		shard := i + 1
 		worker := id + "-" + strconv.Itoa(shard)
-		n := NewNode(worker, "", Requires(in), Provides(out), func(rc *RunCtx) error {
+		n := NewNode(worker, description, Requires(in), Provides(out), func(rc *RunCtx) error {
 			// 门已经等到输入到达（就绪或跳过）：跳过的那条在这里读回来是
 			// *SkipError，本实例随之以跳过收尾，与手写节点一模一样。
 			v, err := Get(rc, in)

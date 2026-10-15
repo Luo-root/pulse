@@ -77,7 +77,7 @@ func main() {
 
 ```sh
 go mod init example.com/pulse-observation
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 go run .
 ```
 

@@ -94,7 +94,7 @@ The repository root contains the production `pulse` package and its package-inte
 tests. Public-API regression tests live in `tests/`; runnable external examples stay in
 `examples_test.go` at the root so godoc discovers them. `observe/` and `yaml/` remain separate
 public packages, each with its own tests. The five design documents live in `docs/design/`, and
-bilingual tutorials and usage guides live in `site/guide/` and `site/en/guide/`, and behavior references live in `site/reference/` and `site/en/reference/`. The documentation describes the development API; use the pinned version in the installation guide to run its examples.
+bilingual tutorials and usage guides live in `site/guide/` and `site/en/guide/`, and behavior references live in `site/reference/` and `site/en/reference/`. The documentation describes the development API; follow the installation guide to select matching public code or a local checkout for unmerged changes.
 
 ### Conventions a reviewer will check
 
@@ -207,7 +207,7 @@ secret scanning 与 push protection。
 
 仓库根目录保留 `pulse` 生产包及包内白盒测试。公开 API 回归测试放在 `tests/`；可运行的外部示例
 保留在根目录 `examples_test.go`，便于 godoc 收录。`observe/` 和 `yaml/` 仍是独立的公开包，各有
-自己的测试。五份设计文档在 `docs/design/`，中英文入门与使用指南在 `site/guide/` 和 `site/en/guide/`，行为参考在 `site/reference/` 和 `site/en/reference/`。文档描述开发版 API；运行示例时使用安装页给出的固定版本。
+自己的测试。五份设计文档在 `docs/design/`，中英文入门与使用指南在 `site/guide/` 和 `site/en/guide/`，行为参考在 `site/reference/` 和 `site/en/reference/`。文档描述开发版 API；按安装页选择对应公开版本，尚未合并的修改使用匹配的本地源码。
 
 ### Review 会检查的约定
 

@@ -49,7 +49,7 @@ func run() error {
 		})); err != nil {
 		return err
 	}
-	if err := pulse.Join(g, "collect", pulse.Keys(left, right), report,
+	if err := pulse.Join(g, "collect", "Collect branch results", pulse.Keys(left, right), report,
 		func(rc *pulse.RunCtx, batch pulse.Batch[string]) (string, error) {
 			return strings.Join(batch.Values(), ", "), nil
 		}); err != nil {
@@ -88,11 +88,11 @@ func main() {
 }
 ```
 
-Run these commands in the directory containing the file:
+Run these commands in the directory containing the file. For examples from an unmerged branch, use the matching source checkout with the [installation page's local replacement steps](./installation.md); `@main` below only installs APIs already merged into main.
 
 ```sh
 go mod init example.com/pulse-branches
-go get github.com/Luo-root/pulse@1f67045d6c42
+go get github.com/Luo-root/pulse@main
 go run .
 ```
 
@@ -131,6 +131,10 @@ The example uses an exclusive branch, so one input is always absent. With this s
 
 ## Read a Batch and choose a branch operation
 
+`Join` takes `g, id, description, ins, out, fn, aspects...` in that order. `description` is preserved as the node description, and an empty string is valid.
+
+`Join` copies the `ins` wiring list during assembly. Replacing or reordering the caller's slice afterward does not change the graph's input declarations or the callback's batch order. This copies Key wiring only; runtime business values are not deep-copied.
+
 `Batch.Items` retains every input in declaration order, including absent items with `Present=false`. `Len` counts present values; `Values` returns those values; `Missing` returns skipped key names. Use `batch.Get(key)` for a particular source instead of guessing the origin of same-typed results by slice position.
 
 `Batch.Get` returns `*SkipError` for a skipped item. Returning it skips the current node. Passing a key outside the batch returns `ErrUndeclared`, a calling error. For inputs of different types, use `NewNode` with `Deps` rather than forcing them into one `Batch[T]`.
@@ -145,12 +149,12 @@ Use `Only` in place of `Set` for that branch; do not write other outputs first. 
 
 ## Parallel instances: FanOut
 
-At assembly time, `FanOut` creates `id-1` through `id-N` nodes from the output count. Shard numbers start at 1. Every instance reads the complete ordinary input value and chooses its work by shard number. It does not automatically divide a slice into pieces.
+`FanOut` takes `g, id, description, in, outs, fn, aspects...` in that order. At assembly time, it creates `id-1` through `id-N` nodes from the output count. Shard numbers start at 1. All instances share the supplied `description`, which may be empty, and remain distinguished by their IDs. Every instance reads the complete ordinary input value and chooses its work by shard number. It does not automatically divide a slice into pieces.
 
 Place this fragment in an assembly function returning `error`, with existing `g`, `docs` (`Key[[]string]`), and `r1`, `r2` (`Key[string]`):
 
 ```go
-if err := pulse.FanOut(g, "worker", docs, pulse.Keys(r1, r2),
+if err := pulse.FanOut(g, "worker", "Process document shards", docs, pulse.Keys(r1, r2),
 	func(rc *pulse.RunCtx, shard int, values []string) (string, error) {
 		if shard > len(values) {
 			return "", pulse.NoValue()
