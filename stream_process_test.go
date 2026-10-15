@@ -3,8 +3,10 @@ package pulse
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -538,5 +540,226 @@ func TestMessageAcceptedCommitSurvivesSubsequentCancellation(t *testing.T) {
 	messageTestOK(t, frame.commit(f.rc, messageCancelOnConfirmation{delivery.ack, f.rc.Cancel}))
 	if f.rc.Context().Err() != context.Canceled || f.output.Snapshot().LastSequence != 1 || f.input.Snapshot().AckedThrough != 1 {
 		t.Fatal("completed message was rewritten as an uncommitted cancellation")
+	}
+}
+
+// 只验证 Core 消息协议；真正的存储恢复/所有权检查由 Durable 联调验证。
+func messageTestCheckpoint(f *messageTestFixture, hooks *CheckpointStreamHooks) {
+	e := f.rc.exec
+	e.checkpoint = &checkpointConfig{scope: "run", hooks: CheckpointHooks{StreamHooks: hooks}, failure: &checkpointFailure{root: e}}
+	f.rc.checkpointAttempt = CheckpointAttempt{Scope: "node-attempt", Index: 1}
+	f.rc.checkpointWrites = &writeSet{}
+	f.rc.writes = f.rc.checkpointWrites
+	f.input.state.checkpoint = &checkpointStream{exec: e, descriptor: CheckpointStreamDescriptor{
+		ID:      CheckpointStreamID{Scope: "run", NodeID: "source", Key: "input", Group: "default", Generation: 1},
+		Attempt: "source-attempt", Element: reflect.TypeFor[int](), Capacity: f.input.state.capacity,
+	}}
+	f.output.state.checkpoint = &checkpointStream{exec: e, descriptor: CheckpointStreamDescriptor{
+		ID:      CheckpointStreamID{Scope: "run", NodeID: "map", Key: "output", Group: "default", Generation: 1},
+		Attempt: "node-attempt", Element: reflect.TypeFor[int](), Capacity: f.output.state.capacity,
+	}}
+	f.other.state.checkpoint = &checkpointStream{exec: e, descriptor: CheckpointStreamDescriptor{
+		ID:      CheckpointStreamID{Scope: "run", NodeID: "map", Key: "other", Group: "default", Generation: 1},
+		Attempt: "node-attempt", Element: reflect.TypeFor[string](), Capacity: f.other.state.capacity,
+	}}
+}
+
+func TestMessageCheckpointResumesBudgetAndCommitsOnceBeforePublish(t *testing.T) {
+	f := newMessageTestFixture(t, 2)
+	delivery := f.delivery(t, 2)
+	var order []string
+	var commit CheckpointMessageCommit
+	hooks := &CheckpointStreamHooks{
+		OpenMessage: func(_ context.Context, req CheckpointMessageAttemptRequest) (CheckpointMessageAttempt, error) {
+			index := 2
+			if len(order) != 0 {
+				if !reflect.DeepEqual(order, []string{"open-2", "fail-message-2"}) {
+					t.Fatalf("opened next attempt before confirmed failure: %v", order)
+				}
+				index = 3
+			}
+			if req.Limit != 3 || req.Input.Sequence != 1 || req.Input.Stream.Key != "input" || req.Attempt != "node-attempt" {
+				t.Fatalf("unstable message attempt identity: %+v", req)
+			}
+			order = append(order, fmt.Sprintf("open-%d", index))
+			return CheckpointMessageAttempt{Attempt: CheckpointAttempt{Scope: fmt.Sprintf("message-%d", index), Index: index},
+				State: []CheckpointState{{Name: "count", Type: reflect.TypeFor[int](), Value: 5}}}, nil
+		},
+		FailMessage: func(_ context.Context, scope string) error { order = append(order, "fail-"+scope); return nil },
+		Commit: func(_ context.Context, record CheckpointMessageCommit) error {
+			order = append(order, "commit")
+			for _, mu := range []*sync.Mutex{&f.input.state.mu, &f.output.state.mu, &f.other.state.mu} {
+				if !mu.TryLock() {
+					t.Fatal("reliable Commit ran under a stream state lock")
+				}
+				mu.Unlock()
+			}
+			for _, op := range []*streamOperation{&f.input.state.operation, &f.output.state.operation, &f.other.state.operation} {
+				if len(op.gate) != 1 {
+					t.Fatal("Commit did not retain all transaction operation gates")
+				}
+			}
+			messageTestNoCommit(t, f)
+			commit = record
+			return nil
+		},
+	}
+	messageTestCheckpoint(f, hooks)
+	calls := 0
+	messageTestOK(t, HandleMessage(f.rc, delivery, func(rc *RunCtx, value int) error {
+		calls++
+		state, present, err := GetMessageState[int](rc, "count")
+		if err != nil || !present || state != 5 {
+			t.Fatalf("state leaked from failed attempt: value=%d present=%t err=%v", state, present, err)
+		}
+		messageTestOK(t, SetMessageState(rc, "count", state+calls))
+		messageTestOK(t, Set(rc, f.value, value*10))
+		messageTestOK(t, f.writer.Send(value*10))
+		if calls == 1 {
+			return errors.New("failed persistent attempt two")
+		}
+		return f.otherWriter.Send("committed")
+	}, WithMessageRetry(3, 0)))
+	if calls != 2 || !reflect.DeepEqual(order, []string{"open-2", "fail-message-2", "open-3", "commit"}) {
+		t.Fatalf("persistent budget replenished or success double-committed: calls=%d order=%v", calls, order)
+	}
+	if commit.Attempt != "message-3" || len(commit.Inputs) != 1 || len(commit.Outputs) != 2 || len(commit.Values) != 1 || len(commit.State) != 1 || commit.State[0].Value != 7 {
+		t.Fatalf("incomplete atomic reliable record: %+v", commit)
+	}
+	if commit.Outputs[0].Message.Sequence != 1 || commit.Outputs[0].Message.Value != 20 || commit.Values[0].Value != 20 {
+		t.Fatalf("wrong output identities or values: %+v", commit)
+	}
+	if f.input.Snapshot().AckedThrough != 1 || f.output.Snapshot().LastSequence != 1 || f.other.Snapshot().LastSequence != 1 {
+		t.Fatal("confirmed reliable message was not locally published")
+	}
+	if state, _ := f.rc.exec.slotOf(f.value.asRef()).snapshot(); state != slotPending {
+		t.Fatal("message ordinary value escaped complete-chain checkpoint staging")
+	}
+	if state, value := f.rc.checkpointWrites.peek(f.value.asRef()).snapshot(); state != slotReady || value != 20 || f.rc.writes != f.rc.checkpointWrites {
+		t.Fatalf("ordinary value was not merged into complete-chain frame: state=%v value=%v", state, value)
+	}
+}
+
+func TestMessageCheckpointCommitExcludesConcurrentNack(t *testing.T) {
+	f := newMessageTestFixture(t, 1)
+	delivery := f.delivery(t, 1)
+	witness := &messageWaitWitness{Context: f.rc.Context(), waiting: make(chan struct{})}
+	f.rc.ctx = witness
+	nacked := make(chan error, 1)
+	messageTestCheckpoint(f, &CheckpointStreamHooks{
+		OpenMessage: func(context.Context, CheckpointMessageAttemptRequest) (CheckpointMessageAttempt, error) {
+			return CheckpointMessageAttempt{Attempt: CheckpointAttempt{Scope: "message", Index: 1}}, nil
+		},
+		Commit: func(context.Context, CheckpointMessageCommit) error {
+			go func() { nacked <- delivery.Nack() }()
+			messageTestWait(t, f.sourceRC.Context(), witness.waiting)
+			select {
+			case err := <-nacked:
+				t.Fatalf("Nack interposed during reliable confirmation: %v", err)
+			default:
+			}
+			if !delivery.active() {
+				t.Fatal("reliable confirmation lost its current delivery")
+			}
+			return nil
+		},
+	})
+	messageTestOK(t, HandleMessage(f.rc, delivery, func(_ *RunCtx, value int) error { return f.writer.Send(value) }))
+	select {
+	case err := <-nacked:
+		if !errors.Is(err, ErrDeliveryExpired) {
+			t.Fatalf("Nack after committed Ack = %v", err)
+		}
+	case <-f.sourceRC.Context().Done():
+		t.Fatal(f.sourceRC.Context().Err())
+	}
+	if f.input.Snapshot().AckedThrough != 1 || f.output.Snapshot().LastSequence != 1 {
+		t.Fatal("Nack interposed between reliable Commit and local publication")
+	}
+}
+
+func TestMessageCheckpointConfirmedCommitSurvivesCancellation(t *testing.T) {
+	f := newMessageTestFixture(t, 1)
+	delivery := f.delivery(t, 1)
+	messageTestCheckpoint(f, &CheckpointStreamHooks{
+		OpenMessage: func(context.Context, CheckpointMessageAttemptRequest) (CheckpointMessageAttempt, error) {
+			return CheckpointMessageAttempt{Attempt: CheckpointAttempt{Scope: "message", Index: 1}}, nil
+		},
+		Commit: func(context.Context, CheckpointMessageCommit) error {
+			f.rc.Cancel() // 存储已经确认；取消不能把已提交结果改报为未提交。
+			return nil
+		},
+	})
+	messageTestOK(t, HandleMessage(f.rc, delivery, func(rc *RunCtx, value int) error {
+		messageTestOK(t, Set(rc, f.value, value))
+		return f.writer.Send(value)
+	}))
+	if f.rc.Context().Err() != context.Canceled || f.input.Snapshot().AckedThrough != 1 || f.output.Snapshot().LastSequence != 1 {
+		t.Fatal("confirmed message became an uncommitted cancellation")
+	}
+}
+
+func TestMessageCheckpointFailuresDoNotPublishOrReplenishBudget(t *testing.T) {
+	for _, mode := range []string{"exhausted", "last-attempt", "open-error", "commit-error", "fail-error", "host-cancel", "preflight"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newMessageTestFixture(t, 2)
+			delivery := f.delivery(t, 1)
+			opens, failures, commits, calls := 0, 0, 0, 0
+			cause := errors.New("persistent failure")
+			hooks := &CheckpointStreamHooks{
+				OpenMessage: func(context.Context, CheckpointMessageAttemptRequest) (CheckpointMessageAttempt, error) {
+					opens++
+					if mode == "open-error" {
+						return CheckpointMessageAttempt{}, cause
+					}
+					index := 1
+					if mode == "exhausted" || mode == "last-attempt" {
+						index = 3
+					}
+					return CheckpointMessageAttempt{Attempt: CheckpointAttempt{Scope: "message", Index: index, Exhausted: mode == "exhausted"}}, nil
+				},
+				FailMessage: func(context.Context, string) error {
+					failures++
+					if mode == "fail-error" {
+						return cause
+					}
+					return nil
+				},
+				Commit: func(context.Context, CheckpointMessageCommit) error { commits++; return cause },
+			}
+			messageTestCheckpoint(f, hooks)
+			if mode == "preflight" {
+				messageTestOK(t, Skip(f.rc, f.conflict))
+			}
+			err := HandleMessage(f.rc, delivery, func(rc *RunCtx, value int) error {
+				calls++
+				messageTestOK(t, Set(rc, f.value, value))
+				messageTestOK(t, f.writer.Send(value))
+				switch mode {
+				case "host-cancel":
+					f.rc.exec.Cancel()
+					return cause
+				case "last-attempt", "fail-error":
+					return cause
+				case "preflight":
+					return Set(rc, f.conflict, value)
+				}
+				return nil
+			}, WithMessageRetry(3, 0))
+			if err == nil || opens != 1 || calls > 1 {
+				t.Fatalf("failure retried locally or became success: opens=%d callbacks=%d err=%v", opens, calls, err)
+			}
+			wantFailures := 0
+			if mode == "last-attempt" || mode == "fail-error" {
+				wantFailures = 1
+			}
+			if failures != wantFailures || (mode == "commit-error" && commits != 1) || (mode != "commit-error" && commits != 0) {
+				t.Fatalf("wrong failure/commit protocol: failed=%d commits=%d err=%v", failures, commits, err)
+			}
+			if strings.HasSuffix(mode, "error") && !isCheckpointFailure(err) {
+				t.Fatalf("storage failure lost reliable error identity: %v", err)
+			}
+			messageTestNoCommit(t, f)
+		})
 	}
 }

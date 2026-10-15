@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 )
 
@@ -680,4 +681,153 @@ func checkpointChainResult(rc *RunCtx, err error) error {
 		}
 	}
 	return err
+}
+
+// checkpointMessage 是 HandleMessage 一次持久尝试的状态视图，不与节点 Retry 共用预算。
+type checkpointMessage struct {
+	attempt CheckpointAttempt
+	state   map[string]CheckpointState
+}
+
+func (rc *RunCtx) openCheckpointMessage(input CheckpointStreamAcknowledgement, limit int) (*checkpointMessage, error) {
+	if rc.exec.checkpoint == nil {
+		return nil, nil
+	}
+	var result CheckpointMessageAttempt
+	if err := rc.exec.callCheckpoint("open message attempt", func() error {
+		var err error
+		result, err = rc.exec.checkpoint.hooks.StreamHooks.OpenMessage(rc.ctx, CheckpointMessageAttemptRequest{
+			Site: rc.exec.site, Scope: rc.exec.checkpoint.scope, Attempt: rc.checkpointAttempt.Scope, NodeID: rc.NodeID(), Input: input, Limit: limit})
+		if err != nil {
+			return err
+		}
+		a := result.Attempt
+		if a.Scope == "" || a.Scope == rc.checkpointAttempt.Scope || a.Index < 1 || a.Index > limit || (a.Exhausted && a.Index != limit) || len(a.Values) != 0 {
+			return fmt.Errorf("invalid persistent message attempt cursor")
+		}
+		return checkCheckpointState(result.State)
+	}); err != nil {
+		return nil, err
+	}
+	message := &checkpointMessage{attempt: result.Attempt, state: make(map[string]CheckpointState, len(result.State))}
+	for _, state := range result.State {
+		message.state[state.Name] = state
+	}
+	return message, nil
+}
+
+func (rc *RunCtx) failCheckpointMessage(message *checkpointMessage) error {
+	if message == nil {
+		return nil
+	}
+	return rc.exec.callCheckpoint("fail message attempt", func() error {
+		return rc.exec.checkpoint.hooks.StreamHooks.FailMessage(rc.exec.ctx, message.attempt.Scope)
+	})
+}
+
+func checkCheckpointState(states []CheckpointState) error {
+	seen := make(map[string]bool, len(states))
+	for _, state := range states {
+		if state.Name == "" || seen[state.Name] {
+			return fmt.Errorf("checkpoint state has an empty or duplicate name")
+		}
+		seen[state.Name] = true
+		if err := checkCheckpointPayload(state.Type, state.Value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GetMessageState 读取 OpenMessage 认回的显式状态快照，仅可在持久 HandleMessage 回调中使用。
+// 引用不深拷贝；需要改动时构造新值并调用 SetMessageState，失败尝试不保存此快照。
+func GetMessageState[T any](rc *RunCtx, name string) (value T, present bool, err error) {
+	if rc == nil || rc.message == nil || rc.message.checkpoint == nil || !rc.message.active {
+		return value, false, fmt.Errorf("pulse: GetMessageState requires an active checkpoint message attempt")
+	}
+	state, present := rc.message.checkpoint.state[name]
+	if !present {
+		return value, false, nil
+	}
+	if state.Type != reflect.TypeFor[T]() {
+		return value, false, rc.message.fail(fmt.Errorf("pulse: message state %q type mismatch", name))
+	}
+	if state.Value != nil {
+		value = state.Value.(T)
+	}
+	return value, true, nil
+}
+
+// SetMessageState 显式替换本次消息尝试的一项状态；完整状态快照和输入确认、输出共同提交。
+func SetMessageState[T any](rc *RunCtx, name string, value T) error {
+	if rc == nil || rc.message == nil || rc.message.checkpoint == nil || !rc.message.active {
+		return fmt.Errorf("pulse: SetMessageState requires an active checkpoint message attempt")
+	}
+	state := CheckpointState{Name: name, Type: reflect.TypeFor[T](), Value: value}
+	if err := checkCheckpointState([]CheckpointState{state}); err != nil {
+		return rc.message.fail(err)
+	}
+	if previous, present := rc.message.checkpoint.state[name]; present && previous.Type != state.Type {
+		return rc.message.fail(fmt.Errorf("pulse: message state %q type mismatch", name))
+	}
+	rc.message.checkpoint.state[name] = state
+	return nil
+}
+
+// checkpointCommit 只做可靠确认，调用方先完成容量/槽位/当前交付预检，且不持流锁；
+// 必须防止同一交付的 Nack/Stop 插入确认和本地发布之间。失败不发布、不 Ack。
+func (m *messageAttempt) checkpointCommit(rc *RunCtx, input CheckpointStreamAcknowledgement, outputs []CheckpointStreamAppend) error {
+	if m.checkpoint == nil {
+		return nil
+	}
+	commit := CheckpointMessageCommit{Site: rc.exec.site, Scope: rc.exec.checkpoint.scope,
+		Attempt: m.checkpoint.attempt.Scope, Inputs: []CheckpointStreamAcknowledgement{input}, Outputs: outputs}
+	for _, state := range m.checkpoint.state {
+		commit.State = append(commit.State, state)
+	}
+	sort.Slice(commit.State, func(i, j int) bool { return commit.State[i].Name < commit.State[j].Name })
+	m.writes.mu.Lock()
+	var entries []stagedWrite
+	for _, entry := range m.writes.staged {
+		entries = append(entries, *entry)
+	}
+	m.writes.mu.Unlock()
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ref.name < entries[j].ref.name })
+	for _, entry := range entries {
+		state, value := entry.slot.snapshot()
+		if state == slotPending {
+			continue
+		}
+		output := checkpointOutput(entry.ref, state, value)
+		if err := checkCheckpointOutput(output); err != nil {
+			return rc.exec.stopCheckpoint("finalize message value", err)
+		}
+		commit.Values = append(commit.Values, output)
+	}
+	for _, output := range outputs {
+		if err := checkCheckpointCursor(output.Cursor); err != nil {
+			return rc.exec.stopCheckpoint("finalize message output", err)
+		}
+		if err := checkCheckpointCursor(output.Message.Value); err != nil {
+			return rc.exec.stopCheckpoint("finalize message output", err)
+		}
+	}
+	return rc.exec.commitCheckpointMessage(rc.ctx, commit)
+}
+
+// checkpointAppends 在本地流锁下取序号/身份快照，不调用宿主代码；业务值不深复制。
+func (b *messageOutput[T]) checkpointAppends(site Site) []CheckpointStreamAppend {
+	if b.ignoreStopped && b.stream.stopped {
+		return nil
+	}
+	checkpoint := b.stream.checkpoint
+	if checkpoint == nil {
+		return nil
+	}
+	out := make([]CheckpointStreamAppend, len(b.values))
+	for i, value := range b.values {
+		out[i] = CheckpointStreamAppend{Site: site, Attempt: checkpoint.descriptor.Attempt, Stream: checkpoint.descriptor.ID,
+			Message: CheckpointStreamMessage{Sequence: b.stream.last + uint64(i) + 1, Value: value}}
+	}
+	return out
 }

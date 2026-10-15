@@ -183,6 +183,13 @@ func (rc *RunCtx) openCheckpointAttempt(parent, boundary string, limit int) (Che
 		if result.Scope == "" || result.Scope == parent || result.Index < 1 || result.Index > limit || (result.Exhausted && result.Index != limit) {
 			return fmt.Errorf("invalid persistent attempt cursor")
 		}
+		if len(result.Values) != 0 && (boundary != "" || result.Exhausted) {
+			return fmt.Errorf("only an active complete-chain attempt may restore message values")
+		}
+		if err := checkCheckpointAttemptValues(rc.node, result.Values); err != nil {
+			return err
+		}
+		result.Values = append([]CheckpointOutput(nil), result.Values...)
 		return nil
 	})
 	return result, err
@@ -241,6 +248,14 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 	rc.checkpointAttempt = root
 	rc.checkpointEntries = &checkpointEntryLedger{}
 	ws := &writeSet{}
+	for _, output := range root.Values {
+		ref := keyRef{name: output.Key.Name, typ: output.Key.Type}
+		if output.State == SlotStateSkipped {
+			_ = ws.slotOf(ref).resolveSkip()
+		} else {
+			_ = ws.slotOf(ref).resolveValue(output.Value)
+		}
+	}
 	rc.writes, rc.checkpointWrites = ws, ws
 	err = invokeCheckpointChain(chain, rc)
 	err = checkpointChainResult(rc, err)

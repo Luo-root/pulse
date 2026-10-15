@@ -713,7 +713,7 @@ func TestCheckpointFailureUsesExecutionContext(t *testing.T) {
 					if retry {
 						wantCalls++
 						wantFailures = 3
-						if opened[resumeStart+1] != opened[1] {
+						if !reflect.DeepEqual(opened[resumeStart+1], opened[1]) {
 							t.Fatalf("resume did not recover active Retry cursor: before=%+v after=%+v", opened[1], opened[resumeStart+1])
 						}
 					}

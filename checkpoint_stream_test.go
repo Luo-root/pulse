@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -294,6 +295,121 @@ func TestCheckpointStreamFailedAspectConfirmsTerminalBeforeFinish(t *testing.T) 
 	}
 }
 
+func TestCheckpointMessageCommitCoordinatesStateOutputAndInput(t *testing.T) {
+	for _, failCommit := range []bool{false, true} {
+		t.Run(fmt.Sprint(failCommit), func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			g := mustNew(t, ctx, "message-checkpoint")
+			input, output := NewKey[Stream[int]]("input"), NewKey[Stream[int]]("output")
+			entered, release := make(chan CheckpointMessageCommit, 1), make(chan struct{})
+			var downstream atomic.Int32
+			mustAdd(t, g, NewNode("source", "输入", nil, Provides(input), func(rc *RunCtx) error {
+				writer, err := OpenStream(rc, input, WithStreamSource("source", true))
+				if err != nil {
+					return err
+				}
+				return writer.Send(5)
+			}))
+			swallow := func(rc *RunCtx, next func(*RunCtx) error) error { _ = next(rc); return nil }
+			mustAdd(t, g, NewNode("transform", "状态与输出同次确认", Requires(input), Provides(output), func(rc *RunCtx) error {
+				writer, err := OpenStream(rc, output, WithBuffer(2), WithStreamSource("transform", true))
+				if err != nil {
+					return err
+				}
+				stream, err := Get(rc, input)
+				if err != nil {
+					return err
+				}
+				delivery, err := stream.Receive(rc)
+				if err != nil {
+					return err
+				}
+				if err := HandleMessage(rc, delivery, func(rc *RunCtx, value int) error {
+					if err := SetMessageState(rc, "sum", value); err != nil {
+						return err
+					}
+					if sum, ok, err := GetMessageState[int](rc, "sum"); err != nil || !ok || sum != value {
+						return fmt.Errorf("inconsistent state snapshot: %d %t %v", sum, ok, err)
+					}
+					return writer.Send(value * 2)
+				}); err != nil {
+					return err
+				}
+				if _, err := stream.Receive(rc); err != io.EOF {
+					return fmt.Errorf("expected input EOF, got %v", err)
+				}
+				return nil
+			}, swallow))
+			mustAdd(t, g, NewNode("sink", "未确认成果不可见", Requires(output), nil, func(rc *RunCtx) error {
+				stream, err := Get(rc, output)
+				if err != nil {
+					return err
+				}
+				for {
+					delivery, err := stream.Receive(rc)
+					if err == io.EOF {
+						return nil
+					}
+					if err != nil {
+						return err
+					}
+					downstream.Add(1)
+					if err := delivery.Ack(); err != nil {
+						return err
+					}
+				}
+			}))
+			probe := &checkpointProbe{}
+			hooks := checkpointStreamTestHooks(probe)
+			hooks.StreamHooks.Commit = func(ctx context.Context, commit CheckpointMessageCommit) error {
+				if commit.Attempt == "" {
+					return nil // 手动下游 Ack。
+				}
+				entered <- commit
+				select {
+				case <-release:
+					if failCommit {
+						return fmt.Errorf("uncertain transaction: %w", ErrSkipped)
+					}
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Start(); err != nil {
+				t.Fatal(err)
+			}
+			commit := waitCheckpointSignal(t, ctx, entered)
+			if len(commit.Inputs) != 1 || len(commit.State) != 1 || commit.State[0].Name != "sum" || commit.State[0].Value != 5 ||
+				len(commit.Outputs) != 1 || commit.Outputs[0].Message.Value != 10 || commit.Outputs[0].Message.Sequence != 1 {
+				t.Fatalf("input/state/output are not one payload: %+v", commit)
+			}
+			_, inputRaw := e.slotOf(input.asRef()).snapshot()
+			_, outputRaw := e.slotOf(output.asRef()).snapshot()
+			if in, out := inputRaw.(Stream[int]).Snapshot(), outputRaw.(Stream[int]).Snapshot(); in.AckedThrough != 0 || out.LastSequence != 0 || downstream.Load() != 0 {
+				t.Fatalf("message published or Acked before Commit: input=%+v output=%+v seen=%d", in, out, downstream.Load())
+			}
+			close(release)
+			err = e.Wait()
+			if failCommit {
+				var failure *CheckpointError
+				if !errors.As(err, &failure) || isSkipped(err) || downstream.Load() != 0 {
+					t.Fatalf("failed Commit published or was swallowed: err=%v seen=%d", err, downstream.Load())
+				}
+				if inputRaw.(Stream[int]).Snapshot().AckedThrough != 0 || outputRaw.(Stream[int]).Snapshot().LastSequence != 0 {
+					t.Fatal("failed Commit changed local input/output progress")
+				}
+			} else if err != nil || downstream.Load() != 1 || inputRaw.(Stream[int]).Snapshot().AckedThrough != 1 {
+				t.Fatalf("confirmed message failed: %v seen=%d", err, downstream.Load())
+			}
+		})
+	}
+}
+
 func TestCheckpointCompletedStreamRestoresTailAndFencesGeneration(t *testing.T) {
 	ctx := checkpointTestContext(t)
 	g := mustNew(t, ctx, "restore-tail")
@@ -466,6 +582,64 @@ func TestCheckpointOldExecutionDeliveryCannotConfirmRestoredGeneration(t *testin
 	}
 	if confirmations.Load() != 1 {
 		t.Fatalf("current generation confirmations=%d", confirmations.Load())
+	}
+}
+
+func TestCheckpointStreamMessageBudgetIsReadBeforeCallbackAndSurvivesResume(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "message-budget")
+	key := NewKey[Stream[int]]("stream")
+	var callbacks atomic.Int32
+	mustAdd(t, g, NewNode("source", "单条输入", nil, Provides(key), func(rc *RunCtx) error {
+		writer, err := OpenStream(rc, key, WithStreamSource("input", true))
+		if err != nil {
+			return err
+		}
+		return writer.Send(1)
+	}))
+	cause := errors.New("business failed")
+	mustAdd(t, g, NewNode("sink", "认回预算", Requires(key), nil, func(rc *RunCtx) error {
+		stream, err := Get(rc, key)
+		if err != nil {
+			return err
+		}
+		delivery, err := stream.Receive(rc)
+		if err != nil {
+			return err
+		}
+		return HandleMessage(rc, delivery, func(*RunCtx, int) error { callbacks.Add(1); return cause }, WithMessageRetry(3, 0))
+	}))
+	probe := &checkpointProbe{}
+	hooks := checkpointStreamTestHooks(probe)
+	var mu sync.Mutex
+	index, confirmedFailures := 2, 1 // 恢复前第 1 次失败已确认，当前活跃为第 2 次。
+	opened := 0
+	hooks.StreamHooks.OpenMessage = func(_ context.Context, request CheckpointMessageAttemptRequest) (CheckpointMessageAttempt, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		opened++
+		if request.Limit != 3 || int(callbacks.Load()) != opened-1 {
+			return CheckpointMessageAttempt{}, errors.New("callback entered before persistent budget")
+		}
+		if confirmedFailures == index {
+			index++
+		}
+		return CheckpointMessageAttempt{Attempt: CheckpointAttempt{Scope: fmt.Sprintf("message-%d", index), Index: index}}, nil
+	}
+	hooks.StreamHooks.FailMessage = func(_ context.Context, scope string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if scope != fmt.Sprintf("message-%d", index) || confirmedFailures != index-1 {
+			return errors.New("failure confirmation lost identity")
+		}
+		confirmedFailures = index
+		return nil
+	}
+	if err := g.Run(ctx, Inputs{}, WithExecCheckpoint("root", hooks)); !errors.Is(err, cause) {
+		t.Fatalf("wrong message failure: %v", err)
+	}
+	if callbacks.Load() != 2 || opened != 2 || confirmedFailures != 3 {
+		t.Fatalf("resume replenished budget or skipped failure confirmation: calls=%d opens=%d confirmed=%d", callbacks.Load(), opened, confirmedFailures)
 	}
 }
 

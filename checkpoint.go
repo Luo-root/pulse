@@ -56,6 +56,9 @@ type CheckpointAttempt struct {
 	Scope     string
 	Index     int
 	Exhausted bool
+	// Values 仅完整节点根尝试可返回已确认消息贡献的普通输出子集。
+	// Core 在业务前恢复到完整链暂存，仍待节点 Commit 后发布；不含流端点。
+	Values []CheckpointOutput
 }
 
 // CheckpointCommit 是完整节点链的提交单元。Scope 是本层图作用域，Attempt 是该节点

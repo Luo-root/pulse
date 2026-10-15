@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -595,6 +596,68 @@ func TestStreamSugarProducerStopNormalizationRequiresExactError(t *testing.T) {
 				t.Fatalf("source failure was normalized: mode=%s err=%v want=%v", mode, err, want)
 			}
 		})
+	}
+}
+
+func TestStreamSugarSourceAndBranchCheckpointConfiguration(t *testing.T) {
+	for _, buffer := range []int{1, 3} {
+		for _, explicit := range []bool{false, true} {
+			t.Run(fmt.Sprint(buffer, explicit), func(t *testing.T) {
+				g := managedPublicGraph(t, "sugar-checkpoint", p.WithMaxRunning(1))
+				input, a, b := p.NewKey[p.Stream[int]]("input"), p.NewKey[p.Stream[int]]("a"), p.NewKey[p.Stream[int]]("b")
+				managedPublicOK(t, p.ProduceStream(g, "source", "", input, func(_ *p.RunCtx, writer *p.StreamWriter[int]) error {
+					if got := writer.Position(); got.Sequence != 0 || got.Cursor != nil {
+						return fmt.Errorf("new source position=%+v", got)
+					}
+					return writer.SendAt(9, "cursor-9")
+				}, p.WithStreamSource("external-log", true), p.WithBuffer(buffer)))
+				opts := []p.StreamOption{p.WithBuffer(buffer), p.WithMessageHandling(p.WithMessageRetry(2, 0)), p.WithStreamAspects()}
+				if explicit {
+					opts = append(opts, p.WithStreamSource("explicit-transform", false))
+				}
+				managedPublicOK(t, p.TeeStream(g, "tee", "", input, p.Keys(a, b), opts...))
+				var values [2][]int
+				for i, key := range p.Keys(a, b) {
+					managedPublicOK(t, p.ConsumeStream(g, fmt.Sprint("sink", i), "", key, func(_ *p.RunCtx, value int) error { values[i] = append(values[i], value); return nil }))
+				}
+				hooks := publicCheckpointStreamHooks()
+				open := hooks.StreamHooks.Open
+				var mu sync.Mutex
+				sources := make(map[string]p.CheckpointStreamSource)
+				var appends []p.CheckpointStreamAppend
+				hooks.StreamHooks.Open = func(ctx context.Context, request p.CheckpointStreamOpen) (p.CheckpointStreamRecord, error) {
+					mu.Lock()
+					sources[request.Key.Name] = request.Source
+					mu.Unlock()
+					if request.Capacity != buffer {
+						return p.CheckpointStreamRecord{}, fmt.Errorf("capacity=%d want %d", request.Capacity, buffer)
+					}
+					return open(ctx, request)
+				}
+				hooks.StreamHooks.Append = func(_ context.Context, record p.CheckpointStreamAppend) error {
+					mu.Lock()
+					defer mu.Unlock()
+					appends = append(appends, record)
+					return nil
+				}
+				managedPublicOK(t, g.Run(managedPublicContext(t), p.Inputs{}, p.WithExecCheckpoint("stable-root", hooks)))
+				if sources["input"] != (p.CheckpointStreamSource{ID: "external-log", Resumable: true}) || len(appends) != 1 || appends[0].Cursor != "cursor-9" {
+					t.Fatalf("producer source=%v appends=%+v", sources, appends)
+				}
+				for _, key := range []string{"a", "b"} {
+					want := p.CheckpointStreamSource{ID: "tee/tee/" + key, Resumable: true}
+					if explicit {
+						want = p.CheckpointStreamSource{ID: "explicit-transform", Resumable: false}
+					}
+					if sources[key] != want {
+						t.Fatalf("branch %q source=%+v want %+v", key, sources[key], want)
+					}
+				}
+				if !reflect.DeepEqual(values, [2][]int{{9}, {9}}) {
+					t.Fatalf("checkpoint broadcast=%v", values)
+				}
+			})
+		}
 	}
 }
 

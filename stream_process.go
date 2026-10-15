@@ -47,7 +47,8 @@ func WithMessageLimit(n int) MessageOption {
 // 回调的 Set / Skip 和 StreamWriter.Send 暂存于本次尝试；失败成果对下游不可见。
 // 输出写端须在回调之前由同一 RunCtx 打开。回调不得接收下一条消息、打开新流、
 // 嵌套 HandleMessage 或套普通 Retry；确认由本函数完成，不在回调中手动 Ack / Nack。
-// 渐进输出应在此边界外逐条 Send。检查点消息尝试尚未开放，明确拒绝。
+// 渐进输出应在此边界外逐条 Send。启用 checkpoint 时，输入确认、显式状态和输出消息
+// 先一次可靠确认；普通值并入完整节点外帧，仍待完整链确认后才发布。持久预算不因重启补充。
 // 闭包变量、业务值中的引用和外部副作用不回滚；不要并发使用同一 RunCtx（含 Fork）。
 //
 // 成功提交先等待每个批次的足够容量，再整批预检普通槽位、接纳全部输出并确认输入。
@@ -63,9 +64,6 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 			rc.streams.failMessage(err)
 		}
 	}()
-	if rc != nil && rc.exec != nil && rc.exec.checkpoint != nil {
-		return fmt.Errorf("pulse: HandleMessage: persistent message attempts are not supported in this layer")
-	}
 	if err = checkManagedRunCtx(rc, "HandleMessage"); err != nil {
 		return err
 	}
@@ -88,6 +86,13 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 			option(&cfg)
 		}
 	}
+	var inputID CheckpointStreamAcknowledgement
+	if rc.exec.checkpoint != nil {
+		if input.checkpoint == nil {
+			return rc.exec.stopCheckpoint("open message attempt", fmt.Errorf("message input has no checkpoint stream identity"))
+		}
+		inputID = delivery.ack.checkpointAcknowledgement()
+	}
 	for attempt := 0; attempt < cfg.attempts; attempt++ {
 		if err = rc.Context().Err(); err != nil {
 			return err
@@ -95,10 +100,20 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 		if !delivery.active() {
 			return ErrDeliveryExpired
 		}
+		checkpoint, openErr := rc.openCheckpointMessage(inputID, cfg.attempts)
+		if openErr != nil {
+			return openErr
+		}
 		index := attempt + 1
+		if checkpoint != nil {
+			if checkpoint.attempt.Exhausted {
+				return fmt.Errorf("pulse: HandleMessage on node %q exhausted after %d confirmed attempts", rc.NodeID(), cfg.attempts)
+			}
+			index = checkpoint.attempt.Index
+		}
 		frame := &messageAttempt{
-			writes: &writeSet{}, input: &input.mu, limit: cfg.limit,
-			outputs: make(map[any]messageBatch),
+			writes: &writeSet{outer: rc.checkpointWrites}, input: &input.mu, limit: cfg.limit,
+			checkpoint: checkpoint, outputs: make(map[any]messageBatch),
 		}
 		err = runMessageAttempt(rc, frame, func() error { return fn(rc, delivery.Value) })
 		if frame.err != nil {
@@ -115,6 +130,9 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 		}
 		if isCheckpointFailure(err) {
 			return err
+		}
+		if failure := rc.failCheckpointMessage(checkpoint); failure != nil {
+			return failure // 存储失败不在本地循环重试。
 		}
 		if index == cfg.attempts {
 			return err
@@ -143,14 +161,15 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 // messageAttempt 只由当前节点的一条调用栈使用；RunCtx.Fork 保留同一帧视图。
 // writes 必须仍是当前帧，防止普通 Retry 的写暂存借本帧放行流 I/O。
 type messageAttempt struct {
-	writes  *writeSet
-	input   *sync.Mutex
-	limit   int
-	count   int
-	active  bool
-	err     error
-	outputs map[any]messageBatch
-	batches []messageBatch
+	writes     *writeSet
+	input      *sync.Mutex
+	limit      int
+	count      int
+	active     bool
+	err        error
+	checkpoint *checkpointMessage
+	outputs    map[any]messageBatch
+	batches    []messageBatch
 	// 仅显式广播使用：已 Stop 的分支不再有交付义务，其它分支继续。
 	allowStoppedOutputs bool
 }
@@ -232,6 +251,7 @@ type messageBatch interface {
 	mutex() *sync.Mutex
 	operation() *streamOperation
 	readyLocked() (<-chan struct{}, error)
+	checkpointAppends(Site) []CheckpointStreamAppend
 	publishLocked()
 }
 
@@ -377,6 +397,7 @@ type messageConfirmation interface {
 	activeLocked() bool
 	messageChangedLocked() <-chan struct{}
 	messageOperation() *streamOperation
+	checkpointAcknowledgement() CheckpointStreamAcknowledgement
 	confirmMessageLocked()
 }
 
@@ -406,6 +427,14 @@ func (m *messageAttempt) commitWithOperations(rc *RunCtx, input messageConfirmat
 		mu.Lock()
 	}
 	changed, err := m.preflightLocked(rc, input)
+	var acknowledgement CheckpointStreamAcknowledgement
+	var appends []CheckpointStreamAppend
+	if err == nil && changed == nil && m.checkpoint != nil {
+		acknowledgement = input.checkpointAcknowledgement()
+		for _, batch := range m.batches {
+			appends = append(appends, batch.checkpointAppends(rc.exec.site)...)
+		}
+	}
 	for i := len(locks) - 1; i >= 0; i-- {
 		locks[i].Unlock()
 	}
@@ -416,6 +445,9 @@ func (m *messageAttempt) commitWithOperations(rc *RunCtx, input messageConfirmat
 	if err := rc.Context().Err(); err != nil {
 		return nil, err
 	}
+	if err := m.checkpointCommit(rc, acknowledgement, appends); err != nil {
+		return nil, err
+	}
 	for _, mu := range locks {
 		mu.Lock()
 	}
@@ -424,8 +456,10 @@ func (m *messageAttempt) commitWithOperations(rc *RunCtx, input messageConfirmat
 			locks[i].Unlock()
 		}
 	}()
-	if err := rc.Context().Err(); err != nil {
-		return nil, err
+	if m.checkpoint == nil {
+		if err := rc.Context().Err(); err != nil {
+			return nil, err
+		}
 	}
 	// checkpoint 写只合入完整节点外帧；单顺序写者保证预检之后目标不变。
 	if err := m.writes.commit(rc.exec); err != nil {
