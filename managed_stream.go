@@ -101,6 +101,9 @@ func OpenStream[T any](rc *RunCtx, key Key[Stream[T]], opts ...StreamOption) (*S
 	if len(cfg.aspects) != 0 {
 		return nil, fmt.Errorf("pulse: OpenStream: WithStreamAspects configures stream node constructors; attach aspects to the owning NewNode")
 	}
+	if len(cfg.messageOptions) != 0 {
+		return nil, fmt.Errorf("pulse: OpenStream: WithMessageHandling configures managed consumer constructors; call HandleMessage for a NewNode")
+	}
 	if cfg.buf <= 0 {
 		cfg.buf = 1
 	}
@@ -123,6 +126,9 @@ func OpenStream[T any](rc *RunCtx, key Key[Stream[T]], opts ...StreamOption) (*S
 func (w *StreamWriter[T]) Send(value T) error {
 	if w == nil || w.state == nil {
 		return fmt.Errorf("pulse: Send: unopened stream writer")
+	}
+	if staged, err := stageMessageValue(w.rc, w.state, value); staged {
+		return err
 	}
 	if err := checkManagedRunCtx(w.rc, "Send"); err != nil {
 		return w.state.recordFailure(err)
@@ -325,6 +331,9 @@ func (s Stream[T]) Done() <-chan struct{} {
 func checkManagedRunCtx(rc *RunCtx, operation string) error {
 	if rc == nil || rc.exec == nil || rc.node == nil || rc.ctx == nil {
 		return fmt.Errorf("pulse: %s: a node RunCtx is required", operation)
+	}
+	if rc.message != nil {
+		return fmt.Errorf("pulse: %s on node %q: cannot open, receive, expose or stop a stream inside a message attempt", operation, rc.NodeID())
 	}
 	if rc.exec.checkpoint != nil {
 		return fmt.Errorf("pulse: %s: managed stream checkpoint mode is not supported in this layer", operation)

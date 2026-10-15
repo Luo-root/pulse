@@ -33,8 +33,20 @@ type managedReaderLifecycle interface {
 }
 
 type nodeStreams struct {
-	mu      sync.Mutex
-	outputs []streamLifecycle
+	mu         sync.Mutex
+	outputs    []streamLifecycle
+	messageErr error
+}
+
+func (s *nodeStreams) failMessage(err error) {
+	if err == nil || isSkipped(err) {
+		return
+	}
+	s.mu.Lock()
+	if s.messageErr == nil {
+		s.messageErr = err
+	}
+	s.mu.Unlock()
 }
 
 func (s *nodeStreams) add(output streamLifecycle) {
@@ -49,7 +61,11 @@ func (rc *RunCtx) finishStreams(err error) error {
 	}
 	rc.streams.mu.Lock()
 	outputs := append([]streamLifecycle(nil), rc.streams.outputs...)
+	messageErr := rc.streams.messageErr
 	rc.streams.mu.Unlock()
+	if (err == nil || isSkipped(err)) && messageErr != nil {
+		err = messageErr
+	}
 	if err == nil || isSkipped(err) {
 		for _, output := range outputs {
 			if cause := output.failure(); cause != nil {

@@ -390,6 +390,17 @@ func TestManagedEndpointPermissionsAndStaging(t *testing.T) {
 	if got := stream.Snapshot(); got.LastSequence != 0 || got.InFlight != 0 {
 		t.Fatalf("staged I/O published messages: %+v", got)
 	}
+	readerRC.message = &messageAttempt{}
+	for _, operation := range []func() error{
+		func() error { _, err := stream.Receive(readerRC); return err },
+		func() error { _, err := stream.Messages(readerRC); return err },
+		func() error { return stream.Stop(readerRC) },
+	} {
+		if err := operation(); err == nil || !strings.Contains(err.Error(), "message attempt") {
+			t.Fatalf("message callback performed stream I/O: %v", err)
+		}
+	}
+	readerRC.message = nil
 	fresh, err := writerRC.exec.graph.NewExecution(readerRC.Context(), Inputs{})
 	managedTestOK(t, err)
 	defer fresh.Cancel()
@@ -397,6 +408,10 @@ func TestManagedEndpointPermissionsAndStaging(t *testing.T) {
 	defer freshRC.Cancel()
 	if _, err := OpenStream(freshRC, key, WithStreamAspects(Timeout(time.Second))); err == nil || !strings.Contains(err.Error(), "NewNode") {
 		t.Fatalf("OpenStream silently accepted node aspects: %v", err)
+	}
+	freshRC.message = &messageAttempt{}
+	if _, err := OpenStream(freshRC, key); err == nil || !strings.Contains(err.Error(), "message attempt") {
+		t.Fatalf("OpenStream inside message callback = %v", err)
 	}
 	if state, _ := fresh.slotOf(key.asRef()).snapshot(); state != slotPending {
 		t.Fatal("rejected OpenStream published an endpoint")

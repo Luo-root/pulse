@@ -135,6 +135,8 @@ type RunCtx struct {
 	lease *runLease
 	// host 的等待上下文只活到一次 Receive；确认仍归这份 Execution 的活跃读取义务。
 	host bool
+	// message 只在显式有限消息尝试期间存在；普通 Retry 不改变粒度。
+	message *messageAttempt
 	// checkpointAttempt 是当前持久尝试，Fork 复制其视图；Retry 只在自己的层次换它。
 	checkpointAttempt CheckpointAttempt
 	aspectIndex       int
