@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -326,6 +327,194 @@ func TestSubLiveRetryRejectedBeforeChildBusiness(t *testing.T) {
 	}
 	if calls.Load() != 0 || e.Snapshot().Nodes[0].Child != nil {
 		t.Fatal("staged live export advanced child business before rejection")
+	}
+}
+
+// 完整生产链终结流，而祖先 Sub 仍等待反馈入口；WithMaxRunning(1) 同时钉受管等待让位。
+func TestSubManagedStreamFinishesAtWriterChain(t *testing.T) {
+	g, child := streamTestGraph(t, "parent", WithMaxRunning(1)), streamTestGraph(t, "child")
+	inside, outside := NewKey[Stream[int]]("inside"), NewKey[Stream[int]]("outside")
+	done, childDone := NewKey[bool]("done"), NewKey[bool]("child.done")
+	bodyReturned, releaseAspect := make(chan struct{}), make(chan struct{})
+	post := func(rc *RunCtx, next func(*RunCtx) error) error {
+		err := next(rc)
+		if err != nil {
+			return err
+		}
+		close(bodyReturned)
+		select {
+		case <-releaseAspect:
+			return nil
+		case <-rc.Context().Done():
+			return rc.Context().Err()
+		}
+	}
+	streamTestMust(t, child.DeclareInput(NewPort(childDone)))
+	streamTestMust(t, child.DeclareOutput(NewPort(inside)))
+	streamTestMust(t, child.Add(NewNode("produce", "", nil, Provides(inside), func(rc *RunCtx) error {
+		writer, err := OpenStream(rc, inside)
+		if err != nil {
+			return err
+		}
+		return writer.Send(1)
+	}, post)))
+	var acknowledged atomic.Bool
+	streamTestMust(t, child.Add(NewNode("feedback", "", Requires(childDone), nil, func(*RunCtx) error {
+		acknowledged.Store(true)
+		return nil
+	})))
+	streamTestMust(t, Sub(g, "source", "", []SubBind{In(done, childDone), Out(inside, outside)}, child))
+	streamTestMust(t, g.Add(NewNode("reader", "", Requires(outside), Provides(done), func(rc *RunCtx) error {
+		stream, err := Get(rc, outside)
+		if err != nil {
+			return err
+		}
+		delivery, err := stream.Receive(rc)
+		if err != nil {
+			return err
+		}
+		if delivery.Value != 1 {
+			return fmt.Errorf("received %d, want 1", delivery.Value)
+		}
+		if err := delivery.Ack(); err != nil {
+			return err
+		}
+		select {
+		case <-bodyReturned:
+		case <-rc.Context().Done():
+			return rc.Context().Err()
+		}
+		if snapshot := stream.Snapshot(); snapshot.Terminal != "" {
+			return fmt.Errorf("stream ended before its producer Aspect returned: %+v", snapshot)
+		}
+		close(releaseAspect)
+		if _, err := stream.Receive(rc); !errors.Is(err, io.EOF) {
+			return fmt.Errorf("producer chain did not finish its stream: %w", err)
+		}
+		return Set(rc, done, true)
+	})))
+	streamTestRun(t, g)
+	if !acknowledged.Load() {
+		t.Fatal("stream ended only after ancestor Sub completed, so feedback never arrived")
+	}
+}
+
+func TestSubManagedStreamSurvivesChildWaitCleanup(t *testing.T) {
+	childFinished := make(chan struct{})
+	g := streamTestGraph(t, "parent", WithMaxRunning(1), WithObserver(ObserverFunc{GraphFinished: func(site Site, _ NodeFinishReason, _ error) {
+		if site.Path == "source" {
+			close(childFinished)
+		}
+	}}))
+	child := streamTestGraph(t, "child")
+	inside, outside := NewKey[Stream[int]]("inside"), NewKey[Stream[int]]("outside")
+	streamTestMust(t, child.DeclareOutput(NewPort(inside)))
+	streamTestMust(t, child.Add(NewNode("produce", "", nil, Provides(inside), func(rc *RunCtx) error {
+		writer, err := OpenStream(rc, inside)
+		if err != nil {
+			return err
+		}
+		return writer.Send(42)
+	})))
+	streamTestMust(t, Sub(g, "source", "", []SubBind{Out(inside, outside)}, child))
+	streamTestMust(t, g.Add(NewNode("read-after-child-wait", "", Requires(outside), nil, func(rc *RunCtx) error {
+		stream, err := Get(rc, outside)
+		if err != nil {
+			return err
+		}
+		if err := rc.WaitStream(func(ctx context.Context) error {
+			select {
+			case <-childFinished:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}); err != nil {
+			return err
+		}
+		delivery, err := stream.Receive(rc)
+		if err != nil {
+			return err
+		}
+		if delivery.Value != 42 {
+			return fmt.Errorf("received %d after child Wait, want 42", delivery.Value)
+		}
+		if err := delivery.Ack(); err != nil {
+			return err
+		}
+		if _, err := stream.Receive(rc); !errors.Is(err, io.EOF) {
+			return fmt.Errorf("completed child stream did not end normally: %w", err)
+		}
+		return nil
+	})))
+	streamTestRun(t, g)
+}
+
+func TestSubManagedStreamPreservesFailureAndCancellation(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canceled-%t", canceled), func(t *testing.T) {
+			g, child := streamTestGraph(t, "parent", WithMaxRunning(1)), streamTestGraph(t, "child")
+			inside, outside := NewKey[Stream[int]]("inside"), NewKey[Stream[int]]("outside")
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			observed := make(chan struct{})
+			failure := errors.New("producer failed after its live message")
+			streamTestMust(t, child.DeclareOutput(NewPort(inside)))
+			streamTestMust(t, child.Add(NewNode("produce", "", nil, Provides(inside), func(rc *RunCtx) error {
+				writer, err := OpenStream(rc, inside)
+				if err != nil {
+					return err
+				}
+				if err := writer.Send(1); err != nil {
+					return err
+				}
+				if err := rc.WaitStream(func(ctx context.Context) error {
+					select {
+					case <-observed:
+						return ctx.Err()
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}); err != nil {
+					return err
+				}
+				return failure
+			})))
+			streamTestMust(t, Sub(g, "source", "", []SubBind{Out(inside, outside)}, child))
+			var endpoint Stream[int]
+			streamTestMust(t, g.Add(NewNode("reader", "", Requires(outside), nil, func(rc *RunCtx) error {
+				var err error
+				endpoint, err = Get(rc, outside)
+				if err != nil {
+					return err
+				}
+				delivery, err := endpoint.Receive(rc)
+				if err != nil {
+					return err
+				}
+				if err := delivery.Ack(); err != nil {
+					return err
+				}
+				if canceled {
+					cancel()
+				}
+				close(observed)
+				// 继续等待生产结论，不能读一条后遗弃整个读取义务。
+				_, err = endpoint.Receive(rc)
+				return err
+			})))
+			err := g.Run(ctx, Inputs{})
+			want, terminal := error(failure), StreamFailed
+			if canceled {
+				want, terminal = context.Canceled, StreamCanceled
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("Sub lost its child's cause: got %v, want %v", err, want)
+			}
+			if snapshot := endpoint.Snapshot(); snapshot.Terminal != terminal || !errors.Is(snapshot.Err, want) {
+				t.Fatalf("live endpoint lost its child's cause: %+v", snapshot)
+			}
+		})
 	}
 }
 

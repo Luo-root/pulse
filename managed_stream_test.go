@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -162,6 +163,58 @@ func TestManagedAckFrontierAndNackAfterProduction(t *testing.T) {
 	}
 }
 
+func TestManagedNativeViewSharesReceiveQueue(t *testing.T) {
+	writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 2)
+	messages, err := stream.Messages(readerRC)
+	managedTestOK(t, err)
+	secondView, err := stream.Messages(readerRC)
+	managedTestOK(t, err)
+	if messages != secondView || messages != stream.state.queue {
+		t.Fatal("Messages created a separate delivery queue")
+	}
+	managedTestOK(t, writer.Send(10))
+	managedTestOK(t, writer.Send(20))
+	first := <-messages
+	second, err := stream.Receive(readerRC)
+	managedTestOK(t, err)
+	if first.Sequence != 1 || second.Sequence != 2 {
+		t.Fatalf("view and Receive did not compete: %d, %d", first.Sequence, second.Sequence)
+	}
+	managedTestOK(t, writerRC.finishStreams(nil))
+	managedTestOK(t, first.Ack())
+	managedTestOK(t, second.Ack())
+	if _, ok := <-messages; ok {
+		t.Fatal("acknowledged completed queue remains open")
+	}
+}
+
+func TestManagedStopReleasesAllObligations(t *testing.T) {
+	writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 2)
+	managedTestOK(t, writer.Send(1))
+	managedTestOK(t, writer.Send(2))
+	first, err := stream.Receive(readerRC)
+	managedTestOK(t, err)
+	result := managedTestBlockedSend(t, writerRC, func() error { return writer.Send(3) })
+	managedTestOK(t, stream.Stop(readerRC))
+	managedTestOK(t, stream.Stop(readerRC))
+	if err := managedTestResult(t, readerRC.Context(), result); !errors.Is(err, ErrStreamStopped) {
+		t.Fatalf("blocked Send after Stop = %v", err)
+	}
+	if err := first.Ack(); !errors.Is(err, ErrDeliveryExpired) {
+		t.Fatalf("Ack after Stop = %v", err)
+	}
+	if _, err := stream.Receive(readerRC); err != io.EOF {
+		t.Fatalf("stopped Receive = %v", err)
+	}
+	if got := stream.Snapshot(); got.InFlight != 0 || got.AckedThrough != 0 || !got.Stopped || got.Terminal != "" {
+		t.Fatalf("Stop became confirmation or premature production terminal: %+v", got)
+	}
+	managedTestOK(t, writerRC.finishStreams(nil))
+	if got := stream.Snapshot(); got.Terminal != StreamStopped || got.Err != nil {
+		t.Fatalf("handled stop terminal = %+v", got)
+	}
+}
+
 func TestManagedCancellationDoesNotAck(t *testing.T) {
 	writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 1)
 	managedTestOK(t, writer.Send(1))
@@ -301,4 +354,228 @@ func TestManagedReceivedDeliverySurvivesCancellationWhileResumingQuota(t *testin
 		t.Fatalf("cancellation automatically Acked/Nacked received delivery: %+v", snapshot)
 	}
 	managedTestOK(t, got.delivery.Ack())
+}
+
+func TestManagedEndpointPermissionsAndStaging(t *testing.T) {
+	writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 1)
+	key := NewKey[Stream[int]]("messages")
+	if _, err := OpenStream(writerRC, key); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate OpenStream = %v", err)
+	}
+	if _, err := OpenStream(readerRC, key); !errors.Is(err, ErrUndeclared) {
+		t.Fatalf("reader opened writer = %v", err)
+	}
+	_, foreign, _, foreignRC := managedTestEndpoint[int](t, 1)
+	if _, err := stream.Receive(foreignRC); !errors.Is(err, ErrUndeclared) {
+		t.Fatalf("other execution Receive = %v", err)
+	}
+	if foreign.state == stream.state {
+		t.Fatal("executions share stream state")
+	}
+	readerRC.writes = &writeSet{}
+	if _, err := stream.Receive(readerRC); err == nil || !strings.Contains(err.Error(), "write set") {
+		t.Fatalf("staged Receive = %v", err)
+	}
+	if _, err := stream.Messages(readerRC); err == nil || !strings.Contains(err.Error(), "write set") {
+		t.Fatalf("staged Messages = %v", err)
+	}
+	readerRC.writes = nil
+	writerRC.writes = &writeSet{}
+	if _, err := OpenStream(writerRC, key); err == nil || !strings.Contains(err.Error(), "write set") {
+		t.Fatalf("staged OpenStream = %v", err)
+	}
+	if err := writer.Send(1); err == nil || !strings.Contains(err.Error(), "write set") {
+		t.Fatalf("staged Send = %v", err)
+	}
+	if got := stream.Snapshot(); got.LastSequence != 0 || got.InFlight != 0 {
+		t.Fatalf("staged I/O published messages: %+v", got)
+	}
+	fresh, err := writerRC.exec.graph.NewExecution(readerRC.Context(), Inputs{})
+	managedTestOK(t, err)
+	defer fresh.Cancel()
+	freshRC := newRunCtx(fresh, writerRC.node, fresh.Context())
+	defer freshRC.Cancel()
+	if _, err := OpenStream(freshRC, key, WithStreamAspects(Timeout(time.Second))); err == nil || !strings.Contains(err.Error(), "NewNode") {
+		t.Fatalf("OpenStream silently accepted node aspects: %v", err)
+	}
+	if state, _ := fresh.slotOf(key.asRef()).snapshot(); state != slotPending {
+		t.Fatal("rejected OpenStream published an endpoint")
+	}
+}
+
+func TestManagedReaderExitWakesSend(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		t.Run(fmt.Sprint(native), func(t *testing.T) {
+			writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 1)
+			managedTestOK(t, writer.Send(1))
+			if native {
+				messages, err := stream.Messages(readerRC)
+				managedTestOK(t, err)
+				<-messages
+			} else {
+				_, err := stream.Receive(readerRC)
+				managedTestOK(t, err)
+			}
+			result := managedTestBlockedSend(t, writerRC, func() error { return writer.Send(2) })
+			cause := readerRC.finishStreams(nil)
+			if cause == nil || !strings.Contains(cause.Error(), "reading obligations") {
+				t.Fatalf("reader silently abandoned active stream: %v", cause)
+			}
+			if err := managedTestResult(t, readerRC.Context(), result); err != cause {
+				t.Fatalf("abandoned stream did not wake Send with its cause: %v", err)
+			}
+			if err := writerRC.finishStreams(nil); err != cause {
+				t.Fatalf("ignored Send error became successful producer: %v", err)
+			}
+			if got := stream.Snapshot(); got.Terminal != StreamFailed || got.Err != cause || got.AckedThrough != 0 {
+				t.Fatalf("abandonment terminal = %+v", got)
+			}
+		})
+	}
+}
+
+func TestManagedWorkerExitRequeuesOnlyOwnedDeliveries(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	key := NewKey[Stream[int]]("messages")
+	g, err := New("workers", "")
+	managedTestOK(t, err)
+	source := NewNode("source", "", nil, Provides(key), nil)
+	managedTestOK(t, g.Add(source))
+	managedTestOK(t, FanOut(g, "workers", "", key, Keys(NewKey[int]("one"), NewKey[int]("two")),
+		func(*RunCtx, int, Stream[int]) (int, error) { return 0, nil }))
+	e, err := g.NewExecution(ctx, Inputs{})
+	managedTestOK(t, err)
+	defer e.Cancel()
+	writerRC := newRunCtx(e, source, e.Context())
+	firstRC, secondRC := newRunCtx(e, g.nodes[1], e.Context()), newRunCtx(e, g.nodes[2], e.Context())
+	defer writerRC.Cancel()
+	defer firstRC.Cancel()
+	defer secondRC.Cancel()
+	writer, err := OpenStream(writerRC, key, WithBuffer(2))
+	managedTestOK(t, err)
+	stream, err := Get(firstRC, key)
+	managedTestOK(t, err)
+	if _, err := stream.Messages(firstRC); err == nil || !strings.Contains(err.Error(), "competing FanOut") {
+		t.Fatalf("unowned competing native view = %v", err)
+	}
+	managedTestOK(t, writer.Send(1))
+	first, err := stream.Receive(firstRC)
+	managedTestOK(t, err)
+	managedTestOK(t, writer.Send(2))
+	second, err := stream.Receive(secondRC)
+	managedTestOK(t, err)
+	managedTestOK(t, firstRC.finishStreams(nil))
+	managedTestOK(t, firstRC.finishStreams(nil)) // 别名/重复收尾不得重复投递。
+	if err := first.Ack(); !errors.Is(err, ErrDeliveryExpired) {
+		t.Fatalf("exited worker retained valid Ack: %v", err)
+	}
+	managedTestOK(t, second.Ack())
+	retry, err := stream.Receive(secondRC)
+	managedTestOK(t, err)
+	if retry.Value != 1 || retry.Sequence != 1 || stream.Snapshot().InFlight != 1 {
+		t.Fatalf("worker exit redelivered another worker's message: %+v, %+v", retry, stream.Snapshot())
+	}
+	managedTestOK(t, writerRC.finishStreams(nil))
+	managedTestOK(t, retry.Ack())
+	// 生产完成且全部确认，最后的 worker 不必为了收尾再读一次 EOF。
+	managedTestOK(t, secondRC.finishStreams(nil))
+}
+
+func TestManagedZeroEndpointsReturnErrors(t *testing.T) {
+	var stream Stream[int]
+	var writer *StreamWriter[int]
+	var delivery Delivery[int]
+	if _, err := OpenStream[int](nil, NewKey[Stream[int]]("s")); err == nil {
+		t.Fatal("nil RunCtx accepted")
+	}
+	if _, err := stream.Receive(nil); err == nil {
+		t.Fatal("zero stream Receive accepted")
+	}
+	if _, err := stream.Messages(nil); err == nil {
+		t.Fatal("zero stream Messages accepted")
+	}
+	if err := stream.Stop(nil); err == nil {
+		t.Fatal("zero stream Stop accepted")
+	}
+	if err := writer.Send(1); err == nil {
+		t.Fatal("nil writer Send accepted")
+	}
+	if err := delivery.Ack(); err == nil {
+		t.Fatal("zero delivery Ack accepted")
+	}
+	if err := delivery.Nack(); err == nil {
+		t.Fatal("zero delivery Nack accepted")
+	}
+	if stream.Snapshot().Err == nil || stream.Done() != nil {
+		t.Fatal("zero stream has no explicit unopened state")
+	}
+	if !isManagedStreamType(NewKey[Stream[int]]("s").asRef().typ) {
+		t.Fatal("value Stream does not implement the declaration marker")
+	}
+}
+
+func TestManagedStopRacesFinishWithBlockedSend(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 1)
+		managedTestOK(t, writer.Send(1))
+		first, err := stream.Receive(readerRC)
+		managedTestOK(t, err)
+		result := managedTestBlockedSend(t, writerRC, func() error { return writer.Send(2) })
+		late := errors.New("producer failed while reader stopped")
+		finished, stopped := make(chan struct{}), make(chan error, 1)
+		go func() { writerRC.finishStreams(late); close(finished) }()
+		go func() { stopped <- stream.Stop(readerRC) }()
+		managedTestOK(t, <-stopped)
+		<-finished
+		if err := managedTestResult(t, readerRC.Context(), result); !errors.Is(err, late) && !errors.Is(err, ErrStreamStopped) {
+			t.Fatalf("Stop/finish woke Send with %v", err)
+		}
+		if err := first.Ack(); !errors.Is(err, ErrDeliveryExpired) {
+			t.Fatalf("Stop left a live delivery: %v", err)
+		}
+		if got := stream.Snapshot(); got.Terminal != StreamFailed || !errors.Is(got.Err, late) || got.InFlight != 0 {
+			t.Fatalf("Stop/finish hid failure or retained obligations: %+v", got)
+		}
+	}
+}
+
+func TestManagedAckNackAndStopFinishRaces(t *testing.T) {
+	for i := 0; i < 40; i++ {
+		writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 1)
+		managedTestOK(t, writer.Send(i))
+		delivery, err := stream.Receive(readerRC)
+		managedTestOK(t, err)
+		start := make(chan struct{})
+		acked, nacked := make(chan error, 1), make(chan error, 1)
+		go func() { <-start; acked <- delivery.Ack() }()
+		go func() { <-start; nacked <- delivery.Nack() }()
+		close(start)
+		ackErr, nackErr := <-acked, <-nacked
+		if ackErr == nil {
+			if !errors.Is(nackErr, ErrDeliveryExpired) || stream.Snapshot().InFlight != 0 {
+				t.Fatalf("Ack won but Nack retained another live delivery: %v, %+v", nackErr, stream.Snapshot())
+			}
+		} else {
+			if !errors.Is(ackErr, ErrDeliveryExpired) || nackErr != nil {
+				t.Fatalf("Nack winner errors = %v, %v", ackErr, nackErr)
+			}
+			retry, err := stream.Receive(readerRC)
+			managedTestOK(t, err)
+			managedTestOK(t, retry.Ack())
+		}
+		late := errors.New("late aspect failure")
+		stopped := make(chan error, 1)
+		finished := make(chan struct{})
+		go func() { stopped <- stream.Stop(readerRC) }()
+		go func() { writerRC.finishStreams(late); close(finished) }()
+		managedTestOK(t, <-stopped)
+		<-finished
+		if got := stream.Snapshot(); got.Terminal != StreamFailed || !errors.Is(got.Err, late) {
+			t.Fatalf("Stop hid production failure: %+v", got)
+		}
+		if _, err := stream.Receive(readerRC); !errors.Is(err, late) {
+			t.Fatalf("failed stream became EOF: %v", err)
+		}
+	}
 }

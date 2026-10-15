@@ -28,6 +28,10 @@ type streamLifecycle interface {
 	finish(error)
 }
 
+type managedReaderLifecycle interface {
+	pulseReaderFinished(*RunCtx, error) error
+}
+
 type nodeStreams struct {
 	mu      sync.Mutex
 	outputs []streamLifecycle
@@ -51,6 +55,22 @@ func (rc *RunCtx) finishStreams(err error) error {
 			if cause := output.failure(); cause != nil {
 				err = cause
 				break
+			}
+		}
+	}
+	// Sub 只是接线代理，不是读取者；只有声明 Requires 的实际业务节点
+	// 履行读取义务。同一端点可经不同名称出现，按端点幂等收尾。
+	if rc.node != nil && !rc.node.sub {
+		seen := make(map[managedReaderLifecycle]bool)
+		for _, ref := range rc.node.requires {
+			st, value := rc.exec.slotOf(ref).snapshot()
+			reader, ok := value.(managedReaderLifecycle)
+			if st != slotReady || !ok || seen[reader] {
+				continue
+			}
+			seen[reader] = true
+			if cause := reader.pulseReaderFinished(rc, err); cause != nil && (err == nil || isSkipped(err)) {
+				err = cause
 			}
 		}
 	}

@@ -69,6 +69,7 @@ type managedStream[T any] struct {
 	err         error
 	sendErr     error
 	readerErr   error
+	readers     map[managedReaderID]bool // false = 尚未退出；成员含尚未开始的同组 worker
 	nativeOwner managedReaderID
 	nativeCtx   *RunCtx
 }
@@ -186,6 +187,10 @@ func (s Stream[T]) Receive(rc *RunCtx) (Delivery[T], error) {
 	if err := s.checkReader(rc, "Receive"); err != nil {
 		return delivery, err
 	}
+	owner, _, err := s.state.registerReader(rc)
+	if err != nil {
+		return delivery, err
+	}
 	for {
 		if err := rc.Context().Err(); err != nil {
 			return delivery, s.state.receiveError(err)
@@ -215,8 +220,77 @@ func (s Stream[T]) Receive(rc *RunCtx) (Delivery[T], error) {
 			return Delivery[T]{}, s.state.receiveError(io.EOF)
 		}
 		// Stop 可以与原生 channel 的读取相遇；已作废的交付不能再交给业务。
-		if delivery.claim(managedReaderID{exec: rc.exec, node: rc.NodeID()}, rc) {
+		if delivery.claim(owner, rc) {
 			return delivery, nil
+		}
+	}
+}
+
+// Messages 返回与 Receive 相同的原生通道，没有转发 goroutine。
+// 该视图不自动让出业务额度。自写 select 的等待用 rc.WaitStream 包住；
+// 回调只等待，取得交付后回到回调外执行业务并 Ack / Nack。
+// 通道关闭后读取 Snapshot.Err 判断生产结论，关闭本身不代表成功。
+// 原生竞争读取无法登记交付属于哪个 worker，多 worker 的 FanOut 请用 Receive。
+func (s Stream[T]) Messages(rc *RunCtx) (<-chan Delivery[T], error) {
+	if err := s.checkReader(rc, "Messages"); err != nil {
+		return nil, err
+	}
+	owner, readers, err := s.state.registerReader(rc)
+	if err != nil {
+		return nil, err
+	}
+	if readers > 1 {
+		return nil, fmt.Errorf("pulse: Messages cannot track delivery ownership for competing FanOut workers; use Receive")
+	}
+	if err := rc.Context().Err(); err != nil {
+		return nil, s.state.receiveError(err)
+	}
+	s.state.mu.Lock()
+	s.state.nativeOwner, s.state.nativeCtx = owner, rc
+	for _, message := range s.state.pending {
+		message.current.owner, message.current.rc = owner, rc
+	}
+	s.state.mu.Unlock()
+	return s.state.queue, nil
+}
+
+// Stop 显式结束整个读取组，作废未确认交付并唤醒满载的 Send。
+// 它不把清理过的消息算成 Ack，也不把生产完整链的其他错误变成正常结束。
+func (s Stream[T]) Stop(rc *RunCtx) error {
+	if err := s.checkReader(rc, "Stop"); err != nil {
+		return err
+	}
+	state := s.state
+	if err := state.operation.lock(rc); err != nil {
+		return err
+	}
+	defer state.operation.unlock()
+	state.mu.Lock()
+	if state.stopped {
+		state.mu.Unlock()
+		return nil
+	}
+	state.mu.Unlock()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.stopped = true
+	for sequence, message := range state.pending {
+		message.current.state = deliveryExpired
+		var zero T
+		message.value = zero
+		delete(state.pending, sequence)
+	}
+	for {
+		select {
+		case _, ok := <-state.queue:
+			if !ok {
+				state.signalLocked()
+				return nil
+			}
+		default:
+			state.closeQueueLocked()
+			state.signalLocked()
+			return nil
 		}
 	}
 }
@@ -252,6 +326,9 @@ func checkManagedRunCtx(rc *RunCtx, operation string) error {
 	if rc == nil || rc.exec == nil || rc.node == nil || rc.ctx == nil {
 		return fmt.Errorf("pulse: %s: a node RunCtx is required", operation)
 	}
+	if rc.exec.checkpoint != nil {
+		return fmt.Errorf("pulse: %s: managed stream checkpoint mode is not supported in this layer", operation)
+	}
 	if rc.writes != nil {
 		return fmt.Errorf("pulse: %s on node %q: managed stream I/O cannot run inside a per-attempt write set "+
 			"(ordinary whole-node Retry or checkpoint staging); use an explicit message attempt instead", operation, rc.NodeID())
@@ -281,6 +358,101 @@ func (s Stream[T]) checkReader(rc *RunCtx, operation string) error {
 		}
 	}
 	return fmt.Errorf("pulse: %s on node %q: stream is not a declared endpoint of this execution: %w", operation, rc.NodeID(), ErrUndeclared)
+}
+
+// registerReader 只在第一次遇到本组时读取定义；每条消息不重扫全图。
+func (s *managedStream[T]) registerReader(rc *RunCtx) (managedReaderID, int, error) {
+	id := managedReaderID{exec: rc.exec, node: rc.NodeID()}
+	s.mu.Lock()
+	if exited, exists := s.readers[id]; exists {
+		count := len(s.readers)
+		s.mu.Unlock()
+		if exited {
+			return id, count, fmt.Errorf("pulse: stream reader %q has already finished", id.node)
+		}
+		return id, count, nil
+	}
+	s.mu.Unlock()
+	members := []managedReaderID{id}
+	if rc.node.compete != "" {
+		rc.exec.graph.mu.Lock()
+		for _, node := range rc.exec.graph.nodes {
+			if node.compete == rc.node.compete && node.id != id.node {
+				members = append(members, managedReaderID{exec: rc.exec, node: node.id})
+			}
+		}
+		rc.exec.graph.mu.Unlock()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readers == nil {
+		s.readers = make(map[managedReaderID]bool, len(members))
+	}
+	for _, member := range members {
+		if _, exists := s.readers[member]; !exists {
+			s.readers[member] = false
+		}
+	}
+	if s.readers[id] {
+		return id, len(s.readers), fmt.Errorf("pulse: stream reader %q has already finished", id.node)
+	}
+	return id, len(s.readers), nil
+}
+
+// pulseReaderFinished 由完整读取节点链收尾调用，不与用户 Run 并发。
+// 同一端点的多个别名会重复到这里，退出账以执行和节点身份幂等。
+func (s Stream[T]) pulseReaderFinished(rc *RunCtx, err error) error {
+	if s.state == nil {
+		return fmt.Errorf("pulse: reader %q finished with an unopened stream", rc.NodeID())
+	}
+	id, _, registerErr := s.state.registerReader(rc)
+	if registerErr != nil {
+		return nil // 已记录的退出，可能是同一端点的另一个 Requires 别名。
+	}
+	state := s.state
+	if operationErr := state.operation.lock(rc); operationErr != nil {
+		if err != nil && !isSkipped(err) {
+			return nil // 执行已失败/取消，保留原始原因和未确认记录。
+		}
+		return operationErr
+	}
+	defer state.operation.unlock()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.readers[id] {
+		return nil
+	}
+	state.readers[id] = true
+	remaining := false
+	for _, exited := range state.readers {
+		remaining = remaining || !exited
+	}
+	if remaining {
+		for _, message := range state.pending {
+			if message.current.owner == id && message.current.activeLocked() {
+				message.current.state = deliveryExpired
+				state.enqueueLocked(message)
+			}
+		}
+		return nil
+	}
+	if state.stopped || state.err != nil || (state.finished && len(state.pending) == 0) {
+		return nil
+	}
+	cause := state.sendErr
+	if cause == nil && err != nil && !isSkipped(err) {
+		cause = err
+	}
+	if cause == nil {
+		cause = fmt.Errorf("pulse: stream reading group finished at node %q without fulfilling its reading obligations "+
+			"(production finished=%t, unacknowledged=%d); consume and Ack the stream or explicitly Stop", id.node, state.finished, len(state.pending))
+	}
+	state.readerErr = cause
+	if state.sendErr == nil {
+		state.sendErr = cause
+	}
+	state.signalLocked()
+	return cause
 }
 
 func (s *managedStream[T]) signalLocked() {
