@@ -246,6 +246,9 @@ func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 				if err != nil {
 					return reflect.Value{}, fmt.Errorf("map key: %w", err)
 				}
+				if out.MapIndex(k).IsValid() {
+					return reflect.Value{}, fmt.Errorf("map key: conversion from %s to %s collides with another key", iter.Key().Type(), target.Key())
+				}
 				ev, err := convertValue(iter.Value(), target.Elem())
 				if err != nil {
 					return reflect.Value{}, fmt.Errorf("map key %v: %w", iter.Key().Interface(), err)
