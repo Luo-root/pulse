@@ -1,7 +1,63 @@
 package pulse
 
-import "reflect"
+import (
+	"reflect"
+	"sync"
+)
+
+// 受管流类型的标记由包内方法提供；普通 channel 仍可作本地实时端口，
+// 但不会因此获得消息确认和持久恢复能力。
+type managedStreamDeclaration interface {
+	pulseStreamElement() reflect.Type
+}
+
+var managedStreamDeclarationType = reflect.TypeOf((*managedStreamDeclaration)(nil)).Elem()
+
+func isManagedStreamType(t reflect.Type) bool {
+	return t != nil && t.Implements(managedStreamDeclarationType)
+}
 
 func isLiveStreamType(t reflect.Type) bool {
-	return t != nil && t.Kind() == reflect.Chan
+	return t != nil && (t.Kind() == reflect.Chan || isManagedStreamType(t))
+}
+
+// 每个实际写端节点在完整 Aspect 链结束后终结它拥有的流。
+// 这份账与 RunCtx 一起属于一次运行，Fork 共享；祖先 Sub 不属于写端链。
+type streamLifecycle interface {
+	failure() error
+	finish(error)
+}
+
+type nodeStreams struct {
+	mu      sync.Mutex
+	outputs []streamLifecycle
+}
+
+func (s *nodeStreams) add(output streamLifecycle) {
+	s.mu.Lock()
+	s.outputs = append(s.outputs, output)
+	s.mu.Unlock()
+}
+
+func (rc *RunCtx) finishStreams(err error) error {
+	if rc.streams == nil {
+		return err
+	}
+	rc.streams.mu.Lock()
+	outputs := append([]streamLifecycle(nil), rc.streams.outputs...)
+	rc.streams.mu.Unlock()
+	if err == nil || isSkipped(err) {
+		for _, output := range outputs {
+			if cause := output.failure(); cause != nil {
+				err = cause
+				break
+			}
+		}
+	}
+	// 先确定完整节点的共同结论，再终结各出口；不能先把第一条流关成成功，
+	// 随后才从另一条流发现这个实际写端早已失败。
+	for _, output := range outputs {
+		output.finish(err)
+	}
+	return err
 }

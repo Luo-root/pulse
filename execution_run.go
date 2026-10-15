@@ -109,6 +109,9 @@ func (e *Execution) runNode(n *Node) {
 	} else {
 		err = chain(rc)
 	}
+	// 流归实际写端的完整链所有，必须在 Aspect / checkpoint 返回后终结；
+	// 子写端不能拖到祖先 Sub.Wait 才结束，否则下游无法把完成信号送回子图。
+	err = rc.finishStreams(err)
 	if isSkipped(err) {
 		e.settleUnwritten(n, rc)
 		e.finishNode(n, NodeSkipped, err)

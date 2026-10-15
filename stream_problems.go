@@ -204,19 +204,29 @@ func (t *streamTree) connectAliases() {
 		r := k.root()
 		gr := byRoot[r]
 		if gr == nil {
-			gr = &streamGroup{key: k}
+			gr = &streamGroup{key: k, known: isManagedStreamType(k.ref.typ)}
 			byRoot[r] = gr
 			t.groups = append(t.groups, gr)
 		}
 		k.group = gr
-		if w := k.writer; w != nil && streamSender(w) && w.def.streamKind != "" {
+		if w := k.writer; w != nil && streamSender(w) && (w.def.streamKind != "" || isManagedStreamType(k.ref.typ)) {
 			gr.source, gr.key, gr.known = k, k, true
 		}
 	}
 }
 
 func streamSender(n *streamNode) bool {
-	return n.def.streamKind == "produce" || n.def.streamKind == "tee"
+	if n.def.streamKind == "produce" || n.def.streamKind == "tee" {
+		return true
+	}
+	if !n.def.sub {
+		for _, ref := range n.def.provides {
+			if isManagedStreamType(ref.typ) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (t *streamTree) collectReaders() {
@@ -245,7 +255,7 @@ func (t *streamTree) collectReaders() {
 			seen[gr] = true
 			// 原生 channel 糖整段持额，保留并发保护；受管端点的消息等待由
 			// 运行期归还名额，不能把它与原生 channel 混成同一套保守计数。
-			live = true
+			live = live || !isManagedStreamType(ref.typ)
 			gr.readers = append(gr.readers, n)
 		}
 		if live {
