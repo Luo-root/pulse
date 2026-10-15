@@ -407,12 +407,16 @@ func (s *AsyncSink) worker() {
 // writeOne 调 inner.Write；panic 被 recover 并计入 Dropped，worker 继续——
 // 见 AsyncSink 类型注释里的策略说明。
 func (s *AsyncSink) writeOne(r Record) {
+	returned := false
 	defer func() {
-		if recover() != nil {
+		if !returned {
+			// 与 flushInner 相同，用正常返回标记兼容 panicnil=1。
+			_ = recover()
 			s.dropped.Add(1)
 		}
 	}()
 	s.inner.Write(r)
+	returned = true
 }
 
 // clone 深拷 Attrs（复制条目切片——值拷贝共享底层数组，异步持有必须
