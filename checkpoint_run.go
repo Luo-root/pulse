@@ -159,15 +159,17 @@ func (e *Execution) applyRestoreLocked() error {
 		if cached := f.streams[logical]; cached != nil {
 			descriptor := descriptors[logical]
 			if cached.opened {
-				if err := checkCheckpointStreamReference(*cached.endpoint.pulseCheckpointDescriptor(), descriptor); err != nil {
+				if err := checkCheckpointStreamReference(*cached.endpoint.pulseCheckpointDescriptor(), descriptor, cached.resumed); err != nil {
 					return err
 				}
-			} else {
+			} else if cached.hasReference {
 				var err error
 				descriptors[logical], err = mergeCheckpointStreamConstraints(cached.reference, descriptor)
 				if err != nil {
 					return err
 				}
+			} else if !sameCheckpointStreamSource(*cached.endpoint.pulseCheckpointDescriptor(), descriptor) {
+				return fmt.Errorf("checkpoint stream %q reference names a different pending source", descriptor.ID.Key)
 			}
 		}
 	}
@@ -176,9 +178,9 @@ func (e *Execution) applyRestoreLocked() error {
 	}
 	for _, logical := range order {
 		if cached := f.streams[logical]; cached == nil {
-			f.streams[logical] = &checkpointStreamCache{reference: descriptors[logical]}
+			f.streams[logical] = &checkpointStreamCache{reference: descriptors[logical], hasReference: true}
 		} else if !cached.opened {
-			cached.reference = descriptors[logical]
+			cached.reference, cached.hasReference = descriptors[logical], true
 		}
 	}
 	e.restored = make(map[*Node]NodeCheckpoint, len(e.restore))
