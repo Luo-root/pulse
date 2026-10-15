@@ -88,7 +88,8 @@ func Timeout(d time.Duration) Aspect {
 	return func(rc *RunCtx, next func(*RunCtx) error) error {
 		child := rc.Fork()
 		defer child.Cancel() // deadline 子层结束不等于释放 Fork 在父 ctx 上的注册
-		ctx, cancel := context.WithTimeout(child.ctx, d)
+		timeoutErr := fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
+		ctx, cancel := context.WithTimeoutCause(child.ctx, d, timeoutErr)
 		defer cancel()
 		child.ctx = ctx
 		errCh := make(chan error, 1)
@@ -98,12 +99,19 @@ func Timeout(d time.Duration) Aspect {
 		case err = <-errCh:
 		case <-ctx.Done():
 			child.Cancel()
-			<-errCh // 等内层收干净：收尾不与它并发
+			err = <-errCh // 等内层收干净，并保留期间捕获的真实失败
 		}
-		// 内层可能已观察到 deadline 却返回 nil；两个分支同时就绪时，
-		// select 选中结果不代表没有超时。两条退出路径共用最终取消判据。
-		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
+		// 清理取消不能覆盖已经捕获的 panic / 可靠失败，两条 select 路径共用此判据。
+		if isPanicFailure(err) || isCheckpointFailure(err) {
+			return err
+		}
+		// 每次 Timeout 的 cause 独立：父域截止或外层 Timeout 不能冒充本层计时器。
+		// 即使等待业务退出期间父域也到期，本层先触发的事实仍然保留。
+		if context.Cause(ctx) == timeoutErr {
+			return timeoutErr
+		}
+		if parentErr := rc.Context().Err(); parentErr != nil {
+			return &executionCancellation{cause: parentErr}
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
