@@ -456,9 +456,12 @@ func isSkipped(err error) bool {
 // failed（宿主按 reason 分流，把一个没有 bug 的节点报成失败会指错方向）。
 //
 // 节点自己的 Timeout 不走这里：它返回一句带节点名与时限的 timeout 错误，
-// 归 failed（那是这个节点没在时限内完成，是它的失败）。
+// 归 failed（那是这个节点没在时限内完成，是它的失败）。panic 和执行域仍有效时
+// 锁存的 RPC 失败也不能因原始 cause 恰好含 context 错误而降格为 canceled。
 func isCanceled(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	var failure *executionFailure
+	return !errors.As(err, &failure) && !isPanicFailure(err) &&
+		(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 }
 
 // 本文件是引擎内部的**来源表**：某个 Key 由**哪个节点**提供。

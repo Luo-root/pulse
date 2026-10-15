@@ -20,7 +20,8 @@ const (
 	// Timeout 切面的节点超时。
 	NodeFailed NodeFinishReason = "failed"
 	// NodeCanceled：这一轮被别人拆掉了——首错取消整图、父 ctx 被取消或
-	// 截止时间到期、排队等名额期间被取消。判据见 isCanceled。
+	// 截止时间到期、排队等名额期间被取消。独立 RPC 的 context 错误在执行域仍
+	// 有效时属于 NodeFailed；归因在引擎自行取消前锁存，判据见 isCanceled。
 	NodeCanceled NodeFinishReason = "canceled"
 )
 

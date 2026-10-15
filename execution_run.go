@@ -6,17 +6,30 @@ import (
 	"sync/atomic"
 )
 
-func (e *Execution) fail(err error) {
+func (e *Execution) fail(err error) error {
 	if err == nil || isSkipped(err) {
-		return
+		return err
 	}
 	e.mu.Lock()
+	// 必须在本次 fail 自行 cancel 之前归因：独立 RPC 的 context 错误
+	// 不代表执行域已取消。把这个事实随错误锁存，供节点、图与快照共用。
+	if !isCheckpointFailure(err) && isCanceled(err) && e.ctx.Err() == nil {
+		err = &executionFailure{cause: err}
+	}
 	if e.err == nil {
 		e.err = err
 		e.cancel()
 	}
 	e.mu.Unlock()
+	return err
 }
+
+// executionFailure 只补充终态归因，不改变原始错误文本或 Is/As 链。
+// 取消错误无需包装：它的执行域在 fail 之前就已取消，归因不会再变化。
+type executionFailure struct{ cause error }
+
+func (e *executionFailure) Error() string { return e.cause.Error() }
+func (e *executionFailure) Unwrap() error { return e.cause }
 
 // acquire 占用这次运行的**有效**名额表里的一个名额（nil = 无限，直接放行）。
 // 取消语义见 limiter.acquire。
@@ -29,7 +42,7 @@ func (e *Execution) runNode(n *Node) {
 	defer e.wg.Done()
 	if r, ok := e.restored[n]; ok {
 		if err := e.restoreCheckpointStreams(n); err != nil {
-			e.fail(err)
+			err = e.fail(err)
 			e.finishNode(n, finishReason(err), err)
 			return
 		}
@@ -118,7 +131,7 @@ func (e *Execution) runNode(n *Node) {
 		return
 	}
 	if err != nil {
-		e.fail(err)
+		err = e.fail(err)
 		e.settleUnwritten(n, rc)
 		e.finishNode(n, finishReason(err), err)
 		return
