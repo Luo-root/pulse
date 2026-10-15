@@ -114,7 +114,7 @@ func (in *Inputs) refs() []keyRef {
 }
 
 // SeedByName 按登记表解析 Key 后写入**一次运行的输入**。值必须能对齐到登记类型：
-// 可赋值的直接写入；声明式装图解出的泛型容器（[]any / map[string]any）
+// 可赋值的按声明类型写入；声明式装图解出的泛型容器（[]any / map[string]any）
 // 按目标类型做**形状对齐**（容器递归、标量同族转换，判据见
 // coerceSeedValue）。map→struct 这类结构性猜测不做——那类取值应由
 // 宿主的 resolve 回调给出类型正确的值。
@@ -126,15 +126,11 @@ func SeedByName(in *Inputs, r *Registry, name, typeTag string, v any) error {
 	if v == nil {
 		return fmt.Errorf("pulse: seed %q: nil value", name)
 	}
-	vt := reflect.TypeOf(v)
-	if !vt.AssignableTo(ref.typ) {
-		converted, cerr := coerceSeedValue(v, ref.typ)
-		if cerr != nil {
-			return fmt.Errorf("pulse: seed %q: value type %s not assignable to %s (%v)", name, vt, ref.typ, cerr)
-		}
-		v = converted
+	converted, err := coerceSeedValue(v, ref.typ)
+	if err != nil {
+		return fmt.Errorf("pulse: seed %q: value type %s not assignable to %s (%v)", name, reflect.TypeOf(v), ref.typ, err)
 	}
-	return in.set(ref, v, false)
+	return in.set(ref, converted, false)
 }
 
 // SkipSeedByName 按登记表解析 Key 后把**这一次运行**的那条输入标成跳过。
@@ -148,7 +144,7 @@ func SkipSeedByName(in *Inputs, r *Registry, name, typeTag string) error {
 
 // coerceSeedValue 把装配层给出的值对齐到 Key 的登记类型。
 //
-// 只有「形状」不同才转换：已可赋值直接返回；声明式装图解出的泛型容器
+// 只有「形状」不同才转换：已可赋值按声明类型返回；声明式装图解出的泛型容器
 // （[]any、map[string]any）按目标类型递归转换；标量只做数值家族之间与
 // 同底层种类（含命名类型）的转换。null / nil 元素落到目标零值。
 //
@@ -174,6 +170,24 @@ func coerceSeedValue(v any, target reflect.Type) (any, error) {
 	return out.Interface(), nil
 }
 
+// valueForType 按 Go 的赋值规则装入声明类型；命名容器/指针不能把原动态类型
+// 留在 any 里，否则入口成功后 Get[T] 仍会断言失败。赋值保留接口动态类型和共享引用。
+// 无效 Value 仅代表合法的 nil 接口；宿主输入是否允许 nil 由各自入口判断。
+func valueForType(v reflect.Value, target reflect.Type) (reflect.Value, bool) {
+	if !v.IsValid() {
+		if target.Kind() == reflect.Interface {
+			return reflect.Zero(target), true
+		}
+		return reflect.Value{}, false
+	}
+	if !v.Type().AssignableTo(target) {
+		return reflect.Value{}, false
+	}
+	out := reflect.New(target).Elem()
+	out.Set(v)
+	return out, true
+}
+
 // convertValue 递归转换：容器逐元素 / 逐键值，标量走 convertScalar。
 func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 	// null / nil 元素（YAML 的 null、JSON 的 null）：落到目标零值。
@@ -186,8 +200,8 @@ func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 	if v.Kind() == reflect.Interface {
 		v = v.Elem()
 	}
-	if v.Type().AssignableTo(target) {
-		return v, nil
+	if out, ok := valueForType(v, target); ok {
+		return out, nil
 	}
 
 	switch target.Kind() {
@@ -248,11 +262,8 @@ func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 		}
 		out := reflect.New(target.Elem())
 		out.Elem().Set(ev)
-		return out, nil
-	case reflect.Interface:
-		if v.Type().Implements(target) {
-			return v, nil
-		}
+		assigned, _ := valueForType(out, target) // *Elem 可赋值给同底层的命名指针。
+		return assigned, nil
 	}
 
 	if out, ok := convertScalar(v, target); ok {

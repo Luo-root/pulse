@@ -203,7 +203,9 @@ func (e *Execution) applyRestoreLocked() error {
 				}
 				_ = s.resolveValue(cached.endpoint)
 			} else {
-				_ = s.resolveValue(o.Value)
+				// 全量预检已确认可赋值；安装仍须落成键的声明类型。
+				value, _ := valueForType(reflect.ValueOf(o.Value), o.Key.Type)
+				_ = s.resolveValue(value.Interface())
 			}
 		}
 	}
@@ -233,6 +235,13 @@ func (rc *RunCtx) openCheckpointAttempt(parent, boundary string, limit int) (Che
 			return err
 		}
 		result.Values = append([]CheckpointOutput(nil), result.Values...)
+		for i := range result.Values {
+			output := &result.Values[i]
+			if output.State == SlotStateReady {
+				value, _ := valueForType(reflect.ValueOf(output.Value), output.Key.Type)
+				output.Value = value.Interface()
+			}
+		}
 		return nil
 	})
 	return result, err
