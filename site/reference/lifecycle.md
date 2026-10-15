@@ -26,7 +26,7 @@ Graph 的生命周期是创建、装配、封闭；它不保存本次运行的�
 
 Start 在封闭前按当前定义再次检查本次输入。通过后同步发 GraphStarted，再为节点启动 goroutine。Start 只允许成功一次；再次调用返回 ErrGraphStarted。失败启动不标记 started，也不产生启动事件。结构可以补充时可修正后再启动；需要补充输入时创建新执行。
 
-Wait 必须在成功 Start 后调用，否则返回 ErrGraphNotStarted。它等待所有节点终止，锁存最终结果，发 GraphFinished，再释放执行上下文。并发或重复 Wait 返回同一锁存结果，并都等待 GraphFinished 回调返回；正常资源释放的 cancel 不会把成功改成取消。
+Wait 必须在成功 Start 后调用，否则返回 ErrGraphNotStarted。它等待所有节点终止，以及 Start 前登记的必需宿主流读取组完成并 Ack 或明确 Stop，随后锁存最终结果，发 GraphFinished，再释放执行上下文。Wait 不替宿主排空；只读宿主流应先 NewExecution → SubscribeStream → Start，持续读取确认后再 Wait。并发或重复 Wait 返回同一锁存结果，并都等待 GraphFinished 回调返回；正常资源释放的 cancel 不会把成功改成取消。
 
 只 Start 而不 Wait，即使节点已结束，图快照仍显示 running，也不会产生 GraphFinished。Cancel 只发送信号，不能代替 Wait。
 
@@ -51,9 +51,17 @@ Wait 必须在成功 Start 后调用，否则返回 ErrGraphNotStarted。它等�
 3. 否则申请运行额度；挂载子图步骤自身不占额度。
 4. 在取消检查通过后进入业务体。
 
-无 Requires 的源节点不适用“全部跳过”的判断。等待输入和额度均可被上下文取消。默认汇聚允许部分有值；要求全部有值的节点必须显式返回 WaitAll 的缺值结果。已经发布的值不会因稍后正常跳过撤回。
+以上输入门用于普通业务节点。Sub 无整体输入门：In 稳定绑定 pending/ready/skipped 来源槽，内部各节点自行判门，全入口 skipped 也创建 child，独立自产分支仍可运行。实时 Stream/原生 channel Out 提前绑定，普通 Out 等 child.Wait 成功后桥回；挂载本身仍等 child 终结且不占额。
+
+无 Requires 的源节点不适用“全部跳过”的判断。等待输入和额度均可被上下文取消。受管流阻塞等待暂时让额，恢复业务（含取消返回与 panic 展开）前取回；同一 RunCtx（含 Fork）不得并发 I/O。默认汇聚允许部分有值；要求全部有值的节点必须显式返回 WaitAll 的缺值结果。已经发布的值不会因稍后正常跳过撤回。
 
 未写出的 Provides 在收尾时变为 skipped。节点返回 nil 仍是 completed；返回正常 SkipError 是 skipped；真实错误捕获为首错并取消执行。并行错误的首个捕获顺序不由声明顺序保证。
+
+## 受管流的两类完成
+
+流槽位 ready 表示端点可用，不表示消息发完。实际写端完整 Aspect 链结束才关闭 Done，并设置 completed/failed/canceled/stopped 与 Err；祖先 Sub 不是 EOF 边界。Snapshot 另给连续确认前沿、在途量和读取组 Stopped。Done 可以先于尾部 Ack，child 成功清理不撤销尾部。
+
+Receive 不确认；Ack 释放容量，Nack 同序重投，取消不自动 Ack。正常生产结束且读取义务已清，或显式 Stop 后才返回 io.EOF；真实失败保留原因。Stop 清理未确认消息，不推进确认前沿。原生 Messages 只支持单读者，select 等待用只等待的 WaitStream 回调；FanOut 竞争用 Receive。完整使用方式见[流指南](../guide/streams.md)。
 
 ## Observer 次数与顺序
 

@@ -11,6 +11,8 @@ import (
 type CheckpointKey struct {
 	Name string
 	Type reflect.Type
+	// Element 仅受管流非空；Codec 编码消息元素，不编码 Stream 端点。
+	Element reflect.Type
 }
 
 // CheckpointNode 是静态挂载位置上的节点声明副本。Stream 非空表示流式节点。
@@ -27,6 +29,8 @@ type CheckpointOutput struct {
 	Key   CheckpointKey
 	State SlotState
 	Value any
+	// Stream 与 Value 互斥，是独立流记录的引用；不会把本地端点交给普通 Codec。
+	Stream *CheckpointStreamDescriptor
 }
 
 // NodeCheckpoint 是一个节点的完整成果，恰好覆盖其全部 Provides（含隐式 skipped）。
@@ -52,6 +56,9 @@ type CheckpointAttempt struct {
 	Scope     string
 	Index     int
 	Exhausted bool
+	// Values 仅完整节点根尝试可返回已确认消息贡献的普通输出子集。
+	// Core 在业务前恢复到完整链暂存，仍待节点 Commit 后发布；不含流端点。
+	Values []CheckpointOutput
 }
 
 // CheckpointCommit 是完整节点链的提交单元。Scope 是本层图作用域，Attempt 是该节点
@@ -60,14 +67,28 @@ type CheckpointCommit struct {
 	Site           Site
 	Scope, Attempt string
 	Node           NodeCheckpoint
+	// Streams 只含本节点实际拥有的写端终态；必须与 Node 原子确认。
+	// Sub 的别名输出不是写端，不能提前终结子节点的流。
+	Streams []CheckpointStreamFinish
 }
 
-// CheckpointChild 打开静态子图。Attempt 是当前最内层持久尝试，也是子图作用域；
-// 集成层须持久核对 Graph/Path 和实际绑定输入，返回这一作用域的完整节点成果。
+// CheckpointChild 打开静态子图。Attempt 是当前最内层持久尝试，也是子图作用域。
+// Inputs 包含 Fix/FixSkip 及此刻已到达的 In，后者仅保留旧桥接层的观察兼容性。
+// Bindings 完整描述 In 的稳定来源，允许入口仍 pending；其中列出的键不参与值指纹。
+// 集成层结合根输入指纹、静态拓扑/Version、固定值和绑定身份核验，不能等待全部 In。
 type CheckpointChild struct {
 	Site                   Site
 	Attempt, NodeID, Graph string
 	Inputs                 []CheckpointOutput
+	Bindings               []CheckpointBinding
+}
+
+// CheckpointBinding 描述一次静态 In 绑定；Source.Execution 仅用于观察，不参与持久身份。
+// Scope 是父图作用域，Attempt 是此次挂载的有效持久尝试，Parent/Child 是真实键声明。
+type CheckpointBinding struct {
+	Source         Site
+	Scope, Attempt string
+	Parent, Child  CheckpointKey
 }
 
 // CheckpointHooks 是显式检查点模式的同步可靠边界，四个函数都必须提供。
@@ -83,12 +104,20 @@ type CheckpointHooks struct {
 	FailAttempt func(context.Context, string) error
 	OpenChild   func(context.Context, CheckpointChild) ([]NodeCheckpoint, error)
 	Commit      func(context.Context, CheckpointCommit) error
+	// StreamHooks 可选；普通完整节点仍只要求上面四个钩子。
+	// 使用受管流时必须提供完整增量钩子，原生 channel 仍不支持检查点。
+	StreamHooks *CheckpointStreamHooks
 }
 
 // WithExecCheckpoint 为本次执行及全部子执行启用检查点模式，与 Aspect 独立。
-// 完整链先暂存，最终成果经 Commit 确认才逐键发布；非流式，需非空作用域及完整钩子。
+// 完整链的普通输出先暂存，最终成果经 Commit 确认才逐键发布；需非空作用域及完整钩子。
+// 受管流使用可选 StreamHooks 逐消息确认；完整成果只保存流 descriptor。
 // Store/Codec/RunID/版本/所有权属于集成层，Core 不提供存储或 exactly-once 外部副作用。
 func WithExecCheckpoint(scope string, hooks CheckpointHooks) ExecOption {
+	if hooks.StreamHooks != nil {
+		streamHooks := *hooks.StreamHooks
+		hooks.StreamHooks = &streamHooks
+	}
 	return func(c *execConfig) { c.checkpoint = &checkpointConfig{scope: scope, hooks: hooks} }
 }
 
@@ -118,11 +147,11 @@ func (g *Graph) checkpointPortsAt(path string, chain mountChain) []CheckpointPor
 	var out []CheckpointPort
 	for _, k := range g.inPortOrder {
 		_, alsoOutput := g.outPorts[k.name]
-		out = append(out, CheckpointPort{Graph: g.id, Path: path, Key: CheckpointKey{Name: k.name, Type: k.typ}, Input: true, Output: alsoOutput})
+		out = append(out, CheckpointPort{Graph: g.id, Path: path, Key: checkpointKey(k), Input: true, Output: alsoOutput})
 	}
 	for _, k := range g.outPortOrder {
 		if _, alsoInput := g.inPorts[k.name]; !alsoInput {
-			out = append(out, CheckpointPort{Graph: g.id, Path: path, Key: CheckpointKey{Name: k.name, Type: k.typ}, Output: true})
+			out = append(out, CheckpointPort{Graph: g.id, Path: path, Key: checkpointKey(k), Output: true})
 		}
 	}
 	for _, n := range g.nodes {
@@ -175,7 +204,7 @@ func checkpointNode(graph, path string, n *Node) CheckpointNode {
 func checkpointKeys(refs []keyRef) []CheckpointKey {
 	out := make([]CheckpointKey, len(refs))
 	for i, k := range refs {
-		out[i] = CheckpointKey{Name: k.name, Type: k.typ}
+		out[i] = checkpointKey(k)
 	}
 	return out
 }
@@ -198,8 +227,10 @@ func (e *Execution) CheckpointInputs() []CheckpointOutput {
 		e.slotsMu.Lock()
 		s := e.slots[ref.name]
 		e.slotsMu.Unlock()
-		st, v := s.snapshot() // 输入在创建时就已到达，定义不能改写其类型或来源。
-		out = append(out, CheckpointOutput{Key: CheckpointKey{Name: ref.name, Type: ref.typ}, State: publicSlotState(st), Value: v})
+		st, v := s.snapshot()
+		if st != slotPending { // 子图 In 可已绑定但尚未到达；它由 CheckpointChild.Bindings 表达。
+			out = append(out, checkpointOutput(ref, st, v))
+		}
 	}
 	return out
 }
@@ -235,6 +266,12 @@ func copyCheckpoints(records []NodeCheckpoint) []NodeCheckpoint {
 	out := append([]NodeCheckpoint(nil), records...)
 	for i := range out {
 		out[i].Outputs = append([]CheckpointOutput(nil), out[i].Outputs...)
+		for j := range out[i].Outputs {
+			if descriptor := out[i].Outputs[j].Stream; descriptor != nil {
+				copy := *descriptor
+				out[i].Outputs[j].Stream = &copy
+			}
+		}
 	}
 	return out
 }
@@ -246,6 +283,7 @@ func (g *Graph) checkRestoreLocked(records []NodeCheckpoint) error {
 		nodes[n.id] = n
 	}
 	seen := make(map[string]bool, len(records))
+	descriptors := make(map[[4]string]CheckpointStreamDescriptor)
 	for _, r := range records {
 		n := nodes[r.NodeID]
 		if n == nil || seen[r.NodeID] {
@@ -271,11 +309,33 @@ func (g *Graph) checkRestoreLocked(records []NodeCheckpoint) error {
 			if err := checkCheckpointOutput(o); err != nil {
 				return fmt.Errorf("pulse: restore node %q: %w", r.NodeID, err)
 			}
+			if o.Stream != nil {
+				if o.Stream.Terminal != StreamCompleted && o.Stream.Terminal != StreamStopped && !(n.sub && o.Stream.Terminal == "") {
+					return fmt.Errorf("pulse: restore node %q: stream %q is not a completed source reference", r.NodeID, o.Key.Name)
+				}
+				id := o.Stream.ID
+				logical := [4]string{id.Scope, id.NodeID, id.Key, id.Group}
+				descriptor := *o.Stream
+				if previous, exists := descriptors[logical]; exists {
+					var err error
+					descriptor, err = mergeCheckpointStreamReference(previous, descriptor)
+					if err != nil {
+						return err
+					}
+				}
+				descriptors[logical] = descriptor
+			}
 		}
 	}
 	for _, r := range records {
-		for _, k := range nodes[r.NodeID].requires {
-			if p := g.producer[k.name]; p.kind == sourceNode && !seen[p.nodeID] {
+		n := nodes[r.NodeID]
+		// Sub 的 Requires 只是 In 绑定，不是整体完成门；Aspect 也可在进入子图前
+		// 正常短路。实际业务节点的普通依赖仍在各自作用域按完整成果核验。
+		if n.sub {
+			continue
+		}
+		for _, k := range n.requires {
+			if p := g.producer[k.name]; p.kind == sourceNode && !seen[p.nodeID] && !isManagedStreamType(k.typ) {
 				return fmt.Errorf("pulse: restore node %q: required producer %q has no checkpoint", r.NodeID, p.nodeID)
 			}
 		}
@@ -288,13 +348,22 @@ func checkCheckpointOutput(o CheckpointOutput) error {
 		return fmt.Errorf("checkpoint output has an empty key or type")
 	}
 	if o.State == SlotStateSkipped {
-		if o.Value != nil {
+		if o.Value != nil || o.Stream != nil {
 			return fmt.Errorf("checkpoint skipped output %q carries a value", o.Key.Name)
 		}
 		return nil
 	}
 	if o.State != SlotStateReady {
 		return fmt.Errorf("checkpoint output %q is not ready or skipped", o.Key.Name)
+	}
+	if isManagedStreamType(o.Key.Type) {
+		if o.Value != nil || o.Stream == nil {
+			return fmt.Errorf("checkpoint stream output %q requires a descriptor, not an endpoint value", o.Key.Name)
+		}
+		return checkCheckpointStreamDescriptor(o.Key, *o.Stream)
+	}
+	if o.Stream != nil {
+		return fmt.Errorf("checkpoint ordinary output %q carries a stream descriptor", o.Key.Name)
 	}
 	if o.Value == nil {
 		if o.Key.Type.Kind() != reflect.Interface {

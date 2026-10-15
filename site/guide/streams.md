@@ -1,12 +1,10 @@
 # 流式处理
 
-本页面向连续生产数据、逐项处理数据或需要广播同一条流的开发者。需要 Go 1.25+，并了解[编排与额度](./orchestration.md)。流式辅助函数使用开发版 API。
+需要连续产生数据、逐条确认或跨子图传递实时结果时，使用 `Key[pulse.Stream[T]]`。槽位发布端点，端点管理消息序号、读取组、背压和生产终态。以下 API 属于当前开发检出，尚未随正式 tag 发布；先按[安装页](./installation.md#试用尚未合并的源码)使用与文档匹配的源码。
 
-流的键是 `Key[<-chan T]`。槽位到达时发布的是 channel；channel 中的数据仍会继续到达，生产节点要在发送完毕后才结束。普通值可以直接被多个节点读取，channel 的多个读取者则会竞争其中的元素。
+## 完整示例：一个额度，广播到两个消费端
 
-## 完整示例：广播给两个消费端
-
-程序产生 `1`、`2`、`3`，通过 Tee 复制为两条流，每个消费端都计算完整序列的和。保存为一个空目录中的 `main.go`：
+程序发送 `1`、`2`、`3`，经 `TeeStream` 复制，两路各得到完整序列。保存为 `main.go`：
 
 ```go
 package main
@@ -21,37 +19,36 @@ import (
 )
 
 func run() error {
-	stream := pulse.NewKey[<-chan int]("numbers")
-	left := pulse.NewKey[<-chan int]("left")
-	right := pulse.NewKey[<-chan int]("right")
-	g, err := pulse.New("stream-demo", "广播数字流", pulse.WithMaxRunning(4))
+	numbers := pulse.NewKey[pulse.Stream[int]]("numbers")
+	left := pulse.NewKey[pulse.Stream[int]]("left")
+	right := pulse.NewKey[pulse.Stream[int]]("right")
+	g, err := pulse.New("stream-demo", "受管广播", pulse.WithMaxRunning(1))
 	if err != nil {
 		return err
 	}
-	nodeTimeout := pulse.WithStreamAspects(pulse.Timeout(time.Second))
-	if err := pulse.Produce(g, "source", "生成数字流", stream,
-		func(rc *pulse.RunCtx, send func(int) error) error {
+	if err := pulse.ProduceStream(g, "source", "生成数字", numbers,
+		func(rc *pulse.RunCtx, writer *pulse.StreamWriter[int]) error {
 			for _, value := range []int{1, 2, 3} {
-				if err := send(value); err != nil {
+				if err := writer.Send(value); err != nil {
 					return err
 				}
 			}
 			return nil
-		}, pulse.WithBuffer(1), nodeTimeout); err != nil {
+		}, pulse.WithBuffer(1)); err != nil {
 		return err
 	}
-	if err := pulse.Tee(g, "broadcast", "广播数字流", stream, pulse.Keys(left, right), nodeTimeout); err != nil {
+	if err := pulse.TeeStream(g, "broadcast", "复制到两路", numbers, pulse.Keys(left, right)); err != nil {
 		return err
 	}
 	var leftSum, rightSum int
-	if err := pulse.Consume(g, "left-sink", "计算左路总和", left,
+	if err := pulse.ConsumeStream(g, "left-sink", "累计左路", left,
 		func(rc *pulse.RunCtx, value int) error {
 			leftSum += value
 			return nil
-		}, nodeTimeout); err != nil {
+		}); err != nil {
 		return err
 	}
-	if err := pulse.Consume(g, "right-sink", "计算右路总和", right,
+	if err := pulse.ConsumeStream(g, "right-sink", "累计右路", right,
 		func(rc *pulse.RunCtx, value int) error {
 			rightSum += value
 			return nil
@@ -77,100 +74,216 @@ func main() {
 }
 ```
 
-在该目录运行。运行未合并分支的示例时，按[安装页的本地替换步骤](./installation.md#试用尚未合并的源码)使用对应源码；以下 `@main` 命令只获取已合入主线的 API。
+在示例模块中运行；把 `../pulse` 换成与本文档匹配的检出路径。这里不能用旧 tag 或假定 `@main` 已包含未合并 API。
 
 ```sh
 go mod init example.com/pulse-streams
-go get github.com/Luo-root/pulse@main
-go run .
+go mod edit -replace=github.com/Luo-root/pulse=../pulse
+go mod tidy
+go run -race .
 ```
 
-预期输出：
+输出：
 
 ```text
 left=6 right=6
 ```
 
-示例有生产端、Tee 和两个消费端，需要四个共享运行名额。每个和只有自己的消费节点写入，宿主在 Run 等全部节点退出后读取。它们是示例的宿主状态，不适合原样共享给同一定义的并发执行；可复用流程应把结果组织为每次执行的输出，或由宿主提供独立且同步的状态。
+四个节点共享一个业务额度也能推进，因为阻塞的受管发送、接收与提交等待会暂时归还额度。返回业务代码、取消处理或 panic 展开前都要重新取得额度；其他节点不协作地长期持额时，取消返回也可能等待。引擎不会识别任意 HTTP、channel 或业务锁等待。
 
-## 参数与关闭责任
+两份 sum 是仅运行一次的宿主示例状态，各由一个消费节点写、Run 完成后读。复用定义并发执行时，应改为独立的每次执行状态或输出；闭包不会自动隔离。
 
-| 函数 | 调用参数 | 回调职责 |
+## 三个薄糖与选项
+
+| 入口 | 回调或输出 | 处理边界 |
 |---|---|---|
-| `Produce` | `g, id, description, out, fn, opts...` | `fn(*RunCtx, func(T) error) error`，检查每次 `send` 的错误 |
-| `Consume` | `g, id, description, in, fn, opts...` | `fn(*RunCtx, T) error`，处理一个元素 |
-| `Tee` | `g, id, description, in, outs, opts...` | `outs` 为 `[]Key[<-chan T]`；无业务回调，复制每个元素到全部出口 |
-| `FanOut` | `g, id, description, in, outs, fn, aspects...` | `fn(*RunCtx, int, I) (O, error)`，普通输入共享；channel 输入显式竞争 |
+| `ProduceStream` | `fn(*RunCtx, *StreamWriter[T]) error` | 打开一个输出，回调逐条发送 |
+| `ConsumeStream` | `fn(*RunCtx, T) error` | 每条 Receive → HandleMessage → 成功 Ack |
+| `TeeStream` | `outs []Key[Stream[T]]` | 一条输入的一批分支输出确认后 Ack 输入 |
 
-`description` 原样作为节点说明，空串合法。FanOut 的所有 worker 共用这份说明，仍由 `id-1` 至 `id-N` 区分。
+三者均为 `g, id, description, ...`，使用普通 `NewNode` 链。`WithStreamAspects(pulse.Timeout(time.Second))` 配置节点切面；图级与执行级切面仍在节点切面之外，重复选项按声明顺序追加，先声明的在外。选项复制切片，闭包中的业务状态仍共享。Timeout 等内层退出，真实错误和 panic 保留为失败。
 
-Tee 在装配时复制 `outs` 接线列表；之后修改原切片，不会改变图的输出声明或广播出口。这只复制 Key 接线，不深拷贝流中的业务值。
+`WithBuffer(n)` 控制**排队 + 已领取未确认**的总在途条数，受管流默认上限为 1；非正数不改变配置。Receive 不释放容量，Ack 才释放。ConsumeStream 不创建缓冲，传正数在装配期拒绝。TeeStream 为每个出口各设容量；慢支提供有界背压，不等待后代业务全部完成，也不承诺多分支同一瞬间可见。
 
-Produce、Consume、Tee 的可选参数类型都是 `StreamOption`。`pulse.WithStreamAspects(aspects ...Aspect)` 只给本节点追加切面；`pulse.WithBuffer(8)` 只配置 Produce/Tee 创建的发送缓冲。Consume 不创建 channel，传正数 WithBuffer 会在装配时返回错误且不留下节点，零和负数不改变配置。FanOut 的末尾参数仍是 `Aspect`。
+`WithMessageHandling(pulse.WithMessageRetry(3, 0), pulse.WithMessageLimit(8))` 配置 ConsumeStream/TeeStream 的当前消息尝试；ProduceStream 没有输入消息，会拒绝非空消息配置。`WithStreamSource(id, resumable)` 声明来源续读能力，后文说明其责任。
 
-Produce 创建并发布 channel，回调在节点内发送，节点返回时负责关闭；成功、错误和取消都会走关闭路径。不要保留 `send` 交给后台 goroutine，在回调结束后继续发送。
+## 手写 NewNode、Receive 和 Ack
 
-Consume 等待元素或取消信号，channel 正常关闭后结束。回调错误成为节点错误并取消本次执行；生产者失败也保留为执行失败，不会因消费者读到关闭而变成成功。
-
-空流与跳过不同：生产者正常返回但一次未发送，channel 仍是 ready，消费者执行零次回调后完成。上游槽位为 skipped 时，消费者不进入业务体并正常跳过。
-
-## 节点级切面与超时
-
-示例将同一份 `nodeTimeout` 选项用于 Produce、Tee 和左路 Consume，每个节点各自有一秒时限；右路没有本地时限。图级、执行级切面仍可包裹所有节点。组合顺序与普通 NewNode 相同：图级在外，执行级其次，本地切面在内；多次 WithStreamAspects 按选项声明顺序追加，先声明的在外层。
-
-创建 WithStreamAspects 时就复制切片，之后修改原切片不会改变选项。每次应用和节点装配也隔离列表，所以选项可复用；切面闭包捕获的业务状态不会深拷贝，仍需调用方保证并发安全。空配置合法，nil StreamOption 忽略。
-
-Timeout、计时和普通包装均可用于三个糖。Timeout 覆盖等输入与执行整段，到期会取消受管发送、接收或输入等待，再等内层退出；回调内的阻塞操作也应响应 `rc.Context()`。生产端的 channel 会在退出时关闭，但本次执行保留超时失败，不能因消费者看见关闭就把截断报成功。它不会撤回已经发送或处理的数据，也不是整条流水线共享的一份时限。
-
-## 广播与竞争消费
-
-Tee 为每个下游创建一条独立 channel，每个下游获得完整、同序的数据。最慢下游会对 Tee 施加背压，进而影响生产者。缓冲用于吸收短时速度差，不能解决没有消费者或额度不足的问题。
-
-若每个元素只需要由一个 worker 处理，用一组 FanOut 竞争读取同一条 channel。以下片段用于替换完整示例的 Tee 与两个 Consume；需要已有 `g`、生产者的 `stream` 和 `r1`、`r2`（`Key[int]`），放在返回 `error` 的装配函数内：
+以下函数放在已有 Go 程序中，需导入 `fmt`、`io` 和 `pulse`；输入键由上游提供。写端必须在自己的节点调用链内使用，不能留给节点返回后的 goroutine；同一 RunCtx（包括 Fork）的 I/O 串行使用。
 
 ```go
-if err := pulse.FanOut(g, "worker", "汇总分配的数字", stream, pulse.Keys(r1, r2),
-	func(rc *pulse.RunCtx, shard int, ch <-chan int) (int, error) {
-		sum := 0
-		for {
-			select {
-			case <-rc.Context().Done():
-				return 0, rc.Context().Err()
-			case value, ok := <-ch:
-				if err := rc.Context().Err(); err != nil {
-					return 0, err
-				}
-				if !ok {
-					return sum, nil
-				}
-				sum += value
+func addReader(g *pulse.Graph, key pulse.Key[pulse.Stream[int]]) error {
+	return g.Add(pulse.NewNode("reader", "逐条处理并确认", pulse.Requires(key), nil,
+		func(rc *pulse.RunCtx) error {
+			stream, err := pulse.Get(rc, key)
+			if err != nil {
+				return err
 			}
-		}
-	}); err != nil {
-	return err
+			for {
+				delivery, err := stream.Receive(rc)
+				if err == io.EOF {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				fmt.Println(delivery.Sequence, delivery.Value)
+				if err := delivery.Ack(); err != nil {
+					return err
+				}
+			}
+		}))
 }
 ```
 
-这两个结果各自的数值不固定，但总和为 6。后续可以用 Join 汇总普通输出。两个独立 Consume 共读一条已知流出口会被拒绝；一组 FanOut 是显式的竞争声明。不要把广播与竞争当作同一种行为。
+生产端的等价形状是在声明 `Provides(key)` 的节点中调用 `writer, err := pulse.OpenStream(rc, key, pulse.WithBuffer(1))`，检查错误后 `writer.Send(value)`。节点本身的 Aspect 直接传给 NewNode；OpenStream 不接受 WithStreamAspects 或 WithMessageHandling。
 
-## 静态检查与额度边界
+Delivery 从序号 1 开始。Ack 对同一有效交付幂等；Nack 作废这份交付，将同一序号重投到同一读取组，不释放容量、不推进确认前沿。Nack/Stop 后旧交付再确认返回 `ErrDeliveryExpired`。取消不会自动 Ack；已完成的 Send/Receive 即使在重新排队取额时取消，也保留已成功的结果。
 
-装配辅助函数只做局部的快速检查。`Validate` 和 `Start` 会展开整棵静态挂载树，追踪 `In`、`Out` 与透传造成的 channel 别名，检查已知流的实际读取者、额度池和生命周期等待关系。Start 使用本次执行的有效额度与已提供的跳过输入。
+## 原生 select：Messages 配合 WaitStream
 
-每条已知 Produce/Tee 出口需要真实读取者，包括声明为根图出口的流。`ReadOutput` 在 Wait 后读取结果，不能作为运行中的流消费者。同一流的独立多读取者会被拒绝；同一挂载中的一组 FanOut worker 可以竞争。
+Messages 返回同一消息队列的 `<-chan Delivery[T]`，不创建转发 goroutine。它仅支持单读取者；FanOut 多 worker 必须用 Receive 登记交付归属。以下函数需要 `context` 与 `fmt`：
 
-共享池中的生产、转发和读取节点必须有足够同时存活的容量。Sub 不占名额；示例的两个 Consume 放进共享额度的子图，仍需要四个名额。子图自己声明额度时使用独立池，相同数字不代表同一个池，多处挂载也分别计数。
+```go
+func readNative(rc *pulse.RunCtx, stream pulse.Stream[int]) error {
+	messages, err := stream.Messages(rc)
+	if err != nil {
+		return err
+	}
+	for {
+		var delivery pulse.Delivery[int]
+		var ok bool
+		if err := rc.WaitStream(func(ctx context.Context) error {
+			select {
+			case delivery, ok = <-messages:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}); err != nil {
+			return err
+		}
+		if !ok {
+			return stream.Snapshot().Err
+		}
+		fmt.Println(delivery.Value) // 取回额度后才执行业务。
+		if err := delivery.Ack(); err != nil {
+			return err
+		}
+	}
+}
+```
 
-子图 Out 要等整个子执行结束后才桥回，Consume 要等 channel 关闭，Tee 的发送又可能等下游开始读取。这些可见关系如果形成等待环，会在 Validate/Start 被拒绝；无限额度或较大缓冲不能解除该规则。
+WaitStream 回调**只能等待和记录结果**，不能处理业务、重入或并发使用同一 RunCtx。channel 关闭后要检查 Snapshot.Err；关闭本身不能证明成功。
 
-静态容量检查是必要条件。Pulse 不会为一组流节点一次性预留额度，也不推断回调或切面内的隐藏等待、手写关闭时机、实际 Fix channel 指针别名。其他节点长时间占用额度时，流仍可能等待；宿主应提供取消上下文，并避免把隐藏阻塞混入同一额度池。
+## 结束、停止与读取义务
 
-## 重试限制与常见错误
+`Snapshot()` 给出 `Terminal`、`Err`、`LastSequence`、连续确认前沿 `AckedThrough`、`InFlight` 和 `Stopped`，不含业务值。`Done()` 在实际生产节点**完整 Aspect 链**结束后关闭；完成、失败、取消、停止分别为 completed/failed/canceled/stopped。Done 不表示尾部已消费；别名共享同一本进度账，祖先 Sub 不是 EOF 边界，child 正常清理不会撤销尾部。
 
-流的消费位置不能回退。Produce/Tee 在 Retry 写集内会因延迟发布 channel 而在运行期拒绝；消费者重试也不能重放已经消费的元素。不要对整张流图统一安装 Retry。检查点模式拒绝 stream/channel，包括接口或容器中隐藏的实际 channel。
+Receive 仅在正常生产结束且交付义务已清，或明确 Stop 后返回 io.EOF；生产失败返回原因。空流是 ready 端点、零条消息，正常成功；skipped 是没有端点，沿普通缺值语义处理。最后一个读取者提前返回却未消费并 Ack 完、也未 Stop，会成为读取义务错误。
 
-遇到“无人消费”，添加 Consume 或 Tee 下游，而非只声明出口；遇到“名额不足”，按真实并发参与者设置额度，而非增大缓冲；遇到生命周期环，调整跨子图的输入输出，使读取不依赖自身所等待的完成事件。
+`stream.Stop(rc)` 显式结束整个读取组，作废剩余消息并唤醒生产者，不把清理算作 Ack。ConsumeStream 回调直接返回**精确的** `pulse.ErrStreamStopped` 表示当前条成功：先 Ack 当前条，再 Stop。包装的停止错误仍是失败。ProduceStream 仅在写端真的已 Stop 且回调返回精确 ErrStreamStopped 时正常结束；手写生产节点需自己处理正常停止，真实包装错误不能洗掉。TeeStream 单支 Stop 后其余支继续，全支 Stop 后正常 Stop 上游。
 
-## 下一步
+## 宿主在运行中订阅
 
-运行诊断与图示见[观测与诊断](./observability.md)。精确错误处理见[错误参考](../reference/errors.md)，持久化能力与流限制见[检查点参考](../reference/checkpoint.md)。
+给 `g` 声明 `DeclareOutput(pulse.NewPort(key))` 并添加生产者后，可用以下函数消费。需要导入 `errors`；skipped 出口也是正常结束。
+
+```go
+func readHost(ctx context.Context, g *pulse.Graph, key pulse.Key[pulse.Stream[int]]) error {
+	e, err := g.NewExecution(ctx, pulse.Inputs{})
+	if err != nil {
+		return err
+	}
+	defer e.Cancel()
+	subscription, err := pulse.SubscribeStream(e, key)
+	if err != nil {
+		return err
+	}
+	if err := e.Start(); err != nil {
+		return err
+	}
+	for {
+		delivery, err := subscription.Receive(ctx)
+		if err == io.EOF || errors.Is(err, pulse.ErrSkipped) {
+			break
+		}
+		if err == nil {
+			fmt.Println(delivery.Value)
+			err = delivery.Ack()
+		}
+		if err != nil {
+			e.Cancel()
+			_ = e.Wait()
+			return err
+		}
+	}
+	return e.Wait()
+}
+```
+
+SubscribeStream 必须在 NewExecution 后、Start 前登记，参与别名和单读取组校验；同一流不能再由独立图内消费者瓜分。Wait 包括全部节点和已登记必需宿主读取组的完成、Ack 或 Stop，**不会替宿主排空**。不读时应显式 Stop 或 Cancel。订阅的单次 Receive 上下文取消仅取消该次等待，不自动停止执行或确认。
+
+仅宿主读取的根流应走上述 NewExecution → SubscribeStream → Start。Graph.Validate/Topology 允许已声明的 managed 根出口留待宿主连接，只省略该处缺读者诊断，不把出口算作真实 host；未导出流和原生 channel 的检查不变。因而持久集成可以先 Validate 冻结 schema，再于 BeforeStart 登记订阅。Execution.Start 仍按实际订阅严格检查无人消费和静默分流。ReadOutput 仍只在 Wait 后读结果。输入输出同键透传一旦被订阅，就必须为本轮 Seed 或 SkipSeed；缺值在 Start 前报错，明确 skip 正常。没有启动后补订阅、补历史或隐式无限缓冲。
+
+## 跨 Sub 实时输出
+
+以下装配函数可配合 readHost 使用：父图创建后调用它，声明父出口，再调用 readHost。子图内部没有输入也能生产。
+
+```go
+func addSubSource(parent *pulse.Graph, out pulse.Key[pulse.Stream[int]]) error {
+	inside := pulse.NewKey[pulse.Stream[int]]("child.numbers")
+	child, err := pulse.New("source-module", "可复用流来源")
+	if err != nil {
+		return err
+	}
+	if err := child.DeclareOutput(pulse.NewPort(inside)); err != nil {
+		return err
+	}
+	if err := pulse.ProduceStream(child, "source", "产生三个数字", inside,
+		func(rc *pulse.RunCtx, writer *pulse.StreamWriter[int]) error {
+			for _, value := range []int{1, 2, 3} {
+				if err := writer.Send(value); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+	return pulse.Sub(parent, "module", "挂载实时来源", []pulse.SubBind{pulse.Out(inside, out)}, child)
+}
+```
+
+Sub 没有整体输入门。In 绑定稳定来源槽，即使仍 pending，内部节点也按自己的 Requires 激活；全入口 skipped 仍创建 child，独立自产分支照常运行。Stream 和原生 channel 的 Out 在 child.Wait 前绑定，普通值 Out 仍待 child.Wait 成功后桥回；挂载步骤本身仍等 child 最终结束，不占业务额度。
+
+## 有限消息重试与渐进来源
+
+有限变换用 HandleMessage：在回调外打开输出并取得 delivery，回调内只计算这一条的有限成果。以下函数默认可重做当前条三次，不会先读取下一条：
+
+```go
+func transform(rc *pulse.RunCtx, delivery pulse.Delivery[int], writer *pulse.StreamWriter[int]) error {
+	return pulse.HandleMessage(rc, delivery, func(rc *pulse.RunCtx, value int) error {
+		return writer.Send(value * 2)
+	}, pulse.WithMessageRetry(3, 0), pulse.WithMessageLimit(8))
+}
+```
+
+默认只尝试一次，最多暂存 64 条输出，每个输出批次还必须不超过该输出流容量；超限当场失败，不等自身回调结束。若处理 2 失败一次，输入顺序是 1、2、**2**、3。失败尝试的 Set/Skip/Send 不正式发布；成功后确认输入，零输出和正常 NoValue/Skip 也成功。耗尽或提交失败会锁存失败，吞掉返回错误也不能成功。不能在回调内再 Receive、OpenStream、Stop、Ack/Nack、嵌套 HandleMessage、套普通 Retry 或用 SendAt。闭包、引用对象修改和外部副作用不会回滚。
+
+逐 token 或其他渐进输出放在 HandleMessage **之外**逐条 Send/SendAt，已经外发的前缀不撤回。`WithStreamSource("feed-v1", true)` 只是承诺：业务必须读取 `writer.Position().Cursor` 并按该位置续读，使用 SendAt 将消息和来源游标一起确认。本地模式 SendAt 等同 Send，不保存可恢复游标。无法续读时明确失败或发起新 Execution，不自动整节点重试后把两个版本拼起来。
+
+普通 Retry 对外接实际流输入/输出在 I/O 前明确拒绝；确定跳过、没有数据的路径仍是正常缺失。完整有限流水线封在 Sub 内、仅桥普通值时，可以整段重试；不要把 Retry 继承到内部流节点。增量检查点还需要[完整 StreamHooks](../reference/checkpoint.md)，存储与进程恢复由 Durable 提供，使用匹配本地检出；发布状态以实际 tag/release 为准。
+
+## 从原生 channel 迁移
+
+| 关注点 | 原生兼容入口 | 受管入口 |
+|---|---|---|
+| 键与糖 | `Key[<-chan T]`；Produce/Consume/Tee | `Key[Stream[T]]`；ProduceStream/ConsumeStream/TeeStream |
+| 自写节点 | Set channel、select、发送端 close | OpenStream、Send、Receive、Ack/Nack |
+| 缓冲 | 默认无缓冲；只限制排队 | 默认 1；限制排队和未确认总量 |
+| 额度 | 整段持额，保守要求参与者可同时存活 | 受管等待让额，纯受管流水线额度 1 可推进 |
+| 终态 | close 不是生产成功证明 | Snapshot.Err/Terminal 与 Done 独立记录 |
+| 重试 | 无 Ack、无自动倒带或消息可靠性 | 显式有限 HandleMessage；渐进来源按游标续读 |
+| 检查点 | 原生 channel 及嵌套 channel 仍拒绝 | 可选 StreamHooks，descriptor 与消息记录分开 |
+
+旧三个糖保留，支持 WithStreamAspects；它们不能使用 WithStreamSource 或 WithMessageHandling 来静默获得新语义。受管流同一组 FanOut worker 用 Receive 竞争；广播用 TeeStream，多个独立读取者会被校验拒绝。静态校验追踪 In/Out/透传别名和实际额度池，不能推断业务或 Aspect 里的隐藏等待。YAML 登记同一 Key[Stream[T]] 并在 Run 工厂调用这些 core API 即可共用执行器；拓扑必须显式声明 Requires/Provides，藏在工厂里的 channel 不能当成声明齐全，见 [YAML 装配](./assembly.md)。

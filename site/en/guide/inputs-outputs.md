@@ -104,6 +104,8 @@ Check `err` before the state. On error, both `value` and `state` are invalid. Su
 
 `ReadOutput` does not wait, create slots, or emit observation events. Read after `Wait` finalizes the execution; `OnGraphFinished` may also read the finalized result. Unfinished, failed, or genuinely canceled executions expose no partial business result. Mutable objects remain the original business objects; the host owns subsequent synchronization.
 
+For live managed streams, register `SubscribeStream(e, key)` after NewExecution and before Start. This is a real reader: the host must Receive and Ack, or explicitly Stop/Cancel; Wait does not drain for it. Graph.Validate/Topology omit only the missing-reader diagnostic for declared managed root outlets awaiting host connection, allowing schema to be frozen first. Unexported streams and native channels keep their checks; Start strictly validates missing readers and splitting using actual subscriptions. A subscribed input/output pass-through needs Seed or SkipSeed for this run. ReadOutput still reads only finalized results. See the [stream guide](./streams.md) for the live fragment.
+
 ## Common errors
 
 - Seeding without declaring an input: call `DeclareInput` before creating the execution.

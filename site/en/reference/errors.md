@@ -13,6 +13,8 @@ This page is for developers handling assembly, startup, or runtime errors in the
 | `ErrGraphNotStarted` | Wait called before successful Start | Handle Start errors and Wait only after successful startup |
 | `ErrNextCalledTwice` | Overlapping aspect advance or re-entry without a new attempt boundary | Do not call next concurrently; use built-in Retry |
 | `ErrSkipped` | Normal absence or explicit node-level absence | Follow the absence policy; do not retry it as an ordinary fault |
+| `ErrStreamStopped` | Producer stop signal after explicit reading-group Stop | Manual producers handle it explicitly; ProduceStream succeeds only if actually stopped and its callback returns the exact sentinel |
+| `ErrDeliveryExpired` | Nack/Stop expired this delivery | Use the new Delivery; an old credential cannot advance acknowledgement |
 
 Both ErrNextCalledTwice triggers share a sentinel; the message explains which one occurred. Another execution of the same definition is not node re-entry. Each Execution has independent advance state.
 
@@ -63,12 +65,18 @@ Not every contract error has a public sentinel. Diagnose these from their stage 
 | Requires lacks a source or an output has no producer | Add a producer or correct port declaration; fix key names |
 | Dependency or composition cycle | Change the structure; there is no Remove API, so rebuild an assembled cycle |
 | Child input omitted, bound twice, or wrong direction/type | Check In/Out/Fix against child ports |
-| Stream has no reader, independent readers, insufficient capacity, or lifecycle cycle | Add actual readers, use Tee/FanOut, adjust quotas or cross-graph completion dependencies |
+| Stream has no reader, independent readers, insufficient native quota, or lifecycle cycle | Add actual readers/pre-start host subscriptions, use TeeStream/FanOut, and adjust quotas/completion dependencies for native or managed semantics |
 | ReadOutput before finalization | Wait after successful Start; this error is not ErrGraphNotStarted |
 | YAML assembly, registry, or input resolution error | Check GraphID, uses, and name/type, then resolver and value types |
 | Checkpoint mode lacks scope/hooks, contains channels, or has an invalid restoration plan | Fix integration, values, or recovery sets; rejected startup restores nothing partially |
 
 Read all static problems from Topology.Problems before confirming with Validate. Successful Validate seals the definition; account for that boundary when inspecting problems.
+
+## Concrete managed-stream errors
+
+Messages supports one reader; FanOut workers use Receive. Unopened endpoints, undeclared reads, unfinished reading obligations, incomplete StreamHooks, active sources without continuation promises, and HandleMessage output overflow return concrete errors. Overflow fails immediately without waiting for its own callback. Exhaustion and commit failures are latched; swallowing them cannot produce success.
+
+An exact ErrStreamStopped from a ConsumeStream callback first Acks the successful current item, then Stops; wrapped stop errors remain failures. Ordinary Retry cannot retract actual stream outputs or rewind inputs; proven skipped paths with no data remain normal. Register SubscribeStream before Start for host-only streams. Graph.Validate/Topology omit only missing-reader diagnostics for declared managed root outlets awaiting host connection, preserving checks for unexported streams and native channels. Start still strictly checks actual subscriptions for missing readers and splitting; definition validation does not replace startup checks. A subscribed pass-through inlet needs Seed/SkipSeed before startup.
 
 ## Runtime failure, cancellation, and outputs
 

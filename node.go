@@ -129,6 +129,16 @@ type RunCtx struct {
 	// ——「这一步推进过没有」是那一次运行的事实。`Fork` 浅拷贝，所以 `Timeout` 里面
 	// 那层看到的是同一份账。
 	advance *advanceLedger
+	// streams 归实际写端所有，在完整链结果确定后终结；Fork 共享，不放回定义。
+	streams *nodeStreams
+	// lease 是本节点实际业务额度，Fork 与协作 Timeout 共享；流等待可暂时让位。
+	lease *runLease
+	// host 的等待上下文只活到一次 Receive；确认仍归这份 Execution 的活跃读取义务。
+	host bool
+	// message 只在显式有限消息尝试期间存在；普通 Retry 不改变粒度。
+	message *messageAttempt
+	// checkpointWrites 仅指完整节点链的可靠外帧，普通 Retry 的新帧不能放行流 I/O。
+	checkpointWrites *writeSet
 	// checkpointAttempt 是当前持久尝试，Fork 复制其视图；Retry 只在自己的层次换它。
 	checkpointAttempt CheckpointAttempt
 	aspectIndex       int
@@ -167,6 +177,8 @@ func newRunCtx(e *Execution, n *Node, parent context.Context) *RunCtx {
 		cancel:  cancel,
 		allowed: allowed,
 		advance: &advanceLedger{},
+		streams: &nodeStreams{},
+		lease:   &runLease{pool: e.lim},
 	}
 }
 

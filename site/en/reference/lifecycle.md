@@ -26,7 +26,7 @@ Static validation checks Requires sources, producers or pass-through inputs for 
 
 Start rechecks per-run inputs against the current definition before sealing. On success, it synchronously emits GraphStarted and then launches node goroutines. Start may succeed once only; a second call returns ErrGraphStarted. Rejected startup sets no started flag and emits no start event. Correct a repairable structure and retry startup, or create a new execution when more input data is required.
 
-Wait requires successful Start, otherwise returning ErrGraphNotStarted. It waits for all nodes, latches the final result, emits GraphFinished, and releases the execution context. Concurrent or repeated Wait calls return the same latched result and all wait for GraphFinished to return. Cleanup cancellation does not turn success into cancellation.
+Wait requires successful Start, otherwise returning ErrGraphNotStarted. It waits for all nodes plus required host stream reading groups registered before Start to complete and Ack or explicitly Stop. It then latches the result, emits GraphFinished, and releases the context. Wait does not drain for the host. For host-only streams, use NewExecution → SubscribeStream → Start, consume and acknowledge, then Wait. Concurrent or repeated Wait calls return the same result and all wait for GraphFinished to return. Cleanup cancellation does not turn success into cancellation.
 
 With Start but no Wait, the graph snapshot remains running even after nodes finish, and no GraphFinished is emitted. Cancel signals cancellation and does not replace Wait.
 
@@ -51,9 +51,17 @@ A slot transitions once from pending to ready or skipped. Both represent arrival
 3. Otherwise acquire quota; a child mounting step consumes no quota itself.
 4. Enter the body after cancellation checks pass.
 
-A source node with no Requires is exempt from the all-skipped test. Context cancellation interrupts input and quota waits. Default joins permit partial values; a node requiring all values must explicitly return WaitAll's absence result. Normal skipping does not withdraw already published values.
+This input gate applies to ordinary business nodes. Sub has no aggregate input gate: In stably binds pending/ready/skipped source slots and each internal node judges its own inputs. All skipped inlets still create a child whose independent source branches may run. Live Stream/native-channel Out binds early; ordinary Out bridges after successful child.Wait. The mount still waits for final child completion without quota.
+
+A source node without Requires is exempt from the all-skipped test. Context cancellation interrupts input and quota waits. Managed blocking waits temporarily release quota and reacquire before business resumes, including cancellation returns and panic unwinding. Serialize I/O on one RunCtx, including Forks. Default joins permit partial values; a node requiring all values must explicitly return WaitAll's absence result. Normal skipping does not withdraw already published values.
 
 Unwritten Provides become skipped at finalization. A nil return remains completed; a normal SkipError means skipped. A real error is captured as the first error and cancels the execution. The first captured error among parallel nodes is not guaranteed by declaration order.
+
+## Two managed-stream completion facts
+
+A ready stream slot means the endpoint is available, not that messages are finished. The actual writer's complete aspect chain closes Done and sets completed/failed/canceled/stopped and Err. An ancestor Sub is not an EOF boundary. Snapshot separately reports the continuous acknowledgement frontier, in-flight count, and reading-group Stopped. Done may precede tail Ack; successful child cleanup does not withdraw that tail.
+
+Receive does not acknowledge. Ack releases capacity, Nack requeues the same sequence, and cancellation never automatically Acks. Receive returns io.EOF after normal production with no remaining obligations, or explicit Stop; real failure preserves its cause. Stop clears unacknowledged obligations without advancing the frontier. Native Messages supports one reader; wrap select waiting in a wait-only WaitStream callback. FanOut competition uses Receive. See the [stream guide](../guide/streams.md).
 
 ## Observer counts and ordering
 

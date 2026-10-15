@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 )
@@ -34,9 +35,11 @@ type checkpointConfig struct {
 
 // 整棵执行树共享可靠失败，不受 Aspect 的错误吞并、Retry 或子图取消域截断。
 type checkpointFailure struct {
-	mu   sync.Mutex
-	err  error
-	root *Execution
+	mu      sync.Mutex
+	err     error
+	root    *Execution
+	streams map[CheckpointStreamID]*checkpointStreamCache // 索引只用逻辑身份，Generation 由权威记录核验。
+	values  map[*writeSet]map[string]bool                 // 完整节点帧中已随消息确认的普通键。
 }
 
 func (e *Execution) checkpointErr() error {
@@ -82,23 +85,18 @@ func (g *Graph) checkCheckpointLocked(c *checkpointConfig, chain mountChain) err
 	if c.scope == "" || c.hooks.OpenAttempt == nil || c.hooks.FailAttempt == nil || c.hooks.OpenChild == nil || c.hooks.Commit == nil {
 		return fmt.Errorf("pulse: checkpoint mode requires a scope and all four hooks")
 	}
-	for _, ref := range g.inPortOrder {
-		if checkpointChannelType(ref.typ, nil) {
-			return fmt.Errorf("pulse: checkpoint mode does not support channel input %q", ref.name)
-		}
+	if c.hooks.StreamHooks != nil && !c.hooks.StreamHooks.complete() {
+		return fmt.Errorf("pulse: checkpoint StreamHooks requires all six hooks")
 	}
-	for _, ref := range g.outPortOrder {
-		if checkpointChannelType(ref.typ, nil) {
-			return fmt.Errorf("pulse: checkpoint mode does not support channel output %q", ref.name)
+	for _, ref := range append(append([]keyRef(nil), g.inPortOrder...), g.outPortOrder...) {
+		if err := checkCheckpointDeclaration(c, ref); err != nil {
+			return err
 		}
 	}
 	for _, n := range g.nodes {
-		if n.streamKind != "" {
-			return fmt.Errorf("pulse: checkpoint mode does not support stream node %q", n.id)
-		}
 		for _, ref := range append(append([]keyRef(nil), n.requires...), n.provides...) {
-			if checkpointChannelType(ref.typ, nil) {
-				return fmt.Errorf("pulse: checkpoint node %q does not support channel key %q", n.id, ref.name)
+			if err := checkCheckpointDeclaration(c, ref); err != nil {
+				return fmt.Errorf("pulse: checkpoint node %q: %w", n.id, err)
 			}
 		}
 		if n.child != nil && !chain.has(n.child) {
@@ -124,7 +122,10 @@ func (e *Execution) checkCheckpointInputsLocked() error {
 		s := e.slots[ref.name]
 		e.slotsMu.Unlock()
 		st, value := s.snapshot()
-		if err := checkCheckpointOutput(CheckpointOutput{Key: CheckpointKey{Name: ref.name, Type: ref.typ}, State: publicSlotState(st), Value: value}); err != nil {
+		if st == slotPending { // 有效 In 绑定尚未到达，不是一个待保存的成果。
+			continue
+		}
+		if err := checkCheckpointOutput(checkpointOutput(ref, st, value)); err != nil {
 			return fmt.Errorf("pulse: checkpoint input: %w", err)
 		}
 	}
@@ -133,7 +134,56 @@ func (e *Execution) checkCheckpointInputsLocked() error {
 
 // applyRestoreLocked 在全量验证以后灌入；输入不能占输出，且每条输出只有一个节点来源。
 // 调用方持装配锁、Graph.mu 和 Execution.mu，还未发任何事件或提交 goroutine。
-func (e *Execution) applyRestoreLocked() {
+func (e *Execution) applyRestoreLocked() error {
+	// 本作用域已整批预检；跨作用域缓存也须先整批核验，失败不能安装任何槽位
+	// 或改变已有端点。树锁保护缓存和 Open 结果安装，不在这里调用可靠钩子。
+	f := e.checkpoint.failure
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	descriptors := make(map[CheckpointStreamID]CheckpointStreamDescriptor)
+	var order []CheckpointStreamID
+	for _, r := range e.restore {
+		for _, o := range r.Outputs {
+			if o.Stream != nil {
+				descriptor := *o.Stream
+				logical := checkpointStreamLogicalID(descriptor.ID)
+				if previous, exists := descriptors[logical]; exists {
+					descriptor, _ = mergeCheckpointStreamReference(previous, descriptor)
+				} else {
+					order = append(order, logical)
+				}
+				descriptors[logical] = descriptor
+			}
+		}
+	}
+	for _, logical := range order {
+		if cached := f.streams[logical]; cached != nil {
+			descriptor := descriptors[logical]
+			if cached.opened {
+				if err := checkCheckpointStreamReference(*cached.endpoint.pulseCheckpointDescriptor(), descriptor, cached.resumed); err != nil {
+					return err
+				}
+			} else if cached.hasReference {
+				var err error
+				descriptors[logical], err = mergeCheckpointStreamConstraints(cached.reference, descriptor)
+				if err != nil {
+					return err
+				}
+			} else if !sameCheckpointStreamSource(*cached.endpoint.pulseCheckpointDescriptor(), descriptor) {
+				return fmt.Errorf("checkpoint stream %q reference names a different pending source", descriptor.ID.Key)
+			}
+		}
+	}
+	if len(order) != 0 && f.streams == nil {
+		f.streams = make(map[CheckpointStreamID]*checkpointStreamCache)
+	}
+	for _, logical := range order {
+		if cached := f.streams[logical]; cached == nil {
+			f.streams[logical] = &checkpointStreamCache{reference: descriptors[logical], hasReference: true}
+		} else if !cached.opened {
+			cached.reference, cached.hasReference = descriptors[logical], true
+		}
+	}
 	e.restored = make(map[*Node]NodeCheckpoint, len(e.restore))
 	nodes := make(map[string]*Node, len(e.graph.nodes))
 	for _, n := range e.graph.nodes {
@@ -145,11 +195,19 @@ func (e *Execution) applyRestoreLocked() {
 			s := e.slotOf(keyRef{name: o.Key.Name, typ: o.Key.Type})
 			if o.State == SlotStateSkipped {
 				_ = s.resolveSkip()
+			} else if o.Stream != nil {
+				cached := f.streams[checkpointStreamLogicalID(o.Stream.ID)]
+				if cached.endpoint == nil {
+					factory := reflect.Zero(o.Key.Type).Interface().(checkpointStreamFactory)
+					cached.endpoint = factory.pulseRestoreCheckpoint(e, descriptors[checkpointStreamLogicalID(o.Stream.ID)], cached).(checkpointEndpoint)
+				}
+				_ = s.resolveValue(cached.endpoint)
 			} else {
 				_ = s.resolveValue(o.Value)
 			}
 		}
 	}
+	return nil
 }
 
 func (rc *RunCtx) openCheckpointAttempt(parent, boundary string, limit int) (CheckpointAttempt, error) {
@@ -168,6 +226,13 @@ func (rc *RunCtx) openCheckpointAttempt(parent, boundary string, limit int) (Che
 		if result.Scope == "" || result.Scope == parent || result.Index < 1 || result.Index > limit || (result.Exhausted && result.Index != limit) {
 			return fmt.Errorf("invalid persistent attempt cursor")
 		}
+		if len(result.Values) != 0 && (boundary != "" || result.Exhausted) {
+			return fmt.Errorf("only an active complete-chain attempt may restore message values")
+		}
+		if err := checkCheckpointAttemptValues(rc.node, result.Values); err != nil {
+			return err
+		}
+		result.Values = append([]CheckpointOutput(nil), result.Values...)
 		return nil
 	})
 	return result, err
@@ -226,8 +291,19 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 	rc.checkpointAttempt = root
 	rc.checkpointEntries = &checkpointEntryLedger{}
 	ws := &writeSet{}
-	rc.writes = ws
+	for _, output := range root.Values {
+		ref := keyRef{name: output.Key.Name, typ: output.Key.Type}
+		if output.State == SlotStateSkipped {
+			_ = ws.slotOf(ref).resolveSkip()
+		} else {
+			_ = ws.slotOf(ref).resolveValue(output.Value)
+		}
+	}
+	rc.writes, rc.checkpointWrites = ws, ws
+	rc.confirmCheckpointValues(root.Values)
+	defer rc.forgetCheckpointValues()
 	err = invokeCheckpointChain(chain, rc)
+	err = checkpointChainResult(rc, err)
 	if failure := e.checkpointErr(); failure != nil {
 		err = failure
 	}
@@ -237,21 +313,38 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 	if err != nil && !isSkipped(err) {
 		// 在 fail 取消执行域之前区分外部中断与最终真实失败。
 		if !isCheckpointFailure(err) && e.ctx.Err() == nil {
+			for _, terminal := range checkpointFinishes(rc, err) {
+				if ferr := e.callCheckpoint("finish stream", func() error {
+					return e.checkpoint.hooks.StreamHooks.Finish(e.ctx, terminal)
+				}); ferr != nil {
+					return ferr
+				}
+			}
 			if ferr := rc.failCheckpointAttempt(root.Scope); ferr != nil {
 				return ferr
 			}
 		}
 		return err
 	}
-	// 切面即使短路业务体，成功检查点也等声明依赖到达，保证恢复集合依赖闭合。
-	if _, werr := awaitAll(rc, n.requires); werr != nil {
-		return werr
+	// 普通节点保持恢复集合依赖闭合；Sub 的 In 按绑定来源核验，不整体等待入口。
+	if !n.sub {
+		if _, werr := awaitAll(rc, n.requires); werr != nil {
+			return werr
+		}
 	}
 	e.settleUnwritten(n, rc)
+	terminals := checkpointFinishes(rc, err)
 	r := NodeCheckpoint{NodeID: n.id, Reason: finishReason(err), Outputs: make([]CheckpointOutput, 0, len(n.provides))}
 	for _, ref := range n.provides {
-		st, value := ws.peek(ref).snapshot()
-		o := CheckpointOutput{Key: CheckpointKey{Name: ref.name, Type: ref.typ}, State: publicSlotState(st), Value: value}
+		st, value := rc.readTarget(ref).snapshot()
+		o := checkpointOutput(ref, st, value)
+		if o.Stream != nil {
+			for _, terminal := range terminals {
+				if terminal.Stream == o.Stream.ID {
+					o.Stream.Terminal = terminal.Terminal
+				}
+			}
+		}
 		if cerr := checkCheckpointOutput(o); cerr != nil {
 			return e.stopCheckpoint("finalize output", cerr)
 		}
@@ -264,7 +357,7 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 		return cerr
 	}
 	if cerr := e.callCheckpoint("commit", func() error {
-		return e.checkpoint.hooks.Commit(rc.ctx, CheckpointCommit{Site: e.site, Scope: e.checkpoint.scope, Attempt: root.Scope, Node: r})
+		return e.checkpoint.hooks.Commit(rc.ctx, CheckpointCommit{Site: e.site, Scope: e.checkpoint.scope, Attempt: root.Scope, Node: r, Streams: terminals})
 	}); cerr != nil {
 		return cerr
 	}
@@ -281,10 +374,34 @@ func (rc *RunCtx) prepareChildCheckpoint(sub *Execution) error {
 	c := *rc.exec.checkpoint
 	c.scope = rc.checkpointAttempt.Scope
 	sub.checkpoint = &c
+	request := CheckpointChild{Site: sub.site, Attempt: c.scope, NodeID: rc.node.id, Graph: sub.site.Graph}
+	for _, bind := range rc.node.binds {
+		if bind.fix != nil {
+			for _, ref := range bind.fixKeys() {
+				entry := bind.fix.in.entries[ref.name]
+				state := slotReady
+				if entry.skip {
+					state = slotSkipped
+				}
+				output := checkpointOutput(ref, state, entry.value)
+				if err := checkCheckpointOutput(output); err != nil {
+					return rc.exec.stopCheckpoint("child fixed input", err)
+				}
+				request.Inputs = append(request.Inputs, output)
+			}
+		} else if bind.in {
+			request.Bindings = append(request.Bindings, CheckpointBinding{Source: rc.exec.site,
+				Scope: rc.exec.checkpoint.scope, Attempt: c.scope, Parent: checkpointKey(bind.parent), Child: checkpointKey(bind.child)})
+			if state, value := rc.readTarget(bind.parent).snapshot(); state != slotPending {
+				request.Inputs = append(request.Inputs, checkpointOutput(bind.child, state, value))
+			}
+		}
+	}
+	sort.Slice(request.Inputs, func(i, j int) bool { return request.Inputs[i].Key.Name < request.Inputs[j].Key.Name })
 	var records []NodeCheckpoint
 	if err := rc.exec.callCheckpoint("open child", func() error {
 		var err error
-		records, err = c.hooks.OpenChild(rc.ctx, CheckpointChild{Site: sub.site, Attempt: c.scope, NodeID: rc.node.id, Graph: sub.site.Graph, Inputs: sub.CheckpointInputs()})
+		records, err = c.hooks.OpenChild(rc.ctx, request)
 		return err
 	}); err != nil {
 		return err

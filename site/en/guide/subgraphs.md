@@ -151,7 +151,7 @@ The root has two run records plus two records for each of its three nodes. Each 
 | Bind | Data direction | Parent-side declaration |
 |---|---|---|
 | `In(parentKey, childKey)` | A parent value enters a child input | Becomes the mounting node's `Requires` |
-| `Out(childKey, parentKey)` | A child output is bridged after the child execution finishes | Becomes the mounting node's `Provides` |
+| `Out(childKey, parentKey)` | Ordinary values bridge after successful child.Wait; Stream / native channels bind early | Becomes the mounting node's `Provides` |
 | `Fix(childKey, value)` | Supplies a fixed input at this mount | Uses no parent key |
 | `FixSkip(childKey)` | Supplies normal absence at this mount | Uses no parent key |
 
@@ -173,9 +173,11 @@ Every mount creates an independent child execution at runtime. Reusing a definit
 
 ## Runtime, aspects, and quotas
 
-The child context derives from the parent node's layer, so parent cancellation and mounting-step Timeout propagate into it. After successful child completion, ready outputs bridge as values and skipped outputs bridge as skips. If all bound outputs are skipped, the mounting node skips normally. A real child failure preserves its cause and fails the parent step.
+Sub does not wait for all parent inputs or omit the child when every inlet is skipped. In binds stable source slots that may remain pending. Internal nodes activate according to their own Requires, and independent source branches may run. Stream and native-channel Out bindings are installed before child.Wait and share live endpoints across layers. Ordinary values still bridge after successful child.Wait. The mount itself waits for final child completion and preserves real failure. All skipped bound outputs produce a normal skipped mount.
 
-Retry on the mount creates a new child execution per attempt; only the successful attempt's parent-side write set is published. By default, children inherit the parent observer and quota pool. The mounting step itself consumes no quota. A child quota declaration creates an independent pool for that branch, rather than adding a second limit on top of the parent pool.
+The child context derives from the mounting node, propagating parent cancellation and local Timeout. The actual writer's complete aspect chain determines managed Done/status; an ancestor mount is not an EOF boundary. Normal child cleanup does not withdraw the accepted tail. The [stream guide](./streams.md) includes cross-Sub and host-subscription fragments.
+
+Retry on a mount creates a new child execution per attempt. A complete finite pipeline wholly inside the child, bridging only ordinary results, can be retried together. Actual external stream inputs/outputs reject ordinary Retry before I/O; proven skipped paths with no data remain normal. Do not inherit Retry into internal stream nodes. Children default to the parent observer and quota pool. The mount consumes no quota; managed waits temporarily release it. A child quota declaration uses an independent pool.
 
 ## Common errors and next steps
 

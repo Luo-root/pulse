@@ -2,7 +2,7 @@ package pulse
 
 import (
 	"fmt"
-	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -31,7 +31,7 @@ type streamNode struct {
 	at          string
 	site        *streamSite
 	child       *streamSite
-	bodySkipped bool // 全输入确定 skip，或挂载它的祖先不会进入 Sub body
+	bodySkipped bool // 普通节点的全输入确定 skip；结构 Sub 始终可进入
 }
 
 type streamKey struct {
@@ -49,17 +49,20 @@ type streamPool struct {
 }
 
 type streamGroup struct {
-	key     *streamKey
-	source  *streamKey // Produce / Tee 的真实 channel 来源；每条出口独立
-	readers []*streamNode
-	known   bool
+	key      *streamKey
+	source   *streamKey // Produce / Tee 的真实 channel 来源；每条出口独立
+	readers  []*streamNode
+	known    bool
+	host     bool
+	outlet   bool     // 定义检查允许受管根出口稍后登记宿主；不算真实读者，Start 仍严查。
+	hostKeys []string // 同一实际流上的根出口名，按名字排序；两个别名订阅也算两个读者
 }
 
 // problemsStreamLocked 展开整个检查范围，再把诊断放回最小共同图层，保持
 // 来源 → 出口 → 普通依赖环 → 流式 → 子树的既有顺序。根 capacity 已解析
 // ExecOption > 定义声明；子层有声明就新建池，否则继承同一池（不能按数值合并）。
 func (g *Graph) problemsStreamLocked(at string, chain mountChain, capacity int, known ...streamKnownInputs) map[string][]error {
-	if !g.hasStreamsLocked(chain) {
+	if !g.needsWaitTreeLocked() {
 		return nil
 	}
 	t := &streamTree{}
@@ -69,34 +72,48 @@ func (g *Graph) problemsStreamLocked(at string, chain mountChain, capacity int, 
 	if len(known) != 0 {
 		facts = known[0]
 	}
-	t.collectLocked(g, at, chain, pool, nil, facts.hasAspects)
+	root := t.collectLocked(g, at, chain, pool, nil, facts.hasAspects)
+	var hostOutlets []*streamKey
+	if len(known) == 0 {
+		// 定义尚无这轮宿主的注册事实，只接受声明出口的连接可能。
+		// 不把它算成一次订阅；Start 总会以本轮 known 重新严格核查。
+		for _, ref := range g.outPortOrder {
+			if isManagedStreamType(ref.typ) {
+				hostOutlets = append(hostOutlets, t.key(root, ref))
+			}
+		}
+	}
 	t.propagateSkips(facts.skipped)
 	t.connectAliases()
+	for _, outlet := range hostOutlets {
+		outlet.group.outlet = true
+	}
+	t.collectHostReaders(facts.hostReads)
 	t.collectReaders()
 	out := make(map[string][]error)
 	t.problemsSlots(out)
 	t.problemsReaders(out)
-	t.problemsLifecycle(out)
+	t.problemsLifecycle(out, facts.checkpoint)
 	return out
 }
 
-// 没有已知流糖就沿用普通检查，不为大量未使用端口建流模型。仍逐层取锁，
-// 判定不承诺跨层原子快照；Validate / Start 的 assemblyMu 保证其版本一致。
-func (g *Graph) hasStreamsLocked(chain mountChain) bool {
+// 没有流声明且没有 Sub 的普通图沿用原 DAG 快路；结构 Sub 的实际输入依赖
+// 即便都是普通值也必须展开（可选、未读取的 In 不是整个 child 的启动门）。
+// 不复制未使用端口；Validate / Start 的 assemblyMu 保证整个检查版本一致。
+func (g *Graph) needsWaitTreeLocked() bool {
 	for _, n := range g.nodes {
-		if n.streamKind != "" {
+		if n.child != nil || n.streamKind != "" {
 			return true
 		}
-	}
-	for _, n := range g.nodes {
-		if n.child == nil || chain.has(n.child) {
-			continue
+		for _, ref := range n.requires {
+			if isLiveStreamType(ref.typ) {
+				return true
+			}
 		}
-		n.child.mu.Lock()
-		has := n.child.hasStreamsLocked(chain.push(n.child))
-		n.child.mu.Unlock()
-		if has {
-			return true
+		for _, ref := range n.provides {
+			if isLiveStreamType(ref.typ) {
+				return true
+			}
 		}
 	}
 	return false
@@ -168,7 +185,7 @@ func (t *streamTree) key(s *streamSite, ref keyRef) *streamKey {
 }
 
 func streamChannel(k *streamKey) bool {
-	return k != nil && k.ref.typ != nil && k.ref.typ.Kind() == reflect.Chan
+	return k != nil && isLiveStreamType(k.ref.typ)
 }
 
 func (k *streamKey) root() *streamKey {
@@ -189,7 +206,11 @@ func (t *streamTree) connectAliases() {
 			}
 			p, c := n.site.keys[b.parent.name], n.child.keys[b.child.name]
 			if streamChannel(p) && streamChannel(c) && p.ref.typ == c.ref.typ {
-				c.root().parent = p.root()
+				// 透传和多层出口可能已经属于同组，不能给并查集制造自引用。
+				pr, cr := p.root(), c.root()
+				if pr != cr {
+					cr.parent = pr
+				}
 			}
 		}
 	}
@@ -201,19 +222,48 @@ func (t *streamTree) connectAliases() {
 		r := k.root()
 		gr := byRoot[r]
 		if gr == nil {
-			gr = &streamGroup{key: k}
+			gr = &streamGroup{key: k, known: isManagedStreamType(k.ref.typ)}
 			byRoot[r] = gr
 			t.groups = append(t.groups, gr)
 		}
 		k.group = gr
-		if w := k.writer; w != nil && streamSender(w) {
+		if w := k.writer; w != nil && streamSender(w) && (w.def.streamKind != "" || isManagedStreamType(k.ref.typ)) {
 			gr.source, gr.key, gr.known = k, k, true
 		}
 	}
 }
 
+// 宿主注册在 Start 前完成；沿真实别名组计数，不能把两个根出口当作两份广播。
+func (t *streamTree) collectHostReaders(reads map[string]bool) {
+	names := make([]string, 0, len(reads))
+	for name, registered := range reads {
+		if registered {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		k := t.sites[0].keys[name]
+		if k == nil || !isManagedStreamType(k.ref.typ) || k.group == nil {
+			continue // 公开注册入口已核方向和类型；这里不推测未声明的宿主消费。
+		}
+		k.group.host = true
+		k.group.hostKeys = append(k.group.hostKeys, name)
+	}
+}
+
 func streamSender(n *streamNode) bool {
-	return n.def.streamKind == "produce" || n.def.streamKind == "tee"
+	if n.def.streamKind == "produce" || n.def.streamKind == "tee" {
+		return true
+	}
+	if !n.def.sub {
+		for _, ref := range n.def.provides {
+			if isManagedStreamType(ref.typ) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (t *streamTree) collectReaders() {
@@ -239,7 +289,10 @@ func (t *streamTree) collectReaders() {
 			if gr == nil || !gr.known || seen[gr] {
 				continue
 			}
-			seen[gr], live = true, true
+			seen[gr] = true
+			// 原生 channel 糖整段持额，保留并发保护；受管端点的消息等待由
+			// 运行期归还名额，不能把它与原生 channel 混成同一套保守计数。
+			live = live || !isManagedStreamType(ref.typ)
 			gr.readers = append(gr.readers, n)
 		}
 		if live {
@@ -263,10 +316,26 @@ func (t *streamTree) problemsSlots(out map[string][]error) {
 
 func (t *streamTree) problemsReaders(out map[string][]error) {
 	for _, gr := range t.groups {
-		if !gr.known || (gr.source != nil && gr.source.writer.bodySkipped) {
+		if !gr.known {
 			continue
 		}
-		if len(gr.readers) == 0 && gr.source != nil {
+		if gr.host && len(gr.readers)+len(gr.hostKeys) > 1 {
+			ids := make([]string, 0, len(gr.readers)+len(gr.hostKeys))
+			for _, name := range gr.hostKeys {
+				ids = append(ids, fmt.Sprintf("host output %q", name))
+			}
+			for _, n := range gr.readers {
+				ids = append(ids, fmt.Sprintf("node %q", n.at))
+			}
+			out[t.sites[0].at] = append(out[t.sites[0].at], fmt.Errorf("pulse: stream output %q is read by %d readers (%s), "+
+				"so its values would be split between them: a host subscription and graph readers, or two subscribed outlet aliases, "+
+				"must use separate Tee outputs", gr.key.ref.name, len(ids), strings.Join(ids, ", ")))
+			continue
+		}
+		if gr.source != nil && gr.source.writer.bodySkipped {
+			continue
+		}
+		if len(gr.readers) == 0 && !gr.host && !gr.outlet && gr.source != nil {
 			n := gr.source.writer
 			out[n.site.at] = append(out[n.site.at], fmt.Errorf("pulse: node %q provides %q but nothing consumes it: "+
 				"a stream output nobody reads blocks the sender forever", n.at, gr.source.ref.name))
@@ -320,9 +389,12 @@ func streamCommonPath(a, b string) string {
 // streamKnownInputs 只为流检查补充本次已供给的确定事实，不改 Graph 定义。
 // Validate / Topology 没有这份执行事实，只能从 FixSkip 推导。Start 的
 // hasAspects 已包含 ExecOption 和继承环境，不能只看定义自己的声明。
+// checkpoint 同样只属于这次检查，完整链普通值的提交边界适用于整棵执行树。
 type streamKnownInputs struct {
 	skipped    map[string]bool
 	hasAspects bool
+	hostReads  map[string]bool
+	checkpoint bool
 }
 
 // streamSkipWork 记录建索引和传播实际访问的声明数，供包内回归校验线性工作量。
@@ -358,8 +430,10 @@ func (t *streamTree) propagateSkips(rootSkipped map[string]bool) streamSkipWork 
 		remaining[n] = len(n.def.requires)
 		for _, ref := range n.def.requires {
 			work.requires++
-			k := n.site.keys[ref.name]
-			readers[k] = append(readers[k], n)
+			if !n.def.sub {
+				k := n.site.keys[ref.name]
+				readers[k] = append(readers[k], n)
+			}
 		}
 		if n.child == nil {
 			continue
@@ -408,22 +482,14 @@ func (t *streamTree) propagateSkips(rootSkipped map[string]bool) streamSkipWork 
 				markBody(n)
 			}
 		}
-		// 先传递 body 不进入的事实，再判断桥接；祖先跳过意味着根本不创建
-		// child execution，不为其内部节点凭空推导一次输出到达。
+		// Sub 不设整体输入门；只传播真实普通节点按自己 Requires 得到的 skip。
 		for ; bodyAt < len(bodies); bodyAt++ {
 			n := bodies[bodyAt]
 			work.nodes++
-			ancestorSkipped := n.site.mount != nil && n.site.mount.bodySkipped
-			if remaining[n] == 0 && len(n.def.requires) != 0 && !ancestorSkipped && !n.site.hasAspects && len(n.def.aspects) == 0 {
+			if remaining[n] == 0 && len(n.def.requires) != 0 && !n.site.hasAspects && len(n.def.aspects) == 0 {
 				for _, ref := range n.def.provides {
 					work.provides++
 					markKey(n.site.keys[ref.name])
-				}
-			}
-			if n.child != nil {
-				for _, child := range n.child.nodes {
-					work.mounts++
-					markBody(child)
 				}
 			}
 		}
