@@ -137,6 +137,8 @@ type RunCtx struct {
 	host bool
 	// message 只在显式有限消息尝试期间存在；普通 Retry 不改变粒度。
 	message *messageAttempt
+	// checkpointWrites 仅指完整节点链的可靠外帧，普通 Retry 的新帧不能放行流 I/O。
+	checkpointWrites *writeSet
 	// checkpointAttempt 是当前持久尝试，Fork 复制其视图；Retry 只在自己的层次换它。
 	checkpointAttempt CheckpointAttempt
 	aspectIndex       int

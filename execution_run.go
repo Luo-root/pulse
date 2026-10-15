@@ -230,6 +230,9 @@ func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 			if rc.writes == nil || !isLiveStreamType(port.typ) {
 				continue
 			}
+			if rc.exec.checkpoint != nil && rc.writes == rc.checkpointWrites && isManagedStreamType(port.typ) {
+				continue
+			}
 			if streamBoundary == nil {
 				var err error
 				streamBoundary, err = child.subStreamBoundary(rc, binds)
@@ -291,7 +294,7 @@ func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 		if b.intoChild() || !isLiveStreamType(b.child.typ) {
 			continue
 		}
-		if rc.writes != nil {
+		if rc.writes != nil && rc.writes != rc.checkpointWrites {
 			continue // 守卫只放行了确定缺失的流出口，仍随尝试暂存 Skip，不安装永久别名。
 		}
 		if err := rc.exec.slotOf(b.parent).bindTo(sub.slotOf(b.child)); err != nil {
@@ -350,7 +353,7 @@ func bridgeOutputs(rc *RunCtx, id string, binds []SubBind, sub *Execution) error
 			continue
 		}
 		if isLiveStreamType(b.child.typ) {
-			if rc.writes != nil {
+			if rc.writes != nil && rc.writes != rc.checkpointWrites {
 				if err := skipRef(rc, b.parent); err != nil {
 					return err
 				}

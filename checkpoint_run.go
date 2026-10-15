@@ -83,23 +83,18 @@ func (g *Graph) checkCheckpointLocked(c *checkpointConfig, chain mountChain) err
 	if c.scope == "" || c.hooks.OpenAttempt == nil || c.hooks.FailAttempt == nil || c.hooks.OpenChild == nil || c.hooks.Commit == nil {
 		return fmt.Errorf("pulse: checkpoint mode requires a scope and all four hooks")
 	}
-	for _, ref := range g.inPortOrder {
-		if checkpointChannelType(ref.typ, nil) {
-			return fmt.Errorf("pulse: checkpoint mode does not support channel input %q", ref.name)
-		}
+	if c.hooks.StreamHooks != nil && !c.hooks.StreamHooks.complete() {
+		return fmt.Errorf("pulse: checkpoint StreamHooks requires all six hooks")
 	}
-	for _, ref := range g.outPortOrder {
-		if checkpointChannelType(ref.typ, nil) {
-			return fmt.Errorf("pulse: checkpoint mode does not support channel output %q", ref.name)
+	for _, ref := range append(append([]keyRef(nil), g.inPortOrder...), g.outPortOrder...) {
+		if err := checkCheckpointDeclaration(c, ref); err != nil {
+			return err
 		}
 	}
 	for _, n := range g.nodes {
-		if n.streamKind != "" {
-			return fmt.Errorf("pulse: checkpoint mode does not support stream node %q", n.id)
-		}
 		for _, ref := range append(append([]keyRef(nil), n.requires...), n.provides...) {
-			if checkpointChannelType(ref.typ, nil) {
-				return fmt.Errorf("pulse: checkpoint node %q does not support channel key %q", n.id, ref.name)
+			if err := checkCheckpointDeclaration(c, ref); err != nil {
+				return fmt.Errorf("pulse: checkpoint node %q: %w", n.id, err)
 			}
 		}
 		if n.child != nil && !chain.has(n.child) {
@@ -125,10 +120,10 @@ func (e *Execution) checkCheckpointInputsLocked() error {
 		s := e.slots[ref.name]
 		e.slotsMu.Unlock()
 		st, value := s.snapshot()
-		if st == slotPending { // 合法 In 绑定尚未到达，由稳定 Bindings 表达。
+		if st == slotPending { // 有效 In 绑定尚未到达，不是一个待保存的成果。
 			continue
 		}
-		if err := checkCheckpointOutput(CheckpointOutput{Key: CheckpointKey{Name: ref.name, Type: ref.typ}, State: publicSlotState(st), Value: value}); err != nil {
+		if err := checkCheckpointOutput(checkpointOutput(ref, st, value)); err != nil {
 			return fmt.Errorf("pulse: checkpoint input: %w", err)
 		}
 	}
@@ -230,8 +225,9 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 	rc.checkpointAttempt = root
 	rc.checkpointEntries = &checkpointEntryLedger{}
 	ws := &writeSet{}
-	rc.writes = ws
+	rc.writes, rc.checkpointWrites = ws, ws
 	err = invokeCheckpointChain(chain, rc)
+	err = checkpointChainResult(rc, err)
 	if failure := e.checkpointErr(); failure != nil {
 		err = failure
 	}
@@ -241,23 +237,38 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 	if err != nil && !isSkipped(err) {
 		// 在 fail 取消执行域之前区分外部中断与最终真实失败。
 		if !isCheckpointFailure(err) && e.ctx.Err() == nil {
+			for _, terminal := range checkpointFinishes(rc, err) {
+				if ferr := e.callCheckpoint("finish stream", func() error {
+					return e.checkpoint.hooks.StreamHooks.Finish(e.ctx, terminal)
+				}); ferr != nil {
+					return ferr
+				}
+			}
 			if ferr := rc.failCheckpointAttempt(root.Scope); ferr != nil {
 				return ferr
 			}
 		}
 		return err
 	}
-	// 切面即使短路业务体，成功检查点也等声明依赖到达，保证恢复集合依赖闭合。
+	// 普通节点保持恢复集合依赖闭合；Sub 的 In 按绑定来源核验，不整体等待入口。
 	if !n.sub {
 		if _, werr := awaitAll(rc, n.requires); werr != nil {
 			return werr
 		}
 	}
 	e.settleUnwritten(n, rc)
+	terminals := checkpointFinishes(rc, err)
 	r := NodeCheckpoint{NodeID: n.id, Reason: finishReason(err), Outputs: make([]CheckpointOutput, 0, len(n.provides))}
 	for _, ref := range n.provides {
-		st, value := ws.peek(ref).snapshot()
-		o := CheckpointOutput{Key: CheckpointKey{Name: ref.name, Type: ref.typ}, State: publicSlotState(st), Value: value}
+		st, value := rc.readTarget(ref).snapshot()
+		o := checkpointOutput(ref, st, value)
+		if o.Stream != nil {
+			for _, terminal := range terminals {
+				if terminal.Stream == o.Stream.ID {
+					o.Stream.Terminal = terminal.Terminal
+				}
+			}
+		}
 		if cerr := checkCheckpointOutput(o); cerr != nil {
 			return e.stopCheckpoint("finalize output", cerr)
 		}
@@ -270,7 +281,7 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 		return cerr
 	}
 	if cerr := e.callCheckpoint("commit", func() error {
-		return e.checkpoint.hooks.Commit(rc.ctx, CheckpointCommit{Site: e.site, Scope: e.checkpoint.scope, Attempt: root.Scope, Node: r})
+		return e.checkpoint.hooks.Commit(rc.ctx, CheckpointCommit{Site: e.site, Scope: e.checkpoint.scope, Attempt: root.Scope, Node: r, Streams: terminals})
 	}); cerr != nil {
 		return cerr
 	}
@@ -296,7 +307,7 @@ func (rc *RunCtx) prepareChildCheckpoint(sub *Execution) error {
 				if entry.skip {
 					state = slotSkipped
 				}
-				output := CheckpointOutput{Key: CheckpointKey{Name: ref.name, Type: ref.typ}, State: publicSlotState(state), Value: entry.value}
+				output := checkpointOutput(ref, state, entry.value)
 				if err := checkCheckpointOutput(output); err != nil {
 					return rc.exec.stopCheckpoint("child fixed input", err)
 				}
@@ -304,9 +315,9 @@ func (rc *RunCtx) prepareChildCheckpoint(sub *Execution) error {
 			}
 		} else if bind.in {
 			request.Bindings = append(request.Bindings, CheckpointBinding{Source: rc.exec.site,
-				Scope: rc.exec.checkpoint.scope, Attempt: c.scope, Parent: CheckpointKey{Name: bind.parent.name, Type: bind.parent.typ}, Child: CheckpointKey{Name: bind.child.name, Type: bind.child.typ}})
+				Scope: rc.exec.checkpoint.scope, Attempt: c.scope, Parent: checkpointKey(bind.parent), Child: checkpointKey(bind.child)})
 			if state, value := rc.readTarget(bind.parent).snapshot(); state != slotPending {
-				request.Inputs = append(request.Inputs, CheckpointOutput{Key: CheckpointKey{Name: bind.child.name, Type: bind.child.typ}, State: publicSlotState(state), Value: value})
+				request.Inputs = append(request.Inputs, checkpointOutput(bind.child, state, value))
 			}
 		}
 	}

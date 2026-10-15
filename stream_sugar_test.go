@@ -27,10 +27,10 @@ func TestStreamSugarMessageOptionCopies(t *testing.T) {
 		}
 	}
 	open := newStreamConfig([]StreamOption{streamOpenOption(streamConfig{
-		buf:     7,
+		buf: 7, checkpointSource: CheckpointStreamSource{ID: "source", Resumable: true},
 		aspects: []Aspect{Retry(2, 0)}, messageOptions: []MessageOption{WithMessageRetry(2, 0)},
 	})})
-	if len(open.aspects) != 0 || len(open.messageOptions) != 0 || open.buf != 7 {
+	if len(open.aspects) != 0 || len(open.messageOptions) != 0 || open.buf != 7 || open.checkpointSource.ID != "source" || !open.checkpointSource.Resumable {
 		t.Fatalf("OpenStream helper changed endpoint configuration: %+v", open)
 	}
 }

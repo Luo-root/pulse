@@ -55,6 +55,7 @@ type StreamWriter[T any] struct {
 type managedStream[T any] struct {
 	mu          sync.Mutex
 	operation   streamOperation
+	checkpoint  *checkpointStream
 	queue       chan Delivery[T]
 	changed     chan struct{}
 	done        chan struct{}
@@ -81,7 +82,8 @@ type managedReaderID struct {
 
 // OpenStream 发布一个受管端点。每个输出只能打开一次。
 // WithBuffer 控制总在途量（已排队 + 已读取未确认）；未给正缓冲时上限为 1。
-// 普通整节点 Retry / checkpoint 写暂存不能包含流 I/O，拒绝发生在发布前。
+// 普通整节点 Retry 的写暂存不能包含流 I/O，拒绝发生在发布前。
+// 检查点完整链的外帧经增量协议发布端点；普通值仍在完整链确认后发布。
 // 切面属于打开它的 NewNode；WithStreamAspects 仅用于流节点构造糖，在此被拒绝。
 func OpenStream[T any](rc *RunCtx, key Key[Stream[T]], opts ...StreamOption) (*StreamWriter[T], error) {
 	if err := checkManagedRunCtx(rc, "OpenStream"); err != nil {
@@ -107,12 +109,20 @@ func OpenStream[T any](rc *RunCtx, key Key[Stream[T]], opts ...StreamOption) (*S
 	if cfg.buf <= 0 {
 		cfg.buf = 1
 	}
-	state := &managedStream[T]{
-		queue: make(chan Delivery[T], cfg.buf), changed: make(chan struct{}),
-		done: make(chan struct{}), capacity: cfg.buf,
-		pending: make(map[uint64]*managedMessage[T]),
+	state, err := openManagedStreamCheckpoint[T](rc, ref, cfg)
+	if err != nil {
+		return nil, err
 	}
-	// 本地流早发布端点；检查点模式尚未开放，不能借普通写暂存发布。
+	if state == nil {
+		state = &managedStream[T]{
+			queue:    make(chan Delivery[T], cfg.buf),
+			changed:  make(chan struct{}),
+			done:     make(chan struct{}),
+			capacity: cfg.buf,
+			pending:  make(map[uint64]*managedMessage[T]),
+		}
+	}
+	// 端点的早发布由增量流协议确认，普通值仍留在完整链写暂存里。
 	if err := rc.exec.slotOf(ref).resolveValue(Stream[T]{state: state}); err != nil {
 		return nil, err
 	}
@@ -132,6 +142,9 @@ func (w *StreamWriter[T]) Send(value T) error {
 	}
 	if err := checkManagedRunCtx(w.rc, "Send"); err != nil {
 		return w.state.recordFailure(err)
+	}
+	if w.state.checkpoint != nil {
+		return w.sendCheckpointValue(value, nil)
 	}
 	for {
 		if err := w.rc.Context().Err(); err != nil {
@@ -277,6 +290,9 @@ func (s Stream[T]) Stop(rc *RunCtx) error {
 		return nil
 	}
 	state.mu.Unlock()
+	if err := state.checkpointStop(rc); err != nil {
+		return err
+	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	state.stopped = true
@@ -335,10 +351,7 @@ func checkManagedRunCtx(rc *RunCtx, operation string) error {
 	if rc.message != nil {
 		return fmt.Errorf("pulse: %s on node %q: cannot open, receive, expose or stop a stream inside a message attempt", operation, rc.NodeID())
 	}
-	if rc.exec.checkpoint != nil {
-		return fmt.Errorf("pulse: %s: managed stream checkpoint mode is not supported in this layer", operation)
-	}
-	if rc.writes != nil {
+	if rc.writes != nil && (rc.exec.checkpoint == nil || rc.writes != rc.checkpointWrites) {
 		return fmt.Errorf("pulse: %s on node %q: managed stream I/O cannot run inside a per-attempt write set "+
 			"(ordinary whole-node Retry or checkpoint staging); use an explicit message attempt instead", operation, rc.NodeID())
 	}
@@ -363,7 +376,7 @@ func (s Stream[T]) checkReader(rc *RunCtx, operation string) error {
 			if err := rc.must(ref, false); err != nil {
 				return err
 			}
-			return nil
+			return s.state.ensureCheckpoint(rc.Context())
 		}
 	}
 	return fmt.Errorf("pulse: %s on node %q: stream is not a declared endpoint of this execution: %w", operation, rc.NodeID(), ErrUndeclared)

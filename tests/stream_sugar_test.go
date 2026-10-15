@@ -597,3 +597,15 @@ func TestStreamSugarProducerStopNormalizationRequiresExactError(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamSugarProducerDoesNotInventResumableSource(t *testing.T) {
+	g := managedPublicGraph(t, "sugar-no-source")
+	key := p.NewKey[p.Stream[int]]("input")
+	var called atomic.Int32
+	managedPublicOK(t, p.ProduceStream(g, "source", "", key, func(*p.RunCtx, *p.StreamWriter[int]) error { called.Add(1); return nil }))
+	managedPublicOK(t, p.ConsumeStream(g, "sink", "", key, func(*p.RunCtx, int) error { return nil }))
+	err := g.Run(managedPublicContext(t), p.Inputs{}, p.WithExecCheckpoint("stable-root", publicCheckpointStreamHooks()))
+	if err == nil || !strings.Contains(err.Error(), "WithStreamSource") || called.Load() != 0 {
+		t.Fatalf("unspecified source was treated as resumable: err=%v called=%d", err, called.Load())
+	}
+}

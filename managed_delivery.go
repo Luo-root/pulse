@@ -80,6 +80,9 @@ func (d Delivery[T]) Ack() error {
 	if !active {
 		return ErrDeliveryExpired
 	}
+	if err := ack.checkpointAck(rc); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ack.confirmMessageLocked()
@@ -124,8 +127,10 @@ func (a *managedAck[T]) operationContextLocked() *RunCtx {
 	if copy.host {
 		copy.ctx = copy.exec.ctx
 	}
-	// 显式确认与取消不自动确认是两件事；本地交付仍可由业务明确处置。
-	copy.ctx = context.WithoutCancel(copy.ctx)
+	if a.stream.checkpoint == nil {
+		// 显式确认与取消不自动确认是两件事；本地交付仍可由业务明确处置。
+		copy.ctx = context.WithoutCancel(copy.ctx)
+	}
 	return &copy
 }
 
@@ -156,7 +161,7 @@ func (d Delivery[T]) active() bool {
 	return d.ack.activeLocked()
 }
 
-// 与 Delivery.Ack 相同的连续前沿规则。
+// 与 Delivery.Ack 相同的连续前沿规则；本方法仅在交付和全部输出都预检成功后调用。
 func (a *managedAck[T]) confirmMessageLocked() {
 	s := a.stream
 	a.state = deliveryAcknowledged

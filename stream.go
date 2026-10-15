@@ -17,9 +17,10 @@ import "fmt"
 type StreamOption func(*streamConfig)
 
 type streamConfig struct {
-	buf            int
-	aspects        []Aspect
-	messageOptions []MessageOption
+	buf              int
+	aspects          []Aspect
+	checkpointSource CheckpointStreamSource
+	messageOptions   []MessageOption
 }
 
 // WithStreamAspects 给本流节点追加切面；多次配置按声明顺序追加，先声明的在外层。
@@ -51,8 +52,8 @@ func WithBuffer(n int) StreamOption {
 }
 
 func checkNativeStreamOptions(id string, cfg streamConfig) error {
-	if len(cfg.messageOptions) != 0 {
-		return fmt.Errorf("pulse: stream node %q: WithMessageHandling requires a managed Stream endpoint", id)
+	if cfg.checkpointSource != (CheckpointStreamSource{}) || len(cfg.messageOptions) != 0 {
+		return fmt.Errorf("pulse: stream node %q: WithStreamSource and WithMessageHandling require a managed Stream endpoint; use ProduceStream, ConsumeStream or TeeStream", id)
 	}
 	return nil
 }

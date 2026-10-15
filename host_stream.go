@@ -33,6 +33,9 @@ func (s Stream[T]) pulseWaitReadCompletion(ctx context.Context) error {
 	if s.state == nil {
 		return fmt.Errorf("pulse: host output contains an unopened stream")
 	}
+	if err := s.state.ensureCheckpoint(); err != nil {
+		return err
+	}
 	for {
 		state := s.state
 		state.mu.Lock()

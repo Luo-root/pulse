@@ -11,6 +11,8 @@ import (
 type CheckpointKey struct {
 	Name string
 	Type reflect.Type
+	// Element 仅受管流非空；Codec 编码消息元素，不编码 Stream 端点。
+	Element reflect.Type
 }
 
 // CheckpointNode 是静态挂载位置上的节点声明副本。Stream 非空表示流式节点。
@@ -27,6 +29,8 @@ type CheckpointOutput struct {
 	Key   CheckpointKey
 	State SlotState
 	Value any
+	// Stream 与 Value 互斥，是独立流记录的引用；不会把本地端点交给普通 Codec。
+	Stream *CheckpointStreamDescriptor
 }
 
 // NodeCheckpoint 是一个节点的完整成果，恰好覆盖其全部 Provides（含隐式 skipped）。
@@ -60,6 +64,9 @@ type CheckpointCommit struct {
 	Site           Site
 	Scope, Attempt string
 	Node           NodeCheckpoint
+	// Streams 只含本节点实际拥有的写端终态；必须与 Node 原子确认。
+	// Sub 的别名输出不是写端，不能提前终结子节点的流。
+	Streams []CheckpointStreamFinish
 }
 
 // CheckpointChild 打开静态子图。Attempt 是当前最内层持久尝试，也是子图作用域。
@@ -94,12 +101,20 @@ type CheckpointHooks struct {
 	FailAttempt func(context.Context, string) error
 	OpenChild   func(context.Context, CheckpointChild) ([]NodeCheckpoint, error)
 	Commit      func(context.Context, CheckpointCommit) error
+	// StreamHooks 可选；普通完整节点仍只要求上面四个钩子。
+	// 使用受管流时必须提供完整增量钩子，原生 channel 仍不支持检查点。
+	StreamHooks *CheckpointStreamHooks
 }
 
 // WithExecCheckpoint 为本次执行及全部子执行启用检查点模式，与 Aspect 独立。
-// 完整链先暂存，最终成果经 Commit 确认才逐键发布；非流式，需非空作用域及完整钩子。
+// 完整链的普通输出先暂存，最终成果经 Commit 确认才逐键发布；需非空作用域及完整钩子。
+// 受管流使用可选 StreamHooks 逐消息确认；完整成果只保存流 descriptor。
 // Store/Codec/RunID/版本/所有权属于集成层，Core 不提供存储或 exactly-once 外部副作用。
 func WithExecCheckpoint(scope string, hooks CheckpointHooks) ExecOption {
+	if hooks.StreamHooks != nil {
+		streamHooks := *hooks.StreamHooks
+		hooks.StreamHooks = &streamHooks
+	}
 	return func(c *execConfig) { c.checkpoint = &checkpointConfig{scope: scope, hooks: hooks} }
 }
 
@@ -129,11 +144,11 @@ func (g *Graph) checkpointPortsAt(path string, chain mountChain) []CheckpointPor
 	var out []CheckpointPort
 	for _, k := range g.inPortOrder {
 		_, alsoOutput := g.outPorts[k.name]
-		out = append(out, CheckpointPort{Graph: g.id, Path: path, Key: CheckpointKey{Name: k.name, Type: k.typ}, Input: true, Output: alsoOutput})
+		out = append(out, CheckpointPort{Graph: g.id, Path: path, Key: checkpointKey(k), Input: true, Output: alsoOutput})
 	}
 	for _, k := range g.outPortOrder {
 		if _, alsoInput := g.inPorts[k.name]; !alsoInput {
-			out = append(out, CheckpointPort{Graph: g.id, Path: path, Key: CheckpointKey{Name: k.name, Type: k.typ}, Output: true})
+			out = append(out, CheckpointPort{Graph: g.id, Path: path, Key: checkpointKey(k), Output: true})
 		}
 	}
 	for _, n := range g.nodes {
@@ -186,7 +201,7 @@ func checkpointNode(graph, path string, n *Node) CheckpointNode {
 func checkpointKeys(refs []keyRef) []CheckpointKey {
 	out := make([]CheckpointKey, len(refs))
 	for i, k := range refs {
-		out[i] = CheckpointKey{Name: k.name, Type: k.typ}
+		out[i] = checkpointKey(k)
 	}
 	return out
 }
@@ -211,7 +226,7 @@ func (e *Execution) CheckpointInputs() []CheckpointOutput {
 		e.slotsMu.Unlock()
 		st, v := s.snapshot()
 		if st != slotPending { // 子图 In 可已绑定但尚未到达；它由 CheckpointChild.Bindings 表达。
-			out = append(out, CheckpointOutput{Key: CheckpointKey{Name: ref.name, Type: ref.typ}, State: publicSlotState(st), Value: v})
+			out = append(out, checkpointOutput(ref, st, v))
 		}
 	}
 	return out
@@ -248,6 +263,12 @@ func copyCheckpoints(records []NodeCheckpoint) []NodeCheckpoint {
 	out := append([]NodeCheckpoint(nil), records...)
 	for i := range out {
 		out[i].Outputs = append([]CheckpointOutput(nil), out[i].Outputs...)
+		for j := range out[i].Outputs {
+			if descriptor := out[i].Outputs[j].Stream; descriptor != nil {
+				copy := *descriptor
+				out[i].Outputs[j].Stream = &copy
+			}
+		}
 	}
 	return out
 }
@@ -259,6 +280,7 @@ func (g *Graph) checkRestoreLocked(records []NodeCheckpoint) error {
 		nodes[n.id] = n
 	}
 	seen := make(map[string]bool, len(records))
+	descriptors := make(map[[4]string]CheckpointStreamDescriptor)
 	for _, r := range records {
 		n := nodes[r.NodeID]
 		if n == nil || seen[r.NodeID] {
@@ -276,6 +298,10 @@ func (g *Graph) checkRestoreLocked(records []NodeCheckpoint) error {
 			keys[k.name] = k.typ
 		}
 		for _, o := range r.Outputs {
+			if o.Stream != nil {
+				return fmt.Errorf("pulse: RestoreNodes: completed stream descriptors are not supported in this layer")
+			}
+
 			typ, ok := keys[o.Key.Name]
 			if !ok || typ != o.Key.Type {
 				return fmt.Errorf("pulse: restore node %q: undeclared, duplicate or mistyped output %q", r.NodeID, o.Key.Name)
@@ -284,11 +310,22 @@ func (g *Graph) checkRestoreLocked(records []NodeCheckpoint) error {
 			if err := checkCheckpointOutput(o); err != nil {
 				return fmt.Errorf("pulse: restore node %q: %w", r.NodeID, err)
 			}
+			if o.Stream != nil {
+				if o.Stream.Terminal != StreamCompleted && o.Stream.Terminal != StreamStopped {
+					return fmt.Errorf("pulse: restore node %q: stream %q is not a completed source reference", r.NodeID, o.Key.Name)
+				}
+				id := o.Stream.ID
+				logical := [4]string{id.Scope, id.NodeID, id.Key, id.Group}
+				if previous, exists := descriptors[logical]; exists && previous != *o.Stream {
+					return fmt.Errorf("pulse: restore stream %q: aliases contain conflicting source descriptors", id.Key)
+				}
+				descriptors[logical] = *o.Stream
+			}
 		}
 	}
 	for _, r := range records {
 		for _, k := range nodes[r.NodeID].requires {
-			if p := g.producer[k.name]; p.kind == sourceNode && !seen[p.nodeID] {
+			if p := g.producer[k.name]; p.kind == sourceNode && !seen[p.nodeID] && !isManagedStreamType(k.typ) {
 				return fmt.Errorf("pulse: restore node %q: required producer %q has no checkpoint", r.NodeID, p.nodeID)
 			}
 		}
@@ -301,13 +338,22 @@ func checkCheckpointOutput(o CheckpointOutput) error {
 		return fmt.Errorf("checkpoint output has an empty key or type")
 	}
 	if o.State == SlotStateSkipped {
-		if o.Value != nil {
+		if o.Value != nil || o.Stream != nil {
 			return fmt.Errorf("checkpoint skipped output %q carries a value", o.Key.Name)
 		}
 		return nil
 	}
 	if o.State != SlotStateReady {
 		return fmt.Errorf("checkpoint output %q is not ready or skipped", o.Key.Name)
+	}
+	if isManagedStreamType(o.Key.Type) {
+		if o.Value != nil || o.Stream == nil {
+			return fmt.Errorf("checkpoint stream output %q requires a descriptor, not an endpoint value", o.Key.Name)
+		}
+		return checkCheckpointStreamDescriptor(o.Key, *o.Stream)
+	}
+	if o.Stream != nil {
+		return fmt.Errorf("checkpoint ordinary output %q carries a stream descriptor", o.Key.Name)
 	}
 	if o.Value == nil {
 		if o.Key.Type.Kind() != reflect.Interface {

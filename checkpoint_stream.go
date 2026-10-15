@@ -1,0 +1,642 @@
+package pulse
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"sync"
+)
+
+// CheckpointStreamID 是持久逻辑流及读取组的身份。Scope 来自持久图作用域，
+// Generation 由存储分配和核验；不能使用本次 ExecutionID 代替其中任何一项。
+// 恢复可以提升 Generation 以隔离旧交付，但必须保留同一逻辑流的消息与进度。
+type CheckpointStreamID struct {
+	Scope, NodeID, Key, Group string
+	Generation                uint64
+}
+
+// CheckpointStreamSource 声明业务来源，不尝试保存 Go 闭包或调用栈。
+// Resumable 表示业务能按 StreamWriter.Position 返回的位置继续；没有此承诺的
+// 已完成来源仍可重放可靠尾部，活跃来源则不能假装可以中途恢复。
+type CheckpointStreamSource struct {
+	ID        string
+	Resumable bool
+}
+
+// CheckpointStreamDescriptor 是完整节点成果里的流引用，不携带本地 channel。
+// Attempt 是实际写端的完整节点尝试，祖先 Sub 不能替换它或冒充写端终态。
+// Element 为消息元素的真实 Go 类型；消息内容与读取进度由独立记录保存。
+type CheckpointStreamDescriptor struct {
+	ID          CheckpointStreamID
+	Graph, Path string
+	Attempt     string
+	Element     reflect.Type
+	Source      CheckpointStreamSource
+	Capacity    int
+	Terminal    StreamTerminal
+	Stopped     bool
+}
+
+// CheckpointStreamMessage 是一条可靠消息，Sequence 从 1 起，重投不重新编号。
+// Value 的编码、版本和深复制归 Durable；钩子确认前必须完成所需编码。
+type CheckpointStreamMessage struct {
+	Sequence uint64
+	Value    any
+}
+
+// CheckpointStreamRecord 是 Open 返回的权威恢复结果。Pending 恰好包含仍有读取
+// 义务的消息，按 Sequence 递增；已确认的缺口由 LastSequence、AckedThrough 和
+// Pending 的补集表示，不能把最大确认序号当成连续前沿。消息总数不超过 Capacity。
+// Resumed 区分新来源与认回的活跃来源；Cursor 是最后一次可靠追加的来源位置。
+type CheckpointStreamRecord struct {
+	Stream                     CheckpointStreamDescriptor
+	LastSequence, AckedThrough uint64
+	Pending                    []CheckpointStreamMessage
+	Cursor                     any
+	Resumed                    bool
+}
+
+// CheckpointStreamOpen 打开或认回流。Restore 非空时必须重建记录，即使来源已 completed。
+// Site.Execution 只用于观察；稳定身份是 Scope/NodeID/Key/Group 和持久 Generation。
+type CheckpointStreamOpen struct {
+	Site                   Site
+	Scope, Attempt, NodeID string
+	Key                    CheckpointKey
+	Group                  string
+	Source                 CheckpointStreamSource
+	Capacity               int
+	Restore                *CheckpointStreamDescriptor
+}
+
+// CheckpointStreamAppend 可靠追加一条消息及其来源位置；确认后才允许本地交付。
+// Attempt 必须与 Stream 的来源尝试一致且全部祖先有效。
+type CheckpointStreamAppend struct {
+	Site    Site
+	Attempt string
+	Stream  CheckpointStreamID
+	Message CheckpointStreamMessage
+	Cursor  any
+}
+
+// CheckpointStreamAcknowledgement 确认一个读取组中的消息。Core 另核验本地当前交付；
+// Durable 必须核验 Generation 以及来源和处理尝试的全部祖先。来源自身已经 confirmed
+// 是合法的（completed 来源仍有尾部）；failed 来源或 failed 祖先不合法。
+type CheckpointStreamAcknowledgement struct {
+	Stream   CheckpointStreamID
+	Sequence uint64
+}
+
+// CheckpointState 是显式受管状态的一项；完整快照参与同一次消息提交。
+// 它不包含任意闭包、引用对象的隐式改动或外部系统副作用。
+type CheckpointState struct {
+	Name  string
+	Type  reflect.Type
+	Value any
+}
+
+// CheckpointMessageAttemptRequest 在回调之前认回持久预算，重启不补充 Limit。
+// 同一消息的预算按持久逻辑来源、组、序号、处理节点和父尝试识别，不按回调地址识别。
+// 恢复提升 Generation 只隔离旧交付，不能给同一逻辑消息补充预算。
+type CheckpointMessageAttemptRequest struct {
+	Site                   Site
+	Scope, Attempt, NodeID string
+	Input                  CheckpointStreamAcknowledgement
+	Limit                  int
+}
+
+// CheckpointMessageAttempt 携带持久尝试和上次已提交的显式状态快照。
+// Exhausted 时不得进入业务回调；失败确认以后才允许打开下一次尝试。
+type CheckpointMessageAttempt struct {
+	Attempt CheckpointAttempt
+	State   []CheckpointState
+}
+
+// CheckpointMessageCommit 在一份可靠事务中确认输入、保存显式状态、普通值成果及输出
+// 消息。所有记录确认后 Core 才发布输出和本地 Ack；多输出不承诺同时可见。
+// 手动 Ack 没有消息 Attempt，只含 Inputs；Stops 显式结束读取义务，不伪装逐条 Ack。
+// Version、所有权和外部副作用的幂等/outbox 归 Durable，不承诺通用 exactly-once。
+type CheckpointMessageCommit struct {
+	Site           Site
+	Scope, Attempt string
+	Inputs         []CheckpointStreamAcknowledgement
+	State          []CheckpointState
+	Values         []CheckpointOutput
+	Outputs        []CheckpointStreamAppend
+	Stops          []CheckpointStreamID
+}
+
+// CheckpointStreamFinish 记录实际完整 Aspect 链确定的写端终态。
+// 成功终态随 CheckpointCommit.Streams 原子保存；真实失败使用 Finish 同步确认。
+// 返回错误可能已写成，Core 不重试，不发布成功 EOF，由恢复读取权威事实。
+type CheckpointStreamFinish struct {
+	Site         Site
+	Attempt      string
+	Stream       CheckpointStreamID
+	Terminal     StreamTerminal
+	LastSequence uint64
+	Cursor       any
+}
+
+// CheckpointStreamHooks 是可选增量可靠边界；启用后六项必须齐备。
+// 遵守 CheckpointHooks 的同步、并发、panic 和失败锁存契约；不得在普通 Codec 中编码
+// 本地端点。所有修改必须核验持久代际和祖先有效性，旧交付不能推进新代际。
+type CheckpointStreamHooks struct {
+	Open        func(context.Context, CheckpointStreamOpen) (CheckpointStreamRecord, error)
+	Append      func(context.Context, CheckpointStreamAppend) error
+	Commit      func(context.Context, CheckpointMessageCommit) error
+	OpenMessage func(context.Context, CheckpointMessageAttemptRequest) (CheckpointMessageAttempt, error)
+	FailMessage func(context.Context, string) error
+	Finish      func(context.Context, CheckpointStreamFinish) error
+}
+
+func (h *CheckpointStreamHooks) complete() bool {
+	return h != nil && h.Open != nil && h.Append != nil && h.Commit != nil &&
+		h.OpenMessage != nil && h.FailMessage != nil && h.Finish != nil
+}
+
+// WithStreamSource 为 OpenStream 显式声明稳定来源及业务是否能按位置续读。
+// 可续读来源使用 SendAt 同步保存消息与外部游标，恢复后从 Position 继续。
+// 非可续读来源也会保存消息内容，可恢复 completed 来源的未确认尾部。
+func WithStreamSource(id string, resumable bool) StreamOption {
+	return func(c *streamConfig) { c.checkpointSource = CheckpointStreamSource{ID: id, Resumable: resumable} }
+}
+
+// StreamPosition 是最近一次可靠接纳的位置；Cursor 不深复制。
+type StreamPosition struct {
+	Sequence uint64
+	Cursor   any
+}
+
+// Position 返回当前来源位置。恢复时包含 Open 返回的权威游标，不靠闭包计数续读。
+func (w *StreamWriter[T]) Position() StreamPosition {
+	if w == nil || w.state == nil {
+		return StreamPosition{}
+	}
+	w.state.mu.Lock()
+	defer w.state.mu.Unlock()
+	position := StreamPosition{Sequence: w.state.last}
+	if checkpoint := w.state.checkpoint; checkpoint != nil {
+		position.Cursor = checkpoint.cursor
+	}
+	return position
+}
+
+// SendAt 在检查点模式原子保存消息及其来源位置，确认后才交付；本地模式等同 Send，
+// 不保存可恢复游标。它用于渐进来源，不用于有限消息回调（后者一次提交全部成果）。
+func (w *StreamWriter[T]) SendAt(value T, cursor any) error {
+	if w == nil || w.state == nil {
+		return fmt.Errorf("pulse: SendAt: unopened stream writer")
+	}
+	if w.rc.message != nil {
+		return w.rc.message.fail(fmt.Errorf("pulse: SendAt cannot advance a source cursor inside HandleMessage"))
+	}
+	if w.state.checkpoint == nil {
+		return w.Send(value)
+	}
+	return w.sendCheckpointValue(value, cursor)
+}
+
+type checkpointEndpoint interface {
+	pulseCheckpointDescriptor() *CheckpointStreamDescriptor
+	pulseEnsureCheckpoint() error
+}
+
+type checkpointStream struct {
+	exec       *Execution
+	descriptor CheckpointStreamDescriptor
+	cursor     any // 由所属 managedStream.mu 保护
+	restore    bool
+	once       sync.Once
+	err        error
+}
+
+func checkCheckpointDeclaration(config *checkpointConfig, ref keyRef) error {
+	if isManagedStreamType(ref.typ) {
+		if !config.hooks.StreamHooks.complete() {
+			return fmt.Errorf("checkpoint stream key %q requires complete StreamHooks", ref.name)
+		}
+		if checkpointKey(ref).Element == nil {
+			return fmt.Errorf("checkpoint stream key %q must use a Stream value endpoint", ref.name)
+		}
+		if checkpointChannelType(checkpointKey(ref).Element, nil) {
+			return fmt.Errorf("checkpoint stream key %q element contains a channel", ref.name)
+		}
+		return nil
+	}
+	if checkpointChannelType(ref.typ, nil) {
+		return fmt.Errorf("checkpoint mode does not support channel key %q", ref.name)
+	}
+	return nil
+}
+
+func checkpointKey(ref keyRef) CheckpointKey {
+	key := CheckpointKey{Name: ref.name, Type: ref.typ}
+	if isManagedStreamType(ref.typ) && ref.typ.Kind() == reflect.Struct {
+		key.Element = reflect.Zero(ref.typ).Interface().(managedStreamDeclaration).pulseStreamElement()
+	}
+	return key
+}
+
+func checkpointOutput(ref keyRef, state slotState, value any) CheckpointOutput {
+	output := CheckpointOutput{Key: checkpointKey(ref), State: publicSlotState(state), Value: value}
+	if endpoint, ok := value.(checkpointEndpoint); ok && output.Key.Element != nil {
+		output.Stream, output.Value = endpoint.pulseCheckpointDescriptor(), nil
+	}
+	return output
+}
+
+func checkCheckpointStreamDescriptor(key CheckpointKey, descriptor CheckpointStreamDescriptor) error {
+	element := checkpointKey(keyRef{name: key.Name, typ: key.Type}).Element
+	id := descriptor.ID
+	if id.Scope == "" || id.NodeID == "" || id.Key == "" || id.Group == "" || id.Generation == 0 ||
+		descriptor.Attempt == "" || descriptor.Graph == "" || descriptor.Source.ID == "" || descriptor.Capacity < 1 ||
+		element == nil || descriptor.Element != element || (key.Element != nil && key.Element != element) {
+		return fmt.Errorf("checkpoint stream %q has an invalid identity, source or element type", key.Name)
+	}
+	if descriptor.Terminal != "" && descriptor.Terminal != StreamCompleted && descriptor.Terminal != StreamStopped &&
+		descriptor.Terminal != StreamFailed && descriptor.Terminal != StreamCanceled {
+		return fmt.Errorf("checkpoint stream %q has an invalid terminal", key.Name)
+	}
+	if checkpointChannelType(element, nil) {
+		return fmt.Errorf("checkpoint stream %q element contains a channel", key.Name)
+	}
+	return nil
+}
+
+func checkCheckpointStreamRecord(request CheckpointStreamOpen, record CheckpointStreamRecord) error {
+	descriptor := record.Stream
+	if err := checkCheckpointStreamDescriptor(request.Key, descriptor); err != nil {
+		return err
+	}
+	id := descriptor.ID
+	if id.Scope != request.Scope || id.NodeID != request.NodeID || id.Key != request.Key.Name || id.Group != request.Group ||
+		descriptor.Attempt != request.Attempt || descriptor.Graph != request.Site.Graph || descriptor.Path != request.Site.Path ||
+		descriptor.Source != request.Source || descriptor.Capacity != request.Capacity {
+		return fmt.Errorf("stream Open returned a different persistent source")
+	}
+	if request.Restore != nil {
+		if id.Generation < request.Restore.ID.Generation || descriptor.Terminal != request.Restore.Terminal || !record.Resumed {
+			return fmt.Errorf("stream Open did not restore the completed source reference")
+		}
+	}
+	if record.Resumed && descriptor.Terminal == "" && !descriptor.Source.Resumable {
+		return fmt.Errorf("stream source %q cannot resume an active source; declare a replayable source and continue from Position", descriptor.Source.ID)
+	}
+	if descriptor.Terminal == StreamFailed || descriptor.Terminal == StreamCanceled {
+		return fmt.Errorf("stream Open returned a failed or canceled source")
+	}
+	if record.AckedThrough > record.LastSequence || len(record.Pending) > descriptor.Capacity ||
+		(descriptor.Stopped && len(record.Pending) != 0) {
+		return fmt.Errorf("stream Open returned invalid confirmation progress or capacity")
+	}
+	if !descriptor.Stopped && ((len(record.Pending) == 0 && record.AckedThrough != record.LastSequence) ||
+		(len(record.Pending) != 0 && record.Pending[0].Sequence != record.AckedThrough+1)) {
+		return fmt.Errorf("stream Open returned a non-contiguous confirmation frontier")
+	}
+	if !descriptor.Stopped && ((len(record.Pending) == 0 && record.AckedThrough != record.LastSequence) ||
+		(len(record.Pending) != 0 && record.Pending[0].Sequence != record.AckedThrough+1)) {
+		return fmt.Errorf("stream Open returned a confirmation frontier inconsistent with its pending messages")
+	}
+	previous := record.AckedThrough
+	for _, message := range record.Pending {
+		if message.Sequence <= previous || message.Sequence > record.LastSequence {
+			return fmt.Errorf("stream Open returned duplicate or unordered pending messages")
+		}
+		previous = message.Sequence
+		if err := checkCheckpointPayload(descriptor.Element, message.Value); err != nil {
+			return err
+		}
+	}
+	return checkCheckpointCursor(record.Cursor)
+}
+
+func checkCheckpointPayload(typ reflect.Type, value any) error {
+	return checkCheckpointOutput(CheckpointOutput{Key: CheckpointKey{Name: "payload", Type: typ}, State: SlotStateReady, Value: value})
+}
+
+func checkCheckpointCursor(cursor any) error {
+	if cursor != nil {
+		return checkCheckpointPayload(reflect.TypeOf(cursor), cursor)
+	}
+	return nil
+}
+
+func (e *Execution) openCheckpointStream(ctx context.Context, request CheckpointStreamOpen) (record CheckpointStreamRecord, err error) {
+	err = e.callCheckpoint("open stream", func() error {
+		var err error
+		record, err = e.checkpoint.hooks.StreamHooks.Open(ctx, request)
+		if err != nil {
+			return err
+		}
+		return checkCheckpointStreamRecord(request, record)
+	})
+	return record, err
+}
+
+// openManagedStreamCheckpoint 在端点发布前调用；本地模式返回 nil，仍走原实现。
+func openManagedStreamCheckpoint[T any](rc *RunCtx, ref keyRef, cfg streamConfig) (*managedStream[T], error) {
+	if rc.exec.checkpoint == nil {
+		return nil, nil
+	}
+	if !rc.exec.checkpoint.hooks.StreamHooks.complete() || cfg.checkpointSource.ID == "" {
+		return nil, rc.exec.stopCheckpoint("open stream", fmt.Errorf("OpenStream %q requires complete StreamHooks and WithStreamSource", ref.name))
+	}
+	request := CheckpointStreamOpen{Site: rc.exec.site, Scope: rc.exec.checkpoint.scope, Attempt: rc.checkpointAttempt.Scope,
+		NodeID: rc.NodeID(), Key: checkpointKey(ref), Group: "default", Source: cfg.checkpointSource, Capacity: cfg.buf}
+	record, err := rc.exec.openCheckpointStream(rc.ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	s := checkpointManagedStream[T](record.Stream.Capacity)
+	s.checkpoint = &checkpointStream{exec: rc.exec, descriptor: record.Stream, cursor: record.Cursor}
+	s.installCheckpointRecord(record)
+	return s, nil
+}
+
+func checkpointManagedStream[T any](capacity int) *managedStream[T] {
+	return &managedStream[T]{queue: make(chan Delivery[T], capacity), changed: make(chan struct{}),
+		done: make(chan struct{}), capacity: capacity, pending: make(map[uint64]*managedMessage[T])}
+}
+
+func (s *managedStream[T]) installCheckpointRecord(record CheckpointStreamRecord) {
+	s.mu.Lock()
+	s.last, s.frontier, s.stopped = record.LastSequence, record.AckedThrough, record.Stream.Stopped
+	for _, saved := range record.Pending {
+		var value T
+		if saved.Value != nil { // nil 接口元素是合法值。
+			value = saved.Value.(T)
+		}
+		message := &managedMessage[T]{value: value, sequence: saved.Sequence}
+		s.pending[message.sequence] = message
+		s.enqueueLocked(message)
+	}
+	s.mu.Unlock()
+	if record.Stream.Terminal != "" {
+		s.finish(nil)
+	}
+}
+
+func (s Stream[T]) pulseCheckpointDescriptor() *CheckpointStreamDescriptor {
+	if s.state == nil || s.state.checkpoint == nil {
+		return nil
+	}
+	s.state.mu.Lock()
+	defer s.state.mu.Unlock()
+	descriptor := s.state.checkpoint.descriptor
+	if s.state.finished {
+		descriptor.Terminal = s.state.terminal
+	}
+	descriptor.Stopped = s.state.stopped
+	return &descriptor
+}
+
+func (s Stream[T]) pulseEnsureCheckpoint() error { return s.state.ensureCheckpoint() }
+
+// ensureCheckpoint 必须在 Receive/Messages/Stop 使用恢复端点之前调用，且不持流锁。
+// 多个竞争读者只做一次 Open；completed 来源照样装回未确认尾部，之后再开放 EOF。
+func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
+	checkpoint := s.checkpoint
+	if checkpoint == nil || !checkpoint.restore {
+		return nil
+	}
+	checkpoint.once.Do(func() {
+		descriptor := checkpoint.descriptor
+		site := checkpoint.exec.site
+		site.Graph, site.Path = descriptor.Graph, descriptor.Path
+		request := CheckpointStreamOpen{Site: site, Scope: descriptor.ID.Scope, Attempt: descriptor.Attempt,
+			NodeID: descriptor.ID.NodeID, Key: CheckpointKey{Name: descriptor.ID.Key, Type: reflect.TypeFor[Stream[T]](), Element: descriptor.Element},
+			Group: descriptor.ID.Group, Source: descriptor.Source, Capacity: descriptor.Capacity, Restore: &descriptor}
+		ctx := checkpoint.exec.checkpoint.failure.root.ctx
+		if len(contexts) != 0 && contexts[0] != nil {
+			ctx = contexts[0]
+		}
+		record, err := checkpoint.exec.openCheckpointStream(ctx, request)
+		checkpoint.err = err
+		if err == nil {
+			s.mu.Lock()
+			checkpoint.descriptor, checkpoint.cursor = record.Stream, record.Cursor
+			s.mu.Unlock()
+			s.installCheckpointRecord(record)
+		}
+	})
+	return checkpoint.err
+}
+
+// sendCheckpointValue 由 Send/SendAt 共用；钩子在流锁外，确认前不改序号、不入队。
+// 写端串行；并发 Ack 只释放容量，不会抢走已经预检的位置。Stop 的可靠记录与本地
+// 退出可能发生在确认之后，此时消息已经接纳，按显式 Stop 清理而不伪装发送失败。
+func (w *StreamWriter[T]) sendCheckpointValue(value T, cursor any) error {
+	if err := checkManagedRunCtx(w.rc, "Send"); err != nil {
+		return w.state.recordFailure(err)
+	}
+	s := w.state
+	if err := checkCheckpointPayload(reflect.TypeFor[T](), value); err != nil {
+		return s.checkpoint.exec.stopCheckpoint("append stream", err)
+	}
+	if err := checkCheckpointCursor(cursor); err != nil {
+		return s.checkpoint.exec.stopCheckpoint("append stream", err)
+	}
+	for {
+		if err := w.rc.Context().Err(); err != nil {
+			return s.recordFailure(err)
+		}
+		s.mu.Lock()
+		changed, err := s.checkpointSendReadyLocked()
+		s.mu.Unlock()
+		if err != nil {
+			return s.recordFailure(err)
+		}
+		if changed != nil {
+			if err := waitMessageCapacity(w.rc, changed); err != nil {
+				return s.recordFailure(err)
+			}
+			continue
+		}
+		// 等待操作门会让出额度，不能持流锁，也不能占着门等 Ack 释放容量。
+		if err := s.operation.lock(w.rc); err != nil {
+			return s.recordFailure(err)
+		}
+		s.mu.Lock()
+		changed, err = s.checkpointSendReadyLocked()
+		if canceled := w.rc.Context().Err(); canceled != nil {
+			err = canceled
+		}
+		if changed != nil || err != nil {
+			s.mu.Unlock()
+			s.operation.unlock()
+			if err != nil {
+				return s.recordFailure(err)
+			}
+			if err := waitMessageCapacity(w.rc, changed); err != nil {
+				return s.recordFailure(err)
+			}
+			continue
+		}
+		sequence, checkpoint := s.last+1, s.checkpoint
+		append := CheckpointStreamAppend{Site: w.rc.exec.site, Attempt: checkpoint.descriptor.Attempt,
+			Stream: checkpoint.descriptor.ID, Message: CheckpointStreamMessage{Sequence: sequence, Value: value}, Cursor: cursor}
+		s.mu.Unlock()
+		if err := w.rc.exec.callCheckpoint("append stream", func() error {
+			return w.rc.exec.checkpoint.hooks.StreamHooks.Append(w.rc.Context(), append)
+		}); err != nil {
+			s.operation.unlock()
+			return err
+		}
+		s.mu.Lock()
+		s.last, checkpoint.cursor = sequence, cursor
+		message := &managedMessage[T]{value: value, sequence: sequence}
+		s.pending[sequence] = message
+		s.enqueueLocked(message)
+		s.mu.Unlock()
+		s.operation.unlock()
+		return nil
+	}
+}
+
+func (s *managedStream[T]) checkpointSendReadyLocked() (<-chan struct{}, error) {
+	if s.readerErr != nil {
+		return nil, s.readerErr
+	}
+	if s.stopped {
+		return nil, ErrStreamStopped
+	}
+	if s.finished {
+		if s.err != nil {
+			return nil, s.err
+		}
+		return nil, fmt.Errorf("pulse: Send: production already finished")
+	}
+	if s.last == ^uint64(0) {
+		return nil, fmt.Errorf("pulse: Send: message sequence exhausted")
+	}
+	if len(s.pending) >= s.capacity {
+		return s.changed, nil
+	}
+	return nil, nil
+}
+
+func (a *managedAck[T]) checkpointAcknowledgement() CheckpointStreamAcknowledgement {
+	return CheckpointStreamAcknowledgement{Stream: a.stream.checkpoint.descriptor.ID, Sequence: a.message.sequence}
+}
+
+// checkpointAck 与 checkpointStop 只执行可靠边界，不改本地确认状态。调用者必须先核验
+// 当前交付并排斥其并发 Nack/Stop，锁外调用，确认后再做原有本地状态变更。
+func (a *managedAck[T]) checkpointAck(rc *RunCtx) error {
+	checkpoint := a.stream.checkpoint
+	if checkpoint == nil {
+		return nil
+	}
+	ctx := checkpointActorContext(rc, checkpoint)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	e := checkpoint.exec
+	return e.commitCheckpointMessage(ctx, CheckpointMessageCommit{Site: e.site, Scope: checkpoint.descriptor.ID.Scope,
+		Inputs: []CheckpointStreamAcknowledgement{a.checkpointAcknowledgement()}})
+}
+
+func (s *managedStream[T]) checkpointStop(rc *RunCtx) error {
+	if s.checkpoint == nil {
+		return nil
+	}
+	checkpoint := s.checkpoint
+	ctx := checkpointActorContext(rc, checkpoint)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return checkpoint.exec.commitCheckpointMessage(ctx, CheckpointMessageCommit{Site: checkpoint.exec.site,
+		Scope: checkpoint.descriptor.ID.Scope, Stops: []CheckpointStreamID{checkpoint.descriptor.ID}})
+}
+
+// 来源子执行的成功 Wait 会正常取消其 ctx，不能用它阻断父侧尾部确认。
+// 宿主 Receive 的 RunCtx 只管理一次等待，返回时即取消；其交付确认使用执行 ctx。
+func checkpointActorContext(rc *RunCtx, checkpoint *checkpointStream) context.Context {
+	if rc != nil && rc.exec != nil {
+		if rc.host {
+			return rc.exec.ctx
+		}
+		return rc.ctx
+	}
+	return checkpoint.exec.checkpoint.failure.root.ctx
+}
+
+func (e *Execution) commitCheckpointMessage(ctx context.Context, commit CheckpointMessageCommit) error {
+	return e.callCheckpoint("commit message", func() error { return e.checkpoint.hooks.StreamHooks.Commit(ctx, commit) })
+}
+
+func (s *managedStream[T]) checkpointFinish(err error) (CheckpointStreamFinish, bool) {
+	if s.checkpoint == nil {
+		return CheckpointStreamFinish{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	terminal := StreamCompleted
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		terminal = StreamCanceled
+	case err != nil && !isSkipped(err):
+		terminal = StreamFailed
+	case s.stopped:
+		terminal = StreamStopped
+	}
+	checkpoint := s.checkpoint
+	return CheckpointStreamFinish{Site: checkpoint.exec.site, Attempt: checkpoint.descriptor.Attempt,
+		Stream: checkpoint.descriptor.ID, Terminal: terminal, LastSequence: s.last, Cursor: checkpoint.cursor}, true
+}
+
+func checkpointFinishes(rc *RunCtx, err error) []CheckpointStreamFinish {
+	if rc.streams == nil {
+		return nil
+	}
+	rc.streams.mu.Lock()
+	outputs := append([]streamLifecycle(nil), rc.streams.outputs...)
+	rc.streams.mu.Unlock()
+	var records []CheckpointStreamFinish
+	for _, output := range outputs {
+		if stream, ok := output.(interface {
+			checkpointFinish(error) (CheckpointStreamFinish, bool)
+		}); ok {
+			if finish, present := stream.checkpointFinish(err); present {
+				records = append(records, finish)
+			}
+		}
+	}
+	return records
+}
+
+// checkpointChainResult 先确定完整链及读取义务的结论，不开放写端终态。
+// finishStreams 在可靠确认后做本地收尾；重复读取退出检查按端点幂等。
+func checkpointChainResult(rc *RunCtx, err error) error {
+	if rc.streams == nil {
+		return err
+	}
+	rc.streams.mu.Lock()
+	messageErr := rc.streams.messageErr
+	outputs := append([]streamLifecycle(nil), rc.streams.outputs...)
+	rc.streams.mu.Unlock()
+	if err == nil || isSkipped(err) {
+		if messageErr != nil {
+			err = messageErr
+		}
+		for _, output := range outputs {
+			if cause := output.failure(); cause != nil && (err == nil || isSkipped(err)) {
+				err = cause
+			}
+		}
+	}
+	if !rc.node.sub {
+		seen := make(map[managedReaderLifecycle]bool)
+		for _, ref := range rc.node.requires {
+			state, value := rc.exec.slotOf(ref).snapshot()
+			reader, ok := value.(managedReaderLifecycle)
+			if state == slotReady && ok && !seen[reader] {
+				seen[reader] = true
+				if cause := reader.pulseReaderFinished(rc, err); cause != nil && (err == nil || isSkipped(err)) {
+					err = cause
+				}
+			}
+		}
+	}
+	return err
+}

@@ -39,11 +39,12 @@ func streamOpenOption(cfg streamConfig) StreamOption {
 }
 
 // ProduceStream 构造以 Key[Stream[T]] 输出的受管生产节点，description 原样交给 NewNode。
-// 打开后直接调用 fn；Send 逐条接纳，不等整个回调结束才发布。
+// 打开后直接调用 fn；Send / SendAt 逐条接纳，不等整个回调结束才发布。
 // WithBuffer 限制总在途量，默认 1；等待容量时由受管 I/O 临时让出业务额度。
 // 完整节点链（含切面）结束后才确定流的终态，fn 的错误、取消和 panic 不转成正常 EOF。
 //
-// 读取组已明确 Stop 时，fn 返回精确 ErrStreamStopped 正常结束；
+// WithStreamSource 只声明外部来源的续读能力；fn 必须自行用 Position / SendAt 续读，
+// 本糖不保存任意闭包。读取组已明确 Stop 时，fn 返回精确 ErrStreamStopped 正常结束；
 // 包装后的错误、或没有实际 Stop 的停止信号仍是节点失败。
 func ProduceStream[T any](g *Graph, id, description string, out Key[Stream[T]],
 	fn func(*RunCtx, *StreamWriter[T]) error, opts ...StreamOption) error {
@@ -135,6 +136,8 @@ func ConsumeStream[T any](g *Graph, id, description string, in Key[Stream[T]],
 // 已明确 Stop 的分支不再接收消息；所有分支都 Stop 后，本节点 Stop 自己的输入读取组。
 // 分支或来源的真实失败仍保留，不能用正常停止掩盖。
 //
+// 本节点是确定性消息变换，分支默认来源为 "tee/" + id + "/" + keyName，标为可续读：
+// 恢复依赖持久输入和消息原子提交，不保存闭包或调用栈。显式 WithStreamSource 保留原值。
 // WithStreamAspects 进入普通 NewNode 链，WithMessageHandling 只控制每条输入的预算。
 func TeeStream[T any](g *Graph, id, description string, in Key[Stream[T]], outs []Key[Stream[T]],
 	opts ...StreamOption) error {
@@ -158,6 +161,9 @@ func TeeStream[T any](g *Graph, id, description string, in Key[Stream[T]], outs 
 		writers := make([]*StreamWriter[T], len(outs))
 		for i, out := range outs {
 			branch := cfg
+			if branch.checkpointSource == (CheckpointStreamSource{}) {
+				branch.checkpointSource = CheckpointStreamSource{ID: "tee/" + id + "/" + out.asRef().name, Resumable: true}
+			}
 			writers[i], err = OpenStream(rc, out, streamOpenOption(branch))
 			if err != nil {
 				return err
