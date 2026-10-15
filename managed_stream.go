@@ -13,6 +13,9 @@ import (
 // 生产者应明确处理它；直接作为节点错误返回仍会使这次执行失败。
 var ErrStreamStopped = errors.New("pulse: stream reading group stopped")
 
+// 仅包内的组合读取使用；分支变化后重新判断是否仍有读取义务。
+var errStreamReceiveInterrupted = errors.New("pulse: stream receive interrupted by branch change")
+
 // StreamTerminal 是实际生产节点完整链的终态；空值表示生产尚未结束。
 type StreamTerminal string
 
@@ -202,6 +205,10 @@ func (w *StreamWriter[T]) Send(value T) error {
 // 包括恢复额度期间取消；调用方可明确 Nack，不能将已取得改报成未取得。
 // 仅生产正常结束且义务已确认，或显式 Stop 后返回 io.EOF；生产失败返回原因。
 func (s Stream[T]) Receive(rc *RunCtx) (Delivery[T], error) {
+	return s.receive(rc, nil)
+}
+
+func (s Stream[T]) receive(rc *RunCtx, changes []<-chan struct{}) (Delivery[T], error) {
 	var delivery Delivery[T]
 	if err := s.checkReader(rc, "Receive"); err != nil {
 		return delivery, err
@@ -223,6 +230,28 @@ func (s Stream[T]) Receive(rc *RunCtx) (Delivery[T], error) {
 		var err error
 		if !received {
 			err = rc.waitStream(func(ctx context.Context) error {
+				if len(changes) != 0 {
+					// Tee 同时等输入和各分支的状态通知，不另起观察 goroutine。
+					cases := make([]reflect.SelectCase, 2, len(changes)+2)
+					cases[0] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(s.state.queue)}
+					cases[1] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())}
+					for _, changed := range changes {
+						cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(changed)})
+					}
+					chosen, value, open := reflect.Select(cases)
+					switch chosen {
+					case 0:
+						ok, received = open, true
+						if ok {
+							delivery = value.Interface().(Delivery[T])
+						}
+						return nil // 已取得的交付保留成功，恢复额度时的取消不改写它。
+					case 1:
+						return ctx.Err()
+					default:
+						return errStreamReceiveInterrupted
+					}
+				}
 				select {
 				case delivery, ok = <-s.state.queue:
 					received = true

@@ -6,8 +6,9 @@ import (
 )
 
 // 以下边的方向是「事件等待哪个前提」，仅用于静态检查，不参与运行调度。
-// 普通用户节点的 Set 最早可在 start 后发生，不能猜它要等 finish；Sub 的
-// 普通值 Out 等 child.Wait，实时 Out 只等子出口到达，挂载本身没有整体输入门。
+// 普通执行的 Set 最早可在 start 后发生；checkpoint 的普通输出须等完整链
+// Commit，按 finish 建模，实时端点仍可在 start 后到达。Sub 的普通值 Out
+// 还须等 child.Wait，实时 Out 只等子出口到达，挂载本身没有整体输入门。
 // Produce / Tee 活着同步发送；Tee 所有出口的关闭都等所有下游能开始读取，
 // 并且等输入关闭。Consume 正常完成要等输入关闭。缓冲不消除这些结构约束。
 // 业务 callback / Aspect 内的隐藏等待、手写 channel 的关闭时机均不推断。
@@ -44,7 +45,7 @@ func (w *streamWaitGraph) sendWait(from, to int, reason string) {
 	w.sends = append(w.sends, streamWaitEdge{from: from, to: to, reason: reason})
 }
 
-func (t *streamTree) problemsLifecycle(out map[string][]error) {
+func (t *streamTree) problemsLifecycle(out map[string][]error, checkpoint bool) {
 	// 含 Sub 的层由这份展开图核真实依赖；普通简单图仍走既有 DAG 判据。
 	expanded := make(map[string]bool)
 	for _, n := range t.nodes {
@@ -130,6 +131,8 @@ func (t *streamTree) problemsLifecycle(out map[string][]error) {
 					w.wait(bridged[n], arrivals[c], "Sub checks every bound output before returning")
 					if isLiveStreamType(b.child.typ) {
 						w.wait(arrivals[p], start, "live Out binds before the child starts")
+					} else if checkpoint {
+						w.wait(arrivals[p], finish, "checkpoint ordinary Out publishes after complete-chain commit")
 					} else {
 						w.wait(arrivals[p], bridged[n], "ordinary Out bridges only after child Wait completes")
 					}
@@ -138,7 +141,11 @@ func (t *streamTree) problemsLifecycle(out map[string][]error) {
 			}
 		} else if !n.def.sub {
 			for _, ref := range n.def.provides {
-				w.wait(arrivals[n.site.keys[ref.name]], start, "a node can publish its output after it starts")
+				if checkpoint && !isLiveStreamType(ref.typ) {
+					w.wait(arrivals[n.site.keys[ref.name]], finish, "checkpoint ordinary output publishes after complete-chain commit")
+				} else {
+					w.wait(arrivals[n.site.keys[ref.name]], start, "a node can publish its output after it starts")
+				}
 			}
 		}
 		if n.def.streamKind == "consume" || n.def.streamKind == "tee" {

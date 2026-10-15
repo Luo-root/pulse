@@ -405,7 +405,7 @@ func (e *Execution) Start() error {
 	g.mu.Lock()
 	known := streamKnownInputs{
 		skipped: e.streamInputSkips(), hasAspects: len(e.aspects) != 0,
-		hostReads: e.hostStreamReads(),
+		hostReads: e.hostStreamReads(), checkpoint: e.checkpoint != nil,
 	}
 	// 子执行来自已通过整树检查并封口的挂载位置。流的父侧消费者和兄弟池都属于
 	// 那次检查的上下文，不能在这里把子树当作独立根重新判。每次运行的输入仍在下方核验。

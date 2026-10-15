@@ -271,6 +271,22 @@ func checkCheckpointStreamDescriptor(key CheckpointKey, descriptor CheckpointStr
 	return nil
 }
 
+// 历史 Sub 别名可能早于写端完成或读取组 Stop；这些快照仍引用同一来源。
+// 稳定来源（含代际）必须完全一致，已知写端终态不能互相矛盾；Stop 只向前累积。
+func mergeCheckpointStreamReference(previous, next CheckpointStreamDescriptor) (CheckpointStreamDescriptor, error) {
+	left, right := previous, next
+	left.Terminal, right.Terminal = "", ""
+	left.Stopped, right.Stopped = false, false
+	if left != right || (previous.Terminal != "" && next.Terminal != "" && previous.Terminal != next.Terminal) {
+		return previous, fmt.Errorf("pulse: restore stream %q: aliases contain conflicting source descriptors", previous.ID.Key)
+	}
+	if previous.Terminal == "" {
+		previous.Terminal = next.Terminal
+	}
+	previous.Stopped = previous.Stopped || next.Stopped
+	return previous, nil
+}
+
 func checkCheckpointStreamRecord(request CheckpointStreamOpen, record CheckpointStreamRecord) error {
 	descriptor := record.Stream
 	if err := checkCheckpointStreamDescriptor(request.Key, descriptor); err != nil {
@@ -282,8 +298,12 @@ func checkCheckpointStreamRecord(request CheckpointStreamOpen, record Checkpoint
 		descriptor.Source != request.Source || descriptor.Capacity != request.Capacity {
 		return fmt.Errorf("stream Open returned a different persistent source")
 	}
-	if request.Restore != nil {
-		if id.Generation < request.Restore.ID.Generation || descriptor.Terminal != request.Restore.Terminal || !record.Resumed {
+	if history := request.Restore; history != nil {
+		// Sub 完成不是写端完成证明；历史空终态只能由权威的成功终态补全。
+		if id.Generation < history.ID.Generation || !record.Resumed ||
+			(descriptor.Terminal != StreamCompleted && descriptor.Terminal != StreamStopped) ||
+			(history.Terminal != "" && descriptor.Terminal != history.Terminal) ||
+			(history.Stopped && !descriptor.Stopped) {
 			return fmt.Errorf("stream Open did not restore the completed source reference")
 		}
 	}
@@ -378,10 +398,16 @@ func (s *managedStream[T]) installCheckpointRecord(record CheckpointStreamRecord
 		s.pending[message.sequence] = message
 		s.enqueueLocked(message)
 	}
-	s.mu.Unlock()
+	// 持久写端终态与读取组 Stop 是独立事实；不能重新按当前 stopped 推导终态。
 	if record.Stream.Terminal != "" {
-		s.finish(nil)
+		s.finished, s.terminal = true, record.Stream.Terminal
+		close(s.done)
 	}
+	if s.stopped || (s.finished && len(s.pending) == 0) {
+		s.closeQueueLocked()
+	}
+	s.signalLocked()
+	s.mu.Unlock()
 }
 
 func (Stream[T]) pulseRestoreCheckpoint(e *Execution, descriptor CheckpointStreamDescriptor) any {

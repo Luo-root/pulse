@@ -1,6 +1,7 @@
 package pulse
 
 import (
+	"errors"
 	"fmt"
 	"io"
 )
@@ -21,13 +22,31 @@ func streamWriterStopped[T any](writer *StreamWriter[T]) bool {
 	return writer.state.stopped
 }
 
-func streamWritersStopped[T any](writers []*StreamWriter[T]) bool {
+var errTeeOutputsStopped = errors.New("pulse: all TeeStream outputs stopped before message commit")
+
+// 同一眼取得活动分支和通知，Stop 发生在检查后也不会漏掉唤醒。
+// 已停止的分支不再加入等待；真实失败仍须传回，不能当作正常停止。
+func streamWriterChanges[T any](writers []*StreamWriter[T]) ([]<-chan struct{}, error) {
+	changes := make([]<-chan struct{}, 0, len(writers))
 	for _, writer := range writers {
-		if !streamWriterStopped(writer) {
-			return false
+		state := writer.state
+		state.mu.Lock()
+		cause := state.readerErr
+		if cause == nil {
+			cause = state.sendErr
+		}
+		if cause == nil {
+			cause = state.err
+		}
+		if !state.stopped {
+			changes = append(changes, state.changed)
+		}
+		state.mu.Unlock()
+		if cause != nil {
+			return nil, cause
 		}
 	}
-	return true
+	return changes, nil
 }
 
 // streamOpenOption 只传递打开端点的配置，不把节点切面或消息处理预算传给 OpenStream。
@@ -170,10 +189,17 @@ func TeeStream[T any](g *Graph, id, description string, in Key[Stream[T]], outs 
 			}
 		}
 		for {
-			if streamWritersStopped(writers) {
+			changes, err := streamWriterChanges(writers)
+			if err != nil {
+				return err
+			}
+			if len(changes) == 0 {
 				return stream.Stop(rc)
 			}
-			delivery, err := stream.Receive(rc)
+			delivery, err := stream.receive(rc, changes)
+			if err == errStreamReceiveInterrupted {
+				continue
+			}
 			if err == io.EOF {
 				return nil
 			}
@@ -182,6 +208,7 @@ func TeeStream[T any](g *Graph, id, description string, in Key[Stream[T]], outs 
 			}
 			if err := HandleMessage(rc, delivery, func(rc *RunCtx, value T) error {
 				rc.message.allowStoppedOutputs = true
+				rc.message.requireActiveOutput = true
 				for _, writer := range writers {
 					if err := writer.Send(value); err != nil {
 						return err
@@ -189,6 +216,9 @@ func TeeStream[T any](g *Graph, id, description string, in Key[Stream[T]], outs 
 				}
 				return nil
 			}, cfg.messageOptions...); err != nil {
+				if err == errTeeOutputsStopped {
+					return stream.Stop(rc)
+				}
 				return err
 			}
 		}
