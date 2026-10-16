@@ -19,8 +19,8 @@ func TestCheckpointReaderObligationsBeforeCommit(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 				defer cancel()
 				key := NewKey[Stream[int]]("input")
-				waiting, published := make(chan struct{}), make(chan struct{})
-				var publishOnce sync.Once
+				waiting, published, readerFailed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var publishOnce, failOnce sync.Once
 				g, err := New("reader-before-commit", "", WithMaxRunning(1))
 				managedTestOK(t, err)
 				managedTestOK(t, g.Add(NewNode("source", "", nil, Provides(key), func(rc *RunCtx) error {
@@ -33,11 +33,14 @@ func TestCheckpointReaderObligationsBeforeCommit(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					if err := writer.Send(1); err != nil {
+					sendErr := writer.Send(1)
+					publishOnce.Do(func() { close(published) })
+					// source 也会观察到读取义务错误；先等 sink 确认失败，避免它抢先取消整轮。
+					// Send 已报错也走同一屏障；等待会归还额度，并保留取消/截止出口。
+					if err := readerLifecycleWait(rc, readerFailed); err != nil {
 						return err
 					}
-					publishOnce.Do(func() { close(published) })
-					return nil
+					return sendErr
 				})))
 				managedTestOK(t, g.Add(NewNode("sink", "", Requires(key), nil, func(*RunCtx) error {
 					return errors.New("short-circuited reader body ran")
@@ -54,6 +57,21 @@ func TestCheckpointReaderObligationsBeforeCommit(t *testing.T) {
 				})))
 				probe := &checkpointProbe{}
 				hooks := checkpointStreamTestHooks(probe)
+				failAttempt := hooks.FailAttempt
+				hooks.FailAttempt = func(ctx context.Context, scope string) error {
+					if err := failAttempt(ctx, scope); err != nil {
+						return err
+					}
+					probe.mu.Lock()
+					defer probe.mu.Unlock()
+					for request, attempt := range probe.latest {
+						if request.NodeID == "sink" && attempt.Scope == scope {
+							failOnce.Do(func() { close(readerFailed) })
+							break
+						}
+					}
+					return nil
+				}
 				err = g.Run(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
 				if err == nil || !strings.Contains(err.Error(), "reading obligations") {
 					t.Fatalf("Run=%v; want real reader-obligation failure", err)
