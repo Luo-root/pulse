@@ -123,6 +123,8 @@ Attempt includes the first try, and limit is the total budget. First-attempt suc
 
 Timeout automatically reports its own started, deadline when its timer actually expires, and finished. Deadline does not mean business exit: cooperative cancellation still waits for the inner chain, whose final error may retain a panic or reliable failure. Parent cancellation and outer timeout expiry do not count as this Timeout's own deadline.
 
+An independent RPC returning context.Canceled / DeadlineExceeded while the execution domain remains valid is recorded as failed. Business cleanup with `defer rc.Cancel()` after returning does not change it to canceled. Host cancellation, an actual outer control deadline, or an explicit cancellation origin already latched by the engine remains canceled. An unmarked local Fork cancellation does not establish host interruption from final context state alone.
+
 Wrap custom aspects explicitly with `pulse.NamedAspect("approval", approvalAspect)` to report entry/exit. Bare functions have no inferred names or approval reasons. Use `rc.Site()` and `rc.NodeID()` inside an aspect for actual attribution. Fork and Timeout retain Site; the returned copy contains no business values.
 
 To consume Core facts directly, additionally implement `pulse.AspectObserver` on an Observer or set `pulse.ObserverFunc.Aspect`. Install through the same observer options. MultiObserver isolates each member's panic; extra callbacks and Sink reentry into Snapshot run outside engine state locks. Without an observer, no logs are written.

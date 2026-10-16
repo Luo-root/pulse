@@ -123,6 +123,8 @@ attempt 包括首次，limit 是总上限。首次成功只有一次尝试，没
 
 Timeout 自动报告自己的 started、deadline（若本层确实到期）、finished。deadline 不是业务退出：协作取消仍等内层返回，最终错误可能是保留下来的 panic 或可靠失败。父上下文取消、外层 Timeout 到期不会被算成本层 deadline。
 
+独立 RPC 返回 context.Canceled / DeadlineExceeded，而执行域仍有效时，终态记录为 failed；业务返回后的 `defer rc.Cancel()` 清理不会把它改成 canceled。宿主取消、外层控制时限实际到期，或引擎已经锁存的明确取消来源仍记录为 canceled。未标记的局部 Fork 取消不能仅凭最终 context 状态推断为宿主中断。
+
 自定义切面用 `pulse.NamedAspect("approval", approvalAspect)` 显式包装进出；裸函数不会被猜名，也不会自动猜审批原因。切面可用 `rc.Site()` 和 `rc.NodeID()` 读取真实位置；Fork 和 Timeout 保留同一 Site，返回的是不带业务值的副本。
 
 要直接消费 Core 事实，可让原 Observer 另实现 `pulse.AspectObserver`，或填 `pulse.ObserverFunc.Aspect`。通过同一观察者选项装配，MultiObserver 隔离每个成员的 panic；额外回调与 Sink 重入 Snapshot 不持有引擎状态锁。无观察者时不写日志。

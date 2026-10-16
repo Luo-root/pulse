@@ -118,7 +118,9 @@ Seed、SkipSeed 和按名称提供输入的两个入口，其第一个参数都�
 
 快照位于 Execution，且不包含业务值。静态结构位于 Topology；状态 Mermaid 在 Topology 上传入 WithMermaidSnapshot。宿主结果只读取声明出口，先判断 error，再区分 ready、skipped 和可选透传 pending。跟踪过开发期含值快照的调用方应迁移到 ReadOutput。
 
-Retry 的失败尝试输出现在先暂存并丢弃，下游看不到失败版本。成功或正常跳过才提交。自定义切面反复调用 next 不再是合法重试，应使用内置 Retry。外部副作用仍由业务自行保证幂等，详见[重试、超时与取消](../guide/retry-cancellation.md)。
+Retry 的失败尝试输出现在先暂存并丢弃，下游看不到失败版本。成功或正常跳过才提交。自定义切面反复调用 next 不再是合法重试，应使用内置 Retry。错误链含 CheckpointError 时立即停止，即使本图未启用检查点也一样；未确认的可靠操作可能已经生效。外部副作用仍由业务自行保证幂等，详见[重试、超时与取消](../guide/retry-cancellation.md)。
+
+已有 Observer 无需增加方法；需要切面事实时，实现可选 AspectObserver，或使用 RecordObserver 自动接收 Retry/Timeout 记录。原五种生命周期回调次数不变。独立 RPC 的 context 错误仍是失败，返回后的本层 Cancel 清理不会把它改记为取消；阶段与归因见[观测指南](../guide/observability.md)。
 
 Timeout 在到期后取消内层并等待体退出。原来依赖“时限到达即函数强制返回”的业务，需要将阻塞操作改为响应 rc.Context，并确保节点返回前结束自身工作。
 

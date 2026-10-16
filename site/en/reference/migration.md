@@ -118,7 +118,9 @@ Every custom Observer callback receives Site. Preserve Execution and nonempty Pa
 
 Snapshots belong to Execution and contain no business values. Static structure belongs to Topology; pass WithMermaidSnapshot to Topology for state diagrams. Hosts read declared outputs only, checking error before ready, skipped, or optional pass-through pending. Callers of transitional value-bearing snapshots should move to ReadOutput.
 
-Failed Retry attempts now stage and discard outputs, so downstream nodes never see failed versions. Success or normal skipping commits the write set. Custom aspects that repeatedly call next are no longer legal retries; use built-in Retry. Business code still owns external-effect idempotency. See [retry, timeout, and cancellation](../guide/retry-cancellation.md).
+Failed Retry attempts now stage and discard outputs, so downstream nodes never see failed versions. Success or normal skipping commits the write set. Custom aspects that repeatedly call next are no longer legal retries; use built-in Retry. An error chain containing CheckpointError stops Retry even when this graph has no checkpoints: an unconfirmed reliable operation may already have taken effect. Business code still owns external-effect idempotency. See [retry, timeout, and cancellation](../guide/retry-cancellation.md).
+
+Existing Observers need no additional methods. For aspect facts, implement optional AspectObserver or use RecordObserver to receive Retry/Timeout records automatically. The original five lifecycle callback counts remain unchanged. Independent RPC context errors remain failures; local Cancel cleanup after returning does not relabel them as cancellation. See [observation](../guide/observability.md) for phases and attribution.
 
 Timeout cancels its inner context at expiry and waits for the body to exit. Code that depended on forced return at the deadline must make blocking operations honor rc.Context and finish its own work before the node returns.
 
