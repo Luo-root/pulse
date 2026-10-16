@@ -153,6 +153,8 @@ report=about Pulse state=ready
 | `nodes[].retry` | attempts 和 delay；装为内层 Retry |
 | `observer` | 文档提示字段，Load 忽略；观察者通过选项配置 |
 
+`version` 和各层节点的 `retry.attempts` 填写数值时，必须是本机 Go `int` 范围内的 YAML 整数；`1.9`、`1.0`、`2e0`、数字字符串和越界值都会报错。省略或 `null` 按未设置处理；version 的 0 / 1、attempts <= 0 按一次尝试的规则不变。业务 `from.value` 不受配置整数限制。
+
 `type` 是注册键的 `reflect.Type.String()`，不是任意类型别名。使用 `Registry.TypeTagOf` 可以查询期望标签；同名跨类型、缺标签、未注册键与未注册 uses 都会报错。YAML 没有独立流 runner 或专用流糖语法。登记同一 `Key[pulse.Stream[T]]`，工厂只返回 Run，在 Run 内用 OpenStream、Receive、HandleMessage 等 core API；Requires/Provides 仍由 YAML 显式声明，子图 in/out 复用实时绑定契约。不能把 channel 藏进工厂后声称拓扑已声明齐全，Analyze 也不会执行工厂推断它。
 
 ## 外部输入由宿主解析
@@ -203,7 +205,9 @@ for _, problem := range topology.Problems {
 fmt.Println(topology.Mermaid())
 ```
 
-Analyze 不需要 Registry，不执行工厂、切面、resolver 或 ObserverFor。它复用 Load 的装配规则，根层问题保留在 Problems，子图或文档装配问题返回 error。返回的 Type 是 YAML 标签，无法推导的接线键标签为空；它不验证实际 Go 类型、工厂是否登记或 literal 是否可赋值。预览通过后仍需 Load 和 Inputs 的真实检查。
+Analyze 不需要 Registry，不执行工厂、切面、resolver 或 ObserverFor。它复用 Load 的装配规则及不依赖真实键类型的静态判据；这部分根层问题保留在 Problems，子图或文档装配问题返回 error。返回的 Type 是 YAML 标签，无法推导的接线键标签为空；它不验证实际 Go 类型、工厂是否登记或 literal 是否可赋值。
+
+**类型标签不等于流静态安全证明。** Analyze 装配时所有键都用 `any` 占位，最后恢复标签，因此即使显式声明 `pulse.Stream[int]` 或 channel，也不会检查依赖真实类型的流消费者、共享额度或生命周期约束。例如，只有一个节点 provides `pulse.Stream[int]` 而无人读取，Analyze 的 Problems 仍可为空；用真实流键登记后 Load，根图的 Topology.Problems 会报告缺失读取者，Validate 也会拒绝，无需执行工厂。预览通过后仍须经有 Registry 的 Load、Inputs 和 Validate / Start 检查。无流图在标签可知、身份、接线与静态选项一致时可逐字段比较拓扑；流图的 Problems 不承诺一致。
 
 ## 额度、观察者与常见错误
 

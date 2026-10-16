@@ -10,15 +10,19 @@ import (
 // Analyze 不用宿主注册表，把 YAML 的声明装配成静态拓扑。
 //
 // GraphID 必填；Graph / MaxRunning 的静态选项与 Load 相同。Analyze 与 Load 共用
-// 解码、接线、子图装配和引擎的静态判据；根层的静态问题保留在 Topology.Problems，
-// 子图和装配错误仍返回 error。它不创建执行、不运行工厂或切面、不取外部 seed 的值，
-// 也不调用 ObserverFor 或观察回调。
+// 解码、接线、子图装配及不依赖真实键类型的静态判据；这部分根层问题保留在
+// Topology.Problems，子图和装配错误仍返回 error。它不创建执行、不运行工厂或切面，
+// 不取外部 seed 的值，也不调用 ObserverFor 或观察回调。
 //
 // Type 是文档内的类型标签：同名键的标签必须一致，in/out 两端有已知标签时也必须一致。
 // 标签沿绑定传播；仅出现在接线里、且不能由任何声明推导的键，其 Type 为空串。
 // 任意标签（如 example.Item）原样保留；这不是实际 Go 类型的校验。显式 KeySpec 仍须
 // 写 type，但工厂名是否登记、标签是否对应宿主的 Go 类型、literal 值能否赋给该类型，
 // 都要由 Load / SeedPlan.Inputs 对账。Analyze 不从 literal 值猜类型。
+//
+// 分析装配时所有键都用 any 占位；恢复标签不会重新执行依赖真实类型的检查。因此即使
+// 标签显式写成 pulse.Stream[int] 或 channel，Analyze 也不证明流消费者、共享额度及
+// 生命周期约束。须用有 Registry 的 Load 后的 Topology / Validate / Start 检查这些约束。
 func Analyze(data []byte, opts LoadOptions) (*pulse.Topology, error) {
 	doc, err := decodeDocument(data, opts)
 	if err != nil {
