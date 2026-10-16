@@ -153,6 +153,8 @@ Load resolves registry entries and assembles definitions; it runs no body and re
 | `nodes[].retry` | attempts and delay; becomes inner Retry |
 | `observer` | Documentation hint ignored by Load; use options for observers |
 
+Numeric `version` and `retry.attempts` values at every node level must be YAML integers within the host Go `int` range. `1.9`, `1.0`, `2e0`, numeric strings, and out-of-range values return errors. Omitted fields and `null` remain unset; version 0 / 1 and the one-attempt default for attempts <= 0 are unchanged. Business `from.value` data is not subject to this configuration integer restriction.
+
 A type tag is the registered key's `reflect.Type.String()`, not an arbitrary alias. Query the expected tag with `Registry.TypeTagOf`. Same-name type conflicts, missing tags, unregistered keys, and unregistered uses are errors. YAML has no separate stream runner or specialized stream-helper syntax. Register the same `Key[pulse.Stream[T]]`; factories return only Run, which uses core OpenStream, Receive, and HandleMessage APIs. YAML still explicitly declares Requires/Provides, and subgraph in/out uses the live-binding contract. A channel hidden inside a factory does not establish a complete topology declaration; Analyze never executes factories to infer it.
 
 ## Resolve external inputs in the host
@@ -203,7 +205,9 @@ for _, problem := range topology.Problems {
 fmt.Println(topology.Mermaid())
 ```
 
-Analyze needs no Registry and executes no factories, aspects, resolvers, or ObserverFor. It shares Load assembly rules. Root problems remain in Problems; child or document assembly problems return an error. Returned Type fields retain YAML labels, with empty labels for wiring-only keys that cannot be inferred. Analyze does not validate real Go types, registered factories, or literal assignability. A successful preview still needs Load and Inputs validation.
+Analyze needs no Registry and executes no factories, aspects, resolvers, or ObserverFor. It shares Load assembly rules and static checks that do not depend on real key types. Root problems within that scope remain in Problems; child or document assembly problems return an error. Returned Type fields retain YAML labels, with empty labels for wiring-only keys that cannot be inferred. Analyze does not validate real Go types, registered factories, or literal assignability.
+
+**Type labels are not proof of stream safety.** Analyze assembles every key using an `any` placeholder, then restores labels. Even explicit `pulse.Stream[int]` or channel labels do not trigger checks for stream consumers, shared quotas, or lifecycle constraints that need real types. For example, a lone node providing `pulse.Stream[int]` without a reader can leave Analyze Problems empty. Register a real stream key and Load it: root Topology.Problems reports the missing reader, and Validate rejects it, without running the factory. A successful preview still needs Load with a Registry, Inputs and Validate / Start validation. Graphs without streams can be compared field by field when labels are known and identities, wiring and static options match; Problems need not match for graphs with streams.
 
 ## Quotas, observers, and common errors
 

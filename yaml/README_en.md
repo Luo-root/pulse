@@ -166,6 +166,8 @@ These fields match the current [Document / NodeSpec / SeedSpec](load.go) and [Gr
 
 Load and Analyze accept exactly one YAML document. Appending another with `---`, including an empty document, returns an error. Trailing whitespace, comments, and a single document's end marker remain valid. Unknown configuration fields also return an error, including misspelled `timeuot` or `retry.attmpts`, so important settings cannot silently disappear. Custom `from.kind` values and arbitrary business fields inside `from.value` remain host-defined and are not restricted by the configuration field list.
 
+Numeric values for `version` and `retry.attempts` at every node level must be YAML integer scalars within the host Go `int` range. Fractions, integral floats such as `1.0` or `2e0`, numeric strings, and out-of-range values return errors rather than being truncated. Omitted fields and `null` remain unset; version 0 / 1 and the default for attempts <= 0 keep their existing rules. This restriction does not apply to business `from.value` data, whose numbers follow the literal conversion rules below.
+
 ### Document and graph declarations
 
 | Location / field | Syntax | Meaning |
@@ -260,22 +262,32 @@ func describe(doc []byte) error {
 }
 ```
 
-Analyze shares decoding, assembly, ports, binds and core static checks with Load and returns *pulse.Topology. It creates no Execution, runs no factories or aspects, resolves no external seeds and invokes neither ObserverFor nor Observer. Graph / MaxRunning static options follow Load.
+Analyze shares decoding, assembly, ports, binds and core static checks that do not depend on real key types with Load, and returns *pulse.Topology. It creates no Execution, runs no factories or aspects, resolves no external seeds and invokes neither ObserverFor nor Observer. Graph / MaxRunning static options follow Load.
 
-| Check | Analyze | Load / Inputs |
+| Check | Analyze | Load / Inputs / Validate / Start |
 |---|---|---|
-| YAML shapes, nodes, references, binds and static children | Checked | Checked |
-| Root static problems | Retained in Topology.Problems; the caller must inspect them | Load does not judge every root problem early; Validate / Start checks them |
-| Child and assembly errors | Returns error | Returns error |
-| Known labels for the same key and both ends of a bind | Must agree, with propagation through binds | Reconciled against actual Registry types |
-| Registered factory exists | Not checked; unknown names may pass | Checked by Load |
-| A type label denotes an actual Go type | Cannot prove it | Checked against the Registry by Load |
+| YAML shapes, nodes, references and binds | Checked | Checked |
+| Root static problems independent of real key types | Retained in Topology.Problems; the caller must inspect them | Load does not judge every root problem early; Validate / Start checks them |
+| Child and assembly errors within that scope | Returned as errors | Returned as errors |
+| Known type labels on same-name keys and bind ends | Must agree and propagate along binds | Checked against actual Registry types |
+| Registered factories | Not checked; unknown names can pass | Checked by Load |
+| A label denotes a real Go type | Not proved | Load checks the Registry |
 | A literal is assignable to its target type | Not inferred or checked | Root Inputs and child Load check it |
+| Stream consumers, shared quotas and lifecycle constraints that depend on real types | Not checked, even with explicit Stream / channel labels | Load uses real types and checks children; inspect root Topology.Problems and check through Validate / Start |
 | Streaming behavior inside a factory | Not inferred | Cannot infer it from Run either |
 
-Explicit KeySpec declarations still require type. Analyze preserves labels such as `example.Item` verbatim and does not infer a type from a literal. A key appearing only in wiring, whose type cannot be inferred from any known declaration, has an empty returned Type. Successful Analyze therefore does not prove executability; Load and Inputs must still check host types and values.
+Explicit KeySpec declarations still require type. Analyze preserves labels such as `example.Item` verbatim and does not infer a type from a literal. A key appearing only in wiring, whose type cannot be inferred from any known declaration, has an empty returned Type. Analysis assembles every key using an `any` placeholder; restoring labels before returning does not rerun checks that need real types. **Type labels are not proof of static safety.** For example:
 
-Topology preserves every mount's complete input, output and pass-through interface; internal keys do not automatically become outlets. Go ports follow first successful declaration order. YAML in / out maps are sorted by key, root seeds follow document order, and child fixed inputs are declared after in ports in key-name order. With known labels, matching identities and matching wiring, Analyze, Load and hand-built Go topologies can be compared field by field. Label checks happen earlier, so documents with multiple errors are not guaranteed the same first diagnostic.
+```yaml
+nodes:
+  - id: writer
+    uses: write
+    provides: [{name: stream, type: "pulse.Stream[int]"}]
+```
+
+This document has no reader, yet Analyze returns empty Problems and preserves the stream label. Register a real `Key[pulse.Stream[int]]` and Load it: the same root graph's Topology.Problems reports the missing reader, and Validate rejects it, without running the factory. Successful Analyze still needs Load with a Registry, Inputs and Validate / Start to check real types, values and stream constraints.
+
+Topology preserves every mount's complete input, output and pass-through interface; internal keys do not automatically become outlets. Go ports follow first successful declaration order. YAML in / out maps are sorted by key, root seeds follow document order, and child fixed inputs are declared after in ports in key-name order. For **graphs without streams**, known labels and matching identities, wiring and static options allow Analyze, Load and hand-built Go topologies to be compared field by field. Graphs with streams still support assembly previews, but their Problems need not match. Label checks also happen earlier, so documents with multiple errors are not guaranteed the same first diagnostic.
 
 YAML does not declare Go stream-sugar markers such as Produce / Consume / Tee. Static checks cannot infer hidden channel waits or manual close timing inside factories or aspects.
 
