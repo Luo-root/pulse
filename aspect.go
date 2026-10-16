@@ -2,6 +2,7 @@ package pulse
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -27,17 +28,53 @@ func buildChain(aspects []Aspect, core func(*RunCtx) error) func(*RunCtx) error 
 			// 「有没有新的尝试边界」由最内层的推进闸判（见 RunCtx.beginAdvance），
 			// 所以 `Retry` 与用户自写的重试切面在那里被分开。
 			var depth atomic.Int32
-			return a(rc, func(nextRC *RunCtx) error {
-				if depth.Add(1) > 1 {
-					depth.Add(-1)
-					return ErrNextCalledTwice
-				}
-				defer depth.Add(-1)
-				return next(nextRC)
+			return invokeNode(rc, func(rc *RunCtx) error {
+				return a(rc, func(nextRC *RunCtx) error {
+					if depth.Add(1) > 1 {
+						depth.Add(-1)
+						return ErrNextCalledTwice
+					}
+					defer depth.Add(-1)
+					return next(nextRC)
+				})
 			})
 		}
 	}
 	return invoker
+}
+
+// invokeNode 把业务体与每层切面的 panic 就地转成失败。边界随调用进入
+// Timeout 的工作 goroutine，外层 Retry / checkpoint 才能收到同一条错误。
+func invokeNode(rc *RunCtx, run func(*RunCtx) error) (err error) {
+	returned := false
+	defer func() {
+		if rec := recover(); !returned {
+			// returned 也覆盖 GODEBUG=panicnil=1 下 recover 返回 nil 的 panic。
+			err = &nodePanicError{nodeID: rc.NodeID(), value: rec}
+		}
+	}()
+	err = run(rc)
+	returned = true
+	return err
+}
+
+type nodePanicError struct {
+	nodeID string
+	value  any
+}
+
+func (e *nodePanicError) Error() string {
+	return fmt.Sprintf("pulse: panic in node %s: %v", e.nodeID, e.value)
+}
+
+func (e *nodePanicError) Unwrap() error {
+	cause, _ := e.value.(error)
+	return cause
+}
+
+func isPanicFailure(err error) bool {
+	var failure *nodePanicError
+	return errors.As(err, &failure)
 }
 
 // Timeout 限制节点（含等数据）的总时长；超时取消本层 ctx。
@@ -50,7 +87,9 @@ func buildChain(aspects []Aspect, core func(*RunCtx) error) func(*RunCtx) error 
 func Timeout(d time.Duration) Aspect {
 	return func(rc *RunCtx, next func(*RunCtx) error) error {
 		child := rc.Fork()
-		ctx, cancel := context.WithTimeout(child.ctx, d)
+		defer child.Cancel() // deadline 子层结束不等于释放 Fork 在父 ctx 上的注册
+		timeoutErr := fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
+		ctx, cancel := context.WithTimeoutCause(child.ctx, d, timeoutErr)
 		defer cancel()
 		child.ctx = ctx
 		errCh := make(chan error, 1)
@@ -60,12 +99,19 @@ func Timeout(d time.Duration) Aspect {
 		case err = <-errCh:
 		case <-ctx.Done():
 			child.Cancel()
-			<-errCh // 等内层收干净：收尾不与它并发
+			err = <-errCh // 等内层收干净，并保留期间捕获的真实失败
 		}
-		// 内层可能已观察到 deadline 却返回 nil；两个分支同时就绪时，
-		// select 选中结果不代表没有超时。两条退出路径共用最终取消判据。
-		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
+		// 清理取消不能覆盖已经捕获的 panic / 可靠失败，两条 select 路径共用此判据。
+		if isPanicFailure(err) || isCheckpointFailure(err) {
+			return err
+		}
+		// 每次 Timeout 的 cause 独立：父域截止或外层 Timeout 不能冒充本层计时器。
+		// 即使等待业务退出期间父域也到期，本层先触发的事实仍然保留。
+		if context.Cause(ctx) == timeoutErr {
+			return timeoutErr
+		}
+		if parentErr := rc.Context().Err(); parentErr != nil {
+			return &executionCancellation{cause: parentErr}
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()

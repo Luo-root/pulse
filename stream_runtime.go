@@ -34,15 +34,32 @@ type managedReaderLifecycle interface {
 }
 
 type nodeStreams struct {
+	// 归因用实际节点的取消域；Fork 共享此账，它的局部取消不等于节点取消。
+	exec       *Execution
+	ctx        context.Context
 	mu         sync.Mutex
 	outputs    []streamLifecycle
 	messageErr error
+}
+
+func (s *nodeStreams) classifyFailure(err error) error {
+	if s == nil || !isCanceled(err) || isExecutionCancellation(err) {
+		return err
+	}
+	if s.ctx != nil && s.ctx.Err() != nil {
+		return &executionCancellation{cause: err}
+	}
+	if s.exec != nil {
+		return s.exec.classifyFailure(err)
+	}
+	return err
 }
 
 func (s *nodeStreams) failMessage(err error) {
 	if err == nil || isSkipped(err) {
 		return
 	}
+	err = s.classifyFailure(err)
 	s.mu.Lock()
 	if s.messageErr == nil {
 		s.messageErr = err
@@ -60,17 +77,18 @@ func (rc *RunCtx) finishStreams(err error) error {
 	if rc.streams == nil {
 		return err
 	}
+	err = rc.streams.classifyFailure(err)
 	rc.streams.mu.Lock()
 	outputs := append([]streamLifecycle(nil), rc.streams.outputs...)
 	messageErr := rc.streams.messageErr
 	rc.streams.mu.Unlock()
 	if (err == nil || isSkipped(err)) && messageErr != nil {
-		err = messageErr
+		err = rc.streams.classifyFailure(messageErr)
 	}
 	if err == nil || isSkipped(err) {
 		for _, output := range outputs {
 			if cause := output.failure(); cause != nil {
-				err = cause
+				err = rc.streams.classifyFailure(cause)
 				break
 			}
 		}
@@ -106,7 +124,7 @@ func (rc *RunCtx) finishStreamReaders(err error) error {
 					return waitErr
 				})
 				if cause != nil && !isSkipped(cause) {
-					err = cause
+					err = rc.streams.classifyFailure(cause)
 				}
 				st, value = input.snapshot()
 			}
@@ -116,7 +134,7 @@ func (rc *RunCtx) finishStreamReaders(err error) error {
 			}
 			seen[reader] = true
 			if cause := reader.pulseReaderFinished(rc, err); cause != nil && (err == nil || isSkipped(err)) {
-				err = cause
+				err = rc.streams.classifyFailure(cause)
 			}
 		}
 	}

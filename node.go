@@ -177,7 +177,7 @@ func newRunCtx(e *Execution, n *Node, parent context.Context) *RunCtx {
 		cancel:  cancel,
 		allowed: allowed,
 		advance: &advanceLedger{},
-		streams: &nodeStreams{},
+		streams: &nodeStreams{exec: e, ctx: ctx},
 		lease:   &runLease{pool: e.lim},
 	}
 }

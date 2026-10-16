@@ -146,14 +146,14 @@ func (w *StreamWriter[T]) Send(value T) error {
 		return err
 	}
 	if err := checkManagedRunCtx(w.rc, "Send"); err != nil {
-		return w.state.recordFailure(err)
+		return w.recordFailure(err)
 	}
 	if w.state.checkpoint != nil {
 		return w.sendCheckpointValue(value, nil)
 	}
 	for {
 		if err := w.rc.Context().Err(); err != nil {
-			return w.state.recordFailure(err)
+			return w.recordFailure(err)
 		}
 		s := w.state
 		s.mu.Lock()
@@ -177,7 +177,7 @@ func (w *StreamWriter[T]) Send(value T) error {
 		if len(s.pending) < s.capacity {
 			if s.last == ^uint64(0) {
 				s.mu.Unlock()
-				return s.recordFailure(fmt.Errorf("pulse: Send: message sequence exhausted"))
+				return w.recordFailure(fmt.Errorf("pulse: Send: message sequence exhausted"))
 			}
 			s.last++
 			message := &managedMessage[T]{value: value, sequence: s.last}
@@ -197,7 +197,7 @@ func (w *StreamWriter[T]) Send(value T) error {
 				return ctx.Err()
 			}
 		}); err != nil {
-			return s.recordFailure(err)
+			return w.recordFailure(err)
 		}
 	}
 }
@@ -481,7 +481,7 @@ func (s Stream[T]) pulseReaderFinished(rc *RunCtx, err error) error {
 		if err != nil && !isSkipped(err) {
 			return nil // 执行已失败/取消，保留原始原因和未确认记录。
 		}
-		return operationErr
+		return rc.streams.classifyFailure(operationErr)
 	}
 	defer state.operation.unlock()
 	state.mu.Lock()
@@ -514,6 +514,7 @@ func (s Stream[T]) pulseReaderFinished(rc *RunCtx, err error) error {
 		cause = fmt.Errorf("pulse: stream reading group finished at node %q without fulfilling its reading obligations "+
 			"(production finished=%t, unacknowledged=%d); consume and Ack the stream or explicitly Stop", id.node, state.finished, len(state.pending))
 	}
+	cause = rc.streams.classifyFailure(cause)
 	state.readerErr = cause
 	if state.sendErr == nil {
 		state.sendErr = cause
@@ -532,6 +533,10 @@ func (s *managedStream[T]) closeQueueLocked() {
 		s.closed = true
 		close(s.queue)
 	}
+}
+
+func (w *StreamWriter[T]) recordFailure(err error) error {
+	return w.state.recordFailure(w.rc.streams.classifyFailure(err))
 }
 
 func (s *managedStream[T]) recordFailure(err error) error {
@@ -563,7 +568,7 @@ func (s *managedStream[T]) finish(err error) {
 	s.err = err
 	s.finished = true
 	switch {
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case isCanceled(err):
 		s.terminal = StreamCanceled
 	case err != nil:
 		s.terminal = StreamFailed
