@@ -369,7 +369,7 @@ func checkCheckpointOutput(o CheckpointOutput) error {
 		if o.Key.Type.Kind() != reflect.Interface {
 			return fmt.Errorf("checkpoint output %q: nil is not a value of %s", o.Key.Name, o.Key.Type)
 		}
-	} else if !reflect.TypeOf(o.Value).AssignableTo(o.Key.Type) {
+	} else if _, ok := valueForType(reflect.ValueOf(o.Value), o.Key.Type); !ok {
 		return fmt.Errorf("checkpoint output %q: value type does not match %s", o.Key.Name, o.Key.Type)
 	}
 	if checkpointChannelType(o.Key.Type, nil) || checkpointChannelValue(reflect.ValueOf(o.Value), nil) {

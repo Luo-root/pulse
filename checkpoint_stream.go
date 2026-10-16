@@ -461,8 +461,30 @@ func checkpointManagedStream[T any](capacity int) *managedStream[T] {
 		done: make(chan struct{}), capacity: capacity, pending: make(map[uint64]*managedMessage[T])}
 }
 
-func (s *managedStream[T]) installCheckpointRecord(record CheckpointStreamRecord) {
+// normalizeCheckpointStreamRecord 在安装前按声明类型赋值，不原地改钩子的 Pending。
+// 整批成功才返回可安装记录；复制消息容器，但保留业务值的共享引用。
+func normalizeCheckpointStreamRecord[T any](record CheckpointStreamRecord) (CheckpointStreamRecord, error) {
+	if record.Stream.Element != reflect.TypeFor[T]() {
+		return CheckpointStreamRecord{}, fmt.Errorf("checkpoint stream %q: element type does not match %s", record.Stream.ID.Key, reflect.TypeFor[T]())
+	}
+	record.Pending = append([]CheckpointStreamMessage(nil), record.Pending...)
+	for i := range record.Pending {
+		assigned, ok := valueForType(reflect.ValueOf(record.Pending[i].Value), record.Stream.Element)
+		if !ok {
+			return CheckpointStreamRecord{}, fmt.Errorf("checkpoint stream %q: payload type does not match %s", record.Stream.ID.Key, record.Stream.Element)
+		}
+		record.Pending[i].Value = assigned.Interface()
+	}
+	return record, nil
+}
+
+func (s *managedStream[T]) installCheckpointRecord(record CheckpointStreamRecord) error {
+	record, err := normalizeCheckpointStreamRecord[T](record)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.last, s.frontier, s.stopped = record.LastSequence, record.AckedThrough, record.Stream.Stopped
 	for _, saved := range record.Pending {
 		var value T
@@ -482,7 +504,7 @@ func (s *managedStream[T]) installCheckpointRecord(record CheckpointStreamRecord
 		s.closeQueueLocked()
 	}
 	s.signalLocked()
-	s.mu.Unlock()
+	return nil
 }
 
 func (Stream[T]) pulseRestoreCheckpoint(e *Execution, descriptor CheckpointStreamDescriptor, cached *checkpointStreamCache) any {
@@ -579,20 +601,25 @@ func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 	record, err := checkpoint.exec.openCheckpointStream(ctx, request)
 	if err == nil {
 		failure := checkpoint.exec.checkpoint.failure
-		failure.mu.Lock()
-		if checkpoint.cached != nil && checkpoint.cached.hasReference {
-			err = checkCheckpointStreamReference(record.Stream, checkpoint.cached.reference, record.Resumed)
-		}
-		if err == nil {
+		err = func() error {
+			failure.mu.Lock()
+			defer failure.mu.Unlock()
+			if checkpoint.cached != nil && checkpoint.cached.hasReference {
+				if err := checkCheckpointStreamReference(record.Stream, checkpoint.cached.reference, record.Resumed); err != nil {
+					return err
+				}
+			}
 			s.mu.Lock()
 			checkpoint.descriptor, checkpoint.cursor = record.Stream, record.Cursor
 			s.mu.Unlock()
-			s.installCheckpointRecord(record)
+			if err := s.installCheckpointRecord(record); err != nil {
+				return err
+			}
 			if checkpoint.cached != nil {
 				checkpoint.cached.opened, checkpoint.cached.resumed = true, record.Resumed
 			}
-		}
-		failure.mu.Unlock()
+			return nil
+		}()
 		if err != nil {
 			err = checkpoint.exec.stopCheckpoint("restore stream", err)
 		}
@@ -836,6 +863,8 @@ func (rc *RunCtx) openCheckpointMessage(input CheckpointStreamAcknowledgement, l
 	}
 	message := &checkpointMessage{attempt: result.Attempt, state: make(map[string]CheckpointState, len(result.State))}
 	for _, state := range result.State {
+		value, _ := valueForType(reflect.ValueOf(state.Value), state.Type)
+		state.Value = value.Interface()
 		message.state[state.Name] = state
 	}
 	return message, nil

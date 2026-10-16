@@ -297,8 +297,16 @@ func Only[T any](rc *RunCtx, k Key[T], v T) error {
 	// 可能已经被唤醒（引擎不回滚已发布的值）。
 	// 跳过过的 sibling 不算冲突：Skip 幂等，补一次是 no-op。
 	for _, p := range rc.node.provides {
-		if p.name != want && rc.exec.slotOf(p).isReady() {
-			return ErrConflict
+		if p.name == want {
+			continue
+		}
+		// 首个目标是当前写集，再逐层检查外层和最终槽位。只读 peek，复用
+		// 真正提交时的冲突判据；本层 skipped 也不能遮住外层的 ready。
+		target := writeSet{outer: rc.writes}
+		for ws := &target; ws != nil; ws = ws.outer {
+			if err := checkCommitTarget(rc.exec, ws, p, slotSkipped); err != nil {
+				return err
+			}
 		}
 	}
 	if err := Set(rc, k, v); err != nil {
