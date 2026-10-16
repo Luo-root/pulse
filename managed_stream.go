@@ -465,7 +465,7 @@ func (s Stream[T]) pulseReaderFinished(rc *RunCtx, err error) error {
 		if err != nil && !isSkipped(err) {
 			return nil // 执行已失败/取消，保留原始原因和未确认记录。
 		}
-		return operationErr
+		return rc.streams.classifyFailure(operationErr)
 	}
 	defer state.operation.unlock()
 	state.mu.Lock()
