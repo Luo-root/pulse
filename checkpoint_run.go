@@ -302,8 +302,8 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 	rc.writes, rc.checkpointWrites = ws, ws
 	rc.confirmCheckpointValues(root.Values)
 	defer rc.forgetCheckpointValues()
-	err = invokeCheckpointChain(chain, rc)
-	err = checkpointChainResult(rc, err)
+	err = e.classifyFailure(invokeCheckpointChain(chain, rc))
+	err = e.classifyFailure(checkpointChainResult(rc, err))
 	if failure := e.checkpointErr(); failure != nil {
 		err = failure
 	}

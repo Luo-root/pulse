@@ -58,6 +58,11 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 		if err == nil || err == errTeeOutputsStopped || rc == nil {
 			return
 		}
+		// 返回值和消息失败账携带同一来源；否则真实节点取消透传到
+		// 健康执行域时，会被重新解释为独立业务失败。
+		if rc.streams != nil {
+			err = rc.streams.classifyFailure(err)
+		}
 		if rc.message != nil {
 			rc.message.fail(err)
 		} else if rc.streams != nil {
@@ -115,7 +120,10 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 			writes: &writeSet{outer: rc.checkpointWrites}, input: &input.mu, limit: cfg.limit,
 			checkpoint: checkpoint, outputs: make(map[any]messageBatch),
 		}
-		err = runMessageAttempt(rc, frame, func() error { return fn(rc, delivery.Value) })
+		// 回调返回的业务错误与完整节点链采用同一个执行域判据。
+		// 回调的 defer Cancel 已经执行，不能把它当成 RPC 失败的来源；
+		// 已携带的真实取消来源仍保留，帧内 I/O/提交的取消另按发生处归因。
+		err = rc.exec.classifyFailure(runMessageAttempt(rc, frame, func() error { return fn(rc, delivery.Value) }))
 		if frame.err != nil {
 			err = frame.err // 吞掉 Send 错误也不能确认这一条消息。
 		}
@@ -134,11 +142,18 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 		if failure := rc.failCheckpointMessage(checkpoint); failure != nil {
 			return failure // 存储失败不在本地循环重试。
 		}
+		// 同步失败确认期间也可能发生宿主中断；确认已完成的消息失败
+		// 不撤销，但完整节点仍保留 active，不消耗它的失败预算。
+		if canceled := rc.exec.Context().Err(); canceled != nil {
+			return canceled
+		}
 		if index == cfg.attempts {
 			return err
 		}
-		if canceled := rc.Context().Err(); canceled != nil {
-			return canceled
+		if rc.Context().Err() != nil {
+			// 本次失败已确认；本层清理阻止下一次尝试，不能替换
+			// 回调或帧已确定的失败。宿主中断在上面单独处理。
+			return err
 		}
 		if cfg.delay > 0 {
 			if waitErr := rc.waitStream(func(ctx context.Context) error {

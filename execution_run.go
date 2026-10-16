@@ -2,20 +2,52 @@ package pulse
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 )
 
-func (e *Execution) fail(err error) {
+func (e *Execution) fail(err error) error {
 	if err == nil || isSkipped(err) {
-		return
+		return err
 	}
+	// errors.Is/As 会调用用户的 Is/As/Unwrap，可能重入 Err/Snapshot；
+	// 先在锁外确定来源，状态锁内只锁存结果。
+	err = e.classifyFailure(err)
 	e.mu.Lock()
 	if e.err == nil {
 		e.err = err
 		e.cancel()
 	}
 	e.mu.Unlock()
+	return err
+}
+
+// classifyFailure 在向流读取者或可靠钩子传播前锁存归因。不能等 fail 自行
+// cancel 后才判断，也不能先发布裸 context cause 让下游先取消整张图。
+func (e *Execution) classifyFailure(err error) error {
+	if !isCheckpointFailure(err) && isCanceled(err) && !isExecutionCancellation(err) && e.ctx.Err() == nil {
+		return &executionFailure{cause: err}
+	}
+	return err
+}
+
+// executionFailure 只补充终态归因，不改变原始错误文本或 Is/As 链。
+// 与 executionCancellation 一起保存来源，不随传播后接收方的取消状态变化。
+type executionFailure struct{ cause error }
+
+func (e *executionFailure) Error() string { return e.cause.Error() }
+func (e *executionFailure) Unwrap() error { return e.cause }
+
+// 真正的节点/父域取消也须带来源：传播到健康执行时不能被重判为独立 RPC 失败。
+type executionCancellation struct{ cause error }
+
+func (e *executionCancellation) Error() string { return e.cause.Error() }
+func (e *executionCancellation) Unwrap() error { return e.cause }
+
+func isExecutionCancellation(err error) bool {
+	var canceled *executionCancellation
+	return errors.As(err, &canceled)
 }
 
 // acquire 占用这次运行的**有效**名额表里的一个名额（nil = 无限，直接放行）。
@@ -29,7 +61,7 @@ func (e *Execution) runNode(n *Node) {
 	defer e.wg.Done()
 	if r, ok := e.restored[n]; ok {
 		if err := e.restoreCheckpointStreams(n); err != nil {
-			e.fail(err)
+			err = e.fail(err)
 			e.finishNode(n, finishReason(err), err)
 			return
 		}
@@ -97,13 +129,8 @@ func (e *Execution) runNode(n *Node) {
 			defer rc.lease.release()
 		}
 		emitRunning()
-		defer func() {
-			if rec := recover(); rec != nil {
-				err = fmt.Errorf("pulse: panic in node %s: %v", n.id, rec)
-			}
-		}()
 		if n.run != nil {
-			return n.run(rc)
+			return invokeNode(rc, n.run)
 		}
 		return nil
 	})
@@ -112,7 +139,7 @@ func (e *Execution) runNode(n *Node) {
 	if e.checkpoint != nil {
 		err = e.runCheckpointChain(n, rc, chain)
 	} else {
-		err = chain(rc)
+		err = e.classifyFailure(chain(rc))
 	}
 	// 流归实际写端的完整链所有，必须在 Aspect / checkpoint 返回后终结；
 	// 子写端不能拖到祖先 Sub.Wait 才结束，否则下游无法把完成信号送回子图。
@@ -123,7 +150,7 @@ func (e *Execution) runNode(n *Node) {
 		return
 	}
 	if err != nil {
-		e.fail(err)
+		err = e.fail(err)
 		e.settleUnwritten(n, rc)
 		e.finishNode(n, finishReason(err), err)
 		return
