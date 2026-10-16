@@ -115,7 +115,10 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 			writes: &writeSet{outer: rc.checkpointWrites}, input: &input.mu, limit: cfg.limit,
 			checkpoint: checkpoint, outputs: make(map[any]messageBatch),
 		}
-		err = runMessageAttempt(rc, frame, func() error { return fn(rc, delivery.Value) })
+		// 回调返回的业务错误与完整节点链采用同一个执行域判据。
+		// 回调的 defer Cancel 已经执行，不能把它当成 RPC 失败的来源；
+		// 已携带的真实取消来源仍保留，帧内 I/O/提交的取消另按发生处归因。
+		err = rc.exec.classifyFailure(runMessageAttempt(rc, frame, func() error { return fn(rc, delivery.Value) }))
 		if frame.err != nil {
 			err = frame.err // 吞掉 Send 错误也不能确认这一条消息。
 		}
