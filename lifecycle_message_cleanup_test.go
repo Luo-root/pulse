@@ -9,10 +9,14 @@ import (
 )
 
 func TestLifecycleMessageFailureSurvivesCallbackCleanup(t *testing.T) {
-	for _, checkpoint := range []bool{false, true} {
+	for _, config := range []struct {
+		checkpoint bool
+		budget     int
+	}{{false, 1}, {true, 1}, {false, 3}, {true, 3}} {
+		checkpoint, budget := config.checkpoint, config.budget
 		for _, propagate := range []bool{false, true} {
 			for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
-				t.Run(fmt.Sprintf("checkpoint=%t/propagate=%t/%v", checkpoint, propagate, cause), func(t *testing.T) {
+				t.Run(fmt.Sprintf("checkpoint=%t/budget=%d/propagate=%t/%v", checkpoint, budget, propagate, cause), func(t *testing.T) {
 					ctx := checkpointTestContext(t)
 					obs := &recordingObserver{}
 					g := mustNew(t, ctx, "message-cleanup", WithObserver(obs))
@@ -40,7 +44,7 @@ func TestLifecycleMessageFailureSurvivesCallbackCleanup(t *testing.T) {
 						err = HandleMessage(rc, delivery, func(inner *RunCtx, _ int) error {
 							defer inner.Cancel()
 							return original
-						})
+						}, WithMessageRetry(budget, 0))
 						if propagate {
 							return err
 						}

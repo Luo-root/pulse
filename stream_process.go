@@ -58,6 +58,11 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 		if err == nil || err == errTeeOutputsStopped || rc == nil {
 			return
 		}
+		// 返回值和消息失败账携带同一来源；否则真实节点取消透传到
+		// 健康执行域时，会被重新解释为独立业务失败。
+		if rc.streams != nil {
+			err = rc.streams.classifyFailure(err)
+		}
 		if rc.message != nil {
 			rc.message.fail(err)
 		} else if rc.streams != nil {
@@ -140,8 +145,10 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 		if index == cfg.attempts {
 			return err
 		}
-		if canceled := rc.Context().Err(); canceled != nil {
-			return canceled
+		if rc.Context().Err() != nil {
+			// 本次失败已确认；本层清理阻止下一次尝试，不能替换
+			// 回调或帧已确定的失败。宿主中断在上面单独处理。
+			return err
 		}
 		if cfg.delay > 0 {
 			if waitErr := rc.waitStream(func(ctx context.Context) error {
