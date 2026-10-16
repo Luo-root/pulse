@@ -33,7 +33,9 @@ func addFetch(g *pulse.Graph, input, result pulse.Key[string],
 
 Putting `Retry` outside `Timeout` gives each attempt a separate two-second limit. Total duration may approach three attempt limits plus delays. The host execution context still constrains every attempt.
 
-`Retry(attempts, delay)` counts the initial call as an attempt. `attempts <= 0` means one attempt. Ordinary errors are retried, and the last error is returned if all attempts fail. Normal skipping is not retried. Execution cancellation while waiting is not retried either.
+`Retry(attempts, delay)` counts the initial call as an attempt. `attempts <= 0` means one attempt. Ordinary business errors are retried, and the last error is returned if all attempts fail. Retry does not continue after normal skipping or once its own layer's context is canceled or expires.
+
+An error chain containing `CheckpointError` stops Retry immediately, even if this graph has no checkpoint configuration. For example, a body returning an external tool's reliable commit failure runs only once under `Retry(3, 0)`. The operation may already have committed without returning confirmation; retrying would repeat an operation with an uncertain outcome. The host should read authoritative records before deciding how to recover.
 
 ## Failed attempt outputs are not published
 

@@ -56,6 +56,10 @@ type CheckpointAttempt struct {
 	Scope     string
 	Index     int
 	Exhausted bool
+	// Resumed 是可选观察事实：true = 认回已经活跃的 Scope/Index，false = 本次新分配。
+	// nil 表示旧桥未提供，Core 记为 unknown，不根据 Index 或 Execution ID 猜测。
+	// 只在 !Exhausted 时有意义；桥返回后不得修改所指值，不改变持久格式或预算。
+	Resumed *bool
 	// Values 仅完整节点根尝试可返回已确认消息贡献的普通输出子集。
 	// Core 在业务前恢复到完整链暂存，仍待节点 Commit 后发布；不含流端点。
 	Values []CheckpointOutput
