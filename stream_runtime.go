@@ -77,23 +77,22 @@ func (rc *RunCtx) finishStreams(err error) error {
 	if rc.streams == nil {
 		return err
 	}
+	err = rc.streams.classifyFailure(err)
 	rc.streams.mu.Lock()
 	outputs := append([]streamLifecycle(nil), rc.streams.outputs...)
 	messageErr := rc.streams.messageErr
 	rc.streams.mu.Unlock()
 	if (err == nil || isSkipped(err)) && messageErr != nil {
-		err = messageErr
+		err = rc.streams.classifyFailure(messageErr)
 	}
 	if err == nil || isSkipped(err) {
 		for _, output := range outputs {
 			if cause := output.failure(); cause != nil {
-				err = cause
+				err = rc.streams.classifyFailure(cause)
 				break
 			}
 		}
 	}
-	// messageErr / output.failure 可能补回被链吞掉的错误；在向读取端传播前归因。
-	err = rc.streams.classifyFailure(err)
 	// Sub 只是接线代理，不是读取者；只有声明 Requires 的实际业务节点
 	// 履行读取义务。同一端点可经不同名称出现，按端点幂等收尾。
 	if rc.node != nil && !rc.node.sub {

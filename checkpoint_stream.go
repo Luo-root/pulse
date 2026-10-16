@@ -775,21 +775,21 @@ func checkpointChainResult(rc *RunCtx, err error) error {
 	if rc.streams == nil {
 		return err
 	}
+	err = rc.streams.classifyFailure(err)
 	rc.streams.mu.Lock()
 	messageErr := rc.streams.messageErr
 	outputs := append([]streamLifecycle(nil), rc.streams.outputs...)
 	rc.streams.mu.Unlock()
 	if err == nil || isSkipped(err) {
 		if messageErr != nil {
-			err = messageErr
+			err = rc.streams.classifyFailure(messageErr)
 		}
 		for _, output := range outputs {
 			if cause := output.failure(); cause != nil && (err == nil || isSkipped(err)) {
-				err = cause
+				err = rc.streams.classifyFailure(cause)
 			}
 		}
 	}
-	err = rc.streams.classifyFailure(err)
 	if !rc.node.sub {
 		seen := make(map[managedReaderLifecycle]bool)
 		for _, ref := range rc.node.requires {
@@ -798,7 +798,7 @@ func checkpointChainResult(rc *RunCtx, err error) error {
 			if state == slotReady && ok && !seen[reader] {
 				seen[reader] = true
 				if cause := reader.pulseReaderFinished(rc, err); cause != nil && (err == nil || isSkipped(err)) {
-					err = rc.streams.classifyFailure(cause)
+					err = cause
 				}
 			}
 		}
