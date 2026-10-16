@@ -130,17 +130,35 @@ func TestCheckpointFanOutRestoreReadyFailureDoesNotWaitForOpen(t *testing.T) {
 }
 
 func TestCheckpointFanOutRestoreReadyCancellationInterruptsWait(t *testing.T) {
-	f := newCheckpointReaderRestoreFixture(t, false, false, func(*RunCtx) error { return nil })
-	f.awaitCloseout(t)
-	f.exec.Cancel()
-	// 同步 Open 仍未返回；并发等待者必须能响应执行取消，不被 sync.Once 卡住。
-	if err := waitCheckpointSignal(t, f.ctx, f.finished); !errors.Is(err, context.Canceled) {
-		t.Errorf("canceled reader closeout: %v", err)
-	}
-	f.assertConfirmation(t, 0, 0)
-	f.unblockOpen()
-	if err := f.exec.Wait(); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled execution: %v", err)
+	for _, nodeOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("node-only=%t", nodeOnly), func(t *testing.T) {
+			cancelNode := make(chan context.CancelFunc, 1)
+			f := newCheckpointReaderRestoreFixture(t, false, false, func(rc *RunCtx) error {
+				cancelNode <- rc.Cancel
+				return nil
+			})
+			f.awaitCloseout(t)
+			if err := f.exec.ctx.Err(); err != nil {
+				t.Fatalf("execution was already canceled before the probe: %v", err)
+			}
+			wantFailures := 0
+			if nodeOnly {
+				// 只取消本层，Open 所用的根执行 ctx 此刻仍健康。
+				waitCheckpointSignal(t, f.ctx, cancelNode)()
+				wantFailures = 1 // 本层终止是真实节点失败，不冒充整次执行的外部中断。
+			} else {
+				f.exec.Cancel()
+			}
+			// 同步 Open 仍未返回；并发等待者必须独立响应自己的 ctx 取消。
+			if err := waitCheckpointSignal(t, f.ctx, f.finished); !errors.Is(err, context.Canceled) {
+				t.Errorf("canceled reader closeout: %v", err)
+			}
+			f.assertConfirmation(t, 0, wantFailures)
+			f.unblockOpen()
+			if err := f.exec.Wait(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled execution: %v", err)
+			}
+		})
 	}
 }
 
