@@ -142,6 +142,11 @@ func HandleMessage[T any](rc *RunCtx, delivery Delivery[T], fn func(*RunCtx, T) 
 		if failure := rc.failCheckpointMessage(checkpoint); failure != nil {
 			return failure // 存储失败不在本地循环重试。
 		}
+		// 同步失败确认期间也可能发生宿主中断；确认已完成的消息失败
+		// 不撤销，但完整节点仍保留 active，不消耗它的失败预算。
+		if canceled := rc.exec.Context().Err(); canceled != nil {
+			return canceled
+		}
 		if index == cfg.attempts {
 			return err
 		}
