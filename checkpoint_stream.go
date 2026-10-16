@@ -774,15 +774,17 @@ func (s *managedStream[T]) checkpointFinish(err error) (CheckpointStreamFinish, 
 	if s.checkpoint == nil {
 		return CheckpointStreamFinish{}, false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// 业务 Unwrap 可读取流快照；错误链分类不进入流状态锁。
 	terminal := StreamCompleted
 	switch {
 	case isCanceled(err):
 		terminal = StreamCanceled
 	case err != nil && !isSkipped(err):
 		terminal = StreamFailed
-	case s.stopped:
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if terminal == StreamCompleted && s.stopped {
 		terminal = StreamStopped
 	}
 	checkpoint := s.checkpoint

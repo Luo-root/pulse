@@ -466,9 +466,12 @@ func (s Stream[T]) pulseReaderFinished(rc *RunCtx, err error) error {
 		return fmt.Errorf("pulse: reader %q finished with an unopened stream", rc.NodeID())
 	}
 	state := s.state
+	// 错误分类可能通过业务 Unwrap 读取同一流；在进入状态锁和操作门前完成。
+	err = rc.streams.classifyFailure(err)
+	normal := err == nil || isSkipped(err)
 	// 恢复槽位先发布本地端点，权威 Open 可能仍在进行。成功/正常跳过必须先
 	// 认回生产终态和未确认尾部；失败不等恢复，也不持状态锁或 operation 门等待。
-	if err == nil || isSkipped(err) {
+	if normal {
 		if restoreErr := state.ensureCheckpoint(rc.Context()); restoreErr != nil {
 			return restoreErr
 		}
@@ -478,7 +481,7 @@ func (s Stream[T]) pulseReaderFinished(rc *RunCtx, err error) error {
 		return nil // 已记录的退出，可能是同一端点的另一个 Requires 别名。
 	}
 	if operationErr := state.operation.lock(rc); operationErr != nil {
-		if err != nil && !isSkipped(err) {
+		if !normal {
 			return nil // 执行已失败/取消，保留原始原因和未确认记录。
 		}
 		return rc.streams.classifyFailure(operationErr)
@@ -507,14 +510,14 @@ func (s Stream[T]) pulseReaderFinished(rc *RunCtx, err error) error {
 		return nil
 	}
 	cause := state.sendErr
-	if cause == nil && err != nil && !isSkipped(err) {
+	if cause == nil && !normal {
 		cause = err
 	}
 	if cause == nil {
 		cause = fmt.Errorf("pulse: stream reading group finished at node %q without fulfilling its reading obligations "+
 			"(production finished=%t, unacknowledged=%d); consume and Ack the stream or explicitly Stop", id.node, state.finished, len(state.pending))
 	}
-	cause = rc.streams.classifyFailure(cause)
+	// err 已在锁外归因，sendErr 也在首次记录时归因；新建的义务错误始终是失败。
 	state.readerErr = cause
 	if state.sendErr == nil {
 		state.sendErr = cause
@@ -557,18 +560,33 @@ func (s *managedStream[T]) failure() error {
 }
 
 func (s *managedStream[T]) finish(err error) {
+	// 分类会遍历业务错误链，必须在状态锁外进行。
+	normal := err == nil || isSkipped(err)
+	canceled := !normal && isCanceled(err)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.finished {
+		s.mu.Unlock()
 		return
 	}
-	if err == nil || isSkipped(err) {
+	if normal {
 		err = s.sendErr
+		if err != nil {
+			// sendErr 只锁存首次错误，不会被后续写替换。解锁分类不会丢掉
+			// 同期新到的首错；若已有另一条收尾完成，重新取锁后直接退出。
+			s.mu.Unlock()
+			canceled = isCanceled(err)
+			s.mu.Lock()
+			if s.finished {
+				s.mu.Unlock()
+				return
+			}
+		}
 	}
+	defer s.mu.Unlock()
 	s.err = err
 	s.finished = true
 	switch {
-	case isCanceled(err):
+	case canceled:
 		s.terminal = StreamCanceled
 	case err != nil:
 		s.terminal = StreamFailed
