@@ -465,11 +465,18 @@ func (s Stream[T]) pulseReaderFinished(rc *RunCtx, err error) error {
 	if s.state == nil {
 		return fmt.Errorf("pulse: reader %q finished with an unopened stream", rc.NodeID())
 	}
-	id, _, registerErr := s.state.registerReader(rc)
+	state := s.state
+	// 恢复槽位先发布本地端点，权威 Open 可能仍在进行。成功/正常跳过必须先
+	// 认回生产终态和未确认尾部；失败不等恢复，也不持状态锁或 operation 门等待。
+	if err == nil || isSkipped(err) {
+		if restoreErr := state.ensureCheckpoint(rc.Context()); restoreErr != nil {
+			return restoreErr
+		}
+	}
+	id, _, registerErr := state.registerReader(rc)
 	if registerErr != nil {
 		return nil // 已记录的退出，可能是同一端点的另一个 Requires 别名。
 	}
-	state := s.state
 	if operationErr := state.operation.lock(rc); operationErr != nil {
 		if err != nil && !isSkipped(err) {
 			return nil // 执行已失败/取消，保留原始原因和未确认记录。

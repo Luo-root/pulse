@@ -235,6 +235,7 @@ type checkpointStream struct {
 	request    *CheckpointStreamOpen // 实际写端先创建时的首次 Open；与恢复路径共用 once。
 	cached     *checkpointStreamCache
 	once       sync.Once
+	ready      chan struct{} // once 选出初始化者；安装结果由关闭 ready 发布。
 	err        error
 }
 
@@ -536,50 +537,68 @@ func (e *Execution) restoreCheckpointStreams(n *Node) error {
 	return nil
 }
 
-// ensureCheckpoint 必须在 Receive/Messages/Stop 使用恢复端点之前调用，且不持流锁。
+// ensureCheckpoint 必须在读取/收尾使用恢复端点之前调用，且不持流锁或 operation 门。
 // 恢复别名和实际写端共用一次 Open；active 来源保留 Done，真正写端结束后才开放 EOF。
 func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 	checkpoint := s.checkpoint
 	if checkpoint == nil || (!checkpoint.restore && checkpoint.request == nil) {
 		return nil
 	}
+	ctx := checkpoint.exec.checkpoint.failure.root.ctx
+	if len(contexts) != 0 && contexts[0] != nil {
+		ctx = contexts[0]
+	}
+	initialize := false
 	checkpoint.once.Do(func() {
-		descriptor := checkpoint.descriptor
-		site := checkpoint.exec.site
-		site.Graph, site.Path = descriptor.Graph, descriptor.Path
-		request := CheckpointStreamOpen{Site: site, Scope: descriptor.ID.Scope, Attempt: descriptor.Attempt,
-			NodeID: descriptor.ID.NodeID, Key: CheckpointKey{Name: descriptor.ID.Key, Type: reflect.TypeFor[Stream[T]](), Element: descriptor.Element},
-			Group: descriptor.ID.Group, Source: descriptor.Source, Capacity: descriptor.Capacity, Restore: &descriptor}
-		if checkpoint.request != nil {
-			request = *checkpoint.request
-		}
-		ctx := checkpoint.exec.checkpoint.failure.root.ctx
-		if len(contexts) != 0 && contexts[0] != nil {
-			ctx = contexts[0]
-		}
-		record, err := checkpoint.exec.openCheckpointStream(ctx, request)
-		if err == nil {
-			failure := checkpoint.exec.checkpoint.failure
-			failure.mu.Lock()
-			if checkpoint.cached != nil && checkpoint.cached.hasReference {
-				err = checkCheckpointStreamReference(record.Stream, checkpoint.cached.reference, record.Resumed)
-			}
-			if err == nil {
-				s.mu.Lock()
-				checkpoint.descriptor, checkpoint.cursor = record.Stream, record.Cursor
-				s.mu.Unlock()
-				s.installCheckpointRecord(record)
-				if checkpoint.cached != nil {
-					checkpoint.cached.opened, checkpoint.cached.resumed = true, record.Resumed
-				}
-			}
-			failure.mu.Unlock()
-			if err != nil {
-				err = checkpoint.exec.stopCheckpoint("restore stream", err)
-			}
-		}
-		checkpoint.err = err
+		checkpoint.ready = make(chan struct{})
+		initialize = true
 	})
+	if !initialize {
+		// sync.Once 不包住同步钩子，否则并发等待者不能独立响应取消。
+		select {
+		case <-checkpoint.ready:
+			return checkpoint.err
+		default:
+		}
+		select {
+		case <-checkpoint.ready:
+			return checkpoint.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	defer close(checkpoint.ready)
+	descriptor := checkpoint.descriptor
+	site := checkpoint.exec.site
+	site.Graph, site.Path = descriptor.Graph, descriptor.Path
+	request := CheckpointStreamOpen{Site: site, Scope: descriptor.ID.Scope, Attempt: descriptor.Attempt,
+		NodeID: descriptor.ID.NodeID, Key: CheckpointKey{Name: descriptor.ID.Key, Type: reflect.TypeFor[Stream[T]](), Element: descriptor.Element},
+		Group: descriptor.ID.Group, Source: descriptor.Source, Capacity: descriptor.Capacity, Restore: &descriptor}
+	if checkpoint.request != nil {
+		request = *checkpoint.request
+	}
+	record, err := checkpoint.exec.openCheckpointStream(ctx, request)
+	if err == nil {
+		failure := checkpoint.exec.checkpoint.failure
+		failure.mu.Lock()
+		if checkpoint.cached != nil && checkpoint.cached.hasReference {
+			err = checkCheckpointStreamReference(record.Stream, checkpoint.cached.reference, record.Resumed)
+		}
+		if err == nil {
+			s.mu.Lock()
+			checkpoint.descriptor, checkpoint.cursor = record.Stream, record.Cursor
+			s.mu.Unlock()
+			s.installCheckpointRecord(record)
+			if checkpoint.cached != nil {
+				checkpoint.cached.opened, checkpoint.cached.resumed = true, record.Resumed
+			}
+		}
+		failure.mu.Unlock()
+		if err != nil {
+			err = checkpoint.exec.stopCheckpoint("restore stream", err)
+		}
+	}
+	checkpoint.err = err
 	return checkpoint.err
 }
 
