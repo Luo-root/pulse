@@ -1,6 +1,8 @@
 # Streams
 
-Use `Key[pulse.Stream[T]]` for continuous production, individual acknowledgements, or live results across subgraphs. The slot publishes an endpoint; the endpoint manages sequences, a reading group, backpressure, and production status. These APIs belong to the current development checkout and have not shipped in a release tag. Use [matching local source](./installation.md#try-unmerged-source) with these docs first.
+Use `Key[pulse.Stream[T]]` for continuous production, individual acknowledgements, or live results across subgraphs. The slot publishes an endpoint; the endpoint manages sequences, a reading group, backpressure, and production status.
+
+These APIs **are merged into `main` but have not shipped in a release tag**. The latest released tag, `v0.4.1`, does not include managed Stream. Follow [installation and versions](./installation.md#choose-a-version) to select the main branch or a local checkout matching these docs.
 
 ## Complete example: one quota slot, two broadcast consumers
 
@@ -74,10 +76,17 @@ func main() {
 }
 ```
 
-Run in the example module, replacing `../pulse` with the checkout matching these docs. An old tag or `@main` cannot be assumed to contain unmerged APIs.
+In a new example directory containing `main.go`, fetch the development version already merged into the main branch and run it:
 
 ```sh
 go mod init example.com/pulse-streams
+go get github.com/Luo-root/pulse@main
+go run -race .
+```
+
+`go get` records the concrete version resolved by this invocation in `go.mod`. To test local changes, use a local replacement in the initialized example module instead. Adjust `../pulse` to the checkout matching these docs:
+
+```sh
 go mod edit -replace=github.com/Luo-root/pulse=../pulse
 go mod tidy
 go run -race .
@@ -89,7 +98,9 @@ Output:
 left=6 right=6
 ```
 
-Four nodes can progress with one shared business quota slot because blocked managed sends, receives, and commit waits temporarily release quota. They reacquire it before business code, cancellation handling, or panic unwinding resumes. Cancellation may therefore wait for another node that holds quota without cooperating. The engine cannot detect arbitrary HTTP, channel, or business-lock waits.
+Four nodes can progress with one shared business quota slot because blocked managed sends, receives, and commit waits temporarily release quota so other nodes can work. They reacquire it before business code, cancellation handling, or panic unwinding resumes. Cancellation may therefore wait for another node that holds quota without cooperating. The engine cannot detect arbitrary HTTP, channel, or business-lock waits.
+
+Each independently created root Execution has its own quota pool. A child graph without its own `WithMaxRunning` declaration inherits the parent's **same quota pool**, rather than getting another pool per level. An explicit child declaration creates its own pool. The Sub mount itself consumes no business quota.
 
 The sums are host demonstration state for one run, each written by one consumer and read after Run. Concurrent reuse of a definition needs separate per-execution state or outputs; captured closure state is not isolated automatically.
 
@@ -258,7 +269,7 @@ Sub has no aggregate input gate. In binds a stable source slot, including pendin
 
 ## Finite message retry versus progressive sources
 
-Use HandleMessage for finite transforms: open outputs and receive the delivery outside its callback, then compute only this item's finite results inside. This function can redo the current item up to three times without reading the next one:
+Use HandleMessage for finite transforms: open outputs and receive the delivery outside its callback, then compute only this item's finite results inside. This function explicitly sets `WithMessageRetry(3, 0)` for **at most three attempts in total: the initial attempt plus up to two retries**. Failed attempts handle the same delivery without reading the next one:
 
 ```go
 func transform(rc *pulse.RunCtx, delivery pulse.Delivery[int], writer *pulse.StreamWriter[int]) error {
@@ -268,7 +279,9 @@ func transform(rc *pulse.RunCtx, delivery pulse.Delivery[int], writer *pulse.Str
 }
 ```
 
-Defaults are one attempt and at most 64 staged output messages. Each output batch must also fit that output's capacity. Overflow fails immediately without waiting for its own callback to finish. If processing 2 fails once, the input order is 1, 2, **2**, 3. Failed attempts publish no Set/Skip/Send results. Success confirms the input, including zero outputs and normal NoValue/Skip. Exhaustion or commit failure latches failure; swallowing the returned error cannot report success. A callback cannot Receive again, OpenStream, Stop, Ack/Nack, nest HandleMessage, use ordinary Retry, or call SendAt. Closures, referenced objects, and external effects are not rolled back.
+Without message options, the defaults are one attempt and at most 64 staged output messages. Each output batch must also fit that output's capacity. For example, with output `WithBuffer(1)`, a second Send in one attempt fails immediately even if `WithMessageLimit(8)` allows a larger total. Commit waits for downstream readers to free enough capacity. A batch larger than the stream's entire capacity is rejected immediately.
+
+If processing 2 fails once, the **callback invocation order** is 1, 2, **2**, 3; the upstream producer still sends only 1, 2, 3. Failed attempts publish no Set/Skip/Send results. Success confirms the input, including zero outputs and normal NoValue/Skip. Exhaustion or commit failure latches failure; swallowing the returned error cannot report success. A callback cannot Receive again, OpenStream, Stop, Ack/Nack, nest HandleMessage, use ordinary Retry, or call SendAt. Closures, referenced objects, and external effects are not rolled back.
 
 Send progressive tokens or similar output individually with Send/SendAt **outside** HandleMessage. Already published prefixes remain visible. `WithStreamSource("feed-v1", true)` is a promise: business code must read `writer.Position().Cursor`, continue from that location, and use SendAt to confirm each message with its source cursor. In local mode SendAt is Send and saves no recoverable cursor. If continuation is impossible, fail explicitly or start a new Execution; whole-node retries must not splice two generated versions together automatically.
 

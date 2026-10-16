@@ -1,6 +1,8 @@
 # 流式处理
 
-需要连续产生数据、逐条确认或跨子图传递实时结果时，使用 `Key[pulse.Stream[T]]`。槽位发布端点，端点管理消息序号、读取组、背压和生产终态。以下 API 属于当前开发检出，尚未随正式 tag 发布；先按[安装页](./installation.md#试用尚未合并的源码)使用与文档匹配的源码。
+需要连续产生数据、逐条确认或跨子图传递实时结果时，使用 `Key[pulse.Stream[T]]`。槽位发布端点，端点管理消息序号、读取组、背压和生产终态。
+
+本页 API **已合入 `main`，尚未随正式 tag 发布**；最新正式 tag `v0.4.1` 不包含受管 Stream。按[安装页](./installation.md#选择版本)选择主线开发版或与文档匹配的本地检出。
 
 ## 完整示例：一个额度，广播到两个消费端
 
@@ -74,10 +76,17 @@ func main() {
 }
 ```
 
-在示例模块中运行；把 `../pulse` 换成与本文档匹配的检出路径。这里不能用旧 tag 或假定 `@main` 已包含未合并 API。
+在保存 `main.go` 的新示例目录中，获取已合入主线的开发版并运行：
 
 ```sh
 go mod init example.com/pulse-streams
+go get github.com/Luo-root/pulse@main
+go run -race .
+```
+
+`go get` 会将本次解析的具体版本写入 `go.mod`。如果要验证本地修改，可在已初始化的示例模块中改用本地替换；把 `../pulse` 调整为与本文档匹配的检出路径：
+
+```sh
 go mod edit -replace=github.com/Luo-root/pulse=../pulse
 go mod tidy
 go run -race .
@@ -89,7 +98,9 @@ go run -race .
 left=6 right=6
 ```
 
-四个节点共享一个业务额度也能推进，因为阻塞的受管发送、接收与提交等待会暂时归还额度。返回业务代码、取消处理或 panic 展开前都要重新取得额度；其他节点不协作地长期持额时，取消返回也可能等待。引擎不会识别任意 HTTP、channel 或业务锁等待。
+四个节点共享一个业务额度也能推进，因为阻塞的受管发送、接收与提交等待会暂时归还额度，让其他节点继续工作。等待结束后，返回业务代码、取消处理或 panic 展开前都要重新取得额度。其他节点不协作地长期持额时，取消返回也可能等待；引擎不会识别任意 HTTP、channel 或业务锁等待。
+
+分别创建的根 Execution 各有自己的额度池。未自行声明 `WithMaxRunning` 的子图继承父执行的**同一份额度池**，不是每层各得一份；子图显式声明该选项时会另建自己的池。挂载 Sub 的步骤本身不占业务额度。
 
 两份 sum 是仅运行一次的宿主示例状态，各由一个消费节点写、Run 完成后读。复用定义并发执行时，应改为独立的每次执行状态或输出；闭包不会自动隔离。
 
@@ -258,7 +269,7 @@ Sub 没有整体输入门。In 绑定稳定来源槽，即使仍 pending，内�
 
 ## 有限消息重试与渐进来源
 
-有限变换用 HandleMessage：在回调外打开输出并取得 delivery，回调内只计算这一条的有限成果。以下函数默认可重做当前条三次，不会先读取下一条：
+有限变换用 HandleMessage：在回调外打开输出并取得 delivery，回调内只计算这一条的有限成果。以下函数显式设置 `WithMessageRetry(3, 0)`，表示当前交付**总共最多尝试三次：首次处理加最多两次重试**。失败时仍处理这份交付，不会先读取下一条：
 
 ```go
 func transform(rc *pulse.RunCtx, delivery pulse.Delivery[int], writer *pulse.StreamWriter[int]) error {
@@ -268,7 +279,9 @@ func transform(rc *pulse.RunCtx, delivery pulse.Delivery[int], writer *pulse.Str
 }
 ```
 
-默认只尝试一次，最多暂存 64 条输出，每个输出批次还必须不超过该输出流容量；超限当场失败，不等自身回调结束。若处理 2 失败一次，输入顺序是 1、2、**2**、3。失败尝试的 Set/Skip/Send 不正式发布；成功后确认输入，零输出和正常 NoValue/Skip 也成功。耗尽或提交失败会锁存失败，吞掉返回错误也不能成功。不能在回调内再 Receive、OpenStream、Stop、Ack/Nack、嵌套 HandleMessage、套普通 Retry 或用 SendAt。闭包、引用对象修改和外部副作用不会回滚。
+不配置消息选项时，默认只尝试一次，最多暂存 64 条输出。每个输出批次还必须不超过该输出流容量：例如输出 `WithBuffer(1)` 时，一次尝试向它 Send 两条会当场失败，即使 `WithMessageLimit(8)` 允许更大的总条数。提交时会等待下游释放足够容量，但不会靠等待容纳一个超过整条流容量的批次。
+
+若处理 2 失败一次，**回调调用顺序**是 1、2、**2**、3；上游仍只发送 1、2、3。失败尝试的 Set/Skip/Send 不正式发布；成功后确认输入，零输出和正常 NoValue/Skip 也成功。耗尽或提交失败会锁存失败，吞掉返回错误也不能成功。不能在回调内再 Receive、OpenStream、Stop、Ack/Nack、嵌套 HandleMessage、套普通 Retry 或用 SendAt。闭包、引用对象修改和外部副作用不会回滚。
 
 逐 token 或其他渐进输出放在 HandleMessage **之外**逐条 Send/SendAt，已经外发的前缀不撤回。`WithStreamSource("feed-v1", true)` 只是承诺：业务必须读取 `writer.Position().Cursor` 并按该位置续读，使用 SendAt 将消息和来源游标一起确认。本地模式 SendAt 等同 Send，不保存可恢复游标。无法续读时明确失败或发起新 Execution，不自动整节点重试后把两个版本拼起来。
 
