@@ -41,10 +41,11 @@ func TestLifecycleFailureErrorMethodsCanInspectExecution(t *testing.T) {
 	// 而不是把一条永久阻塞的 goroutine 留在其余测试里。
 	if kind := os.Getenv("PULSE_TEST_FAILURE_REENTRY"); kind != "" {
 		g := mustNew(t, t.Context(), "failure-reentry")
+		var cause error
+		mustAdd(t, g, NewNode("work", "错误链可观察执行状态", nil, nil, func(*RunCtx) error { return cause }))
 		e, err := g.NewExecution(t.Context(), Inputs{})
 		managedTestOK(t, err)
 		defer e.Cancel()
-		var cause error
 		sentinel := errors.New("business cause")
 		switch kind {
 		case "Unwrap":
@@ -56,8 +57,12 @@ func TestLifecycleFailureErrorMethodsCanInspectExecution(t *testing.T) {
 		default:
 			t.Fatalf("unknown child mode %q", kind)
 		}
-		if got := e.fail(cause); got != cause || e.Err() != cause {
+		managedTestOK(t, e.Start())
+		if got := e.Wait(); got != cause || e.Err() != cause {
 			t.Fatalf("first error changed: %v", got)
+		}
+		if snapshot := e.Snapshot(); snapshot.Graph.Status != GraphStatusFailed || snapshot.Graph.Err != cause {
+			t.Fatalf("failure snapshot changed: %+v", snapshot.Graph)
 		}
 		if kind == "Unwrap" && !errors.Is(e.Err(), sentinel) {
 			t.Fatal("original cause lost")
