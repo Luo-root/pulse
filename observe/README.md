@@ -148,6 +148,30 @@ Record 不提供任意对象或业务值容器。标量类型约束不能识别�
 
 Observer 的五种回调与上述五种 Record 事件并非一一对应：Waiting 和 Running 启动或结束计时，Finished 负责收尾。Retry 不重复发 Waiting / Running，因此重试不会变成多套节点分段记录，执行段可包含多次尝试及间隔。
 
+### 自动切面记录
+
+`NewRecordObserver` 同时实现 Core 的可选 `pulse.AspectObserver`。安装方式不变：业务原有的 `pulse.Retry(3, delay)` 和 `pulse.Timeout(d)` 自动生成 `EventAspect`（`pulse.aspect`），无需在业务体加日志，也不重复节点 Waiting/Running。原 Observer 实现仍只需五个方法；`MultiObserver` 对可选接口逐成员隔离扇出。
+
+| `pulse.aspect.phase` | 实际事实 | `Status` / `Duration` |
+|---|---|---|
+| `started` / `finished` | 进入/离开一次切面调用 | running / 实际终态；finished 测本次调用耗时 |
+| `attempt_started` / `attempt_finished` | 实际分配或认回的 Retry 尝试进入/结束 | running / 实际终态；finished 测本次尝试耗时 |
+| `retry` | 确实分配了后续尝试，随后发 attempt_started | running；0，不把首次成功说成重试 |
+| `backoff_started` / `backoff_finished` | 失败后实际等待，含等待被取消 | running / completed 或 canceled；finished 测等待耗时 |
+| `deadline` | 本层 Timeout 的计时器确实到期 | expired；截至报告时的耗时，不代表内层已经退出 |
+
+每条记录带 Site 与节点身份，外加 `pulse.aspect`（retry / timeout / custom）、`pulse.aspect.boundary`、阶段。边界只在 **Execution + NodeID** 内唯一；`pulse.aspect.parent_boundary` 与 `pulse.aspect.parent_attempt` 关联直接外层。Retry 的 `pulse.attempt` 从 1 开始，`pulse.attempt.limit` 包括首次；退避配置是 `pulse.retry.delay_ns`，Timeout 配置是 `pulse.timeout.duration_ns`。结束记录的 Err 保留真实失败；正常 skip 是 skipped 且 Err=nil，不重试。
+
+检查点尝试另外带 `pulse.attempt.scope` / `pulse.attempt.parent_scope`，直接取自持久游标；`pulse.attempt.origin` 为 new、resumed 或 unknown。桥的 `CheckpointAttempt.Resumed` 非空时，false 表示新分配，true 表示认回活跃游标；旧桥 nil 明确为 unknown。认回编号 2 也不补造一条“刚重试”的记录。完整恢复节点不运行切面、不补历史。耗时只覆盖本次进程中的调用，稳定 RunID 由 Durable 的 Sink 适配补充，不能用 Execution ID 替代。切面成功也不代表外层切面或完整节点 Commit 已成功。
+
+自定义切面没有天然稳定名称，必须显式包装：
+
+```go
+observedApproval := pulse.NamedAspect("approval", approvalAspect)
+```
+
+包装只报告该调用的 started/finished；审批原因等业务事实仍由该切面自行写入 Record/Attrs/Sink，不猜函数名，也不推测内部尝试。`name` 为空或切面为 nil 时，NamedAspect 在构造时 panic。切面中可用 `rc.Site()` 读取准确位置副本，Fork/Timeout 保留身份；它不提供业务值或可变执行对象。
+
 ### 跳过、短路与恢复
 
 | 节点经历 | 产生的节点记录 |

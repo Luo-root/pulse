@@ -125,8 +125,9 @@ func (s Site) String() string {
 	return fmt.Sprintf("execution %q (graph %q) at %s", s.Execution, s.Graph, path)
 }
 
-// ObserverFunc 把五条回调收成一个结构，便于测试与桥装配：只填要用的那几个字段。
+// ObserverFunc 把五条回调及可选切面回调收成一个结构；只填要用的字段。
 type ObserverFunc struct {
+	Aspect        func(AspectEvent)
 	GraphStarted  func(site Site)
 	GraphFinished func(site Site, reason NodeFinishReason, err error)
 	Waiting       func(site Site, nodeID string)
@@ -166,6 +167,13 @@ func (o ObserverFunc) OnNodeRunning(site Site, nodeID string) {
 func (o ObserverFunc) OnNodeFinished(site Site, nodeID string, reason NodeFinishReason, err error) {
 	if o.Finished != nil {
 		o.Finished(site, nodeID, reason, err)
+	}
+}
+
+// OnAspectEvent 实现可选 AspectObserver；不影响五个生命周期回调。
+func (o ObserverFunc) OnAspectEvent(event AspectEvent) {
+	if o.Aspect != nil {
+		o.Aspect(event)
 	}
 }
 
@@ -218,6 +226,15 @@ func (m MultiObserver) OnNodeFinished(site Site, nodeID string, reason NodeFinis
 	for _, o := range m {
 		if o != nil {
 			callSafely(func() { o.OnNodeFinished(site, nodeID, reason, err) })
+		}
+	}
+}
+
+// OnAspectEvent 仅扇出给实现了可选接口的成员，每个成员独立隔离 panic。
+func (m MultiObserver) OnAspectEvent(event AspectEvent) {
+	for _, o := range m {
+		if extra, ok := o.(AspectObserver); ok {
+			callSafely(func() { extra.OnAspectEvent(event) })
 		}
 	}
 }
