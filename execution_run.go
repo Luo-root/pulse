@@ -11,8 +11,10 @@ func (e *Execution) fail(err error) error {
 	if err == nil || isSkipped(err) {
 		return err
 	}
-	e.mu.Lock()
+	// errors.Is/As 会调用用户的 Is/As/Unwrap，可能重入 Err/Snapshot；
+	// 先在锁外确定来源，状态锁内只锁存结果。
 	err = e.classifyFailure(err)
+	e.mu.Lock()
 	if e.err == nil {
 		e.err = err
 		e.cancel()
