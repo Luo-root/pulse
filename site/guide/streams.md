@@ -283,6 +283,7 @@ func transform(rc *pulse.RunCtx, delivery pulse.Delivery[int], writer *pulse.Str
 | 缓冲 | 默认无缓冲；只限制排队 | 默认 1；限制排队和未确认总量 |
 | 额度 | 整段持额，保守要求参与者可同时存活 | 受管等待让额，纯受管流水线额度 1 可推进 |
 | 终态 | close 不是生产成功证明 | Snapshot.Err/Terminal 与 Done 独立记录 |
+| 正常跳过 | Consume 回调返回 NoValue 后停止业务回调，按 Context 排空至关闭，整节点 skipped | ConsumeStream 的 NoValue 只跳过当前消息，确认后继续下一条 |
 | 重试 | 无 Ack、无自动倒带或消息可靠性 | 显式有限 HandleMessage；渐进来源按游标续读 |
 | 检查点 | 原生 channel 及嵌套 channel 仍拒绝 | 可选 StreamHooks，descriptor 与消息记录分开 |
 

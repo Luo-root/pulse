@@ -192,7 +192,10 @@ func checkChannelVisibleNow(rc *RunCtx, sugar, nodeID string, out keyRef) error 
 // （没有任何节点看见取消，`Run()` 返回 nil）；select 则在取消那一刻退出并返回
 // 取消原因。
 //
-//   - fn 返回 error → 节点错误，首错取消整图。
+//   - fn 返回真实 error → 节点错误，首错取消整图。
+//   - fn 返回 NoValue / ErrSkipped → 不再调用 fn，继续按 Context 排空 channel，
+//     正常关闭后本节点保持 skipped；不会让有限生产者因无人接收而挂住。
+//     这表示整消费节点跳过，与 ConsumeStream 的单条消息跳过不同。
 //   - 输入以**跳过**到达（上游没 `Set` 那条 channel）→ 本节点随之跳过、fn 不执行：
 //     跳过是到达，不是失败。
 //   - channel 正常关闭后返回 nil 是合法的：流上的错误记在生产节点上。
@@ -226,6 +229,7 @@ func Consume[T any](g *Graph, id, description string, in Key[<-chan T],
 		if err != nil {
 			return err // 跳过到达 → 本节点跳过（级联），不是失败
 		}
+		var skipped error
 		for {
 			select {
 			case <-rc.Context().Done():
@@ -239,10 +243,16 @@ func Consume[T any](g *Graph, id, description string, in Key[<-chan T],
 					return err
 				}
 				if !ok {
-					return nil
+					return skipped
+				}
+				if skipped != nil {
+					continue // 正常跳过后只排空，不再调用业务；原生发送端没有 Stop 协议。
 				}
 				if err := fn(rc, v); err != nil {
-					return err
+					if !isSkipped(err) {
+						return err
+					}
+					skipped = err
 				}
 			}
 		}
