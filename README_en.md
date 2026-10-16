@@ -120,6 +120,7 @@ For continuous data, use `Key[pulse.Stream[T]]` and `ProduceStream` / `ConsumeSt
 | Understand definitions, executions, data, and normal skips | [Core concepts](site/en/guide/concepts.md) |
 | Supply inputs, read results, and build branches and joins | [Inputs and outputs](site/en/guide/inputs-outputs.md) · [Branches and joins](site/en/guide/branching.md) |
 | Configure retries, timeouts, and concurrency; compose subgraphs or streams | [Retries and cancellation](site/en/guide/retry-cancellation.md) · [Subgraphs](site/en/guide/subgraphs.md) · [Streams](site/en/guide/streams.md) |
+| Compose approvals, input-dependent batches, or Graph tool loops | [Business composition](site/en/guide/composition.md) |
 | Define workflows in YAML and integrate events or logs | [YAML assembly](site/en/guide/assembly.md) · [Observation](site/en/guide/observability.md) |
 | Look up lifecycle rules, errors, the recovery bridge, or version differences | [Reference index](site/en/reference/index.md) |
 
@@ -135,7 +136,9 @@ Read online: [English documentation](https://luo-root.github.io/pulse/en/) · [�
 
 A normal skip means that a result is absent; the execution can still succeed. A real node error cancels this execution and retains its cause. `Retry` isolates failed attempts' writes to Pulse outputs. Application code owns database, HTTP, file, and other external side effects.
 
-Pulse provides single-process execution. Durable provides checkpoint storage and recovery. Durable waits, task dispatch, and distributed run management are not implemented. Design rationale and plans remain in the [design document](docs/design/pulse.md), [design philosophy](docs/design/philosophy.md), and [cross-repository responsibilities](docs/design/workflow-foundation.md).
+Aspects can read this execution's location with `rc.Site()`. With `observe.NewRecordObserver` installed, existing `Retry` / `Timeout` usage automatically records attempts, actual retries, backoff and the current timeout's expiry, while the five Observer lifecycle callback counts stay unchanged. Register custom entry/exit observation explicitly with `pulse.NamedAspect("approval", aspect)`. Without an observer, no logs are emitted. See the [observation guide](site/en/guide/observability.md) for identities, phases and recovery boundaries.
+
+Pulse provides single-process execution; Durable provides checkpoint storage and recovery. Hosts can compose approval waits with aspects, business wait records, and Cancel/Resume, or call Graph tools from a loop node; see [business composition](site/en/guide/composition.md) for wiring and guarantee boundaries. A built-in wake-up service, task dispatch, cross-machine claiming/leases, and failover remain future directions. Design rationale and plans remain in the [design document](docs/design/pulse.md), [design philosophy](docs/design/philosophy.md), and [cross-repository responsibilities](docs/design/workflow-foundation.md).
 
 ## Development and contributions
 

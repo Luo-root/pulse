@@ -120,6 +120,7 @@ func main() {
 | 理解定义、执行、数据与正常跳过 | [核心概念](site/guide/concepts.md) |
 | 提供输入、读取结果、编写分支和汇聚 | [输入与输出](site/guide/inputs-outputs.md) · [分支与汇聚](site/guide/branching.md) |
 | 配置重试、超时和并发，组合子图或流 | [重试与取消](site/guide/retry-cancellation.md) · [子图](site/guide/subgraphs.md) · [流式处理](site/guide/streams.md) |
+| 组合审批、输入决定的批量处理或 Graph 工具循环 | [业务组合](site/guide/composition.md) |
 | 用 YAML 定义流程，接入事件和日志 | [YAML 装配](site/guide/assembly.md) · [图观测](site/guide/observability.md) |
 | 查阅生命周期、错误、恢复桥与版本差异 | [参考索引](site/reference/index.md) |
 
@@ -135,7 +136,9 @@ func main() {
 
 正常跳过表示没有这项结果，整次执行仍可成功。节点的真实错误会取消本次执行，并保留错误原因。`Retry` 隔离失败尝试对 Pulse 输出的写入；数据库、HTTP 请求、文件等外部副作用由业务负责。
 
-Pulse 负责单进程执行。检查点存储与恢复由 Durable 提供；持久等待、任务派发和分布式运行管理尚未实现。设计依据与演进计划保留在 [设计文档](docs/design/pulse.md)、[设计理念](docs/design/philosophy.md) 和 [两仓职责说明](docs/design/workflow-foundation.md) 中。
+切面可用 `rc.Site()` 取得本次执行的只读位置。接入 `observe.NewRecordObserver` 后，现有 `Retry` / `Timeout` 自动产生尝试、真实重试、退避和本层到期记录，五种 Observer 生命周期回调次数不变。自定义切面用 `pulse.NamedAspect("approval", aspect)` 显式登记进出；未配置观察者时不输出日志。身份、阶段与恢复边界见[观测指南](site/guide/observability.md)。
+
+Pulse 负责单进程执行，Durable 提供检查点存储与恢复。宿主可通过切面、业务等待记录与 Cancel/Resume 组合审批等待，也可在节点中循环调用 Graph 工具；具体接线与保证边界见[业务组合](site/guide/composition.md)。内置唤醒服务、任务派发、跨机器领取/租约与故障接管仍是后续方向。设计依据与演进计划保留在 [设计文档](docs/design/pulse.md)、[设计理念](docs/design/philosophy.md) 和 [两仓职责说明](docs/design/workflow-foundation.md) 中。
 
 ## 开发与贡献
 

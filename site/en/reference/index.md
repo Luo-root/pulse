@@ -14,6 +14,7 @@ These documents describe the development object model. The latest published vers
 | What errors mean and whether to change declarations or handle a runtime failure | [Errors](./errors.md) |
 | When outputs are confirmed and published, what recovery restores, how retry budgets persist | [Checkpoints](./checkpoint.md) |
 | How to migrate from v0.4.1 or transitional development APIs | [Migration](./migration.md) |
+| Which capabilities and breaking changes are prepared for v0.5.0 | [Release notes](./release-v0.5.0.md) |
 
 ## Objects and interfaces
 

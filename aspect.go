@@ -86,42 +86,58 @@ func isPanicFailure(err error) bool {
 // 失真。已经落地的输出不会撤回：超时是失败，不是回滚。
 func Timeout(d time.Duration) Aspect {
 	return func(rc *RunCtx, next func(*RunCtx) error) error {
-		child := rc.Fork()
-		defer child.Cancel() // deadline 子层结束不等于释放 Fork 在父 ctx 上的注册
-		timeoutErr := fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
-		ctx, cancel := context.WithTimeoutCause(child.ctx, d, timeoutErr)
-		defer cancel()
-		child.ctx = ctx
-		errCh := make(chan error, 1)
-		go func() { errCh <- next(child) }()
-		var err error
-		select {
-		case err = <-errCh:
-		case <-ctx.Done():
-			child.Cancel()
-			err = <-errCh // 等内层收干净，并保留期间捕获的真实失败
-		}
-		// 清理取消不能覆盖已经捕获的 panic / 可靠失败，两条 select 路径共用此判据。
-		if isPanicFailure(err) || isCheckpointFailure(err) {
+		o, rc := beginAspect(rc, AspectTimeout, "", 0)
+		o.base.Timeout = d
+		o.emit(AspectEvent{Phase: AspectStarted, Timeout: d})
+		return o.run(rc, func(rc *RunCtx) error {
+			child := rc.Fork()
+			defer child.Cancel() // deadline 子层结束不等于释放 Fork 在父 ctx 上的注册
+			timeoutErr := fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
+			ctx, cancel := context.WithTimeoutCause(child.ctx, d, timeoutErr)
+			defer cancel()
+			child.ctx = ctx
+			errCh := make(chan error, 1)
+			go func() { errCh <- next(child) }()
+			var err error
+			expired := false
+			reportDeadline := func() {
+				if !expired && context.Cause(ctx) == timeoutErr {
+					expired = true
+					o.emit(AspectEvent{Phase: AspectDeadline, Timeout: d, Duration: time.Since(o.start)})
+				}
+			}
+			select {
+			case err = <-errCh:
+			case <-ctx.Done():
+				reportDeadline() // 自己的计时器确实触发，且内层可能还没有退出。
+				child.Cancel()
+				err = <-errCh // 等内层收干净，并保留期间捕获的真实失败
+			}
+			reportDeadline() // 两个 channel 同时就绪时，仍以独立 cause 判定本层事实。
+			// 清理取消不能覆盖已经捕获的 panic / 可靠失败，两条 select 路径共用此判据。
+			if isPanicFailure(err) || isCheckpointFailure(err) {
+				return err
+			}
+			// 每次 Timeout 的 cause 独立：父域截止或外层 Timeout 不能冒充本层计时器。
+			// 即使等待业务退出期间父域也到期，本层先触发的事实仍然保留。
+			if context.Cause(ctx) == timeoutErr {
+				return timeoutErr
+			}
+			if parentErr := rc.Context().Err(); parentErr != nil {
+				return &executionCancellation{cause: parentErr}
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
-		}
-		// 每次 Timeout 的 cause 独立：父域截止或外层 Timeout 不能冒充本层计时器。
-		// 即使等待业务退出期间父域也到期，本层先触发的事实仍然保留。
-		if context.Cause(ctx) == timeoutErr {
-			return timeoutErr
-		}
-		if parentErr := rc.Context().Err(); parentErr != nil {
-			return &executionCancellation{cause: parentErr}
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return err
+		})
 	}
 }
 
-// Retry 在节点 Run（含其内层切面）失败时重试。等数据阶段的取消不重试；
-// 跳过也不重试——跳过是「到达」，不是失败（判据见 isSkipped）。
+// Retry 在节点 Run（含其内层切面）返回普通业务错误时重试。正常跳过不重试——
+// 跳过是「到达」，不是失败（判据见 isSkipped）。本层 ctx 已取消或到期时也不继续重试。
+// 错误链包含 CheckpointError 时立即停止，即使本图未启用检查点；可靠操作可能已经完成
+// 却没有返回确认，不能把这种不确定结果当作普通业务失败重复执行。
 //
 // **它给每一次尝试开一条独立的写暂存**（attempt 写集）：`Retry` 里面（`next` 之内、
 // 含更内层的切面）的 `Set` / `Skip` 先落在这条暂存上，**不碰执行槽位**。于是：
@@ -148,9 +164,9 @@ func Timeout(d time.Duration) Aspect {
 // **它可以装在 `pulse.Sub` 装出来的那一步上**：每一次尝试各建一份**新的子执行**，
 // 第一次尝试的桥回随它的暂存一起作废，父侧只拿得到成功那一次的输出版本。
 //
-// 重试的**次数与时机**不变：最多 `attempts` 次、每次之间 `delay`；进 `Retry` 这一层
-// 拿到的 ctx 已经取消 / 到期时**不重试**（外层 `Timeout` 或父取消就是这样），而 `Retry`
-// 内层自己包的超时只是**这一次尝试**的失败，照常重试。
+// 总上限 `attempts` 包含首次调用，非正值按一次处理；继续尝试时，每次之间等待 `delay`。
+// 进 `Retry` 这一层拿到的 ctx 已经取消 / 到期时**不重试**（外层 `Timeout` 或父取消
+// 就是这样），而内层自己包的超时只是**这一次尝试**的普通失败，未触及上述停止条件时照常重试。
 //
 // 与推进闸的关系：一个节点在**同一次执行**里只允许成功推进一次，而 `Retry` 每次尝试都
 // 换一条新的写暂存——所以它的重入是「有边界的重入」、放行；用户自己写的重试切面开不了
@@ -160,42 +176,50 @@ func Retry(attempts int, delay time.Duration) Aspect {
 		attempts = 1
 	}
 	return func(rc *RunCtx, next func(*RunCtx) error) error {
-		if rc.exec.checkpoint != nil {
-			return retryCheckpoint(rc, next, attempts, delay)
-		}
-		var err error
-		for i := 0; i < attempts; i++ {
-			// 开边界 → 跑 → 关边界。暂存是**这一次尝试**的：失败就整份丢掉，而「丢掉」
-			// 什么都不用做——没有东西被写进执行槽位，下游也就从未被唤醒过。
-			prev := rc.writes
-			ws := &writeSet{outer: prev}
-			rc.writes = ws
-			err = next(rc)
-			rc.writes = prev
+		o, rc := beginAspect(rc, AspectRetry, "", attempts)
+		o.emit(AspectEvent{Phase: AspectStarted})
+		return o.run(rc, func(rc *RunCtx) error {
+			if rc.exec.checkpoint != nil {
+				return retryCheckpoint(rc, next, attempts, delay, o)
+			}
+			var err error
+			resumed := false
+			for i := 1; i <= attempts; i++ {
+				// 实际分配写集后才报告进入，首次不是重试。失败写集整份丢弃。
+				prev := rc.writes
+				ws := &writeSet{outer: prev}
+				rc.writes = ws
+				if o.obs != nil {
+					rc.aspectAttempt = i
+				}
+				a := CheckpointAttempt{Index: i, Resumed: &resumed}
+				if i > 1 {
+					o.attempt(AspectRetrying, a, "", nil, time.Time{})
+				}
+				start := time.Now()
+				o.attempt(AspectAttemptStarted, a, "", nil, time.Time{})
+				err = next(rc)
+				rc.writes = prev
 
-			// 跳过不是失败：WaitAll 的跳过返回 *SkipError（带被跳过的 Key 名），
-			// 只有 errors.Is 成立——用 == 比较会让整段「等输入 + 执行」被重跑
-			// attempts-1 次并逐次等待。以跳过收尾的尝试**照常提交**它的写集：
-			// 那些写是这一次运行真真切切产出的东西。
-			if err == nil || isSkipped(err) {
-				if cerr := ws.commit(rc.exec); cerr != nil {
-					return cerr
+				// 正常 skip 照常提交；可靠失败和 panic 不能降格成 skip。
+				if err == nil || isSkipped(err) {
+					if cerr := ws.commit(rc.exec); cerr != nil {
+						err = cerr
+					}
+					o.attempt(AspectAttemptFinished, a, "", err, start)
+					return err
 				}
-				return err
-			}
-			if rc.ctx.Err() != nil {
-				return err
-			}
-			if i < attempts-1 && delay > 0 {
-				t := time.NewTimer(delay)
-				select {
-				case <-t.C:
-				case <-rc.ctx.Done():
-					t.Stop()
-					return rc.ctx.Err()
+				o.attempt(AspectAttemptFinished, a, "", err, start)
+				if isCheckpointFailure(err) || rc.ctx.Err() != nil {
+					return err
+				}
+				if i < attempts {
+					if werr := o.backoff(rc, a, "", delay); werr != nil {
+						return werr
+					}
 				}
 			}
-		}
-		return err
+			return err
+		})
 	}
 }

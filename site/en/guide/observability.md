@@ -104,6 +104,33 @@ Two mounts of one child may share Graph but have different Path and Execution va
 
 Children inherit observers by default. One sink can serve the complete execution tree without an observer per layer. `ObserveConfig.Path` is only a fallback when Site has no path and is normally empty for engine runs. A nonempty fallback also applies to root records.
 
+## Read Retry and Timeout directly
+
+Keep existing `pulse.Retry(3, time.Second)` usage on nodes. Installing RecordObserver as above adds `pulse.aspect` records automatically. One failed attempt followed by success produces these phases:
+
+```text
+started
+attempt_started  attempt=1 origin=new
+attempt_finished attempt=1 status=failed
+backoff_started → backoff_finished
+retry           attempt=2 origin=new
+attempt_started  attempt=2 origin=new
+attempt_finished attempt=2 status=completed
+finished        status=completed
+```
+
+Attempt includes the first try, and limit is the total budget. First-attempt success has no retry or backoff records. Normal skipping ends as skipped with Err=nil and never retries. Nested Retry boundaries are unique within Execution + NodeID and separately reference the parent boundary and attempt; do not add counts by node name alone. The five Observer callback counts stay unchanged, and node run segments still cover all attempts.
+
+Timeout automatically reports its own started, deadline when its timer actually expires, and finished. Deadline does not mean business exit: cooperative cancellation still waits for the inner chain, whose final error may retain a panic or reliable failure. Parent cancellation and outer timeout expiry do not count as this Timeout's own deadline.
+
+An independent RPC returning context.Canceled / DeadlineExceeded while the execution domain remains valid is recorded as failed. Business cleanup with `defer rc.Cancel()` after returning does not change it to canceled. Host cancellation, an actual outer control deadline, or an explicit cancellation origin already latched by the engine remains canceled. An unmarked local Fork cancellation does not establish host interruption from final context state alone.
+
+Wrap custom aspects explicitly with `pulse.NamedAspect("approval", approvalAspect)` to report entry/exit. Bare functions have no inferred names or approval reasons. Use `rc.Site()` and `rc.NodeID()` inside an aspect for actual attribution. Fork and Timeout retain Site; the returned copy contains no business values.
+
+To consume Core facts directly, additionally implement `pulse.AspectObserver` on an Observer or set `pulse.ObserverFunc.Aspect`. Install through the same observer options. MultiObserver isolates each member's panic; extra callbacks and Sink reentry into Snapshot run outside engine state locks. Without an observer, no logs are written.
+
+Checkpoint numbering comes from persistent cursors. Origin distinguishes new and resumed; an older bridge omitting optional `CheckpointAttempt.Resumed` yields unknown. Reclaiming attempt 2 does not imply a fresh retry just occurred, and fully restored nodes replay no aspect history. Scope / ParentScope come from the bridge; Durable's Sink adapter supplies a stable RunID. See the [observe package reference](../packages/observe/index.md) for fields, timing and phases.
+
 ## Inspect progress and Mermaid
 
 This fragment belongs in a host program with existing `g`, `e`, and the `fmt` import:

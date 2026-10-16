@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 )
 
 // Node 是图中的一个计算单元：声明读哪些 Key、写哪些 Key，以及到达后做什么。
@@ -143,6 +144,9 @@ type RunCtx struct {
 	checkpointAttempt CheckpointAttempt
 	aspectIndex       int
 	checkpointEntries *checkpointEntryLedger
+	// aspectBoundary / aspectAttempt 是本层观测父边界；Fork 复制视图，不改变运行身份。
+	aspectBoundary uint64
+	aspectAttempt  int
 }
 
 // advanceLedger 是**一次运行里一个节点**的推进账：体推进过没有、上一次推进挂在哪条
@@ -151,8 +155,9 @@ type RunCtx struct {
 // 账记在执行侧而不是定义侧，正是本账的全部意义：同一张定义顺序跑两遍、并发跑两份，
 // 各是各的账（实测过：账记在体闭包里，会把第二遍与并发的第二份都误报成重入）。
 type advanceLedger struct {
-	mu      sync.Mutex
-	entered bool
+	aspectSeq atomic.Uint64 // 仅本节点执行内唯一；不是持久身份。
+	mu        sync.Mutex
+	entered   bool
 	// frame 是上一次推进时挂着的尝试边界（nil = 当时没有边界）。第二次推进时它**没变**
 	// 才叫「无边界重入」；`Retry` 每次尝试都换一条新的暂存，所以它的重入是合法的。
 	frame *writeSet
@@ -284,6 +289,15 @@ func (rc *RunCtx) landed(ref keyRef) bool {
 
 // Context 返回本层可取消的 context。切面超时应取消它，以打断 Get/WaitAll。
 func (rc *RunCtx) Context() context.Context { return rc.ctx }
+
+// Site 返回当前节点所属执行的只读位置副本。Fork、Timeout 与 Retry 保留同一位置；
+// 子图使用实际子执行的身份和挂载路径。不含业务值，也不暴露可变 Execution。
+func (rc *RunCtx) Site() Site {
+	if rc == nil || rc.exec == nil {
+		return Site{}
+	}
+	return rc.exec.site
+}
 
 // NodeID 返回当前节点 id。
 func (rc *RunCtx) NodeID() string {

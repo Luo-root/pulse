@@ -17,6 +17,7 @@ go version
 | 版本 | 适用情况 | 对应资料 |
 | --- | --- | --- |
 | 正式 tag `v0.4.1` | 需要已发布版本，并愿意使用该版本的 API | [v0.4.1 源码与说明](https://github.com/Luo-root/pulse/tree/v0.4.1) |
+| `v0.5.0` 发布准备 | 先评估对象模型、受管流与恢复桥的升级影响；tag 创建前不作为安装版本 | [发布说明](../reference/release-v0.5.0.md) · [迁移步骤](../reference/migration.md) |
 | `main` | 使用已合入主线的开发 API | [main 源码](https://github.com/Luo-root/pulse) |
 | 与文档一起检出的本地源码 | 试用尚未合并的修复或参与开发 | 本站指南与参考；使用下方本地替换步骤 |
 

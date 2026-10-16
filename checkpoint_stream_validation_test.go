@@ -1,13 +1,124 @@
 package pulse
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
+
+func TestCheckpointStreamConfirmationFrontierValidation(t *testing.T) {
+	request := CheckpointStreamOpen{Site: Site{Graph: "frontier"}, Scope: "root", Attempt: "attempt", NodeID: "source",
+		Key: checkpointKey(NewKey[Stream[int]]("input").asRef()), Group: "readers", Capacity: 3,
+		Source: CheckpointStreamSource{ID: "numbers", Resumable: true}}
+	for _, test := range []struct {
+		name    string
+		last    uint64
+		acked   uint64
+		pending []uint64
+		stopped bool
+		want    string
+	}{
+		{name: "empty"},
+		{name: "all-confirmed", last: 5, acked: 5},
+		{name: "sparse-confirmations", last: 5, acked: 1, pending: []uint64{2, 5}},
+		{name: "missing-pending", last: 5, acked: 1, want: "non-contiguous confirmation frontier"},
+		{name: "wrong-first-pending", last: 5, acked: 1, pending: []uint64{3, 5}, want: "non-contiguous confirmation frontier"},
+		{name: "stop-is-not-ack", last: 5, acked: 1, stopped: true},
+		{name: "stopped-with-pending", last: 5, acked: 1, pending: []uint64{2}, stopped: true, want: "invalid confirmation progress"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			record, err := checkpointStreamTestHooks(&checkpointProbe{}).StreamHooks.Open(t.Context(), request)
+			managedTestOK(t, err)
+			record.LastSequence, record.AckedThrough = test.last, test.acked
+			record.Stream.Stopped = test.stopped
+			if test.stopped {
+				record.Stream.Terminal = StreamStopped
+			}
+			for _, sequence := range test.pending {
+				record.Pending = append(record.Pending, CheckpointStreamMessage{Sequence: sequence, Value: 1})
+			}
+			err = checkCheckpointStreamRecord(request, record)
+			if test.want == "" {
+				managedTestOK(t, err)
+			} else if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation=%v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestCheckpointStoppedTerminalRequiresStoppedGroup(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	root, child := mustNew(t, ctx, "invalid-stop-root"), mustNew(t, ctx, "invalid-stop-child")
+	original, inlet, alias := NewKey[Stream[int]]("original"), NewKey[Stream[int]]("inlet"), NewKey[Stream[int]]("alias")
+	mustAdd(t, root, NewNode("source", "", nil, Provides(original), nil))
+	declareIn(t, child, NewPort(inlet))
+	declareOut(t, child, NewPort(inlet))
+	if err := Sub(root, "pass", "", []SubBind{In(original, inlet), Out(inlet, alias)}, child); err != nil {
+		t.Fatal(err)
+	}
+	invalid := CheckpointStreamDescriptor{
+		ID:    CheckpointStreamID{Scope: "root", NodeID: "source", Key: "original", Group: "default", Generation: 1},
+		Graph: "invalid-stop-root", Attempt: "source-attempt", Element: reflect.TypeFor[int](),
+		Source: CheckpointStreamSource{ID: "finite", Resumable: true}, Capacity: 1, Terminal: StreamStopped,
+	}
+	request := CheckpointStreamOpen{Site: Site{Graph: invalid.Graph}, Scope: invalid.ID.Scope, Attempt: invalid.Attempt,
+		NodeID: invalid.ID.NodeID, Key: checkpointKey(original.asRef()), Group: invalid.ID.Group,
+		Source: invalid.Source, Capacity: invalid.Capacity, Restore: &invalid}
+	if err := checkCheckpointStreamRecord(request, CheckpointStreamRecord{Stream: invalid, Resumed: true}); err == nil {
+		t.Error("Open accepted Terminal=stopped while Stopped=false")
+	}
+	valid := invalid
+	valid.Stopped = true
+	hooks := checkpointStreamTestHooks(&checkpointProbe{})
+	hooks.StreamHooks.Open = func(context.Context, CheckpointStreamOpen) (CheckpointStreamRecord, error) {
+		return CheckpointStreamRecord{Stream: valid, Resumed: true}, nil
+	}
+	e, err := root.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Cancel()
+	accepted := []NodeCheckpoint{
+		{NodeID: "source", Reason: NodeCompleted, Outputs: []CheckpointOutput{{Key: checkpointKey(original.asRef()), State: SlotStateReady, Stream: &valid}}},
+		{NodeID: "pass", Reason: NodeCompleted, Outputs: []CheckpointOutput{{Key: checkpointKey(alias.asRef()), State: SlotStateReady, Stream: &valid}}},
+	}
+	if err := e.RestoreNodes(accepted); err != nil {
+		t.Fatal(err)
+	}
+	for _, reverse := range []bool{false, true} {
+		plan := copyCheckpoints(accepted)
+		plan[0].Outputs[0].Stream = &invalid
+		if reverse {
+			plan[0], plan[1] = plan[1], plan[0]
+		}
+		if err := e.RestoreNodes(plan); err == nil {
+			t.Errorf("history merge masked stopped/false with stopped/true (reverse=%t)", reverse)
+		}
+		if !reflect.DeepEqual(e.restore, accepted) || len(e.restored) != 0 || e.started || root.sealed {
+			t.Error("invalid stream state replaced the accepted plan or installed restoration")
+		}
+		for _, key := range []Key[Stream[int]]{original, alias} {
+			if state, _ := e.slotOf(key.asRef()).snapshot(); state != slotPending {
+				t.Error("invalid stream state resolved a slot")
+			}
+		}
+	}
+	for _, terminal := range []StreamTerminal{StreamCompleted, StreamStopped} {
+		valid.Terminal = terminal
+		if err := checkCheckpointStreamRecord(request, CheckpointStreamRecord{Stream: valid, Resumed: true}); terminal == StreamStopped && err != nil {
+			t.Fatalf("legitimate stopped writer rejected: %v", err)
+		}
+		if err := checkCheckpointStreamDescriptor(checkpointKey(original.asRef()), valid); err != nil {
+			t.Fatalf("legitimate terminal/reader-stop pair rejected: %v", err)
+		}
+	}
+}
 
 func checkpointValidationSource(t *testing.T, g *Graph, stream Key[Stream[int]], ordinary Key[int], requires []keyRef, calls *atomic.Int32) {
 	t.Helper()

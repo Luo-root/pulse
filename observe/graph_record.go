@@ -27,11 +27,15 @@ const (
 	// EventGraphFinished 是「这一轮结束了」的运行级记录事件名：Duration 为
 	// 整轮耗时（两回调之间），Status 为运行终态（completed / failed / canceled）。
 	EventGraphFinished = "pulse.graph_finished"
+	// EventAspect 承接 Core 的可选切面事实，阶段/边界/尝试都经 pulse.Attr* 进入 Attrs。
+	EventAspect = "pulse.aspect"
 )
 
 // NewRecordObserver 返回写 Record 的观察者：**一次运行两条运行级记录**
 // （started / finished）；观测到等待与执行的节点各有两条分段计时记录
 // （等待完成与执行完成各一条，Duration 分别为等待段/执行段耗时）。
+// 同时实现可选 pulse.AspectObserver：Retry / Timeout / NamedAspect 的真实控制点
+// 直接转为 EventAspect，身份与阶段经 Attrs 承接，不复制节点生命周期或推造历史。
 //
 // 归因走 Attrs：节点记录带 pulse.AttrGraph + pulse.AttrNode，运行级记录只带
 // pulse.AttrGraph（节点维度对它没有意义）——key 契约由**事实归属包** pulse
@@ -121,6 +125,53 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 	}
 
 	return pulse.ObserverFunc{
+		Aspect: func(event pulse.AspectEvent) {
+			status := "running"
+			if event.Reason != "" {
+				status = string(event.Reason)
+			} else if event.Phase == pulse.AspectDeadline {
+				status = "expired" // 到期事实，不声称内层已经退出。
+			}
+			rec := newRec(EventAspect, status, event.Duration, event.Err)
+			rec.Time = event.Time
+			Set(&rec.Attrs, pulse.AttrGraph, event.Site.Graph)
+			Set(&rec.Attrs, pulse.AttrNode, event.NodeID)
+			withSite(&rec, event.Site)
+			Set(&rec.Attrs, pulse.AttrAspect, string(event.Kind))
+			Set(&rec.Attrs, pulse.AttrAspectPhase, string(event.Phase))
+			Set(&rec.Attrs, pulse.AttrBoundary, int64(event.Boundary))
+			if event.Name != "" {
+				Set(&rec.Attrs, pulse.AttrAspectName, event.Name)
+			}
+			if event.ParentBoundary != 0 {
+				Set(&rec.Attrs, pulse.AttrParentBoundary, int64(event.ParentBoundary))
+			}
+			if event.ParentAttempt != 0 {
+				Set(&rec.Attrs, pulse.AttrParentAttempt, int64(event.ParentAttempt))
+			}
+			if event.Limit != 0 {
+				Set(&rec.Attrs, pulse.AttrAttemptLimit, int64(event.Limit))
+			}
+			if event.Attempt != 0 {
+				Set(&rec.Attrs, pulse.AttrAttempt, int64(event.Attempt))
+			}
+			if event.Origin != "" {
+				Set(&rec.Attrs, pulse.AttrAttemptOrigin, string(event.Origin))
+			}
+			if event.Scope != "" {
+				Set(&rec.Attrs, pulse.AttrAttemptScope, event.Scope)
+			}
+			if event.ParentScope != "" {
+				Set(&rec.Attrs, pulse.AttrParentScope, event.ParentScope)
+			}
+			if event.Phase == pulse.AspectBackoffStarted || event.Phase == pulse.AspectBackoffFinished {
+				Set(&rec.Attrs, pulse.AttrRetryDelay, int64(event.Delay))
+			}
+			if event.Kind == pulse.AspectTimeout {
+				Set(&rec.Attrs, pulse.AttrTimeout, int64(event.Timeout))
+			}
+			cfg.Sink.Write(rec) // 无状态锁；Sink panic 由 Core 只读边界隔离。
+		},
 		GraphStarted: func(site pulse.Site) {
 			mu.Lock()
 			execStart[site.Execution] = time.Now()

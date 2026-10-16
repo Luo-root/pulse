@@ -21,6 +21,7 @@ function sidebar(prefix: string, en: boolean) {
       ['分支与汇聚', 'Branches and joins', 'guide/branching'],
       ['重试与取消', 'Retries and cancellation', 'guide/retry-cancellation'],
       ['组合子图', 'Subgraphs', 'guide/subgraphs'],
+      ['业务组合', 'Business composition', 'guide/composition'],
       ['流式处理', 'Streams', 'guide/streams'],
       ['YAML 装配', 'YAML assembly', 'guide/assembly'],
       ['图观测', 'Observation', 'guide/observability'],
@@ -31,6 +32,7 @@ function sidebar(prefix: string, en: boolean) {
       ['错误与排查', 'Errors and troubleshooting', 'reference/errors'],
       ['检查点桥', 'Checkpoint bridge', 'reference/checkpoint'],
       ['版本与迁移', 'Versions and migration', 'reference/migration'],
+      ['v0.5.0 发布说明', 'v0.5.0 release notes', 'reference/release-v0.5.0'],
       ['设计理念', 'Design philosophy', 'guide/philosophy'],
     ]) },
     { text: labels[3], collapsed: true, items: pages([
@@ -52,7 +54,7 @@ function locale(en: boolean) {
     themeConfig: {
       nav: [
         { text: en ? 'Get started' : '入门', link: `${prefix}guide/`, activeMatch: `${prefix}guide/(?:installation|quickstart|concepts)?(?:\\.html)?$` },
-        { text: en ? 'Guides' : '使用指南', link: `${prefix}guide/orchestration`, activeMatch: `${prefix}guide/(?:orchestration|inputs-outputs|branching|retry-cancellation|subgraphs|streams|assembly|observability)` },
+        { text: en ? 'Guides' : '使用指南', link: `${prefix}guide/orchestration`, activeMatch: `${prefix}guide/(?:orchestration|inputs-outputs|branching|retry-cancellation|subgraphs|composition|streams|assembly|observability)` },
         { text: en ? 'Reference' : '参考', link: `${prefix}reference/`, activeMatch: `${prefix}(?:reference/|packages/|guide/philosophy)` },
         { text: 'Durable', link: 'https://github.com/Luo-root/pulse-durable' },
       ],
