@@ -234,6 +234,10 @@ func (rc *RunCtx) openCheckpointAttempt(parent, boundary string, limit int) (Che
 		if err := checkCheckpointAttemptValues(rc.node, result.Values); err != nil {
 			return err
 		}
+		if result.Resumed != nil {
+			resumed := *result.Resumed
+			result.Resumed = &resumed
+		}
 		result.Values = append([]CheckpointOutput(nil), result.Values...)
 		for i := range result.Values {
 			output := &result.Values[i]
@@ -423,12 +427,13 @@ func (rc *RunCtx) prepareChildCheckpoint(sub *Execution) error {
 
 // retryCheckpoint 使用 Store 的活跃游标，不按本次调用循环的次数重建历史身份。
 // 成功的内层尝试保持可认回，直到完整节点检查点确认；写集仍只交给外层写集。
-func retryCheckpoint(rc *RunCtx, next func(*RunCtx) error, attempts int, delay time.Duration) error {
+func retryCheckpoint(rc *RunCtx, next func(*RunCtx) error, attempts int, delay time.Duration, o aspectObservation) error {
 	if err := rc.enterCheckpointRetry(); err != nil {
 		return err
 	}
 	parent := rc.checkpointAttempt
 	boundary := fmt.Sprintf("aspect/%d", rc.aspectIndex)
+	lastIndex := 0
 	for {
 		attempt, err := rc.openCheckpointAttempt(parent.Scope, boundary, attempts)
 		if err != nil {
@@ -440,38 +445,47 @@ func retryCheckpoint(rc *RunCtx, next func(*RunCtx) error, attempts int, delay t
 		previous := rc.writes
 		ws := &writeSet{outer: previous}
 		rc.writes, rc.checkpointAttempt = ws, attempt
+		if o.obs != nil {
+			rc.aspectAttempt = attempt.Index
+		}
+		// 新桥以真实分配标记判定；旧桥只有本次调用已经确认失败并推进时可证明是重试。
+		if attempt.Index > 1 && ((attempt.Resumed != nil && !*attempt.Resumed) ||
+			(attempt.Resumed == nil && lastIndex > 0 && attempt.Index > lastIndex)) {
+			o.attempt(AspectRetrying, attempt, parent.Scope, nil, time.Time{})
+		}
+		start := time.Now()
+		o.attempt(AspectAttemptStarted, attempt, parent.Scope, nil, time.Time{})
 		err = invokeCheckpointChain(next, rc)
 		rc.writes, rc.checkpointAttempt = previous, parent
 		if failure := rc.exec.checkpointErr(); failure != nil {
-			return failure
+			err = failure
 		}
 		if (err == nil || isSkipped(err)) && rc.ctx.Err() != nil {
 			err = rc.ctx.Err()
 		}
 		if err == nil || isSkipped(err) {
 			if cerr := ws.commit(rc.exec); cerr != nil {
-				return cerr
+				err = cerr
 			}
+			o.attempt(AspectAttemptFinished, attempt, parent.Scope, err, start)
 			return err
 		}
 		if isCheckpointFailure(err) || rc.ctx.Err() != nil {
+			o.attempt(AspectAttemptFinished, attempt, parent.Scope, err, start)
 			return err
 		}
-		// 确认失败先于下一轮；退出发生在两者之间也不能把次数从 1 重来。
+		// 确认失败先于下一轮；可靠失败本身也作为本次尝试的失败结果报告。
 		if ferr := rc.failCheckpointAttempt(attempt.Scope); ferr != nil {
+			o.attempt(AspectAttemptFinished, attempt, parent.Scope, ferr, start)
 			return ferr
 		}
+		o.attempt(AspectAttemptFinished, attempt, parent.Scope, err, start)
 		if attempt.Index == attempts {
 			return err
 		}
-		if delay > 0 {
-			timer := time.NewTimer(delay)
-			select {
-			case <-timer.C:
-			case <-rc.ctx.Done():
-				timer.Stop()
-				return rc.ctx.Err()
-			}
+		lastIndex = attempt.Index
+		if werr := o.backoff(rc, attempt, parent.Scope, delay); werr != nil {
+			return werr
 		}
 	}
 }

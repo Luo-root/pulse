@@ -85,7 +85,11 @@ func isPanicFailure(err error) bool {
 // `Run` 同时碰同一批槽，既有数据竞态，也让 `Run()` 的「阻塞到全部终止」
 // 失真。已经落地的输出不会撤回：超时是失败，不是回滚。
 func Timeout(d time.Duration) Aspect {
-	return func(rc *RunCtx, next func(*RunCtx) error) error {
+	return func(rc *RunCtx, next func(*RunCtx) error) (result error) {
+		o, rc := beginAspect(rc, AspectTimeout, "", 0)
+		o.base.Timeout = d
+		o.emit(AspectEvent{Phase: AspectStarted, Timeout: d})
+		defer func() { o.finish(result) }()
 		child := rc.Fork()
 		defer child.Cancel() // deadline 子层结束不等于释放 Fork 在父 ctx 上的注册
 		timeoutErr := fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
@@ -95,12 +99,21 @@ func Timeout(d time.Duration) Aspect {
 		errCh := make(chan error, 1)
 		go func() { errCh <- next(child) }()
 		var err error
+		expired := false
+		reportDeadline := func() {
+			if !expired && context.Cause(ctx) == timeoutErr {
+				expired = true
+				o.emit(AspectEvent{Phase: AspectDeadline, Timeout: d, Duration: time.Since(o.start)})
+			}
+		}
 		select {
 		case err = <-errCh:
 		case <-ctx.Done():
+			reportDeadline() // 自己的计时器确实触发，且内层可能还没有退出。
 			child.Cancel()
 			err = <-errCh // 等内层收干净，并保留期间捕获的真实失败
 		}
+		reportDeadline() // 两个 channel 同时就绪时，仍以独立 cause 判定本层事实。
 		// 清理取消不能覆盖已经捕获的 panic / 可靠失败，两条 select 路径共用此判据。
 		if isPanicFailure(err) || isCheckpointFailure(err) {
 			return err
@@ -159,40 +172,47 @@ func Retry(attempts int, delay time.Duration) Aspect {
 	if attempts <= 0 {
 		attempts = 1
 	}
-	return func(rc *RunCtx, next func(*RunCtx) error) error {
+	return func(rc *RunCtx, next func(*RunCtx) error) (result error) {
+		o, rc := beginAspect(rc, AspectRetry, "", attempts)
+		o.emit(AspectEvent{Phase: AspectStarted})
+		defer func() { o.finish(result) }()
 		if rc.exec.checkpoint != nil {
-			return retryCheckpoint(rc, next, attempts, delay)
+			return retryCheckpoint(rc, next, attempts, delay, o)
 		}
 		var err error
-		for i := 0; i < attempts; i++ {
-			// 开边界 → 跑 → 关边界。暂存是**这一次尝试**的：失败就整份丢掉，而「丢掉」
-			// 什么都不用做——没有东西被写进执行槽位，下游也就从未被唤醒过。
+		resumed := false
+		for i := 1; i <= attempts; i++ {
+			// 实际分配写集后才报告进入，首次不是重试。失败写集整份丢弃。
 			prev := rc.writes
 			ws := &writeSet{outer: prev}
 			rc.writes = ws
+			if o.obs != nil {
+				rc.aspectAttempt = i
+			}
+			a := CheckpointAttempt{Index: i, Resumed: &resumed}
+			if i > 1 {
+				o.attempt(AspectRetrying, a, "", nil, time.Time{})
+			}
+			start := time.Now()
+			o.attempt(AspectAttemptStarted, a, "", nil, time.Time{})
 			err = next(rc)
 			rc.writes = prev
 
-			// 跳过不是失败：WaitAll 的跳过返回 *SkipError（带被跳过的 Key 名），
-			// 只有 errors.Is 成立——用 == 比较会让整段「等输入 + 执行」被重跑
-			// attempts-1 次并逐次等待。以跳过收尾的尝试**照常提交**它的写集：
-			// 那些写是这一次运行真真切切产出的东西。
+			// 正常 skip 照常提交；可靠失败和 panic 不能降格成 skip。
 			if err == nil || isSkipped(err) {
 				if cerr := ws.commit(rc.exec); cerr != nil {
-					return cerr
+					err = cerr
 				}
+				o.attempt(AspectAttemptFinished, a, "", err, start)
 				return err
 			}
-			if rc.ctx.Err() != nil {
+			o.attempt(AspectAttemptFinished, a, "", err, start)
+			if isCheckpointFailure(err) || rc.ctx.Err() != nil {
 				return err
 			}
-			if i < attempts-1 && delay > 0 {
-				t := time.NewTimer(delay)
-				select {
-				case <-t.C:
-				case <-rc.ctx.Done():
-					t.Stop()
-					return rc.ctx.Err()
+			if i < attempts {
+				if werr := o.backoff(rc, a, "", delay); werr != nil {
+					return werr
 				}
 			}
 		}
