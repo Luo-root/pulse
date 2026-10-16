@@ -437,3 +437,91 @@ func TestAspectObservationNamedAndPanicIsolation(t *testing.T) {
 		})
 	}
 }
+
+// panic 发生在切面自己的错误归类中，而不是在已受保护的业务体内。
+type aspectClassificationPanic struct{ value any }
+
+func (*aspectClassificationPanic) Error() string   { return "diagnostic failure" }
+func (e *aspectClassificationPanic) Unwrap() error { panic(e.value) }
+
+func TestAspectObservationClassificationPanicFinishesAsFailure(t *testing.T) {
+	for _, checkpoint := range []bool{false, true} {
+		for _, observed := range []bool{false, true} {
+			for _, nilPanic := range []bool{false, true} {
+				for _, kind := range []AspectKind{AspectRetry, AspectTimeout} {
+					t.Run(fmt.Sprintf("checkpoint=%t/observed=%t/nil=%t/%s", checkpoint, observed, nilPanic, kind), func(t *testing.T) {
+						ctx := checkpointTestContext(t)
+						trace := &aspectTrace{}
+						var value any = "diagnostic Unwrap panicked"
+						if nilPanic {
+							value = nil
+						}
+						calls := 0
+						aspect := Retry(2, 0)
+						if kind == AspectTimeout {
+							aspect = Timeout(time.Second)
+						}
+						g := mustNew(t, ctx, "classification-panic")
+						mustAdd(t, g, NewNode("n", "本层归类异常不伪造成功", nil, nil, func(*RunCtx) error {
+							calls++
+							return &aspectClassificationPanic{value: value}
+						}, aspect))
+						var opts []ExecOption
+						if checkpoint {
+							opts = append(opts, WithExecCheckpoint("root", (&checkpointProbe{}).hooks()))
+						}
+						if observed {
+							opts = append(opts, WithExecObserver(trace.observer()))
+						}
+						err := g.Run(ctx, Inputs{}, opts...)
+						if !isPanicFailure(err) || calls != 1 {
+							t.Fatalf("control panic changed business outcome: err=%v calls=%d", err, calls)
+						}
+						finished, started, attemptFinished := 0, 0, 0
+						for _, event := range trace.snapshot() {
+							switch event.Phase {
+							case AspectAttemptStarted:
+								started++
+							case AspectAttemptFinished:
+								attemptFinished++
+								fallthrough
+							case AspectFinished:
+								if event.Reason != NodeFailed || !isPanicFailure(event.Err) {
+									t.Fatalf("control panic reported a successful exit: %+v", event)
+								}
+								if event.Phase == AspectFinished {
+									finished++
+								}
+							}
+						}
+						if observed && (finished != 1 || started != attemptFinished || (kind == AspectRetry && started != 1)) {
+							t.Fatalf("unpaired control facts: finished=%d attempts=%d/%d", finished, started, attemptFinished)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestRetryStopsReliableFailureWithoutCheckpoint(t *testing.T) {
+	for _, observed := range []bool{false, true} {
+		t.Run(fmt.Sprint(observed), func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			g := mustNew(t, ctx, "reliable-failure")
+			failure := &CheckpointError{Operation: "external-tool", Err: errors.New("unconfirmed")}
+			calls := 0
+			mustAdd(t, g, NewNode("n", "不重复不确定的可靠提交", nil, nil, func(*RunCtx) error {
+				calls++
+				return failure
+			}, Retry(3, 0)))
+			var opts []ExecOption
+			if observed {
+				opts = append(opts, WithExecObserver((&aspectTrace{}).observer()))
+			}
+			if err := g.Run(ctx, Inputs{}, opts...); !errors.Is(err, failure) || calls != 1 {
+				t.Fatalf("reliable failure retried: err=%v calls=%d", err, calls)
+			}
+		})
+	}
+}

@@ -89,10 +89,19 @@ const (
 )
 
 type aspectObservation struct {
-	rc    *RunCtx
-	obs   AspectObserver
-	base  AspectEvent
-	start time.Time
+	rc      *RunCtx
+	obs     AspectObserver
+	base    AspectEvent
+	start   time.Time
+	pending *aspectPendingAttempt
+}
+
+// 只有已报告进入、尚未报告结束的尝试需要异常收尾。每个 Retry 边界独有。
+type aspectPendingAttempt struct {
+	attempt CheckpointAttempt
+	parent  string
+	start   time.Time
+	active  bool
 }
 
 func beginAspect(rc *RunCtx, kind AspectKind, name string, limit int) (aspectObservation, *RunCtx) {
@@ -107,7 +116,21 @@ func beginAspect(rc *RunCtx, kind AspectKind, name string, limit int) (aspectObs
 		Site: rc.Site(), NodeID: rc.NodeID(), Kind: kind, Name: name, Limit: limit,
 		Boundary: id, ParentBoundary: rc.aspectBoundary, ParentAttempt: rc.aspectAttempt,
 	}}
+	if kind == AspectRetry {
+		o.pending = &aspectPendingAttempt{}
+	}
 	return o, &cp
+}
+
+// run 先经过节点原有的异常保护，再报告终态。切面自己的错误归类也可能 panic，
+// 不能在尚未赋值的命名返回值上 defer 一条 completed；观察开关不改变业务结果。
+func (o aspectObservation) run(rc *RunCtx, run func(*RunCtx) error) error {
+	err := invokeNode(rc, run)
+	if p := o.pending; p != nil && p.active {
+		o.attempt(AspectAttemptFinished, p.attempt, p.parent, err, p.start)
+	}
+	o.finish(err)
+	return err
 }
 
 func (o aspectObservation) emit(event AspectEvent) {
@@ -142,6 +165,14 @@ func (o aspectObservation) finish(err error) {
 }
 
 func (o aspectObservation) attempt(phase AspectPhase, a CheckpointAttempt, parent string, err error, start time.Time) {
+	if p := o.pending; p != nil {
+		switch phase {
+		case AspectAttemptStarted:
+			*p = aspectPendingAttempt{attempt: a, parent: parent, start: time.Now(), active: true}
+		case AspectAttemptFinished:
+			p.active = false
+		}
+	}
 	origin := AttemptUnknown
 	if a.Resumed != nil {
 		origin = AttemptNew
@@ -191,10 +222,9 @@ func NamedAspect(name string, aspect Aspect) Aspect {
 	if name == "" || aspect == nil {
 		panic("pulse: NamedAspect requires a name and an aspect")
 	}
-	return func(rc *RunCtx, next func(*RunCtx) error) (err error) {
+	return func(rc *RunCtx, next func(*RunCtx) error) error {
 		o, inner := beginAspect(rc, AspectCustom, name, 0)
 		o.emit(AspectEvent{Phase: AspectStarted})
-		defer func() { o.finish(err) }()
-		return invokeNode(inner, func(rc *RunCtx) error { return aspect(rc, next) })
+		return o.run(inner, func(rc *RunCtx) error { return aspect(rc, next) })
 	}
 }
