@@ -148,6 +148,30 @@ The two records bracket this Execution's node records. Failed startup validation
 
 The five Observer callback types do not map one-to-one onto these five Record events. Waiting and Running start or end timing; Finished finalizes it. Retry does not repeat Waiting / Running, so retries do not produce another set of node segment records. The execution segment can include multiple attempts and their delays.
 
+### Automatic aspect records
+
+`NewRecordObserver` also implements Core's optional `pulse.AspectObserver`. Installation is unchanged: existing `pulse.Retry(3, delay)` and `pulse.Timeout(d)` usage automatically produces `EventAspect` (`pulse.aspect`), without business-body logging or repeated node Waiting/Running callbacks. Existing Observer implementations still need only five methods. `MultiObserver` fans out the optional interface with panic isolation per member.
+
+| `pulse.aspect.phase` | Actual fact | `Status` / `Duration` |
+|---|---|---|
+| `started` / `finished` | Enter/leave one aspect invocation | running / actual outcome; finished measures this invocation |
+| `attempt_started` / `attempt_finished` | Enter/finish an allocated or resumed Retry attempt | running / actual outcome; finished measures this invocation of the attempt |
+| `retry` | A subsequent attempt was actually allocated; attempt_started follows | running; 0; first-attempt success never claims a retry |
+| `backoff_started` / `backoff_finished` | Actual waiting after failure, including cancellation while waiting | running / completed or canceled; finished measures the wait |
+| `deadline` | This Timeout's own timer actually expired | expired; elapsed time at reporting, without claiming the inner chain has exited |
+
+Every record carries Site and node identity, plus `pulse.aspect` (retry / timeout / custom), `pulse.aspect.boundary`, and phase. A boundary is unique only within **Execution + NodeID**. `pulse.aspect.parent_boundary` and `pulse.aspect.parent_attempt` identify the direct outer aspect. Retry's `pulse.attempt` starts at 1, and `pulse.attempt.limit` includes the first try. Configured delays use `pulse.retry.delay_ns`; timeout duration uses `pulse.timeout.duration_ns`. Terminal Err retains real failures. Normal skipping is skipped with Err=nil and never retries.
+
+Checkpoint attempts additionally carry `pulse.attempt.scope` / `pulse.attempt.parent_scope` directly from persistent cursors. `pulse.attempt.origin` is new, resumed, or unknown: a non-nil `CheckpointAttempt.Resumed` is false for fresh allocation and true for reclaiming an active cursor; nil from an older bridge remains unknown. Reclaiming attempt 2 does not invent a new retry event. Fully restored nodes run no aspects and replay no history. Durations cover only this process's invocation. Durable's Sink adapter supplies a stable RunID; Execution ID is not a substitute. A successful aspect does not imply that outer aspects or the complete node Commit succeeded.
+
+Custom functions have no inherent stable name. Register explicitly:
+
+```go
+observedApproval := pulse.NamedAspect("approval", approvalAspect)
+```
+
+The wrapper reports only this invocation's started/finished. Business facts such as approval reasons still come from the owning aspect through Record/Attrs/Sink; no function names or internal attempts are inferred. NamedAspect panics during construction for an empty name or nil aspect. Inside an aspect, `rc.Site()` returns an accurate location copy retained by Fork/Timeout, with no business values or mutable execution handle.
+
 ### Skipping, short circuits and restoration
 
 | Node path | Node records |
