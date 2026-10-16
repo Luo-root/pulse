@@ -122,6 +122,14 @@ Failed Retry attempts now stage and discard outputs, so downstream nodes never s
 
 Timeout cancels its inner context at expiry and waits for the body to exit. Code that depended on forced return at the deadline must make blocking operations honor rc.Context and finish its own work before the node returns.
 
+## Unicode and UTF-8 quoting in text logs
+
+`observe.AppendTextValue` now checks non-ASCII text using the same rules as slog.TextHandler: Unicode whitespace, non-printable characters and invalid UTF-8 trigger Go string quoting and escaping. For example, `a…b` containing U+0085, U+009B, U+2028 or U+00A0 is quoted with that character escaped, and byte FF is encoded as `\xff`. The valid replacement character U+FFFD also conservatively triggers quoting. Ordinary Chinese text and printable emoji retain their original output.
+
+The rule applies to attribute keys and string values, source, host, error, trace, and host renderers using these primitives. Corresponding fragments from the built-in LineSink and AppendTextValue / AppendAttrs / AppendAttrsExcept remain byte-identical. Text-log parsers and fixed-output assertions should update expectations for these inputs and decode quoted fields as Go string literals.
+
+The encoding primitives are frozen, so this output-byte change must ship in the next minor release, never a patch. This describes the development implementation; no new tag has been released.
+
 ## Migrate YAML and recovery integrations
 
 YAML Load returns a definition and SeedPlan, with no execution context in assembly options. Resolve plan.Inputs for each run, then supply ctx and Inputs to execution. Complete added root declarations before Validate.

@@ -269,13 +269,15 @@ The six exported primitives use the same encoding rules as the built-in layout:
 | Primitive | Purpose and boundary |
 |---|---|
 | `AppendDuration(dst, d)` | Appends duration with magnitude-selected ns, µs, ms or s; one decimal for µs, two for ms / s. Zero yields `0ns`; the built-in missing-duration placeholder is a separate layout decision |
-| `AppendTextValue(dst, text)` | Quotes empty strings, spaces, equals signs, quotes and control characters as needed using Go string literals; an empty string is `""`, not a missing value |
+| `AppendTextValue(dst, text)` | Quotes empty strings, whitespace, equals signs, quotes, non-printable characters and invalid UTF-8 using Go string literals; non-ASCII checks match slog.TextHandler, including conservative quoting of U+FFFD; an empty string is `""`, not a missing value |
 | `AppendAttrs(dst, attrs)` | Appends k=v entries in insertion order with single spaces and no leading separator; an empty group emits zero bytes |
 | `AppendAttrsExcept(dst, attrs, keys...)` | Same encoding while excluding attributes already placed in columns; nonexistent keys have no effect, and excluding everything emits zero bytes |
 | `AppendPadding(dst, n)` | Appends n spaces; n <= 0 appends nothing |
 | `DisplayWidth(text)` | Approximates terminal display columns for Padding; common East Asian characters use two columns, combining and zero-width characters use zero |
 
 The corresponding fragments are byte-identical to the built-in layout. DisplayWidth uses an approximate table of common Unicode ranges; uncommon wide characters or emoji may differ from the actual terminal.
+
+The non-ASCII quoting correction changes output bytes on the frozen encoding surface and requires a minor release. Text-log parsers and fixed-output assertions should follow the [migration notes](../site/en/reference/migration.md#unicode-and-utf-8-quoting-in-text-logs). Ordinary Chinese text and printable emoji retain their original output.
 
 The renderer runs under the Sink's internal lock. Do not call that Sink's Write / Flush / Err from it or block for long. Check Get[T]'s ok to distinguish a missing attribute from a real zero value. The host layout supplies Attrs separators. With AppendAttrsExcept, use the actual appended length to detect an empty group; Attrs.Len alone is insufficient. Individual scalar columns can use the text primitive or strconv.AppendInt / AppendFloat(..., 'g', -1, 64) / AppendBool to match attribute encoding.
 
