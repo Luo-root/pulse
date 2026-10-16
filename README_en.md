@@ -135,6 +135,8 @@ Read online: [English documentation](https://luo-root.github.io/pulse/en/) Â· [ä
 
 A normal skip means that a result is absent; the execution can still succeed. A real node error cancels this execution and retains its cause. `Retry` isolates failed attempts' writes to Pulse outputs. Application code owns database, HTTP, file, and other external side effects.
 
+Aspects can read this execution's location with `rc.Site()`. With `observe.NewRecordObserver` installed, existing `Retry` / `Timeout` usage automatically records attempts, actual retries, backoff and the current timeout's expiry, while the five Observer lifecycle callback counts stay unchanged. Register custom entry/exit observation explicitly with `pulse.NamedAspect("approval", aspect)`. Without an observer, no logs are emitted. See the [observation guide](site/en/guide/observability.md) for identities, phases and recovery boundaries.
+
 Pulse provides single-process execution. Durable provides checkpoint storage and recovery. Durable waits, task dispatch, and distributed run management are not implemented. Design rationale and plans remain in the [design document](docs/design/pulse.md), [design philosophy](docs/design/philosophy.md), and [cross-repository responsibilities](docs/design/workflow-foundation.md).
 
 ## Development and contributions

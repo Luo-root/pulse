@@ -135,6 +135,8 @@ func main() {
 
 正常跳过表示没有这项结果，整次执行仍可成功。节点的真实错误会取消本次执行，并保留错误原因。`Retry` 隔离失败尝试对 Pulse 输出的写入；数据库、HTTP 请求、文件等外部副作用由业务负责。
 
+切面可用 `rc.Site()` 取得本次执行的只读位置。接入 `observe.NewRecordObserver` 后，现有 `Retry` / `Timeout` 自动产生尝试、真实重试、退避和本层到期记录，五种 Observer 生命周期回调次数不变。自定义切面用 `pulse.NamedAspect("approval", aspect)` 显式登记进出；未配置观察者时不输出日志。身份、阶段与恢复边界见[观测指南](site/guide/observability.md)。
+
 Pulse 负责单进程执行。检查点存储与恢复由 Durable 提供；持久等待、任务派发和分布式运行管理尚未实现。设计依据与演进计划保留在 [设计文档](docs/design/pulse.md)、[设计理念](docs/design/philosophy.md) 和 [两仓职责说明](docs/design/workflow-foundation.md) 中。
 
 ## 开发与贡献

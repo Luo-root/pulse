@@ -79,6 +79,14 @@ Retry 多次尝试不重复 Waiting 或 Running。启动校验失败不发图或
 
 不要在回调里对同一执行调用 Start/Wait；回调位于它们的调用链上，可能发生自等待。GraphFinished 时最终结果已确定，可以调用 ReadOutput。
 
+## 可选切面事实
+
+`AspectObserver.OnAspectEvent(AspectEvent)` 补充实际切面控制点，不扩充 Observer 的五方法或改变上表次数。通过同一 WithObserver/WithExecObserver 安装，沿执行环境继承；MultiObserver 只向实现了该接口的成员隔离扇出。回调在引擎锁外执行，可读 Snapshot，panic 不改变业务结果。
+
+Retry 在实际分配/认回游标后报告 attempt_started，结束时报 attempt_finished；只有真正分配后续尝试才报 retry。正常 skip 不重试、不记失败。Timeout 的 deadline 来自自己的计时器 cause，父取消或外层到期不会冒充本层；finished 在内层确实退出后发出，panic/可靠失败保持 failed。NamedAspect 显式登记自定义切面，只自动报告进出。未配置观察者时不输出日志。
+
+`RunCtx.Site()` 与回调、运行快照共享真实 Site。边界号只在本次节点执行内唯一，直接父边界和父尝试另外关联；持久 Scope 与恢复标记来自检查点桥，完整恢复不补历史。字段及阶段见[observe 包参考](../packages/observe/index.md)。
+
 ## observe 的事件与耗时
 
 | 事件 | 产生条件 | Duration |
@@ -88,6 +96,7 @@ Retry 多次尝试不重复 Waiting 或 Running。启动校验失败不发图或
 | `pulse.node_wait_finished` | 等待结束、进入执行或在等待后终结 | 等待段 |
 | `pulse.node_run_finished` | 已进入业务体后的终结 | 执行段 |
 | `pulse.node_finished` | 没有 Waiting/Running 的失败或取消 | 0，未测量 |
+| `pulse.aspect` | 可选切面事实 | 实际调用、尝试、等待或到期报告的耗时；进入和 retry 为 0 |
 
 正常 skipped 的 Record.Err 为 nil。只有 Finished 的 completed/skipped 不生成节点耗时记录，包括恢复和成功短路。切面在 next 前失败时用 node_finished 保留归因。
 

@@ -104,6 +104,31 @@ run=2 status=completed value=42 state=ready records=4
 
 观察者默认由子图继承。一个出口可以接收整棵执行树的记录，无需按层创建观察者。`ObserveConfig.Path` 只是 Site 没有路径时的兜底，普通引擎运行通常留空；非空兜底也会作用于根记录。
 
+## 直接看懂 Retry 与 Timeout
+
+已有节点保持 `pulse.Retry(3, time.Second)` 的装法；按上例安装 RecordObserver 后，会额外收到 `pulse.aspect` 记录。比如第一次失败、第二次成功，阶段依次是：
+
+```text
+started
+attempt_started  attempt=1 origin=new
+attempt_finished attempt=1 status=failed
+backoff_started → backoff_finished
+retry           attempt=2 origin=new
+attempt_started  attempt=2 origin=new
+attempt_finished attempt=2 status=completed
+finished        status=completed
+```
+
+attempt 包括首次，limit 是总上限。首次成功只有一次尝试，没有 retry 或退避记录；正常跳过以 skipped、Err=nil 收尾，不重试。嵌套 Retry 的边界号在同一 Execution + NodeID 内唯一，父边界与父尝试单独关联，不能只按节点名混加次数。原五种 Observer 回调次数不变，节点执行段仍覆盖全部尝试。
+
+Timeout 自动报告自己的 started、deadline（若本层确实到期）、finished。deadline 不是业务退出：协作取消仍等内层返回，最终错误可能是保留下来的 panic 或可靠失败。父上下文取消、外层 Timeout 到期不会被算成本层 deadline。
+
+自定义切面用 `pulse.NamedAspect("approval", approvalAspect)` 显式包装进出；裸函数不会被猜名，也不会自动猜审批原因。切面可用 `rc.Site()` 和 `rc.NodeID()` 读取真实位置；Fork 和 Timeout 保留同一 Site，返回的是不带业务值的副本。
+
+要直接消费 Core 事实，可让原 Observer 另实现 `pulse.AspectObserver`，或填 `pulse.ObserverFunc.Aspect`。通过同一观察者选项装配，MultiObserver 隔离每个成员的 panic；额外回调与 Sink 重入 Snapshot 不持有引擎状态锁。无观察者时不写日志。
+
+检查点编号来自实际持久游标，`origin` 区分 new、resumed；桥未提供可选 `CheckpointAttempt.Resumed` 时为 unknown。认回第 2 次不等于刚发生一次新重试；完整恢复的节点不产生历史切面记录。Scope / ParentScope 来自桥，稳定 RunID 由 Durable 的 Sink 适配补充。字段、耗时与每个阶段见 [observe 包参考](../packages/observe/index.md)。
+
 ## 查看进度与 Mermaid
 
 以下片段用于已有 `g`、`e` 的宿主程序，需要 `fmt` 导入：

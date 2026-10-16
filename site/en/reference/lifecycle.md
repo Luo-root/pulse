@@ -79,6 +79,14 @@ Retry attempts do not repeat Waiting or Running. Rejected start validation emits
 
 Do not call Start/Wait on the same execution inside a callback; callbacks sit on their call chains and may wait for themselves. Results are finalized in GraphFinished, where ReadOutput is permitted.
 
+## Optional aspect facts
+
+`AspectObserver.OnAspectEvent(AspectEvent)` supplements actual aspect control points without extending Observer's five methods or changing the counts above. Install through the same WithObserver/WithExecObserver environment. Children inherit it; MultiObserver fans out only to members implementing the optional interface, isolating each panic. Callbacks run outside engine locks, can read Snapshot, and cannot turn observer panic into business failure.
+
+Retry reports attempt_started after allocation/reclamation and attempt_finished on completion. Only actual subsequent allocation emits retry. Normal skipping never retries or counts as failure. Timeout derives deadline from its own timer cause; parent cancellation or an outer timeout cannot impersonate it. Finished follows actual inner exit, retaining panic/reliable failure as failed. NamedAspect explicitly registers custom entry/exit observation. Without an observer, no logs are emitted.
+
+`RunCtx.Site()` shares the actual Site used by callbacks and execution snapshots. Boundaries are unique within this node execution, with direct parent boundary and attempt association. Persistent scopes and recovery markers come from the checkpoint bridge; complete restoration replays no history. See the [observe package reference](../packages/observe/index.md) for fields and phases.
+
 ## observe events and duration
 
 | Event | Produced when | Duration |
@@ -88,6 +96,7 @@ Do not call Start/Wait on the same execution inside a callback; callbacks sit on
 | `pulse.node_wait_finished` | Waiting ends through entry or termination | Wait segment |
 | `pulse.node_run_finished` | Termination after entering the body | Run segment |
 | `pulse.node_finished` | Failure or cancellation without Waiting/Running | 0, not measured |
+| `pulse.aspect` | Optional aspect facts | Measured invocation, attempt, wait or expiry reporting; entry and retry use 0 |
 
 Normal skipped records have nil Record.Err. A lone completed/skipped Finished generates no node timing record, including restoration and successful short-circuiting. An aspect failing before next produces node_finished to retain attribution.
 
