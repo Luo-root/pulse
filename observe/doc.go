@@ -10,6 +10,8 @@
 // NewRecordObserver 折叠，事件名 `pulse.node_wait_finished` /
 // `pulse.node_run_finished`。切面在 next 前失败或取消时另发
 // `pulse.node_finished`，未测量的 Duration 留零；正常跳过的 Err 为 nil。
+// 内置 Retry/Timeout 与显式 NamedAspect 另经可选 AspectObserver 输出 `pulse.aspect`，
+// 实际边界、阶段、尝试与持久游标经 Attrs 传递；不重复生命周期，不补造恢复前历史。
 // 归因维度走 Attrs（`pulse.graph` / `pulse.node` / `pulse.execution` /
 // `pulse.path`，key 契约由引擎定义）。
 //
@@ -21,7 +23,7 @@
 //   - **Sink** 是出口。默认 **LineSink**——一行一条的人读文本（列式版式、
 //     属性插入序、只在终端上色），自带 32 KiB 缓冲、零分配、不经 slog。
 //
-//   - **Observer 适配**把引擎的三条回调折成记录；引擎不认识 Sink。
+//   - **Observer 适配**承接五条生命周期回调与可选切面事实；引擎不认识 Sink。
 //
 //     sink := observe.NewLineSink(os.Stdout) // 关闭前必须 Flush()
 //     obs, err := observe.NewRecordObserver(observe.ObserveConfig{
