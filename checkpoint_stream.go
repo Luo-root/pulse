@@ -235,6 +235,7 @@ type checkpointStream struct {
 	request    *CheckpointStreamOpen // 实际写端先创建时的首次 Open；与恢复路径共用 once。
 	cached     *checkpointStreamCache
 	once       sync.Once
+	ready      chan struct{} // once 选出初始化者；安装结果由关闭 ready 发布。
 	err        error
 }
 
@@ -371,10 +372,6 @@ func checkCheckpointStreamRecord(request CheckpointStreamOpen, record Checkpoint
 		(len(record.Pending) != 0 && record.Pending[0].Sequence != record.AckedThrough+1)) {
 		return fmt.Errorf("stream Open returned a non-contiguous confirmation frontier")
 	}
-	if !descriptor.Stopped && ((len(record.Pending) == 0 && record.AckedThrough != record.LastSequence) ||
-		(len(record.Pending) != 0 && record.Pending[0].Sequence != record.AckedThrough+1)) {
-		return fmt.Errorf("stream Open returned a confirmation frontier inconsistent with its pending messages")
-	}
 	previous := record.AckedThrough
 	for _, message := range record.Pending {
 		if message.Sequence <= previous || message.Sequence > record.LastSequence {
@@ -496,7 +493,7 @@ func (s *managedStream[T]) installCheckpointRecord(record CheckpointStreamRecord
 			value = saved.Value.(T)
 		}
 		message := &managedMessage[T]{value: value, sequence: saved.Sequence}
-		s.pending[message.sequence] = message
+		s.addPendingLocked(message)
 		s.enqueueLocked(message)
 	}
 	// 持久写端终态与读取组 Stop 是独立事实；不能重新按当前 stopped 推导终态。
@@ -562,55 +559,73 @@ func (e *Execution) restoreCheckpointStreams(n *Node) error {
 	return nil
 }
 
-// ensureCheckpoint 必须在 Receive/Messages/Stop 使用恢复端点之前调用，且不持流锁。
+// ensureCheckpoint 必须在读取/收尾使用恢复端点之前调用，且不持流锁或 operation 门。
 // 恢复别名和实际写端共用一次 Open；active 来源保留 Done，真正写端结束后才开放 EOF。
 func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 	checkpoint := s.checkpoint
 	if checkpoint == nil || (!checkpoint.restore && checkpoint.request == nil) {
 		return nil
 	}
+	ctx := checkpoint.exec.checkpoint.failure.root.ctx
+	if len(contexts) != 0 && contexts[0] != nil {
+		ctx = contexts[0]
+	}
+	initialize := false
 	checkpoint.once.Do(func() {
-		descriptor := checkpoint.descriptor
-		site := checkpoint.exec.site
-		site.Graph, site.Path = descriptor.Graph, descriptor.Path
-		request := CheckpointStreamOpen{Site: site, Scope: descriptor.ID.Scope, Attempt: descriptor.Attempt,
-			NodeID: descriptor.ID.NodeID, Key: CheckpointKey{Name: descriptor.ID.Key, Type: reflect.TypeFor[Stream[T]](), Element: descriptor.Element},
-			Group: descriptor.ID.Group, Source: descriptor.Source, Capacity: descriptor.Capacity, Restore: &descriptor}
-		if checkpoint.request != nil {
-			request = *checkpoint.request
+		checkpoint.ready = make(chan struct{})
+		initialize = true
+	})
+	if !initialize {
+		// sync.Once 不包住同步钩子，否则并发等待者不能独立响应取消。
+		select {
+		case <-checkpoint.ready:
+			return checkpoint.err
+		default:
 		}
-		ctx := checkpoint.exec.checkpoint.failure.root.ctx
-		if len(contexts) != 0 && contexts[0] != nil {
-			ctx = contexts[0]
+		select {
+		case <-checkpoint.ready:
+			return checkpoint.err
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-		record, err := checkpoint.exec.openCheckpointStream(ctx, request)
-		if err == nil {
-			failure := checkpoint.exec.checkpoint.failure
-			err = func() error {
-				failure.mu.Lock()
-				defer failure.mu.Unlock()
-				if checkpoint.cached != nil && checkpoint.cached.hasReference {
-					if err := checkCheckpointStreamReference(record.Stream, checkpoint.cached.reference, record.Resumed); err != nil {
-						return err
-					}
-				}
-				s.mu.Lock()
-				checkpoint.descriptor, checkpoint.cursor = record.Stream, record.Cursor
-				s.mu.Unlock()
-				if err := s.installCheckpointRecord(record); err != nil {
+	}
+	defer close(checkpoint.ready)
+	descriptor := checkpoint.descriptor
+	site := checkpoint.exec.site
+	site.Graph, site.Path = descriptor.Graph, descriptor.Path
+	request := CheckpointStreamOpen{Site: site, Scope: descriptor.ID.Scope, Attempt: descriptor.Attempt,
+		NodeID: descriptor.ID.NodeID, Key: CheckpointKey{Name: descriptor.ID.Key, Type: reflect.TypeFor[Stream[T]](), Element: descriptor.Element},
+		Group: descriptor.ID.Group, Source: descriptor.Source, Capacity: descriptor.Capacity, Restore: &descriptor}
+	if checkpoint.request != nil {
+		request = *checkpoint.request
+	}
+	record, err := checkpoint.exec.openCheckpointStream(ctx, request)
+	if err == nil {
+		failure := checkpoint.exec.checkpoint.failure
+		err = func() error {
+			failure.mu.Lock()
+			defer failure.mu.Unlock()
+			if checkpoint.cached != nil && checkpoint.cached.hasReference {
+				if err := checkCheckpointStreamReference(record.Stream, checkpoint.cached.reference, record.Resumed); err != nil {
 					return err
 				}
-				if checkpoint.cached != nil {
-					checkpoint.cached.opened, checkpoint.cached.resumed = true, record.Resumed
-				}
-				return nil
-			}()
-			if err != nil {
-				err = checkpoint.exec.stopCheckpoint("restore stream", err)
 			}
+			s.mu.Lock()
+			checkpoint.descriptor, checkpoint.cursor = record.Stream, record.Cursor
+			s.mu.Unlock()
+			if err := s.installCheckpointRecord(record); err != nil {
+				return err
+			}
+			if checkpoint.cached != nil {
+				checkpoint.cached.opened, checkpoint.cached.resumed = true, record.Resumed
+			}
+			return nil
+		}()
+		if err != nil {
+			err = checkpoint.exec.stopCheckpoint("restore stream", err)
 		}
-		checkpoint.err = err
-	})
+	}
+	checkpoint.err = err
 	return checkpoint.err
 }
 
@@ -677,7 +692,7 @@ func (w *StreamWriter[T]) sendCheckpointValue(value T, cursor any) error {
 		s.mu.Lock()
 		s.last, checkpoint.cursor = sequence, cursor
 		message := &managedMessage[T]{value: value, sequence: sequence}
-		s.pending[sequence] = message
+		s.addPendingLocked(message)
 		s.enqueueLocked(message)
 		s.mu.Unlock()
 		s.operation.unlock()
@@ -817,20 +832,7 @@ func checkpointChainResult(rc *RunCtx, err error) error {
 			}
 		}
 	}
-	if !rc.node.sub {
-		seen := make(map[managedReaderLifecycle]bool)
-		for _, ref := range rc.node.requires {
-			state, value := rc.exec.slotOf(ref).snapshot()
-			reader, ok := value.(managedReaderLifecycle)
-			if state == slotReady && ok && !seen[reader] {
-				seen[reader] = true
-				if cause := reader.pulseReaderFinished(rc, err); cause != nil && (err == nil || isSkipped(err)) {
-					err = cause
-				}
-			}
-		}
-	}
-	return err
+	return rc.finishStreamReaders(err)
 }
 
 // checkpointMessage 是 HandleMessage 一次持久尝试的状态视图，不与节点 Retry 共用预算。

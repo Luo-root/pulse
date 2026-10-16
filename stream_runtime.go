@@ -75,6 +75,18 @@ func (rc *RunCtx) finishStreams(err error) error {
 			}
 		}
 	}
+	err = rc.finishStreamReaders(err)
+	// 先确定完整节点的共同结论，再终结各出口；不能先把第一条流关成成功，
+	// 随后才从另一条流发现这个实际写端早已失败。
+	for _, output := range outputs {
+		output.finish(err)
+	}
+	return err
+}
+
+// finishStreamReaders 共用于普通收尾和可靠 Commit 之前的判定，只记录读取端退出，
+// 不开放实际写端终态。晚到端点在成功/正常跳过路径先到达，再检查读取义务。
+func (rc *RunCtx) finishStreamReaders(err error) error {
 	// Sub 只是接线代理，不是读取者；只有声明 Requires 的实际业务节点
 	// 履行读取义务。同一端点可经不同名称出现，按端点幂等收尾。
 	if rc.node != nil && !rc.node.sub {
@@ -107,11 +119,6 @@ func (rc *RunCtx) finishStreams(err error) error {
 				err = cause
 			}
 		}
-	}
-	// 先确定完整节点的共同结论，再终结各出口；不能先把第一条流关成成功，
-	// 随后才从另一条流发现这个实际写端早已失败。
-	for _, output := range outputs {
-		output.finish(err)
 	}
 	return err
 }

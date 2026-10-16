@@ -26,9 +26,10 @@ const (
 )
 
 type managedMessage[T any] struct {
-	value    T
-	sequence uint64
-	current  *managedAck[T]
+	value      T
+	sequence   uint64
+	current    *managedAck[T]
+	prev, next *managedMessage[T] // 按序号排列的未确认消息；Nack 不改变此链。
 }
 
 type managedAck[T any] struct {
@@ -161,18 +162,42 @@ func (d Delivery[T]) active() bool {
 	return d.ack.activeLocked()
 }
 
+// addPendingLocked 按已接纳序号追加；普通发送、消息批次和已校验的恢复记录
+// 都按严格递增序号安装。链只保留当前未确认消息，空间受在途容量限制。
+func (s *managedStream[T]) addPendingLocked(message *managedMessage[T]) {
+	message.prev = s.pendingTail
+	if s.pendingTail == nil {
+		s.pendingHead = message
+	} else {
+		s.pendingTail.next = message
+	}
+	s.pendingTail = message
+	s.pending[message.sequence] = message
+}
+
 // 与 Delivery.Ack 相同的连续前沿规则；本方法仅在交付和全部输出都预检成功后调用。
 func (a *managedAck[T]) confirmMessageLocked() {
-	s := a.stream
+	s, message := a.stream, a.message
 	a.state = deliveryAcknowledged
-	delete(s.pending, a.message.sequence)
+	delete(s.pending, message.sequence)
+	if message.prev == nil {
+		s.pendingHead = message.next
+	} else {
+		message.prev.next = message.next
+	}
+	if message.next == nil {
+		s.pendingTail = message.prev
+	} else {
+		message.next.prev = message.prev
+	}
+	message.prev, message.next = nil, nil
 	var zero T
-	a.message.value = zero
+	message.value = zero
+	// 最早未确认消息之前都已确认。O(1) 找到前沿，不重扫 pending，
+	// 也不逐个遍历稀疏恢复记录里的已确认大区间；不计算 last+1，避免序号溢出。
 	s.frontier = s.last
-	for sequence := range s.pending {
-		if sequence <= s.frontier {
-			s.frontier = sequence - 1
-		}
+	if s.pendingHead != nil {
+		s.frontier = s.pendingHead.sequence - 1
 	}
 	if s.finished && len(s.pending) == 0 {
 		s.closeQueueLocked()

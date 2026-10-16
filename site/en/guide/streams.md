@@ -283,6 +283,7 @@ Ordinary Retry explicitly rejects actual external stream inputs/outputs before I
 | Buffering | Default unbuffered; queued messages only | Default 1; queued plus unacknowledged total |
 | Quota | Held throughout; conservative simultaneous-participant checks | Managed waits release quota; a purely managed pipeline can progress with 1 |
 | Terminal result | close alone does not prove producer success | Snapshot.Err/Terminal and Done record separate facts |
+| Normal skip | NoValue from Consume stops callbacks, drains under Context until close, then skips the whole node | NoValue from ConsumeStream skips and acknowledges only this message, then continues |
 | Retry | No Ack, automatic rewind, or message reliability | Explicit finite HandleMessage; progressive sources continue by cursor |
 | Checkpoints | Native and nested channels remain rejected | Optional StreamHooks; descriptors separate from message records |
 

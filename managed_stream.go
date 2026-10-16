@@ -64,6 +64,8 @@ type managedStream[T any] struct {
 	done        chan struct{}
 	capacity    int
 	pending     map[uint64]*managedMessage[T]
+	pendingHead *managedMessage[T]
+	pendingTail *managedMessage[T]
 	last        uint64
 	frontier    uint64
 	finished    bool
@@ -179,7 +181,7 @@ func (w *StreamWriter[T]) Send(value T) error {
 			}
 			s.last++
 			message := &managedMessage[T]{value: value, sequence: s.last}
-			s.pending[message.sequence] = message
+			s.addPendingLocked(message)
 			s.enqueueLocked(message)
 			s.mu.Unlock()
 			// 接纳已发生，之后的取消不能把它改报为“没有发送”。
@@ -329,8 +331,10 @@ func (s Stream[T]) Stop(rc *RunCtx) error {
 		message.current.state = deliveryExpired
 		var zero T
 		message.value = zero
+		message.prev, message.next = nil, nil
 		delete(state.pending, sequence)
 	}
+	state.pendingHead, state.pendingTail = nil, nil
 	for {
 		select {
 		case _, ok := <-state.queue:
@@ -428,6 +432,11 @@ func (s *managedStream[T]) registerReader(rc *RunCtx) (managedReaderID, int, err
 	if rc.node.compete != "" {
 		rc.exec.graph.mu.Lock()
 		for _, node := range rc.exec.graph.nodes {
+			// 已恢复节点只报告 Finished，不再执行读取或收尾，不能登记成仍会接手的成员。
+			// restored 按本次 Execution 的节点指针核验，其他挂载的同名 worker 不受影响。
+			if _, restored := rc.exec.restored[node]; restored {
+				continue
+			}
 			if node.compete == rc.node.compete && node.id != id.node {
 				members = append(members, managedReaderID{exec: rc.exec, node: node.id})
 			}
@@ -456,11 +465,18 @@ func (s Stream[T]) pulseReaderFinished(rc *RunCtx, err error) error {
 	if s.state == nil {
 		return fmt.Errorf("pulse: reader %q finished with an unopened stream", rc.NodeID())
 	}
-	id, _, registerErr := s.state.registerReader(rc)
+	state := s.state
+	// 恢复槽位先发布本地端点，权威 Open 可能仍在进行。成功/正常跳过必须先
+	// 认回生产终态和未确认尾部；失败不等恢复，也不持状态锁或 operation 门等待。
+	if err == nil || isSkipped(err) {
+		if restoreErr := state.ensureCheckpoint(rc.Context()); restoreErr != nil {
+			return restoreErr
+		}
+	}
+	id, _, registerErr := state.registerReader(rc)
 	if registerErr != nil {
 		return nil // 已记录的退出，可能是同一端点的另一个 Requires 别名。
 	}
-	state := s.state
 	if operationErr := state.operation.lock(rc); operationErr != nil {
 		if err != nil && !isSkipped(err) {
 			return nil // 执行已失败/取消，保留原始原因和未确认记录。
