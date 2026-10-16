@@ -525,3 +525,161 @@ func TestRetryStopsReliableFailureWithoutCheckpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestAspectObservationCleanupDoesNotCancelRPCFailure(t *testing.T) {
+	for _, checkpoint := range []bool{false, true} {
+		for _, observed := range []bool{false, true} {
+			for _, kind := range []AspectKind{AspectRetry, AspectCustom} {
+				for _, cleanup := range []bool{false, true} {
+					for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+						t.Run(fmt.Sprintf("checkpoint=%t/observed=%t/%s/cleanup=%t/%v", checkpoint, observed, kind, cleanup, cause), func(t *testing.T) {
+							ctx := checkpointTestContext(t)
+							trace := &aspectTrace{}
+							aspect := Retry(1, 0)
+							if kind == AspectCustom {
+								aspect = NamedAspect("rpc", func(rc *RunCtx, next func(*RunCtx) error) error { return next(rc) })
+							}
+							failure := fmt.Errorf("independent RPC: %w", cause)
+							calls := 0
+							g := mustNew(t, ctx, "rpc-cleanup-origin")
+							mustAdd(t, g, NewNode("n", "清理本层上下文不改写RPC错误来源", nil, nil, func(rc *RunCtx) error {
+								calls++
+								if cleanup {
+									defer rc.Cancel()
+								}
+								return failure
+							}, aspect))
+							var opts []ExecOption
+							if checkpoint {
+								opts = append(opts, WithExecCheckpoint("root", (&checkpointProbe{}).hooks()))
+							}
+							if observed {
+								opts = append(opts, WithExecObserver(trace.observer()))
+							}
+							e, err := g.NewExecution(ctx, Inputs{}, opts...)
+							managedTestOK(t, err)
+							defer e.Cancel()
+							managedTestOK(t, e.Start())
+							if err := e.Wait(); !errors.Is(err, failure) || calls != 1 || ctx.Err() != nil {
+								t.Fatalf("business result changed: err=%v calls=%d host=%v", err, calls, ctx.Err())
+							}
+							state := e.Snapshot()
+							if state.Graph.Status != GraphStatusFailed || state.Nodes[0].Status != NodeStatusFailed {
+								t.Fatalf("RPC failure lost: graph=%s node=%s", state.Graph.Status, state.Nodes[0].Status)
+							}
+							terminals := 0
+							for _, event := range trace.snapshot() {
+								if event.Phase != AspectFinished && event.Phase != AspectAttemptFinished {
+									continue
+								}
+								terminals++
+								if event.Reason != NodeFailed || !errors.Is(event.Err, failure) {
+									t.Errorf("cleanup changed RPC observation: %+v", event)
+								}
+							}
+							want := 0
+							if observed {
+								want = 1
+								if kind == AspectRetry {
+									want = 2
+								}
+							}
+							if terminals != want {
+								t.Fatalf("terminal event count=%d want=%d", terminals, want)
+							}
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestAspectObservationUnmarkedForkCancelIsFailure(t *testing.T) {
+	for _, deferred := range []bool{false, true} {
+		t.Run(fmt.Sprint(deferred), func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			trace := &aspectTrace{}
+			g := mustNew(t, ctx, "unmarked-fork-origin")
+			forked := func(rc *RunCtx, next func(*RunCtx) error) error {
+				fork := rc.Fork()
+				defer fork.Cancel()
+				return next(fork)
+			}
+			mustAdd(t, g, NewNode("n", "无来源标记的局部取消不猜业务意图", nil, nil, func(rc *RunCtx) error {
+				if deferred {
+					defer rc.Cancel()
+					return context.Canceled // 独立 RPC 错误，随后清理。
+				}
+				rc.Cancel()
+				return rc.Context().Err() // 主动 Fork 取消，最终可读事实与上面相同。
+			}, forked, NamedAspect("fork", func(rc *RunCtx, next func(*RunCtx) error) error { return next(rc) })))
+			if err := g.Run(ctx, Inputs{}, WithExecObserver(trace.observer())); finishReason(err) != NodeFailed || !errors.Is(err, context.Canceled) {
+				t.Fatalf("unmarked local result changed: %v", err)
+			}
+			events := trace.snapshot()
+			if len(events) != 2 || events[1].Phase != AspectFinished || events[1].Reason != NodeFailed {
+				t.Fatalf("unmarked Fork cancellation guessed intent: %+v", events)
+			}
+		})
+	}
+}
+
+func TestAspectObservationPreservesCancellationOrigins(t *testing.T) {
+	for _, checkpoint := range []bool{false, true} {
+		for _, kind := range []AspectKind{AspectRetry, AspectCustom} {
+			for _, origin := range []string{"host", "outer-timeout", "forwarded"} {
+				t.Run(fmt.Sprintf("checkpoint=%t/%s/%s", checkpoint, kind, origin), func(t *testing.T) {
+					ctx, cancel := context.WithCancel(checkpointTestContext(t))
+					defer cancel()
+					trace := &aspectTrace{}
+					aspect := Retry(1, 0)
+					if kind == AspectCustom {
+						aspect = NamedAspect("inner", func(rc *RunCtx, next func(*RunCtx) error) error { return next(rc) })
+					}
+					var aspects []Aspect
+					if origin == "outer-timeout" {
+						aspects = append(aspects, Timeout(time.Millisecond))
+					}
+					aspects = append(aspects, aspect)
+					g := mustNew(t, ctx, "control-cancellation-origin")
+					mustAdd(t, g, NewNode("n", "真实控制取消仍按取消记录", nil, nil, func(rc *RunCtx) error {
+						if origin == "forwarded" {
+							return &executionCancellation{cause: context.Canceled}
+						}
+						if origin == "host" {
+							cancel()
+						}
+						<-rc.Context().Done()
+						return rc.Context().Err()
+					}, aspects...))
+					var opts []ExecOption
+					if checkpoint {
+						opts = append(opts, WithExecCheckpoint("root", (&checkpointProbe{}).hooks()))
+					}
+					opts = append(opts, WithExecObserver(trace.observer()))
+					if err := g.Run(ctx, Inputs{}, opts...); err == nil {
+						t.Fatal("control cancellation was lost")
+					}
+					terminals := 0
+					for _, event := range trace.snapshot() {
+						if event.Kind != kind || (event.Phase != AspectFinished && event.Phase != AspectAttemptFinished) {
+							continue
+						}
+						terminals++
+						if event.Reason != NodeCanceled || !isCanceled(event.Err) {
+							t.Errorf("real cancellation was reclassified: %+v", event)
+						}
+					}
+					want := 1
+					if kind == AspectRetry {
+						want = 2
+					}
+					if terminals != want {
+						t.Fatalf("terminal event count=%d want=%d", terminals, want)
+					}
+				})
+			}
+		}
+	}
+}

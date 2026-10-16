@@ -3,6 +3,7 @@ package observe
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -189,5 +190,67 @@ func TestRecordObserverAspectTimeoutAndNamedRecords(t *testing.T) {
 	want := []string{"custom:started", "timeout:started", "timeout:deadline", "timeout:finished", "custom:finished"}
 	if !reflect.DeepEqual(phases, want) {
 		t.Fatalf("phases=%v", phases)
+	}
+}
+
+func TestRecordObserverCleanupDoesNotCancelRPCFailure(t *testing.T) {
+	for _, named := range []bool{false, true} {
+		for _, cleanup := range []bool{false, true} {
+			for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+				t.Run(fmt.Sprintf("named=%t/cleanup=%t/%v", named, cleanup, cause), func(t *testing.T) {
+					ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+					defer cancel()
+					sink := &MemorySink{}
+					obs, err := NewRecordObserver(testObsCfg(sink))
+					if err != nil {
+						t.Fatal(err)
+					}
+					g := mustGraph(t, "rpc-cleanup-record")
+					aspect := pulse.Retry(1, 0)
+					if named {
+						aspect = pulse.NamedAspect("rpc", func(rc *pulse.RunCtx, next func(*pulse.RunCtx) error) error { return next(rc) })
+					}
+					failure := fmt.Errorf("independent RPC: %w", cause)
+					if err := g.Add(pulse.NewNode("n", "清理后仍记录真实RPC失败", nil, nil, func(rc *pulse.RunCtx) error {
+						if cleanup {
+							defer rc.Cancel()
+						}
+						return failure
+					}, aspect)); err != nil {
+						t.Fatal(err)
+					}
+					if err := g.Run(ctx, pulse.Inputs{}, pulse.WithExecObserver(obs)); !errors.Is(err, failure) {
+						t.Fatalf("original failure lost: %v", err)
+					}
+					var terminals, lifecycle int
+					for _, record := range sink.Snapshot() {
+						if record.Event == EventNodeRunFinished || record.Event == EventGraphFinished {
+							lifecycle++
+							if record.Status != "failed" || !errors.Is(record.Err, failure) {
+								t.Errorf("lifecycle failure changed: %+v", record)
+							}
+						}
+						if record.Event != EventAspect {
+							continue
+						}
+						phase, _ := Get[string](record.Attrs, pulse.AttrAspectPhase)
+						if phase != "finished" && phase != "attempt_finished" {
+							continue
+						}
+						terminals++
+						if record.Status != "failed" || !errors.Is(record.Err, failure) {
+							t.Errorf("cleanup changed aspect record: %+v", record)
+						}
+					}
+					want := 2
+					if named {
+						want = 1
+					}
+					if terminals != want || lifecycle != 2 {
+						t.Fatalf("records: aspect=%d want=%d lifecycle=%d", terminals, want, lifecycle)
+					}
+				})
+			}
+		}
 	}
 }

@@ -1,6 +1,9 @@
 package pulse
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // AspectObserver 是可选的切面事实出口。通过 WithObserver / WithExecObserver 安装的
 // Observer 实现它即可接收；不增加原五回调的次数。与 Observer 一样须并发安全、快速返回，
@@ -147,8 +150,11 @@ func (o aspectObservation) emit(event AspectEvent) {
 		switch e.Phase {
 		case AspectFinished, AspectAttemptFinished, AspectBackoffFinished:
 			e.Reason = finishReason(event.Err)
-			// 独立 RPC 的 context 错误不是执行域取消；Fork/外层 Timeout 取消则是。
-			if e.Reason == NodeCanceled && o.rc.ctx.Err() == nil && !isExecutionCancellation(event.Err) {
+			// 本层 Cancel 也可能只是业务返回后的清理，不能据此把独立 RPC 失败降为取消。
+			// 执行域取消、外层控制时限实际到期或已锁存的取消来源才足以保留 canceled；
+			// DeadlineExceeded 不会被后续清理 Cancel 覆盖。
+			if e.Reason == NodeCanceled && o.rc.exec.ctx.Err() == nil &&
+				o.rc.ctx.Err() != context.DeadlineExceeded && !isExecutionCancellation(event.Err) {
 				e.Reason = NodeFailed
 			}
 		}
