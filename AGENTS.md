@@ -34,7 +34,7 @@ docs/design/    # pulse.md / philosophy.md / object-model.md / workflow-foundati
 site/           # bilingual VitePress introduction / usage guides / reference; package pages sync from repository READMEs
 ```
 
-Production files group related internals without moving public packages: `graph.go` holds Graph and sources; `key.go` holds typed keys, ports and Registry; `inputs.go` holds run inputs and coercion; `slot.go` holds slots and attempt write sets; `snapshot.go` holds execution views and host-output reads. `execution.go` owns execution types, creation, Start/Wait, lifecycle and ExecOption; `execution_run.go` owns runNode, settleUnwritten, limiter and the child-execution runtime bridge; `sub.go` owns static composition and binds. Checkpoint execution/Retry/value helpers live together in `checkpoint_run.go`; stream validation and skip propagation live in `stream_problems.go`.
+Production files group related internals without moving public packages: `graph.go` holds Graph and sources; `key.go` holds typed keys, ports and Registry; `inputs.go` holds run inputs and coercion; `slot.go` holds slots and attempt write sets; `snapshot.go` holds execution views and host-output reads. `execution.go` owns execution types, creation, Start/Wait, lifecycle and ExecOption; `execution_run.go` owns runNode, settleUnwritten, limiter, node quota leases and managed waits, stream Retry boundaries and the child-execution runtime bridge; `sub.go` owns static composition and binds. Checkpoint execution/Retry/value helpers live together in `checkpoint_run.go`; `managed_stream.go` holds managed endpoints, state and the operation gate; stream validation and skip propagation live in `stream_problems.go`.
 
 ## Key conventions
 
