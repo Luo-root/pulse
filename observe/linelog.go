@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -133,8 +134,8 @@ const (
 //     （`observe` 折叠时按「图 → 节点」的顺序 Set），出口不认识业务语义，
 //     排序只会把它打乱；插入序同样是确定性的，且省掉一次排序；
 //   - **不丢字段**：固定列盖不住的属性全部按插入序跟在列后面；
-//   - **组内 k=v 按需加引号**（含空格 / 等号 / 引号 / 控制字符），与
-//     slog.TextHandler 的 needsQuoting 同一口径；**列**（状态 / 事件）按
+//   - **组内 k=v 按需加引号**（空白 / 等号 / 引号 / 不可打印字符 / 非法
+//     UTF-8），非 ASCII 判据与 slog.TextHandler 一致；**列**（状态 / 事件）按
 //     原样输出不加引号——状态可能是一整句话（宿主自由文本）。
 //
 // # 颜色
@@ -574,9 +575,9 @@ func appendFraction(dst []byte, n int64) []byte {
 	return append(dst, '.', byte('0'+n/10), byte('0'+n%10))
 }
 
-// AppendTextValue 追加文本值：含空格 / 等号 / 引号 / 控制字符时按 Go 字符串
-// 字面量加引号（与 slog.TextHandler 的 needsQuoting 精神一致）；空串也算需要
-// 引号，渲染成 `""`。
+// AppendTextValue 追加文本值：空串或含空白 / 等号 / 引号 / 不可打印字符 /
+// 非法 UTF-8 时按 Go 字符串字面量加引号。非 ASCII 判据与 slog.TextHandler
+// 一致，也保守地为替换字符 U+FFFD 加引号；空串渲染成 `""`。
 //
 // 注意**空串渲染成 `""` 是有值的样子**：「没有这个事实」与「值就是空串」是
 // 两件事，缺列的占位属版式选择、由宿主决定——内置版式对缺列用 `-`。取属性时
@@ -597,11 +598,20 @@ func needsQuoting(s string) bool {
 	if s == "" {
 		return true
 	}
-	for i := 0; i < len(s); i++ {
+	for i := 0; i < len(s); {
 		c := s[i]
-		if c <= ' ' || c == '"' || c == '=' || c == 0x7f {
+		if c < utf8.RuneSelf {
+			if c <= ' ' || c == '"' || c == '=' || c == 0x7f {
+				return true
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError || !unicode.IsPrint(r) || unicode.IsSpace(r) {
 			return true
 		}
+		i += size
 	}
 	return false
 }

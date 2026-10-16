@@ -122,6 +122,14 @@ Retry 的失败尝试输出现在先暂存并丢弃，下游看不到失败版�
 
 Timeout 在到期后取消内层并等待体退出。原来依赖“时限到达即函数强制返回”的业务，需要将阻塞操作改为响应 rc.Context，并确保节点返回前结束自身工作。
 
+## 文本日志的 Unicode 与 UTF-8 引号规则
+
+`observe.AppendTextValue` 现在按 slog.TextHandler 的口径检查非 ASCII 文本：Unicode 空白、不可打印字符和非法 UTF-8 会触发 Go 字符串引号与转义。例如，含 U+0085、U+009B、U+2028 或 U+00A0 的 `a…b` 会加引号并转义该字符，字节 FF 编码为 `\xff`。合法的替换字符 U+FFFD 也会保守地触发引号；普通中文和可打印 emoji 保持原样。
+
+这条规则同时用于属性键与字符串值、source、host、error、trace，以及调用这些原语的宿主渲染器。内置 LineSink 与 AppendTextValue / AppendAttrs / AppendAttrsExcept 的相应片段保持逐字节一致。解析文本日志或比较固定输出的调用方，应更新包含这些输入的预期值，并按 Go 字符串字面量解码带引号的字段。
+
+编码原语属于冻结面，这次输出字节变更必须随下一个 minor 发布，不能作为 patch 发布；当前仅描述开发实现，尚未发布新 tag。
+
 ## 迁移 YAML 与恢复集成
 
 YAML Load 返回定义和 SeedPlan，装配选项不绑定执行上下文。每次运行调用 plan.Inputs，再把 ctx 与 Inputs 传给运行入口。根图补充声明应在 Validate 前完成。
