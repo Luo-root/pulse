@@ -123,6 +123,7 @@ For continuous data, use `Key[pulse.Stream[T]]` and `ProduceStream` / `ConsumeSt
 | Compose approvals, input-dependent batches, or Graph tool loops | [Business composition](site/en/guide/composition.md) |
 | Define workflows in YAML and integrate events or logs | [YAML assembly](site/en/guide/assembly.md) · [Observation](site/en/guide/observability.md) |
 | Look up lifecycle rules, errors, the recovery bridge, or version differences | [Reference index](site/en/reference/index.md) |
+| Evaluate 1–10000-node costs and rerun equal-task engine comparisons | [Scale and performance](site/en/reference/performance.md) · [Benchmark source and method](benchmarks/README_en.md) |
 
 Read online: [English documentation](https://luo-root.github.io/pulse/en/) · [中文文档](https://luo-root.github.io/pulse/).
 

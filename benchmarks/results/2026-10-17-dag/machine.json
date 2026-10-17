@@ -1,0 +1,18 @@
+{
+  "measurement_date": "2026-10-17",
+  "cpu": "Intel(R) Core(TM) i9-14900HX",
+  "physical_cores": 24,
+  "logical_cpus": 32,
+  "installed_memory_bytes": 34070192128,
+  "os": "Windows 11 10.0.26200 amd64",
+  "go": "go1.25.0 windows/amd64",
+  "plotting_matplotlib": "3.10.7",
+  "storage": "D: NTFS, filesystem caches not flushed",
+  "gomaxprocs": 4,
+  "business_parallelism": 4,
+  "sampling": "Engines run serially, without concurrent local compilation, race tests, site builds or profiling. Unrelated workstation activity, power and thermals are not controlled.",
+  "repetitions": "5 planned samples per primary point; slow/incomplete cases retain limits and planned not_repeated rows. Instrumented growth and audited recovery are separate matrices.",
+  "case_limits": "60s context includes setup/warmup; 65s parent hard deadline. Neither value is a per-operation SLO or a lower bound on uncompleted operation time.",
+  "allocation_scope": "Cumulative Go allocation deltas per measured operation, not peak heap/RSS.",
+  "disk_scope": "Durable growth meters successful-Save logical JSON bytes (1GiB budget per isolated run), not physical writes; SQLite reports current file sizes/history, not equivalent cumulative writes."
+}

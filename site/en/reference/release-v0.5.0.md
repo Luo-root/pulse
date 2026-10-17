@@ -57,6 +57,7 @@ The root runtime dependency closure remains standard-library-only. `observe` add
 1. Migrate call sites with the [migration guide](migration.md) and check values, skips, failure, and cancellation separately.
 2. Inspect captured business state when reusing definitions and protect external effects against duplication.
 3. Tag the complete integration on `main`. A MERGED label on every stacked PR does not prove main contains every layer: a PR merged into an earlier feature branch can still be absent from main.
-4. Once the Core release tag is downloadable, align Durable with that version and recheck the public dependency combination. Retain historical measurement baselines; they are not new-version measurements.
+4. Check the pinned versions, equal-task comparisons and incomplete points in [scale and performance](performance.md). The baseline and reproducibility materials are part of this release's acceptance. Retain historical measurements with their original baselines.
+5. Once the Core release tag is downloadable, align Durable with that version and recheck the public dependency combination.
 
 Go 1.25+ is required. The released commit and CI records establish actual build, race, documentation, and cross-repository recovery results. This release continues 0.x development and does not represent a final v1.0 API freeze.
