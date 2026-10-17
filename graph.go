@@ -257,7 +257,7 @@ func (g *Graph) addAllLocked(nodes []*Node) error {
 				return fmt.Errorf("pulse: duplicate node id %q", n.id)
 			}
 		} else {
-			// 尚未建索引时保留只读查找；首次成功提交后后续 Add 都走索引。
+			// 单节点不分配索引，最多比较一次；提交第二个节点时建表，此后走索引。
 			for _, existing := range g.nodes {
 				if existing.id == n.id {
 					return fmt.Errorf("pulse: duplicate node id %q", n.id)
@@ -310,14 +310,16 @@ func (g *Graph) addAllLocked(nodes []*Node) error {
 	}
 
 	// —— 提交段：到这一步不会再失败 ——
-	if len(nodes) > 0 && g.nodeIDs == nil {
+	if len(nodes) > 0 && len(g.nodes)+len(nodes) > 1 && g.nodeIDs == nil {
 		g.nodeIDs = make(map[string]struct{}, len(g.nodes)+len(nodes))
 		for _, existing := range g.nodes {
 			g.nodeIDs[existing.id] = struct{}{}
 		}
 	}
 	for _, n := range nodes {
-		g.nodeIDs[n.id] = struct{}{}
+		if g.nodeIDs != nil {
+			g.nodeIDs[n.id] = struct{}{}
+		}
 		for _, k := range n.requires {
 			_ = g.keys.register(k)
 		}
