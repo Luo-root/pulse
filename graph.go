@@ -377,7 +377,7 @@ func (g *Graph) sourceConflict(name string, owner source) error {
 // 和「依赖成环」都是读一遍声明就能定的，留到运行期只会表现成挂死或一句
 // 看不出病因的超时。
 //
-// 已经封口的图直接通过（它在封口那一刻就过了同一套判据，此后定义没变过）。
+// 已经封口的普通图复用既有结果；含 Sub 或流的图仍按有效额度和等待关系检查。
 func (g *Graph) Validate() error {
 	// 与 Start 同一条同步边界：判 + 封在装配锁里一次做完（见 assemblyMu 与上面的说明）。
 	assemblyMu.Lock()
@@ -429,6 +429,9 @@ func (g *Graph) sealTree(chain mountChain) {
 // 拿的就是它；这里只取**第一条**，维持 `Validate` / `Start` 报首错的既有形状
 // 与文案（顺序也固定为来源 → 依赖环 → 流式，与旧实现一致）。
 func (g *Graph) validateLocked(capacity int) error {
+	if g.canReusePlainValidationLocked() {
+		return nil
+	}
 	if p := g.problemsLocked(capacity); len(p) > 0 {
 		return p[0]
 	}
