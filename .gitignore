@@ -44,4 +44,7 @@ go.work.sum
 
 # Local scratch (docs preview, temp artifacts)
 tmp/
+benchmarks/dag/dag
+benchmarks/results/*/work/
+benchmarks/**/__pycache__/
 

@@ -40,3 +40,25 @@ jobs:
           echo "gofmt clean: $(echo "$files" | wc -l) file(s)"
       - name: Test
         run: go test -race -count=1 ./...
+
+  benchmark-correctness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: benchmarks/dag
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: benchmarks/dag/go.mod
+          cache-dependency-path: benchmarks/dag/go.sum
+      - name: Build isolated benchmark adapters
+        run: go build ./...
+      - name: Vet benchmark adapters
+        run: go vet ./...
+      - name: Check equal results, execution counts and concurrency
+        run: go test -race -count=1 -timeout=180s ./...
+      # Full timing matrices run manually on one machine; CI latency is not a performance gate.
