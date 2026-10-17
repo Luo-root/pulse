@@ -89,15 +89,15 @@ The table reports whole-task median time for **chain, rounds=1, e2e (construct a
 
 For Pulse's 10000-node chain, reuse measures **44.8ms**, versus **119ms** e2e, with cumulative Go allocations approximately **23.4MiB / 31.5MiB**. Taskflow's corresponding times are **13.6ms / 14.5ms**. Reusing definitions has practical value; subtracting these independent medians does not produce a profiler-derived assembly breakdown.
 
-![Construction and execution across three shapes](/performance/2026-10-17/dag-e2e-r1-time.svg)
+![Construction and execution across three shapes](/performance/2026-10-17/dag-e2e-r1-time.png)
 
-![Execution with reused definitions](/performance/2026-10-17/dag-reuse-r1-time.svg)
+![Execution with reused definitions](/performance/2026-10-17/dag-reuse-r1-time.png)
 
-![Amortized time per business node](/performance/2026-10-17/dag-e2e-r1-per-node.svg)
+![Amortized time per business node](/performance/2026-10-17/dag-e2e-r1-per-node.png)
 
-![Cumulative Go allocations per graph](/performance/2026-10-17/dag-e2e-r1-allocations.svg)
+![Cumulative Go allocations per graph](/performance/2026-10-17/dag-e2e-r1-allocations.png)
 
-![Costs with additional fixed business computation](/performance/2026-10-17/dag-e2e-r256-time.svg)
+![Costs with additional fixed business computation](/performance/2026-10-17/dag-e2e-r256-time.png)
 
 The plots retain wide, diamonds and rounds=256 results; the chain table does not replace the full matrix. Multiplicative size sampling does not presume exponential runtime growth. Points without measurements retain limit annotations rather than fabricated zeros.
 
@@ -113,7 +113,7 @@ Between 1000 and 10000 nodes, a tenfold increase in business work raises Pulse r
 
 The DAG suite retains **1800 planned samples**: 1700 successful, 20 case timeouts and 80 later repetitions not attempted. All 20 timeouts are Azure execution-mode points, each retaining its first timeout and four `not_repeated` entries. No checksum mismatch or sampler error counts as success.
 
-Evidence: [raw JSONL](https://github.com/Luo-root/pulse/blob/main/benchmarks/results/2026-10-17-dag/samples.jsonl) · [versions/environment](https://github.com/Luo-root/pulse/blob/main/benchmarks/results/2026-10-17-dag/manifest.json) · [CSV summary](https://github.com/Luo-root/pulse/blob/main/benchmarks/results/2026-10-17-dag/figures/summary.csv).
+Concise evidence: [CSV summary](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-dag.csv) · [versions and raw-data digest](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-dag.json). Full samples, diagnostics and generated plot sets are retained in a separate evidence archive rather than the source repository. Reproduction writes them to ignored `benchmarks/results/`. Raw sample SHA256: `fc31f4a71d8bd3cff4d85b6697a71935cb52982cf570593e115371c8ca689ffd`.
 
 ## The identical task
 
@@ -161,4 +161,4 @@ See the [benchmark method](https://github.com/Luo-root/pulse/blob/main/benchmark
 
 Before sampling, 192 small graph/workload/concurrency/engine combinations passed per-node checks and race tests. Direct/Pulse/Taskflow also passed non-race per-node verification for all three 10000-node shapes. Independent review checked equal work, reuse, timeout behavior and sampler error handling. Azure points exceeding a budget do not count as large-scale correctness passes.
 
-The report retains raw JSONL, configuration, module versions/checksums, binary SHA256, machine details, CSVs and SVGs. Go's retained JSON does not contain Origin fields; separate `module-origins.json` queries the same-version proxy's actual metadata, explicitly marking missing or failed entries. Do not rerun with `@latest`; save a new matrix after changing concurrency, toolchain, computation or backend. This baseline does not alter scheduling or weaken required semantics to publish favorable numbers.
+The external evidence archive retains raw JSONL, configuration, module versions/checksums, binary SHA256, machine details, CSVs and plots. The source repository keeps only concise statistics, version summaries and charts used by the report. Go's retained JSON does not contain Origin fields; separate `module-origins.json` queries the same-version proxy's actual metadata, explicitly marking missing or failed entries. Do not rerun with `@latest`; save a new matrix after changing concurrency, toolchain, computation or backend. This baseline does not alter scheduling or weaken required semantics to publish favorable numbers.

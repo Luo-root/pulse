@@ -84,7 +84,7 @@ Durable 的适配器在另一仓库，但使用相同采样脚本：
 python benchmarks/tools/run_matrix.py --suite workflow --module ../pulse-durable/benchmarks/workflow --binary ../pulse-durable/benchmarks/workflow/workflow.exe --out ../pulse-durable/benchmarks/results/local-workflow --sizes 1,10,100,1000,10000 --rounds 1 --repeats 5 --procs 4 --parallelism 4
 ```
 
-两个仓库的实际相对位置不同则传入绝对路径。文件后端的临时数据位于输出目录的 `work/`，不提交检查点和数据库；结果数据、清单和图表应保留。
+两个仓库的实际相对位置不同则传入绝对路径。文件后端的临时数据位于输出目录的 `work/`。原始 JSONL、完整环境清单、诊断日志和整套生成图保留在本地或单独的证据包，`benchmarks/results/` 不入源码仓；检查点、数据库和二进制同样不提交。仓库只保留复跑代码、`benchmarks/reports/` 的精简统计与版本摘要，以及站点实际引用的单份 PNG。
 
 ## 读懂数据
 
