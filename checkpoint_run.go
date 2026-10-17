@@ -23,6 +23,9 @@ func (e *CheckpointError) Error() string {
 func (e *CheckpointError) Unwrap() error { return e.Err }
 
 func isCheckpointFailure(err error) bool {
+	if err == nil {
+		return false
+	}
 	var failure *CheckpointError
 	return errors.As(err, &failure)
 }

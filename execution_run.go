@@ -47,6 +47,9 @@ func (e *executionCancellation) Error() string { return e.cause.Error() }
 func (e *executionCancellation) Unwrap() error { return e.cause }
 
 func isExecutionCancellation(err error) bool {
+	if err == nil {
+		return false
+	}
 	var canceled *executionCancellation
 	return errors.As(err, &canceled)
 }
