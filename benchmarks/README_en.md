@@ -6,6 +6,12 @@ This directory measures how construction, execution and allocation costs change 
 
 Chinese: [README.md](README.md).
 
+## Separate #422 candidate remeasurement
+
+[Configuration comparisons](reports/2026-10-17-optimization.csv), [stage statistics](reports/2026-10-17-optimization-stages.csv) and [version summary](reports/2026-10-17-optimization.json) retain concise statistics from 1380 successful samples. The 30 instrumented large-graph checks, complete raw samples, 12 plot pairs and diagnostics remain in an external evidence archive rather than the source repository. Original baseline, first candidate and final candidate are separate runs and never mixed.
+
+The layers are [#423](https://github.com/Luo-root/pulse/pull/423), [#424](https://github.com/Luo-root/pulse/pull/424) and [#425](https://github.com/Luo-root/pulse/pull/425). The measured commit is `f6049c4aac4d2d5316e0ced5959dc7bc2a257b46`, not a release tag. See the [English report](../site/en/reference/performance.md) for gains, index space costs and slower points. At measurement time only generated external `-modfile` files used candidate source replacements; shipped dependency files were unchanged. This is historical optimization evidence. Commands below reproduce the original baseline; the new fixed-framework comparison uses a separate run.
+
 ## Identical business tasks
 
 Every engine uses the same indices, dependencies, integer inputs and outputs. N counts actual business nodes, with no synthetic source or aggregation nodes.
