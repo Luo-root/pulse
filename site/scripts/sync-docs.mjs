@@ -31,7 +31,7 @@ function sourceReadmes() {
   ], { cwd: repoDir, encoding: 'utf8' })
     .split('\0')
     .filter(Boolean)
-    .filter(name => !name.startsWith('site/'))
+    .filter(name => !name.startsWith('site/') && !name.startsWith('benchmarks/')) // 独立评测模块由性能页介绍，不是生产包文档。
     .map(name => resolve(repoDir, name))
     .filter(name => existsSync(name)) // Git 仍列出尚未提交的删除；工作树里不存在就不生成。
 }

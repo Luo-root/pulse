@@ -61,4 +61,6 @@ jobs:
         run: go vet ./...
       - name: Check equal results, execution counts and concurrency
         run: go test -race -count=1 -timeout=180s ./...
+      - name: Check sampling evidence contracts
+        run: python ../tools/test_tools.py
       # Full timing matrices run manually on one machine; CI latency is not a performance gate.
