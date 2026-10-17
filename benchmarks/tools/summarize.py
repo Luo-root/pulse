@@ -68,7 +68,7 @@ def draw(rows, destination, selected_modes, selected_rounds):
                             axis = axes[si][bi]
                             panel = [r for r in subset if r["shape"] == shape and r["backend"] == backend]
                             sizes = sorted({r["nodes"] for r in panel})
-                            limits, positive = [], False
+                            limits, positive, measured_bounds = [], False, []
                             configurations = sorted({(r["engine"], r["parallelism"], r["procs"]) for r in panel})
                             multiple_configs = len({(p, g) for _, p, g in configurations}) > 1
                             for engine, parallelism, procs in configurations:
@@ -88,21 +88,28 @@ def draw(rows, destination, selected_modes, selected_rounds):
                                     factor = 1e-3 / nodes if normalized else scale
                                     mid = row[f"{metric}_median"] * factor
                                     positive = positive or mid > 0
+                                    measured_bounds.extend((row[f"{metric}_min"] * factor, row[f"{metric}_max"] * factor))
                                     ys.append(mid)
                                     low.append(mid - row[f"{metric}_min"] * factor)
                                     high.append(row[f"{metric}_max"] * factor - mid)
                                     if row["samples_ok"] < (5 if suite == "dag" else 3):
                                         incomplete_x.append(nodes); incomplete_y.append(mid)
                                 axis.errorbar(sizes, ys, yerr=[low, high], label=label, marker="o", markersize=4,
-                                              capsize=3, linewidth=1.5, color=COLORS.get(engine))
+                                              capsize=3, linewidth=1.5, color=COLORS.get(engine), clip_on=False)
                                 if incomplete_x:
                                     axis.scatter(incomplete_x, incomplete_y, s=70, facecolors="none", edgecolors="red",
                                                  label=f"{label}: few samples")
                             axis.set_xscale("log")
                             axis.set_xticks(sizes)
                             axis.xaxis.set_major_formatter(ScalarFormatter())
-                            if metric == "bytes_per_op":
-                                axis.set_yscale("symlog", linthresh=0.001)
+                            if metric == "bytes_per_op" and measured_bounds:
+                                if min(measured_bounds) > 0:
+                                    axis.set_yscale("log")
+                                    axis.set_ylim(min(measured_bounds) / 2, max(measured_bounds) * 2)
+                                else:
+                                    # Reuse can genuinely allocate zero; keep that point visible without a negative half-axis.
+                                    axis.set_yscale("symlog", linthresh=0.001)
+                                    axis.set_ylim(0, max(measured_bounds) * 2 or 1)
                             elif positive:
                                 axis.set_yscale("log")
                             else:
