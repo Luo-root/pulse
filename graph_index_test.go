@@ -21,6 +21,9 @@ func TestNodeIDsRejectedBatchLeavesNamesReusable(t *testing.T) {
 			if err := g.Add(NewNode("owner", "", nil, Provides(owned), nil)); err != nil {
 				t.Fatal(err)
 			}
+			if err := g.Add(NewNode("other", "", nil, nil, nil)); err != nil {
+				t.Fatal(err)
+			}
 			before := g.Topology()
 			first := NewNode("candidate", "", nil, nil, nil)
 			var last *Node
@@ -62,6 +65,33 @@ func TestNodeIDsFirstRejectedBatchDoesNotInitializeIndex(t *testing.T) {
 	}
 	if err := g.Add(NewNode("free", "", nil, nil, nil)); err != nil {
 		t.Fatalf("first failure reserved node ID: %v", err)
+	}
+}
+
+func TestNodeIDsSingleNodeDefersIndexUntilSecondCommit(t *testing.T) {
+	g, err := New("single-node-index", "单节点不付索引分配成本")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Add(NewNode("first", "", nil, nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if g.nodeIDs != nil {
+		t.Fatal("single node allocated an unnecessary index")
+	}
+	if err := g.Add(NewNode("first", "", nil, nil, nil)); err == nil {
+		t.Fatal("single-node fallback accepted a duplicate")
+	}
+	if err := g.Add(NewNode("second", "", nil, nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"first", "second"} {
+		if _, ok := g.nodeIDs[id]; !ok {
+			t.Fatalf("second commit did not index %q", id)
+		}
+		if err := g.Add(NewNode(id, "", nil, nil, nil)); err == nil {
+			t.Fatalf("index accepted duplicate %q", id)
+		}
 	}
 }
 
