@@ -1,5 +1,0 @@
---- FAIL: TestNodeIDsCommittedBatchKeepsOrderAndRejectsDuplicates (0.00s)
-    graph_index_test.go:115: duplicate "z": got pulse: :int: zero key: build it with NewKey[T] and pass it whole, want pulse: duplicate node id "z"
-FAIL
-FAIL	github.com/Luo-root/pulse	2.478s
-FAIL

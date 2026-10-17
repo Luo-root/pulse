@@ -1,0 +1,25 @@
+{
+  "measured_at": "2026-10-17",
+  "kind": "historical-optimization-comparison",
+  "core_commits": {
+    "baseline": "7d70e1e1477192669d5008d47729e3c8c19a336f",
+    "index": "3a4c890334786b6d64c6904e24bbbf57c6b86e84",
+    "validation": "e33b5cbb27d038fcf6594e402c604037f01dac4b",
+    "optimized": "f6049c4aac4d2d5316e0ced5959dc7bc2a257b46"
+  },
+  "taskflow": "v1.2.0",
+  "go": "go1.25.0 windows/amd64",
+  "cpu": "Intel Core i9-14900HX",
+  "gomaxprocs": 4,
+  "business_parallelism": 4,
+  "planned_samples": 1380,
+  "statuses": {
+    "ok": 1380
+  },
+  "raw_sha256": "7e76785fb76a682f48f888c2f5fd34961d280722a5dfbef20d4ab1807d3458b3",
+  "notes": [
+    "Candidate builds used generated external -modfile files; project dependencies were unchanged.",
+    "Cumulative Go allocation, not peak memory.",
+    "Raw samples, diagnostic logs and the previous candidate remain in the external evidence archive."
+  ]
+}

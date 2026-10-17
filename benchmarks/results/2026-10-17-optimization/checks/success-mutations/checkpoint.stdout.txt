@@ -1,6 +1,0 @@
---- FAIL: TestFailureClassificationNilDoesNotAllocate (0.00s)
-    --- FAIL: TestFailureClassificationNilDoesNotAllocate/checkpoint (0.00s)
-        failure_classification_test.go:34: nil classification allocated 1 objects, want 0
-FAIL
-FAIL	github.com/Luo-root/pulse	2.533s
-FAIL

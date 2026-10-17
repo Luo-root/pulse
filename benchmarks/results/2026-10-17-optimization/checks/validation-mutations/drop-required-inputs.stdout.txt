@@ -1,5 +1,0 @@
---- FAIL: TestPlainValidationReuseKeepsEachRunsInputsAndSkip (0.00s)
-    validation_reuse_test.go:31: sealed graph forgot the next run's required input: <nil>
-FAIL
-FAIL	github.com/Luo-root/pulse	2.480s
-FAIL

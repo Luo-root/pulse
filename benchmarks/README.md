@@ -8,9 +8,9 @@
 
 ## #422 优化候选的单独复测
 
-[2026-10-17-optimization](results/2026-10-17-optimization/README.md) 保留同轮原版、三步最终候选与 Taskflow 的 1380 条成功样本、276 个汇总分组、30 组万节点逐节点验证，以及全部 12 对时间/累计分配图。原始 `2026-10-17-dag` 数据未覆盖，首轮候选数据也不与最终提交混算。
+[配置对照 CSV](reports/2026-10-17-optimization.csv)、[分阶段统计](reports/2026-10-17-optimization-stages.csv) 和[版本摘要](reports/2026-10-17-optimization.json) 保留这轮 1380 条成功样本的精简统计。30 组万节点验证、完整原始样本、12 对图和诊断日志另存外部证据包，不入源码仓。原始基线、首轮候选与最终候选各自保存，不跨轮混算。
 
-三层代码为 [#423](https://github.com/Luo-root/pulse/pull/423)、[#424](https://github.com/Luo-root/pulse/pull/424)、[#425](https://github.com/Luo-root/pulse/pull/425)；最终被测提交 `f6049c4aac4d2d5316e0ced5959dc7bc2a257b46`，不是发布 tag。详细收益、索引空间成本与变慢的点见[中文报告](../site/reference/performance.md)。候选实测只在项目外的临时 `-modfile` 中使用源码 replace，项目和正式 benchmark 的依赖文件不变；准确准备/采样命令在该数据目录保留。下面的固定公共版本命令仍用于复跑原始基线。
+三层代码为 [#423](https://github.com/Luo-root/pulse/pull/423)、[#424](https://github.com/Luo-root/pulse/pull/424)、[#425](https://github.com/Luo-root/pulse/pull/425)；最终被测提交 `f6049c4aac4d2d5316e0ced5959dc7bc2a257b46`，不是发布 tag。收益、索引空间成本与变慢点见[中文报告](../site/reference/performance.md)。当时仅外部生成的 `-modfile` 使用候选源码 replace，正式依赖文件未改。这是历史优化记录；下面的固定公共版本命令用于复跑原始基线，新版统一生产框架对照另存结果。
 
 ## 相同的业务任务
 

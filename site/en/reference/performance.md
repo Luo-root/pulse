@@ -34,13 +34,13 @@ These are whole-graph median times for **N=10000, rounds=1**, in **ms**, with fi
 
 The largest gain removes repeated duplicate checks during large-graph construction. Reused execution also improves, with shape-dependent gains. Taskflow remains faster on all three lightweight ten-thousand-node tasks: candidate e2e times are still about 3.0–4.3 times Taskflow's. This is not parity. The libraries' data-delivery, error and lifecycle contracts differ; this run does not attribute measured shares of the remaining gap to those contracts.
 
-![Chain: final candidate, remeasured baseline and Taskflow](/performance/2026-10-17-optimization/chain-R1-time.svg)
+![Chain: final candidate, remeasured baseline and Taskflow](/performance/2026-10-17-optimization/chain-R1-time.png)
 
-![Independent-node wide graph](/performance/2026-10-17-optimization/wide-R1-time.svg)
+![Independent-node wide graph](/performance/2026-10-17-optimization/wide-R1-time.png)
 
-![Repeated fork/join diamonds](/performance/2026-10-17-optimization/diamonds-R1-time.svg)
+![Repeated fork/join diamonds](/performance/2026-10-17-optimization/diamonds-R1-time.png)
 
-The full dataset retains three shapes, 1/10/100/1000/10000 nodes, rounds=1/256 and build/reuse/e2e. Twelve SVG/PNG pairs show both time and cumulative allocation. The lightweight ten-thousand-node table does not replace the full matrix.
+The external evidence archive retains three shapes, 1/10/100/1000/10000 nodes, rounds=1/256, build/reuse/e2e and twelve SVG/PNG pairs. The source repository keeps concise statistics and only the four PNGs referenced here. The lightweight ten-thousand-node table does not replace the full matrix.
 
 ### Space costs and slower points
 
@@ -48,9 +48,9 @@ The index trades additional O(N) space for duplicate-check speed. Cumulative Go 
 
 Reused execution allocation falls from **23.581/20.652/24.085MiB** to **17.449/16.905/18.104MiB**, reductions of **26.0%/18.1%/24.8%**. E2e allocation falls by **7.7%/6.4%/5.9%** respectively.
 
-![Chain cumulative Go allocation costs and gains](/performance/2026-10-17-optimization/chain-R1-allocation.svg)
+![Chain cumulative Go allocation costs and gains](/performance/2026-10-17-optimization/chain-R1-allocation.png)
 
-Across 90 baseline/candidate configuration pairs, no candidate time median is over 10% slower, but not every point accelerates. Two candidate min–max ranges lie entirely above baseline: N=10 with the rounds=256 label, chain build **4.829→5.115μs (5.9% slower)** and diamonds build **5.412→5.723μs (5.7% slower)**. Build does not execute the compute body; rounds is only a configuration label here. These and all other points remain in `regression-observations.json` / `comparison.csv`. Five-sample ranges are not confidence intervals.
+Across 90 baseline/candidate configuration pairs, no candidate time median is over 10% slower, but not every point accelerates. Two candidate min–max ranges lie entirely above baseline: N=10 with the rounds=256 label, chain build **4.829→5.115μs (5.9% slower)** and diamonds build **5.412→5.723μs (5.7% slower)**. Build does not execute the compute body; rounds is only a configuration label here. These and all other configurations remain in `benchmarks/reports/2026-10-17-optimization.csv`, with stage min–max in the stage CSV and original regression diagnostics in the external archive. Five-sample ranges are not confidence intervals.
 
 The first formal candidate run exposed extra index allocation at N=1. Index creation was then delayed until a successful commit of the second node, followed by a complete rerun of the final commits. That first matrix remains separate rather than being mixed into the final run or hiding the issue it exposed.
 
@@ -69,7 +69,7 @@ Before timing, **30 ten-thousand-node checks**, covering five variants × three 
 
 The environment, task and timing boundaries follow the method below. Serial rotated timing began after local compilation/tests/plotting stopped. Baseline and Taskflow share one benchmark binary, selected by engine flag; candidates replace only Core. As the candidates are unpublished, builds use generated external `-modfile` files with local source replacements. Production and shipped benchmark `go.mod`/`go.sum` files are unchanged. Exact commits, preparation commands, pre/post binary SHA256 and raw commands/output are retained.
 
-Evidence: [complete dataset and reproduction](https://github.com/Luo-root/pulse/tree/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization) · [raw JSONL](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/samples.jsonl) · [all configurations CSV](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/comparison.csv) · [slower observations](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/regression-observations.json). Final raw JSONL SHA256: `7e76785fb76a682f48f888c2f5fd34961d280722a5dfbef20d4ab1807d3458b3`.
+Concise evidence: [all configurations CSV](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-optimization.csv) · [stage min/median/max](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-optimization-stages.csv) · [version summary](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-optimization.json) · [reproduction method](https://github.com/Luo-root/pulse/blob/main/benchmarks/README_en.md). Full raw samples, stage logs, preparation scripts and the first candidate remain in a separate external evidence archive rather than the source repository. Final raw JSONL SHA256: `7e76785fb76a682f48f888c2f5fd34961d280722a5dfbef20d4ab1807d3458b3`.
 
 The following original baseline remains as measured in its original sampling run.
 

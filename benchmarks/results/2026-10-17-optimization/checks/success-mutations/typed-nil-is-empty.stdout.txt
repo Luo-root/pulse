@@ -1,6 +1,0 @@
---- FAIL: TestFailureClassificationNonNilKeepsErrorsAsBehavior (0.00s)
-    --- FAIL: TestFailureClassificationNonNilKeepsErrorsAsBehavior/checkpoint/typed-nil-checkpoint (0.00s)
-        failure_classification_test.go:93: got {matched:false panicked:false panicText:}, original errors.As behavior {matched:true panicked:false panicText:}
-FAIL
-FAIL	github.com/Luo-root/pulse	2.332s
-FAIL

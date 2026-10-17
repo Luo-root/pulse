@@ -1,4 +1,0 @@
-ok  	github.com/Luo-root/pulse	34.568s
-ok  	github.com/Luo-root/pulse/observe	3.644s
-ok  	github.com/Luo-root/pulse/tests	3.253s
-ok  	github.com/Luo-root/pulse/yaml	1.990s

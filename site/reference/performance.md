@@ -34,13 +34,13 @@
 
 主要进展是消除了大图装配时的反复查重；复用运行也有改善，幅度随图形变化。Taskflow 在这三个万节点轻任务中仍更快：候选 e2e 耗时仍约为它的 3.0–4.3 倍，不能据此声称已追平。各库的数据交付、错误与生命周期契约仍有差别，本轮没有测出剩余差距中每项契约占多少。
 
-![最终候选与本轮原版及 Taskflow 的长链曲线](/performance/2026-10-17-optimization/chain-R1-time.svg)
+![最终候选与本轮原版及 Taskflow 的长链曲线](/performance/2026-10-17-optimization/chain-R1-time.png)
 
-![独立节点宽图曲线](/performance/2026-10-17-optimization/wide-R1-time.svg)
+![独立节点宽图曲线](/performance/2026-10-17-optimization/wide-R1-time.png)
 
-![连续分叉汇聚曲线](/performance/2026-10-17-optimization/diamonds-R1-time.svg)
+![连续分叉汇聚曲线](/performance/2026-10-17-optimization/diamonds-R1-time.png)
 
-完整数据保留三图、1/10/100/1000/10000 节点、rounds=1/256、build/reuse/e2e，12 对 SVG/PNG 同时展示时间与累计分配；上述万节点轻任务表不替代全部配置。
+外部完整证据包保留三图、1/10/100/1000/10000 节点、rounds=1/256、build/reuse/e2e 和 12 对 SVG/PNG；源码仓仅留精简统计与页面引用的 4 张 PNG。上述万节点轻任务表不替代全部配置。
 
 ### 空间代价与变慢的点
 
@@ -48,9 +48,9 @@
 
 复用运行的累计分配则由 **23.581/20.652/24.085MiB** 降至 **17.449/16.905/18.104MiB**，分别下降 **26.0%/18.1%/24.8%**；e2e 累计分配分别下降 **7.7%/6.4%/5.9%**。
 
-![长链的累计 Go 分配代价与收益](/performance/2026-10-17-optimization/chain-R1-allocation.svg)
+![长链的累计 Go 分配代价与收益](/performance/2026-10-17-optimization/chain-R1-allocation.png)
 
-90 个原版/候选配置对照中，没有候选耗时中位数慢超过 10% 的点，但不等于每点都加速。两处观察到候选 min–max 整段高于原版：N=10、rounds=256 标签的 chain build **4.829→5.115μs（慢 5.9%）**，diamonds build **5.412→5.723μs（慢 5.7%）**。build 不执行计算体，rounds 在这里仅是配置标签。这两个点及全部其他结果保留在 `regression-observations.json` / `comparison.csv`；五个样本的范围不是置信区间。
+90 个原版/候选配置对照中，没有候选耗时中位数慢超过 10% 的点，但不等于每点都加速。两处观察到候选 min–max 整段高于原版：N=10、rounds=256 标签的 chain build **4.829→5.115μs（慢 5.9%）**，diamonds build **5.412→5.723μs（慢 5.7%）**。build 不执行计算体，rounds 在这里仅是配置标签。这两个点及全部其他配置保留在 `benchmarks/reports/2026-10-17-optimization.csv`，各阶段 min–max 另见阶段 CSV；原始回退诊断在外部证据包中。五个样本的范围不是置信区间。
 
 首轮正式采样曾发现单节点多出索引分配，随后才改为第二个节点成功提交时建表，并对最终提交完整重跑。首轮矩阵单独保留，不与最终矩阵混算，也不删除它所暴露的问题。
 
@@ -69,7 +69,7 @@
 
 环境、业务和计时边界沿用下文；正式计时在本机编译/测试/绘图停止后串行轮换。原版与 Taskflow 使用同一 benchmark 二进制，以 engine 参数选择；三个候选只替换 Core。候选尚未发布，构建使用项目外生成的 `-modfile` 和本地源码 replace，正式生产及 benchmark 的 `go.mod`/`go.sum` 未改。精确提交、准备命令、采前/采后二进制 SHA256 和原始命令输出均保留。
 
-资料：[完整证据与复跑说明](https://github.com/Luo-root/pulse/tree/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization) · [原始 JSONL](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/samples.jsonl) · [全部配置 CSV](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/comparison.csv) · [变慢点](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/regression-observations.json)。最终原始 JSONL SHA256：`7e76785fb76a682f48f888c2f5fd34961d280722a5dfbef20d4ab1807d3458b3`。
+精简资料：[全部配置 CSV](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-optimization.csv) · [各阶段 min/median/max](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-optimization-stages.csv) · [版本摘要](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-optimization.json) · [复跑方法](https://github.com/Luo-root/pulse/blob/main/benchmarks/README.md)。完整原始样本、各阶段日志、准备脚本和首轮候选另存外部证据包，不随源码仓分发。最终原始 JSONL SHA256：`7e76785fb76a682f48f888c2f5fd34961d280722a5dfbef20d4ab1807d3458b3`。
 
 以下继续保留优化前的原始基线，数字对应原始采样轮次。
 

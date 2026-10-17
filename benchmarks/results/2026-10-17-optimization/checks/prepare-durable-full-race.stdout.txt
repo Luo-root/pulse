@@ -1,3 +1,0 @@
-ok  	github.com/Luo-root/pulse-durable	7.369s
-ok  	github.com/Luo-root/pulse-durable/filestore	6.310s
-ok  	github.com/Luo-root/pulse-durable/integration	39.906s
