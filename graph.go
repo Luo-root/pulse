@@ -43,6 +43,9 @@ type Graph struct {
 	outPortOrder []keyRef
 
 	nodes []*Node
+	// nodeIDs 只用于查重，声明和报错顺序仍由 nodes 决定。
+	// 在整批校验通过后才建表/更新，失败的装配不能占住名字。由 mu 保护。
+	nodeIDs map[string]struct{}
 
 	// aspects / observer / maxRunning 是这张图**自己声明**的默认运行策略。
 	// 它们只是声明：某一次运行的**有效值**在创建 `Execution` 时算出来
@@ -249,9 +252,16 @@ func (g *Graph) addAllLocked(nodes []*Node) error {
 		if _, dup := batchIDs[n.id]; dup {
 			return fmt.Errorf("pulse: duplicate node id %q", n.id)
 		}
-		for _, existing := range g.nodes {
-			if existing.id == n.id {
+		if g.nodeIDs != nil {
+			if _, duplicate := g.nodeIDs[n.id]; duplicate {
 				return fmt.Errorf("pulse: duplicate node id %q", n.id)
+			}
+		} else {
+			// 尚未建索引时保留只读查找；首次成功提交后后续 Add 都走索引。
+			for _, existing := range g.nodes {
+				if existing.id == n.id {
+					return fmt.Errorf("pulse: duplicate node id %q", n.id)
+				}
 			}
 		}
 
@@ -300,7 +310,14 @@ func (g *Graph) addAllLocked(nodes []*Node) error {
 	}
 
 	// —— 提交段：到这一步不会再失败 ——
+	if len(nodes) > 0 && g.nodeIDs == nil {
+		g.nodeIDs = make(map[string]struct{}, len(g.nodes)+len(nodes))
+		for _, existing := range g.nodes {
+			g.nodeIDs[existing.id] = struct{}{}
+		}
+	}
 	for _, n := range nodes {
+		g.nodeIDs[n.id] = struct{}{}
 		for _, k := range n.requires {
 			_ = g.keys.register(k)
 		}
