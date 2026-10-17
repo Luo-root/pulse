@@ -1,0 +1,63 @@
+[
+  {
+    "command": [
+      "go",
+      "build",
+      "./..."
+    ],
+    "cwd": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\core-runtime",
+    "started_at": "2026-10-17T09:08:44.849286+00:00",
+    "seconds": 1.0602557000238448,
+    "returncode": 0
+  },
+  {
+    "command": [
+      "go",
+      "vet",
+      "./..."
+    ],
+    "cwd": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\core-runtime",
+    "started_at": "2026-10-17T09:08:45.909852+00:00",
+    "seconds": 3.190904800023418,
+    "returncode": 0
+  },
+  {
+    "command": [
+      "go",
+      "test",
+      "-race",
+      "-count=1",
+      "-timeout=180s",
+      "./..."
+    ],
+    "cwd": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\core-runtime",
+    "started_at": "2026-10-17T09:08:49.101060+00:00",
+    "seconds": 46.50046410001232,
+    "returncode": 0
+  },
+  {
+    "command": [
+      "go",
+      "list",
+      "-deps",
+      "-f",
+      "{{if not .Standard}}{{.ImportPath}}{{end}}",
+      "."
+    ],
+    "cwd": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\core-runtime",
+    "started_at": "2026-10-17T09:09:35.601916+00:00",
+    "seconds": 0.4065654000150971,
+    "returncode": 0
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "cwd": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\core-runtime",
+    "started_at": "2026-10-17T09:09:36.009304+00:00",
+    "seconds": 0.044437200005631894,
+    "returncode": 0
+  }
+]

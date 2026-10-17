@@ -6,6 +6,12 @@
 
 英文说明：[README_en.md](README_en.md)。
 
+## #422 优化候选的单独复测
+
+[2026-10-17-optimization](results/2026-10-17-optimization/README.md) 保留同轮原版、三步最终候选与 Taskflow 的 1380 条成功样本、276 个汇总分组、30 组万节点逐节点验证，以及全部 12 对时间/累计分配图。原始 `2026-10-17-dag` 数据未覆盖，首轮候选数据也不与最终提交混算。
+
+三层代码为 [#423](https://github.com/Luo-root/pulse/pull/423)、[#424](https://github.com/Luo-root/pulse/pull/424)、[#425](https://github.com/Luo-root/pulse/pull/425)；最终被测提交 `f6049c4aac4d2d5316e0ced5959dc7bc2a257b46`，不是发布 tag。详细收益、索引空间成本与变慢的点见[中文报告](../site/reference/performance.md)。候选实测只在项目外的临时 `-modfile` 中使用源码 replace，项目和正式 benchmark 的依赖文件不变；准确准备/采样命令在该数据目录保留。下面的固定公共版本命令仍用于复跑原始基线。
+
 ## 相同的业务任务
 
 所有引擎使用同一索引、依赖、整数输入与输出。节点数是实际业务节点数，不用额外的空源或汇总节点凑图。

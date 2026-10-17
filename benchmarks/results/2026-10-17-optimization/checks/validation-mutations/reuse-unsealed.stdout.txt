@@ -1,0 +1,5 @@
+--- FAIL: TestRequiredInputsWithoutPortsDoesNotHideStaticErrors (0.00s)
+    validation_reuse_test.go:154: no-inlet shortcut hid static missing source: <nil>
+FAIL
+FAIL	github.com/Luo-root/pulse	2.566s
+FAIL

@@ -1,0 +1,87 @@
+{
+  "created_at": "2026-10-17T08:54:26.423839+00:00",
+  "benchmark_source_commit": "3ac6dca7aa4d4325acc4e6b20a72d39a603a779f",
+  "benchmark_module": "D:\\go_Code\\testObject\\pulse\\.workbase\\performance-20261016\\core\\benchmarks\\dag",
+  "benchmark_go_mod_sha256": "7a59730445e4e790c1ec7d62e98951811ba926a4058c338d821ce73cecde7124",
+  "benchmark_go_sum_sha256": "d692e26279e37198c6f7f1c424de23e9546b3ea05bc30e638b30777ac30c6273",
+  "go_version": "go version go1.25.0 windows/amd64",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "logical_cpus": 32,
+  "variants": {
+    "baseline": {
+      "binary": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\matrix\\baseline.exe",
+      "sha256": "01a525d444d19dd5084858a219a916ed73580ebab32011b7bd9104c21bd15ab4",
+      "version": "v0.4.2-0.20261016143631-7d70e1e14771",
+      "commit": "7d70e1e1477192669d5008d47729e3c8c19a336f"
+    },
+    "index": {
+      "binary": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\matrix\\index.exe",
+      "sha256": "1566639c9489f6c9cb6d8da6d3c9d6e4333ae3383ec7d857f07e27994da07298",
+      "commit": "523293567b452da72818ee25ff8531a949eaee9f",
+      "source_path": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\core-index",
+      "modfile": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\matrix\\index.mod",
+      "note": "Only this generated diagnostic modfile has a local replacement; project go.mod/go.sum are unchanged."
+    },
+    "validation": {
+      "binary": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\matrix\\validation.exe",
+      "sha256": "70b86ccc75ec63d697cd18f7a66e678d82f4d074f93d83018fcfffebfa4f6ab3",
+      "commit": "a396453fdc589795f1ab14e1d26ba90f0a2eb73e",
+      "source_path": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\core-validate",
+      "modfile": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\matrix\\validation.mod",
+      "note": "Only this generated diagnostic modfile has a local replacement; project go.mod/go.sum are unchanged."
+    },
+    "optimized": {
+      "binary": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\matrix\\optimized.exe",
+      "sha256": "41c1c89037c22cc37f1a504758135d250e07408e14e4f159cf639fca4e3d72b6",
+      "commit": "238630de928b8490d7b17f673a1e470113bc95d2",
+      "source_path": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\core-runtime",
+      "modfile": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\matrix\\optimized.mod",
+      "note": "Only this generated diagnostic modfile has a local replacement; project go.mod/go.sum are unchanged."
+    }
+  },
+  "scope": {
+    "full_variants": [
+      "baseline",
+      "optimized",
+      "taskflow"
+    ],
+    "intermediate_variants": [
+      "index",
+      "validation"
+    ],
+    "intermediate_shape": "chain",
+    "intermediate_nodes": 10000,
+    "intermediate_rounds": 1,
+    "shapes": [
+      "chain",
+      "wide",
+      "diamonds"
+    ],
+    "nodes": [
+      1,
+      10,
+      100,
+      1000,
+      10000
+    ],
+    "rounds": [
+      1,
+      256
+    ],
+    "modes": [
+      "build",
+      "reuse",
+      "e2e"
+    ],
+    "repetitions": 5,
+    "min_time": "100ms",
+    "parallelism": 4,
+    "procs": 4
+  },
+  "notes": [
+    "All builds and tests precede timed sampling.",
+    "Baseline and Taskflow use the identical original benchmark binary; Taskflow engine is selected by CLI flag.",
+    "Original raw baseline samples are not overwritten or mixed with this new same-machine comparison.",
+    "No production or shipped benchmark go.mod/go.sum is changed."
+  ]
+}

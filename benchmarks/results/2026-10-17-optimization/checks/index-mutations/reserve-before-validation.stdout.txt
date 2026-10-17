@@ -1,0 +1,14 @@
+--- FAIL: TestNodeIDsRejectedBatchLeavesNamesReusable (0.00s)
+    --- FAIL: TestNodeIDsRejectedBatchLeavesNamesReusable/nil (0.00s)
+        graph_index_test.go:48: rejected batch reserved "candidate": pulse: duplicate node id "candidate"
+    --- FAIL: TestNodeIDsRejectedBatchLeavesNamesReusable/same-batch-id (0.00s)
+        graph_index_test.go:48: rejected batch reserved "candidate": pulse: duplicate node id "candidate"
+    --- FAIL: TestNodeIDsRejectedBatchLeavesNamesReusable/existing-id (0.00s)
+        graph_index_test.go:48: rejected batch reserved "candidate": pulse: duplicate node id "candidate"
+    --- FAIL: TestNodeIDsRejectedBatchLeavesNamesReusable/existing-source (0.00s)
+        graph_index_test.go:48: rejected batch reserved "candidate": pulse: duplicate node id "candidate"
+    --- FAIL: TestNodeIDsRejectedBatchLeavesNamesReusable/key-type (0.00s)
+        graph_index_test.go:48: rejected batch reserved "candidate": pulse: duplicate node id "candidate"
+FAIL
+FAIL	github.com/Luo-root/pulse	2.455s
+FAIL

@@ -1,0 +1,10 @@
+--- FAIL: TestSealedValidationStillChecksNativeQuota (0.00s)
+    --- FAIL: TestSealedValidationStillChecksNativeQuota/direct (0.00s)
+        validation_reuse_test.go:84: sealed stream ignored this run's quota: <nil>
+    --- FAIL: TestSealedValidationStillChecksNativeQuota/child (0.00s)
+        validation_reuse_test.go:84: sealed stream ignored this run's quota: <nil>
+    --- FAIL: TestSealedValidationStillChecksNativeQuota/nested-child (0.00s)
+        validation_reuse_test.go:84: sealed stream ignored this run's quota: <nil>
+FAIL
+FAIL	github.com/Luo-root/pulse	2.615s
+FAIL

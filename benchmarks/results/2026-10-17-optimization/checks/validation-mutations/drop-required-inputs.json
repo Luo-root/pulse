@@ -1,0 +1,5 @@
+{
+  "Replace": {
+    "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\core-validate\\execution.go": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\validation\\validation-mutations\\drop-required-inputs.go"
+  }
+}

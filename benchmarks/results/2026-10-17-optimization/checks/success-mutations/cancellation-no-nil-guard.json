@@ -1,0 +1,5 @@
+{
+  "Replace": {
+    "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\core-runtime\\execution_run.go": "D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\validation\\success-mutations\\cancellation-no-nil-guard.go"
+  }
+}

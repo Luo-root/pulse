@@ -1,0 +1,21 @@
+{
+  "started_at": "2026-10-17T09:14:08.653219+00:00",
+  "finished_at": "2026-10-17T09:17:57.559616+00:00",
+  "planned": 1380,
+  "retained": 1380,
+  "summary_groups": 276,
+  "statuses": {
+    "ok": 1380
+  },
+  "binary_sha256_after": {
+    "baseline": "01a525d444d19dd5084858a219a916ed73580ebab32011b7bd9104c21bd15ab4",
+    "index": "21d87f9e42e77f5acf79df7f3480c577e05b0fafab63a1659372af3bae5f2e41",
+    "validation": "97c9126dc02bf1b7871a9fc98fce8f55b81e449f94a1ce68e552ebef051504f4",
+    "optimized": "93870f449136c9cfeef7ad76e2f718ad32fa0550fa1ebecc0fe0d23f02e0f32d"
+  },
+  "notes": [
+    "Serial sampling only, after all local compilation/testing/profiling stopped.",
+    "Each result validated against the independent Python oracle and CLI identity/exit contracts.",
+    "Pre/post binary hashes match at those two moments; no claim of continuous monitoring."
+  ]
+}

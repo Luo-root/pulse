@@ -1,0 +1,34 @@
+[
+  {
+    "name": "missing-commit-index",
+    "command": [
+      "go",
+      "test",
+      "-overlay=D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\validation\\index-mutations\\missing-commit-index.json",
+      "-count=1",
+      "-timeout=60s",
+      "-run",
+      "^TestNodeIDsCommittedBatchKeepsOrderAndRejectsDuplicates$",
+      "."
+    ],
+    "returncode": 1,
+    "expected_assertion": "duplicate",
+    "result": "EXPECTED_RED"
+  },
+  {
+    "name": "reserve-before-validation",
+    "command": [
+      "go",
+      "test",
+      "-overlay=D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\validation\\index-mutations\\reserve-before-validation.json",
+      "-count=1",
+      "-timeout=60s",
+      "-run",
+      "^TestNodeIDsRejectedBatchLeavesNamesReusable$",
+      "."
+    ],
+    "returncode": 1,
+    "expected_assertion": "reserved",
+    "result": "EXPECTED_RED"
+  }
+]

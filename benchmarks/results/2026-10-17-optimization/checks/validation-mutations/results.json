@@ -1,0 +1,50 @@
+[
+  {
+    "name": "reuse-all-sealed",
+    "command": [
+      "go",
+      "test",
+      "-overlay=D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\validation\\validation-mutations\\reuse-all-sealed.json",
+      "-count=1",
+      "-timeout=60s",
+      "-run",
+      "^TestSealedValidationStillChecksNativeQuota$",
+      "."
+    ],
+    "returncode": 1,
+    "expected_assertion": "ignored this run",
+    "result": "EXPECTED_RED"
+  },
+  {
+    "name": "reuse-unsealed",
+    "command": [
+      "go",
+      "test",
+      "-overlay=D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\validation\\validation-mutations\\reuse-unsealed.json",
+      "-count=1",
+      "-timeout=60s",
+      "-run",
+      "^TestRequiredInputsWithoutPortsDoesNotHideStaticErrors$",
+      "."
+    ],
+    "returncode": 1,
+    "expected_assertion": "hid static",
+    "result": "EXPECTED_RED"
+  },
+  {
+    "name": "drop-required-inputs",
+    "command": [
+      "go",
+      "test",
+      "-overlay=D:\\go_Code\\testObject\\pulse\\.workbase\\optimize-422-20261017\\validation\\validation-mutations\\drop-required-inputs.json",
+      "-count=1",
+      "-timeout=60s",
+      "-run",
+      "^TestPlainValidationReuseKeepsEachRunsInputsAndSkip$",
+      "."
+    ],
+    "returncode": 1,
+    "expected_assertion": "forgot the next run",
+    "result": "EXPECTED_RED"
+  }
+]

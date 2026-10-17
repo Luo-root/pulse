@@ -4,6 +4,75 @@ This baseline gives different Go engines the same deterministic integer task and
 
 Measured on **2026-10-17**. Pulse is pinned to `v0.4.2-0.20261016143631-7d70e1e14771`, main integration commit `7d70e1e1477192669d5008d47729e3c8c19a336f`. This is a public development revision during v0.5.0 preparation, not an uncreated release tag. Comparisons pin Azure/go-workflow [v0.1.13](https://github.com/Azure/go-workflow/releases/tag/v0.1.13) and go-taskflow [v1.2.0](https://github.com/noneback/go-taskflow/releases/tag/v1.2.0), using their tagged public APIs.
 
+## #422: three optimization steps with semantics preserved
+
+This is a separate, retained candidate measurement from the same day. The original baseline sections and dataset remain unchanged. It compares baseline `7d70e1e1477192669d5008d47729e3c8c19a336f`, final candidate `f6049c4aac4d2d5316e0ced5959dc7bc2a257b46`, and Taskflow `v1.2.0`. The candidate is not a release tag. All improvements use the baseline remeasured in this run, without mixing in historical baseline numbers below.
+
+The changes are split for review:
+
+1. [#423 node ID index](https://github.com/Luo-root/pulse/pull/423): adding 10000 distinct nodes individually used to scan existing nodes repeatedly, totaling 49,995,000 ID comparisons. A private index now records only successfully committed nodes. A single node does not allocate this index; a successful commit taking the total above one creates it and backfills old nodes. Registration follows whole-batch validation, preserving failed-batch name reuse, error priority and declaration order.
+2. [#424 static-check reuse and input-map allocation](https://github.com/Luo-root/pulse/pull/424): a successfully sealed ordinary graph without Sub/stream declarations reuses invariant static checks. Per-run inputs, host inputs, checkpoint, dynamic-value and recovery checks still execute. No declared inlets means no required-input map; otherwise capacity follows inlet count. The fast path still scans declarations and is not O(1) Start. A fresh graph's first start cannot use sealed validation reuse.
+3. [#425 nil-error classification](https://github.com/Luo-root/pulse/pull/425): three error classifiers return false immediately only for a truly nil interface. Every non-nil path retains the original `errors.As`, including typed nil, custom As, wrappers/Join and Unwrap panic, preserving return and panic behavior.
+
+Scheduling, business work, status maintenance, normal skip, cancellation priority, retry budgets and checkpoint-confirmation-before-publication rules are unchanged. Graph definitions remain reusable with a fresh Execution per run, and the root runtime dependency closure remains standard-library-only.
+
+### Ten-thousand-node results and the remaining gap
+
+These are whole-graph median times for **N=10000, rounds=1**, in **ms**, with five batch means per point. Build constructs definitions, reuse executes warmed definitions, and e2e constructs and executes each iteration. Subtracting modes is not a profile breakdown.
+
+| Shape | Mode | Remeasured Pulse baseline | Final candidate | Time reduction | Taskflow |
+|---|---|---:|---:|---:|---:|
+| chain | build | 75.994 | 6.193 | 91.9% | 1.520 |
+| chain | reuse | 41.413 | 31.061 | 25.0% | 12.790 |
+| chain | e2e | 119.783 | 45.484 | 62.0% | 15.020 |
+| wide | build | 86.701 | 7.480 | 91.4% | 1.158 |
+| wide | reuse | 23.002 | 21.255 | 7.6% | 5.761 |
+| wide | e2e | 102.520 | 31.543 | 69.2% | 7.261 |
+| diamonds | build | 91.330 | 6.585 | 92.8% | 1.674 |
+| diamonds | reuse | 45.135 | 38.139 | 15.5% | 9.535 |
+| diamonds | e2e | 130.238 | 51.355 | 60.6% | 11.828 |
+
+The largest gain removes repeated duplicate checks during large-graph construction. Reused execution also improves, with shape-dependent gains. Taskflow remains faster on all three lightweight ten-thousand-node tasks: candidate e2e times are still about 3.0–4.3 times Taskflow's. This is not parity. The libraries' data-delivery, error and lifecycle contracts differ; this run does not attribute measured shares of the remaining gap to those contracts.
+
+![Chain: final candidate, remeasured baseline and Taskflow](/performance/2026-10-17-optimization/chain-R1-time.svg)
+
+![Independent-node wide graph](/performance/2026-10-17-optimization/wide-R1-time.svg)
+
+![Repeated fork/join diamonds](/performance/2026-10-17-optimization/diamonds-R1-time.svg)
+
+The full dataset retains three shapes, 1/10/100/1000/10000 nodes, rounds=1/256 and build/reuse/e2e. Twelve SVG/PNG pairs show both time and cumulative allocation. The lightweight ten-thousand-node table does not replace the full matrix.
+
+### Space costs and slower points
+
+The index trades additional O(N) space for duplicate-check speed. Cumulative Go build allocation at N=10000 rises from **7.164/10.186/7.418MiB** to **7.997/11.019/8.251MiB** for chain/wide/diamonds, approximately **0.833MiB** extra. This is cumulative allocation, not the live index size, peak heap or RSS.
+
+Reused execution allocation falls from **23.581/20.652/24.085MiB** to **17.449/16.905/18.104MiB**, reductions of **26.0%/18.1%/24.8%**. E2e allocation falls by **7.7%/6.4%/5.9%** respectively.
+
+![Chain cumulative Go allocation costs and gains](/performance/2026-10-17-optimization/chain-R1-allocation.svg)
+
+Across 90 baseline/candidate configuration pairs, no candidate time median is over 10% slower, but not every point accelerates. Two candidate min–max ranges lie entirely above baseline: N=10 with the rounds=256 label, chain build **4.829→5.115μs (5.9% slower)** and diamonds build **5.412→5.723μs (5.7% slower)**. Build does not execute the compute body; rounds is only a configuration label here. These and all other points remain in `regression-observations.json` / `comparison.csv`. Five-sample ranges are not confidence intervals.
+
+The first formal candidate run exposed extra index allocation at N=1. Index creation was then delayed until a successful commit of the second node, followed by a complete rerun of the final commits. That first matrix remains separate rather than being mixed into the final run or hiding the issue it exposed.
+
+### Stages, correctness and reproduction
+
+The two intermediate cumulative stages were also measured for chain/N10000/rounds1. These are observed stage medians, not profiler shares. A code change that does not affect a mode can still coincide with sampling variation.
+
+| Stage | Exact commit prefix | build / ms | reuse / ms | e2e / ms |
+|---|---|---:|---:|---:|
+| Baseline | `7d70e1e14771` | 75.994 | 41.413 | 119.783 |
+| ID index | `3a4c89033478` | 5.953 | 40.960 | 49.116 |
+| Plus static checks/input map | `e33b5cbb27d0` | 6.117 | 33.841 | 48.979 |
+| Plus nil-error classification | `f6049c4aac4d` | 6.193 | 31.061 | 45.484 |
+
+Before timing, **30 ten-thousand-node checks**, covering five variants × three shapes × two compute loads, verified per-node invocation counts, values, maximum business concurrency and two runs of reused definitions. Timing disables per-node probes but still checks every final checksum. **All 1380/1380 samples succeeded, with five valid samples in each of 276 groups.** The final stack passed build, vet, full race, root dependency-closure and whitespace checks. Durable's full race suite, including real process exit/recovery, also passed with the final Core candidate. Focused tests and mutation controls cover whole-batch commit, static/per-run validation boundaries, normal skip, recovery rejection, and original nil/typed-nil behavior. Each layer also received independent review.
+
+The environment, task and timing boundaries follow the method below. Serial rotated timing began after local compilation/tests/plotting stopped. Baseline and Taskflow share one benchmark binary, selected by engine flag; candidates replace only Core. As the candidates are unpublished, builds use generated external `-modfile` files with local source replacements. Production and shipped benchmark `go.mod`/`go.sum` files are unchanged. Exact commits, preparation commands, pre/post binary SHA256 and raw commands/output are retained.
+
+Evidence: [complete dataset and reproduction](https://github.com/Luo-root/pulse/tree/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization) · [raw JSONL](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/samples.jsonl) · [all configurations CSV](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/comparison.csv) · [slower observations](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/regression-observations.json). Final raw JSONL SHA256: `7e76785fb76a682f48f888c2f5fd34961d280722a5dfbef20d4ab1807d3458b3`.
+
+The following original baseline remains as measured in its original sampling run.
+
 ## Local results: tiny tasks expose engine overhead
 
 Taskflow costs less than Pulse for these lightweight calculations; Pulse does not beat Azure at every size either. A 10000-node chain completes, but definition reuse makes a material difference. Splitting business work into finer nodes is not a free abstraction.

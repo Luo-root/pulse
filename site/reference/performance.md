@@ -4,6 +4,75 @@
 
 测量日期为 **2026-10-17**。Pulse 固定为 `v0.4.2-0.20261016143631-7d70e1e14771`，对应 main 集成提交 `7d70e1e1477192669d5008d47729e3c8c19a336f`；这是 v0.5.0 发布准备期间的公开开发版本，不是尚未创建的正式 tag。对照固定 Azure/go-workflow [v0.1.13](https://github.com/Azure/go-workflow/releases/tag/v0.1.13)、go-taskflow [v1.2.0](https://github.com/noneback/go-taskflow/releases/tag/v1.2.0)，使用各 tag 的公开 API。
 
+## #422：保留语义的三步优化复测
+
+以下是同日另一轮独立保存的候选提交实测，原始基线章节和数据保持原样。比较对象为原版 `7d70e1e1477192669d5008d47729e3c8c19a336f`、最终候选 `f6049c4aac4d2d5316e0ced5959dc7bc2a257b46` 和 Taskflow `v1.2.0`；候选不是发布 tag。收益全部用这轮重新测量的原版计算，不把下面历史基线的数字拼进来。
+
+优化分三层提交，便于逐层审查：
+
+1. [#423 节点 ID 索引](https://github.com/Luo-root/pulse/pull/423)：逐个 Add 原先反复扫描已有节点，10000 个无重名节点累计比较 49,995,000 次。改用只登记成功提交节点的私有索引。单节点不单独建表；成功提交使节点总数超过 1 时才建表并回填。整批校验完成后再登记，失败批次仍不占名字，错误优先级与声明顺序不变。
+2. [#424 静态检查复用与输入表分配](https://github.com/Luo-root/pulse/pull/424)：已成功封口、没有 Sub/流声明的普通图复用不再变化的静态检查。每轮输入、宿主输入、checkpoint、动态值和恢复检查仍执行。无声明进口时不建必需输入表，有进口时按进口数预分配。快路仍扫描声明，不能理解为 O(1) Start；新建图的首次启动不会命中封口复用。
+3. [#425 成功路径空错误分类](https://github.com/Luo-root/pulse/pull/425)：三处错误分类只对真正的 nil 接口直接返回 false。非 nil 路径仍执行原 `errors.As`，包括 typed nil、自定义 As、包装/Join 以及 Unwrap panic，保留原返回与异常行为。
+
+没有调整调度模型、节点工作量、状态维护、正常 skip、取消优先、Retry 预算或 checkpoint 确认后发布规则。Graph 继续复用，每轮创建独立 Execution，根包运行依赖闭包仍仅标准库。
+
+### 万节点结果与剩余差距
+
+下表为 **N=10000、rounds=1** 的每图耗时中位数，单位 **ms**，每点 5 个批次均值。build 只建图，reuse 在预热定义上执行，e2e 每轮建图并运行；三种模式不能相减作 profile 归因。
+
+| 图形 | 模式 | 本轮原版 Pulse | 最终候选 | 耗时下降 | Taskflow |
+|---|---|---:|---:|---:|---:|
+| chain | build | 75.994 | 6.193 | 91.9% | 1.520 |
+| chain | reuse | 41.413 | 31.061 | 25.0% | 12.790 |
+| chain | e2e | 119.783 | 45.484 | 62.0% | 15.020 |
+| wide | build | 86.701 | 7.480 | 91.4% | 1.158 |
+| wide | reuse | 23.002 | 21.255 | 7.6% | 5.761 |
+| wide | e2e | 102.520 | 31.543 | 69.2% | 7.261 |
+| diamonds | build | 91.330 | 6.585 | 92.8% | 1.674 |
+| diamonds | reuse | 45.135 | 38.139 | 15.5% | 9.535 |
+| diamonds | e2e | 130.238 | 51.355 | 60.6% | 11.828 |
+
+主要进展是消除了大图装配时的反复查重；复用运行也有改善，幅度随图形变化。Taskflow 在这三个万节点轻任务中仍更快：候选 e2e 耗时仍约为它的 3.0–4.3 倍，不能据此声称已追平。各库的数据交付、错误与生命周期契约仍有差别，本轮没有测出剩余差距中每项契约占多少。
+
+![最终候选与本轮原版及 Taskflow 的长链曲线](/performance/2026-10-17-optimization/chain-R1-time.svg)
+
+![独立节点宽图曲线](/performance/2026-10-17-optimization/wide-R1-time.svg)
+
+![连续分叉汇聚曲线](/performance/2026-10-17-optimization/diamonds-R1-time.svg)
+
+完整数据保留三图、1/10/100/1000/10000 节点、rounds=1/256、build/reuse/e2e，12 对 SVG/PNG 同时展示时间与累计分配；上述万节点轻任务表不替代全部配置。
+
+### 空间代价与变慢的点
+
+索引以额外 O(N) 空间换取查重速度。万节点 build 的累计 Go 分配在 chain/wide/diamonds 分别由 **7.164/10.186/7.418MiB** 增至 **7.997/11.019/8.251MiB**，约多 **0.833MiB**。这是累计分配量，不能当作索引的存活大小、峰值堆或 RSS。
+
+复用运行的累计分配则由 **23.581/20.652/24.085MiB** 降至 **17.449/16.905/18.104MiB**，分别下降 **26.0%/18.1%/24.8%**；e2e 累计分配分别下降 **7.7%/6.4%/5.9%**。
+
+![长链的累计 Go 分配代价与收益](/performance/2026-10-17-optimization/chain-R1-allocation.svg)
+
+90 个原版/候选配置对照中，没有候选耗时中位数慢超过 10% 的点，但不等于每点都加速。两处观察到候选 min–max 整段高于原版：N=10、rounds=256 标签的 chain build **4.829→5.115μs（慢 5.9%）**，diamonds build **5.412→5.723μs（慢 5.7%）**。build 不执行计算体，rounds 在这里仅是配置标签。这两个点及全部其他结果保留在 `regression-observations.json` / `comparison.csv`；五个样本的范围不是置信区间。
+
+首轮正式采样曾发现单节点多出索引分配，随后才改为第二个节点成功提交时建表，并对最终提交完整重跑。首轮矩阵单独保留，不与最终矩阵混算，也不删除它所暴露的问题。
+
+### 分层证据、正确性与复跑
+
+同轮另测了 chain/N10000/rounds1 的两个中间阶段。下表是累计阶段的实测中位数，不是逐层 profiler 占比；没有影响某模式的代码改动也可能出现采样波动。
+
+| 阶段 | 精确提交前缀 | build / ms | reuse / ms | e2e / ms |
+|---|---|---:|---:|---:|
+| 原版 | `7d70e1e14771` | 75.994 | 41.413 | 119.783 |
+| ID 索引 | `3a4c89033478` | 5.953 | 40.960 | 49.116 |
+| 再加静态检查/输入表 | `e33b5cbb27d0` | 6.117 | 33.841 | 48.979 |
+| 再加空错误分类 | `f6049c4aac4d` | 6.193 | 31.061 | 45.484 |
+
+正式采样前，5 个变体 × 3 图 × 2 档计算的 **30 组万节点检查**验证了逐节点运行次数、值、最大业务并发和两轮定义复用。计时关闭逐节点探针，仍核对每次最终 checksum；本轮 **1380/1380 条采样全部 ok，276 个分组各有 5 个有效样本**。最终组合通过 build、vet、全量 race、根依赖闭包与空白检查；最终 Core 替换下 Durable 的全量 race 及真实进程退出/恢复也通过。定向用例和变异对照覆盖整批提交、静态/本轮事实边界、正常 skip、恢复拒绝和 nil/typed nil 的原行为，各层另经独立复审。
+
+环境、业务和计时边界沿用下文；正式计时在本机编译/测试/绘图停止后串行轮换。原版与 Taskflow 使用同一 benchmark 二进制，以 engine 参数选择；三个候选只替换 Core。候选尚未发布，构建使用项目外生成的 `-modfile` 和本地源码 replace，正式生产及 benchmark 的 `go.mod`/`go.sum` 未改。精确提交、准备命令、采前/采后二进制 SHA256 和原始命令输出均保留。
+
+资料：[完整证据与复跑说明](https://github.com/Luo-root/pulse/tree/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization) · [原始 JSONL](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/samples.jsonl) · [全部配置 CSV](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/comparison.csv) · [变慢点](https://github.com/Luo-root/pulse/blob/perf/422-optimization-evidence/benchmarks/results/2026-10-17-optimization/regression-observations.json)。最终原始 JSONL SHA256：`7e76785fb76a682f48f888c2f5fd34961d280722a5dfbef20d4ab1807d3458b3`。
+
+以下继续保留优化前的原始基线，数字对应原始采样轮次。
+
 ## 本机结果：小任务的引擎成本很明显
 
 在这组很轻的计算里，Taskflow 的成本低于 Pulse；Pulse 也没有在所有规模领先 Azure。10000 节点长链可以完成，但定义复用对成本有明显影响，不能把“节点越拆越细”当成免费抽象。

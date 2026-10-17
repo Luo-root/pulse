@@ -1,0 +1,7454 @@
+[
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 703.722821727272,
+      "min": 698.3991238778173,
+      "max": 841.8788883931202
+    },
+    "bytes_per_op": {
+      "median": 1864.0438619130994,
+      "min": 1864.009263457474,
+      "max": 1864.07645142614
+    },
+    "allocs_per_op": {
+      "median": 16.0001464853968,
+      "min": 16.00011858341646,
+      "max": 16.000159955549194
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5354.53879583964,
+      "min": 5257.815323013819,
+      "max": 5501.250061038137
+    },
+    "bytes_per_op": {
+      "median": 5102.0463889838375,
+      "min": 5101.958884711167,
+      "max": 5102.442502075297
+    },
+    "allocs_per_op": {
+      "median": 61.99643537282094,
+      "min": 61.995605254162804,
+      "max": 61.99702133893256
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4224.716174974567,
+      "min": 4075.8087487283824,
+      "max": 4694.3682604272635
+    },
+    "bytes_per_op": {
+      "median": 3238.171475076297,
+      "min": 3238.003499491353,
+      "max": 3238.53997965412
+    },
+    "allocs_per_op": {
+      "median": 45.995686673448624,
+      "min": 45.9947507629705,
+      "max": 45.99670396744659
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 713.418062346975,
+      "min": 705.2490600520372,
+      "max": 747.3643714812048
+    },
+    "bytes_per_op": {
+      "median": 1864.0451519786304,
+      "min": 1864.0418529705146,
+      "max": 1864.0860565078754
+    },
+    "allocs_per_op": {
+      "median": 16.00015079382176,
+      "min": 16.000125558911545,
+      "max": 16.00021454940925
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6049.313931344304,
+      "min": 5933.3268225987595,
+      "max": 6151.168894585851
+    },
+    "bytes_per_op": {
+      "median": 5101.908882269642,
+      "min": 5101.006164927058,
+      "max": 5102.038576102349
+    },
+    "allocs_per_op": {
+      "median": 61.99540993212559,
+      "min": 61.99340780076909,
+      "max": 61.99702133893256
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4822.942014242116,
+      "min": 4785.5015259409965,
+      "max": 5046.955417745007
+    },
+    "bytes_per_op": {
+      "median": 3238.0646998982706,
+      "min": 3237.8073148102935,
+      "max": 3238.1792878942015
+    },
+    "allocs_per_op": {
+      "median": 45.99580874872838,
+      "min": 45.99428683041164,
+      "max": 45.99658189216684
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4914.478246008106,
+      "min": 4744.988809766022,
+      "max": 6553.280839895013
+    },
+    "bytes_per_op": {
+      "median": 7352.274232140241,
+      "min": 7352.232431332655,
+      "max": 7352.668986144174
+    },
+    "allocs_per_op": {
+      "median": 89.00077314343845,
+      "min": 89.00061037639878,
+      "max": 89.00134285539889
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 39170.10989010989,
+      "min": 38390.30525030525,
+      "max": 40513.82173382174
+    },
+    "bytes_per_op": {
+      "median": 29457.244444444445,
+      "min": 29436.825396825396,
+      "max": 29513.179975579977
+    },
+    "allocs_per_op": {
+      "median": 443.1753357753358,
+      "min": 443.03345543345546,
+      "max": 443.55140415140414
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 32169.67032967033,
+      "min": 31660.927960927962,
+      "max": 33648.84004884005
+    },
+    "bytes_per_op": {
+      "median": 22083.87399267399,
+      "min": 22066.70573870574,
+      "max": 22108.04590964591
+    },
+    "allocs_per_op": {
+      "median": 354.0315018315018,
+      "min": 353.9091575091575,
+      "max": 354.192673992674
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5007.6224425020755,
+      "min": 4907.602910298355,
+      "max": 5069.861809658675
+    },
+    "bytes_per_op": {
+      "median": 7352.28829532692,
+      "min": 7352.017969627424,
+      "max": 7352.302358513599
+    },
+    "allocs_per_op": {
+      "median": 89.00083011865814,
+      "min": 89.00034181356511,
+      "max": 89.00097661018604
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 45085.27472527473,
+      "min": 44698.46153846154,
+      "max": 46675.75091575092
+    },
+    "bytes_per_op": {
+      "median": 29550.444932844934,
+      "min": 29545.46324786325,
+      "max": 29557.860805860804
+    },
+    "allocs_per_op": {
+      "median": 443.796336996337,
+      "min": 443.75115995115993,
+      "max": 443.84029304029303
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 38597.557997558,
+      "min": 37249.69474969475,
+      "max": 41275.018315018315
+    },
+    "bytes_per_op": {
+      "median": 22197.929181929183,
+      "min": 22172.825396825396,
+      "max": 22212.499145299145
+    },
+    "allocs_per_op": {
+      "median": 354.7809523809524,
+      "min": 354.601221001221,
+      "max": 354.8832722832723
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 55235.564240351734,
+      "min": 54101.61211529067,
+      "max": 57193.356130923305
+    },
+    "bytes_per_op": {
+      "median": 66330.82950659502,
+      "min": 66328.22667318027,
+      "max": 66333.40107474352
+    },
+    "allocs_per_op": {
+      "median": 734.0073277967758,
+      "min": 734.0039081582804,
+      "max": 734.0112359550562
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 411641.17647058825,
+      "min": 400287.8431372549,
+      "max": 462929.4117647059
+    },
+    "bytes_per_op": {
+      "median": 278778.85490196076,
+      "min": 278695.0274509804,
+      "max": 278935.4666666667
+    },
+    "allocs_per_op": {
+      "median": 3915.572549019608,
+      "min": 3914.450980392157,
+      "max": 3917.0313725490196
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 318928.9628180039,
+      "min": 296083.17025440314,
+      "max": 338335.61643835617
+    },
+    "bytes_per_op": {
+      "median": 212036.8219178082,
+      "min": 211943.62426614482,
+      "max": 212108.61839530332
+    },
+    "allocs_per_op": {
+      "median": 3178.7651663405086,
+      "min": 3178.295499021526,
+      "max": 3179.769080234834
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 58642.69662921348,
+      "min": 55922.76502198339,
+      "max": 59857.98729848559
+    },
+    "bytes_per_op": {
+      "median": 66328.4611626771,
+      "min": 66328.17977528089,
+      "max": 66330.9311187103
+    },
+    "allocs_per_op": {
+      "median": 734.0063507572057,
+      "min": 734.0034196384954,
+      "max": 734.0087933561309
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 455128.23529411765,
+      "min": 442683.137254902,
+      "max": 464269.8039215686
+    },
+    "bytes_per_op": {
+      "median": 279010.00784313725,
+      "min": 278956.26666666666,
+      "max": 279134.77647058823
+    },
+    "allocs_per_op": {
+      "median": 3917.6941176470586,
+      "min": 3916.752941176471,
+      "max": 3918.541176470588
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 373411.15459882584,
+      "min": 370198.23874755384,
+      "max": 466254.1176470588
+    },
+    "bytes_per_op": {
+      "median": 212129.80039138944,
+      "min": 212119.7808219178,
+      "max": 212352.87843137255
+    },
+    "allocs_per_op": {
+      "median": 3179.8180039138942,
+      "min": 3179.6086105675145,
+      "max": 3180.3333333333335
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1271154.3307086613,
+      "min": 1219419.68503937,
+      "max": 1323098.4251968504
+    },
+    "bytes_per_op": {
+      "median": 801957.6062992126,
+      "min": 801915.6535433071,
+      "max": 801995.1496062992
+    },
+    "allocs_per_op": {
+      "median": 7059.118110236221,
+      "min": 7059.062992125984,
+      "max": 7059.149606299213
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5431435.483870967,
+      "min": 5283180.645161291,
+      "max": 6700860
+    },
+    "bytes_per_op": {
+      "median": 3360780.3870967743,
+      "min": 3350474.8387096776,
+      "max": 3366513.066666667
+    },
+    "allocs_per_op": {
+      "median": 39532.25806451613,
+      "min": 39520.3870967742,
+      "max": 39587.48387096774
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 3548490.3225806453,
+      "min": 3485300,
+      "max": 3697077.419354839
+    },
+    "bytes_per_op": {
+      "median": 2517242.580645161,
+      "min": 2508453.419354839,
+      "max": 2526015.2258064514
+    },
+    "allocs_per_op": {
+      "median": 32084.16129032258,
+      "min": 31880.516129032258,
+      "max": 32132.90322580645
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1246881.8897637795,
+      "min": 1162349.6062992127,
+      "max": 1267399.212598425
+    },
+    "bytes_per_op": {
+      "median": 801917.7952755905,
+      "min": 801915.6535433071,
+      "max": 801955.3385826772
+    },
+    "allocs_per_op": {
+      "median": 7059.078740157481,
+      "min": 7059.062992125984,
+      "max": 7059.094488188976
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5757267.741935484,
+      "min": 5698216.129032258,
+      "max": 6226764.516129033
+    },
+    "bytes_per_op": {
+      "median": 3368050.064516129,
+      "min": 3360062.9677419355,
+      "max": 3374246.709677419
+    },
+    "allocs_per_op": {
+      "median": 39577.45161290323,
+      "min": 39525.58064516129,
+      "max": 39622.290322580644
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4286422.580645162,
+      "min": 4181906.4516129033,
+      "max": 4988096.774193549
+    },
+    "bytes_per_op": {
+      "median": 2522909.935483871,
+      "min": 2507842.064516129,
+      "max": 2529673.5483870967
+    },
+    "allocs_per_op": {
+      "median": 31976.83870967742,
+      "min": 31928,
+      "max": 32087.516129032258
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 71260866.66666667,
+      "min": 69270466.66666667,
+      "max": 76539166.66666667
+    },
+    "bytes_per_op": {
+      "median": 7511640,
+      "min": 7511608,
+      "max": 7511682.666666667
+    },
+    "allocs_per_op": {
+      "median": 70184.33333333333,
+      "min": 70184,
+      "max": 70185
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 114141000,
+      "min": 109963100,
+      "max": 166206400
+    },
+    "bytes_per_op": {
+      "median": 33304320,
+      "min": 33155888,
+      "max": 33399648
+    },
+    "allocs_per_op": {
+      "median": 399387,
+      "min": 398972,
+      "max": 400786
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 38999366.666666664,
+      "min": 36568433.333333336,
+      "max": 46008200
+    },
+    "bytes_per_op": {
+      "median": 24976066.666666668,
+      "min": 24679112,
+      "max": 25151832
+    },
+    "allocs_per_op": {
+      "median": 327014,
+      "min": 324709.6666666667,
+      "max": 328031
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 70495800,
+      "min": 69394133.33333333,
+      "max": 72180200
+    },
+    "bytes_per_op": {
+      "median": 7511645.333333333,
+      "min": 7511640,
+      "max": 7513336
+    },
+    "allocs_per_op": {
+      "median": 70184.66666666667,
+      "min": 70184.33333333333,
+      "max": 70186.33333333333
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 120066700,
+      "min": 117197200,
+      "max": 133240600
+    },
+    "bytes_per_op": {
+      "median": 33452256,
+      "min": 31265024,
+      "max": 33522960
+    },
+    "allocs_per_op": {
+      "median": 399890,
+      "min": 391622,
+      "max": 401591
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 45370033.333333336,
+      "min": 37939766.666666664,
+      "max": 48999233.333333336
+    },
+    "bytes_per_op": {
+      "median": 24537682.666666668,
+      "min": 24302413.333333332,
+      "max": 24680402.666666668
+    },
+    "allocs_per_op": {
+      "median": 323374.3333333333,
+      "min": 322376.6666666667,
+      "max": 323986.6666666667
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 746.1695532193509,
+      "min": 705.3467169832379,
+      "max": 774.0964820593418
+    },
+    "bytes_per_op": {
+      "median": 1864.048650928111,
+      "min": 1864.0450997654752,
+      "max": 1864.0894782217272
+    },
+    "allocs_per_op": {
+      "median": 16.000177558131792,
+      "min": 16.000140566854334,
+      "max": 16.00022888358218
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5647.160505884076,
+      "min": 5611.865813760438,
+      "max": 6104.902583133942
+    },
+    "bytes_per_op": {
+      "median": 5102.212803359539,
+      "min": 5101.775281996192,
+      "max": 5102.234288783632
+    },
+    "allocs_per_op": {
+      "median": 61.99658186434885,
+      "min": 61.996191220274426,
+      "max": 61.99799794911861
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4285.208545269583,
+      "min": 4172.0773143438455,
+      "max": 4450.16480162767
+    },
+    "bytes_per_op": {
+      "median": 3238.4794303153612,
+      "min": 3238.0568870803663,
+      "max": 3238.502868769074
+    },
+    "allocs_per_op": {
+      "median": 45.996297049847406,
+      "min": 45.99560528992879,
+      "max": 45.996500508646996
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 764.0851141747603,
+      "min": 741.2105025634955,
+      "max": 773.3297220590367
+    },
+    "bytes_per_op": {
+      "median": 1864.0458099980024,
+      "min": 1864.0091146507652,
+      "max": 1864.047241571362
+    },
+    "allocs_per_op": {
+      "median": 16.00014796510983,
+      "min": 16.00011837208786,
+      "max": 16.00015258905479
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6216.089849233962,
+      "min": 6147.756821095038,
+      "max": 6351.382530672038
+    },
+    "bytes_per_op": {
+      "median": 5100.736617225172,
+      "min": 5100.638955014344,
+      "max": 5101.199536104498
+    },
+    "allocs_per_op": {
+      "median": 61.99310260636025,
+      "min": 61.99212598425197,
+      "max": 61.994079228468536
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5091.327701547927,
+      "min": 4966.140924849846,
+      "max": 5574.656965672152
+    },
+    "bytes_per_op": {
+      "median": 3237.552614873773,
+      "min": 3237.4416719566384,
+      "max": 3237.8319253869818
+    },
+    "allocs_per_op": {
+      "median": 45.99374969480932,
+      "min": 45.99306606767909,
+      "max": 45.99472630499536
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5383.192538698178,
+      "min": 5109.663557790907,
+      "max": 5638.683529469213
+    },
+    "bytes_per_op": {
+      "median": 7592.283607598028,
+      "min": 7592.032032814102,
+      "max": 7592.292983055813
+    },
+    "allocs_per_op": {
+      "median": 89.00078128814883,
+      "min": 89.00048830509303,
+      "max": 89.00087894916744
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 44161.00122100122,
+      "min": 42707.619047619046,
+      "max": 56760.52760136785
+    },
+    "bytes_per_op": {
+      "median": 29962.98315018315,
+      "min": 29955.006593406593,
+      "max": 29975.749877870054
+    },
+    "allocs_per_op": {
+      "median": 453.59145299145297,
+      "min": 453.5310210063508,
+      "max": 453.66471306471306
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 36658.51037851038,
+      "min": 35310.32967032967,
+      "max": 38750.35409035409
+    },
+    "bytes_per_op": {
+      "median": 22375.570207570207,
+      "min": 22364.305738705738,
+      "max": 22395.74700854701
+    },
+    "allocs_per_op": {
+      "median": 364.6253968253968,
+      "min": 364.565811965812,
+      "max": 364.7880341880342
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5380.145514917721,
+      "min": 5249.0600126959325,
+      "max": 5581.7422725719025
+    },
+    "bytes_per_op": {
+      "median": 7592.2976707847065,
+      "min": 7592.041408271888,
+      "max": 7592.521119195273
+    },
+    "allocs_per_op": {
+      "median": 89.00092777967674,
+      "min": 89.00058596611163,
+      "max": 89.00102544069534
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 50833.46360527601,
+      "min": 50217.733268197364,
+      "max": 53514.36248168051
+    },
+    "bytes_per_op": {
+      "median": 30077.03370786517,
+      "min": 30064.26575476307,
+      "max": 30088.36345872008
+    },
+    "allocs_per_op": {
+      "median": 454.2393746946751,
+      "min": 454.1446018563752,
+      "max": 454.33317049340496
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 44819.43833943834,
+      "min": 43614.407814407816,
+      "max": 47856.50793650794
+    },
+    "bytes_per_op": {
+      "median": 22467.53601953602,
+      "min": 22458.3326007326,
+      "max": 22478.634432234434
+    },
+    "allocs_per_op": {
+      "median": 365.24932844932846,
+      "min": 365.1965811965812,
+      "max": 365.3221001221001
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 61519.540791402054,
+      "min": 60665.60820713239,
+      "max": 79912.06643869077
+    },
+    "bytes_per_op": {
+      "median": 68968.4611626771,
+      "min": 68968.320468979,
+      "max": 68970.79042501221
+    },
+    "allocs_per_op": {
+      "median": 734.0063507572057,
+      "min": 734.0048851978505,
+      "max": 734.0073277967758
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 423323.137254902,
+      "min": 419641.56862745096,
+      "max": 449785.8823529412
+    },
+    "bytes_per_op": {
+      "median": 293216.9411764706,
+      "min": 293042.6666666667,
+      "max": 293278.43137254904
+    },
+    "allocs_per_op": {
+      "median": 4048.329411764706,
+      "min": 4046.9882352941177,
+      "max": 4049.1372549019607
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 330321.1350293542,
+      "min": 312256.3600782779,
+      "max": 337396.8688845401
+    },
+    "bytes_per_op": {
+      "median": 223802.19178082192,
+      "min": 223762.06653620352,
+      "max": 223848.0782778865
+    },
+    "allocs_per_op": {
+      "median": 3312.1350293542073,
+      "min": 3311.8727984344423,
+      "max": 3312.6125244618397
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 61293.45383488031,
+      "min": 59892.03712750367,
+      "max": 63562.090864680016
+    },
+    "bytes_per_op": {
+      "median": 68970.69662921349,
+      "min": 68968.13287738153,
+      "max": 68970.73571079629
+    },
+    "allocs_per_op": {
+      "median": 734.0063507572057,
+      "min": 734.0029311187103,
+      "max": 734.0063507572057
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 501801.96078431373,
+      "min": 478146.6666666667,
+      "max": 537610.9803921569
+    },
+    "bytes_per_op": {
+      "median": 293189.08235294116,
+      "min": 293088.1568627451,
+      "max": 293272.18823529413
+    },
+    "allocs_per_op": {
+      "median": 4048.5254901960784,
+      "min": 4047.278431372549,
+      "max": 4049.2
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 410440.39215686277,
+      "min": 400342.7450980392,
+      "max": 411740.39215686277
+    },
+    "bytes_per_op": {
+      "median": 224080.28235294117,
+      "min": 223936.25098039216,
+      "max": 224163.13725490196
+    },
+    "allocs_per_op": {
+      "median": 3313.0745098039215,
+      "min": 3311.7960784313727,
+      "max": 3313.9254901960785
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1327603.937007874,
+      "min": 1302922.8346456692,
+      "max": 1910961.9047619049
+    },
+    "bytes_per_op": {
+      "median": 828594.4566929134,
+      "min": 828555.6535433071,
+      "max": 828639.1111111111
+    },
+    "allocs_per_op": {
+      "median": 7059.110236220473,
+      "min": 7059.062992125984,
+      "max": 7059.174603174603
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5666164.516129033,
+      "min": 5280700,
+      "max": 5950422.580645162
+    },
+    "bytes_per_op": {
+      "median": 3436829.935483871,
+      "min": 3426742.193548387,
+      "max": 3442355.0967741935
+    },
+    "allocs_per_op": {
+      "median": 40880.1935483871,
+      "min": 40740.8064516129,
+      "max": 40925.032258064515
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 3862080.64516129,
+      "min": 3623945.1612903224,
+      "max": 4093096.7741935486
+    },
+    "bytes_per_op": {
+      "median": 2557213.935483871,
+      "min": 2546602.064516129,
+      "max": 2580392.2580645164
+    },
+    "allocs_per_op": {
+      "median": 33236.290322580644,
+      "min": 33180.16129032258,
+      "max": 33455.290322580644
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1315305.5118110236,
+      "min": 1234122.8346456692,
+      "max": 1343766.1417322834
+    },
+    "bytes_per_op": {
+      "median": 828595.0866141733,
+      "min": 828593.8267716535,
+      "max": 828596.094488189
+    },
+    "allocs_per_op": {
+      "median": 7059.094488188976,
+      "min": 7059.078740157481,
+      "max": 7059.102362204724
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6259451.612903226,
+      "min": 5954000,
+      "max": 6423574.193548387
+    },
+    "bytes_per_op": {
+      "median": 3440896.5161290322,
+      "min": 3426804.64516129,
+      "max": 3442786.064516129
+    },
+    "allocs_per_op": {
+      "median": 40869.3870967742,
+      "min": 40765.1935483871,
+      "max": 40911.83870967742
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4685925.806451613,
+      "min": 4546748.387096774,
+      "max": 5116200
+    },
+    "bytes_per_op": {
+      "median": 2562467.35483871,
+      "min": 2551386.3225806453,
+      "max": 2578846.4516129033
+    },
+    "allocs_per_op": {
+      "median": 33338.45161290323,
+      "min": 33199.48387096774,
+      "max": 33437.967741935485
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 73114100,
+      "min": 71063900,
+      "max": 74532900
+    },
+    "bytes_per_op": {
+      "median": 7778253.333333333,
+      "min": 7778248,
+      "max": 7778312
+    },
+    "allocs_per_op": {
+      "median": 70184.33333333333,
+      "min": 70184,
+      "max": 70184.66666666667
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 114260700,
+      "min": 113753700,
+      "max": 120994100
+    },
+    "bytes_per_op": {
+      "median": 34250064,
+      "min": 33993072,
+      "max": 34430720
+    },
+    "allocs_per_op": {
+      "median": 413866,
+      "min": 412925,
+      "max": 415360
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 41056400,
+      "min": 38877366.666666664,
+      "max": 45306733.333333336
+    },
+    "bytes_per_op": {
+      "median": 25402536,
+      "min": 24974493.333333332,
+      "max": 25414568
+    },
+    "allocs_per_op": {
+      "median": 340284,
+      "min": 337420.3333333333,
+      "max": 340857.6666666667
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 71170900,
+      "min": 69862133.33333333,
+      "max": 74313800
+    },
+    "bytes_per_op": {
+      "median": 7778280,
+      "min": 7778258.666666667,
+      "max": 7778285.333333333
+    },
+    "allocs_per_op": {
+      "median": 70184.33333333333,
+      "min": 70184.33333333333,
+      "max": 70184.66666666667
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 117361800,
+      "min": 114622700,
+      "max": 121170200
+    },
+    "bytes_per_op": {
+      "median": 34284496,
+      "min": 33903360,
+      "max": 34482480
+    },
+    "allocs_per_op": {
+      "median": 414631,
+      "min": 412940,
+      "max": 414842
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 48474766.666666664,
+      "min": 45478400,
+      "max": 52251000
+    },
+    "bytes_per_op": {
+      "median": 25459309.333333332,
+      "min": 25164994.666666668,
+      "max": 25566104
+    },
+    "allocs_per_op": {
+      "median": 341317.3333333333,
+      "min": 338374.6666666667,
+      "max": 341865
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 749.0445153032915,
+      "min": 731.7061961899427,
+      "max": 831.5660120931974
+    },
+    "bytes_per_op": {
+      "median": 1864.0143613163582,
+      "min": 1864.0092448669016,
+      "max": 1864.0500713931656
+    },
+    "allocs_per_op": {
+      "median": 16.0001723357963,
+      "min": 16.00012207130592,
+      "max": 16.000192354642774
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5690.355974412813,
+      "min": 5386.239562478637,
+      "max": 6823.74412500763
+    },
+    "bytes_per_op": {
+      "median": 5102.1292055276135,
+      "min": 5101.120429713727,
+      "max": 5102.362029395967
+    },
+    "allocs_per_op": {
+      "median": 61.996142389765126,
+      "min": 61.99322468412379,
+      "max": 61.99726549147908
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4359.434384537131,
+      "min": 4244.651068158698,
+      "max": 4421.684638860631
+    },
+    "bytes_per_op": {
+      "median": 3238.288341810783,
+      "min": 3237.966388606307,
+      "max": 3238.5217497456765
+    },
+    "allocs_per_op": {
+      "median": 45.995442522889114,
+      "min": 45.994954221770094,
+      "max": 45.99633774160733
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 757.2876515717594,
+      "min": 747.1749761406261,
+      "max": 762.7113126724719
+    },
+    "bytes_per_op": {
+      "median": 1864.0472304630568,
+      "min": 1864.043679300421,
+      "max": 1864.0825053452395
+    },
+    "allocs_per_op": {
+      "median": 16.00014796510983,
+      "min": 16.000125770343352,
+      "max": 16.000177558131792
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6317.664652383568,
+      "min": 6244.863578099249,
+      "max": 6475.700421168284
+    },
+    "bytes_per_op": {
+      "median": 5100.920222181529,
+      "min": 5100.671183543917,
+      "max": 5101.263016541537
+    },
+    "allocs_per_op": {
+      "median": 61.99340780076909,
+      "min": 61.993041567478485,
+      "max": 61.99365195629616
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5019.957029151814,
+      "min": 4957.53001017294,
+      "max": 5356.457834855218
+    },
+    "bytes_per_op": {
+      "median": 3237.6932467405636,
+      "min": 3237.501831144099,
+      "max": 3237.932533062055
+    },
+    "allocs_per_op": {
+      "median": 45.99453098295815,
+      "min": 45.9934078812442,
+      "max": 45.99499491353001
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6018.492113872748,
+      "min": 5849.748522877094,
+      "max": 6516.175303668437
+    },
+    "bytes_per_op": {
+      "median": 9008.3023585136,
+      "min": 9008.064846916353,
+      "max": 9008.360373557956
+    },
+    "allocs_per_op": {
+      "median": 73.00091558322652,
+      "min": 73.00083011865814,
+      "max": 73.00103766099005
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 32469.40170940171,
+      "min": 31179.04761904762,
+      "max": 45223.418803418805
+    },
+    "bytes_per_op": {
+      "median": 29387.635653235655,
+      "min": 29386.447863247864,
+      "max": 29388.348717948717
+    },
+    "allocs_per_op": {
+      "median": 383.031746031746,
+      "min": 383.02612942612944,
+      "max": 383.0407814407814
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 24684.175824175825,
+      "min": 24207.996581613967,
+      "max": 25368.058608058607
+    },
+    "bytes_per_op": {
+      "median": 20379.149206349208,
+      "min": 20368.863386643876,
+      "max": 20379.784126984126
+    },
+    "allocs_per_op": {
+      "median": 310.0341838603345,
+      "min": 310.02710622710623,
+      "max": 310.0368742368742
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5852.76136530104,
+      "min": 5763.206211240783,
+      "max": 6106.946224745163
+    },
+    "bytes_per_op": {
+      "median": 9008.292201767665,
+      "min": 9008.051760971739,
+      "max": 9008.3023585136
+    },
+    "allocs_per_op": {
+      "median": 73.00083011865814,
+      "min": 73.00073246658121,
+      "max": 73.00097661018604
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 34888.10744810745,
+      "min": 34854.57875457875,
+      "max": 35656.28815628816
+    },
+    "bytes_per_op": {
+      "median": 29389.048107448107,
+      "min": 29386.674481074482,
+      "max": 29389.70451770452
+    },
+    "allocs_per_op": {
+      "median": 383.03956043956043,
+      "min": 383.02442002442,
+      "max": 383.0488400488401
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 27611.77045177045,
+      "min": 26345.787545787545,
+      "max": 32997.41147741148
+    },
+    "bytes_per_op": {
+      "median": 20378.76043956044,
+      "min": 20377.750427350427,
+      "max": 20380.139682539684
+    },
+    "allocs_per_op": {
+      "median": 310.03394383394385,
+      "min": 310.0290598290598,
+      "max": 310.0361416361416
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 61277.52808988764,
+      "min": 57784.807034684905,
+      "max": 69285.05129457742
+    },
+    "bytes_per_op": {
+      "median": 84690.79042501221,
+      "min": 84690.69662921349,
+      "max": 84690.83732291158
+    },
+    "allocs_per_op": {
+      "median": 460.00732779677577,
+      "min": 460.00635075720567,
+      "max": 460.0078163165608
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 264329.74559686886,
+      "min": 255978.86497064578,
+      "max": 269087.084148728
+    },
+    "bytes_per_op": {
+      "median": 275982.481409002,
+      "min": 275442.5048923679,
+      "max": 276256.93933463795
+    },
+    "allocs_per_op": {
+      "median": 3224.1526418786693,
+      "min": 3223.1761252446186,
+      "max": 3224.9432485322895
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 189616.61779081135,
+      "min": 176451.31964809383,
+      "max": 190704.30107526883
+    },
+    "bytes_per_op": {
+      "median": 191443.94916911045,
+      "min": 191363.83186705768,
+      "max": 191510.09970674486
+    },
+    "allocs_per_op": {
+      "median": 2763.5366568914956,
+      "min": 2763.3587487781037,
+      "max": 2763.905180840665
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 61413.67855398144,
+      "min": 58103.46849047386,
+      "max": 62386.56570591109
+    },
+    "bytes_per_op": {
+      "median": 84690.83732291158,
+      "min": 84688.320468979,
+      "max": 84690.97801660968
+    },
+    "allocs_per_op": {
+      "median": 460.0078163165608,
+      "min": 460.0048851978505,
+      "max": 460.009281875916
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 275587.084148728,
+      "min": 263942.4657534247,
+      "max": 277676.1252446184
+    },
+    "bytes_per_op": {
+      "median": 276397.4011741683,
+      "min": 276160.3287671233,
+      "max": 276597.2133072407
+    },
+    "allocs_per_op": {
+      "median": 3224.816046966732,
+      "min": 3224.426614481409,
+      "max": 3225.0900195694717
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 206734.05088062622,
+      "min": 195760.46966731898,
+      "max": 225046.3796477495
+    },
+    "bytes_per_op": {
+      "median": 191800.2504892368,
+      "min": 191219.38160469668,
+      "max": 191999.53033268102
+    },
+    "allocs_per_op": {
+      "median": 2763.6203522504893,
+      "min": 2763.06457925636,
+      "max": 2764.256360078278
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1554208.661417323,
+      "min": 1526039.3700787402,
+      "max": 1794799.212598425
+    },
+    "bytes_per_op": {
+      "median": 1053009.3858267716,
+      "min": 1053002.7086614172,
+      "max": 1053045.5873015872
+    },
+    "allocs_per_op": {
+      "median": 4102.157480314961,
+      "min": 4102.094488188976,
+      "max": 4102.165354330708
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4211190.322580645,
+      "min": 4116896.7741935486,
+      "max": 4310854.838709678
+    },
+    "bytes_per_op": {
+      "median": 3303427.6129032257,
+      "min": 3300692.64516129,
+      "max": 3305595.870967742
+    },
+    "allocs_per_op": {
+      "median": 32103.645161290322,
+      "min": 32062.83870967742,
+      "max": 32124.677419354837
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2417104.761904762,
+      "min": 2369752.380952381,
+      "max": 2431014.285714286
+    },
+    "bytes_per_op": {
+      "median": 2218576.507936508,
+      "min": 2208327.492063492,
+      "max": 2225123.8095238097
+    },
+    "allocs_per_op": {
+      "median": 27679.06349206349,
+      "min": 27589.714285714286,
+      "max": 27749.333333333332
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1559527.5590551181,
+      "min": 1535744.8818897638,
+      "max": 1601647.619047619
+    },
+    "bytes_per_op": {
+      "median": 1053002.7086614172,
+      "min": 1052972.9523809524,
+      "max": 1053004.220472441
+    },
+    "allocs_per_op": {
+      "median": 4102.102362204724,
+      "min": 4102.094488188976,
+      "max": 4102.158730158731
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4320619.354838709,
+      "min": 4109409.6774193547,
+      "max": 4377651.612903226
+    },
+    "bytes_per_op": {
+      "median": 3310822.193548387,
+      "min": 3308980.129032258,
+      "max": 3320890.3225806453
+    },
+    "allocs_per_op": {
+      "median": 32160.709677419356,
+      "min": 32143.322580645163,
+      "max": 32264.129032258064
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2488623.8095238097,
+      "min": 2356684.126984127,
+      "max": 3470200
+    },
+    "bytes_per_op": {
+      "median": 2218519.365079365,
+      "min": 2215880,
+      "max": 2235808.2580645164
+    },
+    "allocs_per_op": {
+      "median": 27688.396825396827,
+      "min": 27663.571428571428,
+      "max": 27823.354838709678
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 74411133.33333333,
+      "min": 72062133.33333333,
+      "max": 74846733.33333333
+    },
+    "bytes_per_op": {
+      "median": 10681040,
+      "min": 10681029.333333334,
+      "max": 10681130.666666666
+    },
+    "allocs_per_op": {
+      "median": 40301.666666666664,
+      "min": 40301.333333333336,
+      "max": 40302.333333333336
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 103926600,
+      "min": 100034300,
+      "max": 119913900
+    },
+    "bytes_per_op": {
+      "median": 33419728,
+      "min": 32644592,
+      "max": 34143200
+    },
+    "allocs_per_op": {
+      "median": 325171,
+      "min": 322162,
+      "max": 328230
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 22478914.285714287,
+      "min": 21800214.285714287,
+      "max": 23488871.42857143
+    },
+    "bytes_per_op": {
+      "median": 21579453.714285713,
+      "min": 21561088,
+      "max": 21725337.14285714
+    },
+    "allocs_per_op": {
+      "median": 280165.71428571426,
+      "min": 278941.28571428574,
+      "max": 281220.28571428574
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 81965033.33333333,
+      "min": 72440400,
+      "max": 87873166.66666667
+    },
+    "bytes_per_op": {
+      "median": 10681034.666666666,
+      "min": 10681029.333333334,
+      "max": 10681066.666666666
+    },
+    "allocs_per_op": {
+      "median": 40301.666666666664,
+      "min": 40301.333333333336,
+      "max": 40301.666666666664
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 95331500,
+      "min": 94939166.66666667,
+      "max": 105131900
+    },
+    "bytes_per_op": {
+      "median": 32980112,
+      "min": 32590736,
+      "max": 33132032
+    },
+    "allocs_per_op": {
+      "median": 324008,
+      "min": 322487,
+      "max": 325393
+    }
+  },
+  {
+    "variant": "baseline",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 24574471.42857143,
+      "min": 24275085.714285713,
+      "max": 33865333.333333336
+    },
+    "bytes_per_op": {
+      "median": 21505914.666666668,
+      "min": 21268272,
+      "max": 21739958.85714286
+    },
+    "allocs_per_op": {
+      "median": 279172.71428571426,
+      "min": 276794.14285714284,
+      "max": 281804
+    }
+  },
+  {
+    "variant": "index",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5999667.741935484,
+      "min": 5629790.322580645,
+      "max": 8846853.333333334
+    },
+    "bytes_per_op": {
+      "median": 8385146.838709678,
+      "min": 8385139.2,
+      "max": 8385304.258064516
+    },
+    "allocs_per_op": {
+      "median": 70265.16129032258,
+      "min": 70265.13333333333,
+      "max": 70265.32258064517
+    }
+  },
+  {
+    "variant": "index",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 46441300,
+      "min": 42849466.666666664,
+      "max": 51426533.333333336
+    },
+    "bytes_per_op": {
+      "median": 33372904,
+      "min": 32831330.666666668,
+      "max": 33610008
+    },
+    "allocs_per_op": {
+      "median": 397351.6666666667,
+      "min": 394081,
+      "max": 399099
+    }
+  },
+  {
+    "variant": "index",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 40571600,
+      "min": 38943233.333333336,
+      "max": 46444166.666666664
+    },
+    "bytes_per_op": {
+      "median": 24317016,
+      "min": 23935634.666666668,
+      "max": 24723533.333333332
+    },
+    "allocs_per_op": {
+      "median": 321685,
+      "min": 318892.3333333333,
+      "max": 323570.3333333333
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 773.3823652829383,
+      "min": 763.3206430102769,
+      "max": 793.4632801732624
+    },
+    "bytes_per_op": {
+      "median": 2120.050171281214,
+      "min": 2120.044389532948,
+      "max": 2120.053301831069
+    },
+    "allocs_per_op": {
+      "median": 18.000183106865745,
+      "min": 18.000133168598843,
+      "max": 18.000204764717463
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5186.9329557107285,
+      "min": 5123.428878363201,
+      "max": 5308.442795058352
+    },
+    "bytes_per_op": {
+      "median": 5301.980760779335,
+      "min": 5301.82645636994,
+      "max": 5302.006933932321
+    },
+    "allocs_per_op": {
+      "median": 56.996142389765126,
+      "min": 56.99511694906978,
+      "max": 56.99667952536745
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 3882.5642635415575,
+      "min": 3756.6879425203165,
+      "max": 3961.302361270971
+    },
+    "bytes_per_op": {
+      "median": 3182.7245648913536,
+      "min": 3182.490739771895,
+      "max": 3182.9790380523873
+    },
+    "allocs_per_op": {
+      "median": 38.99731435945729,
+      "min": 38.9963377628963,
+      "max": 38.997872414635
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 795.1187241582988,
+      "min": 785.0790792776434,
+      "max": 844.0424976638071
+    },
+    "bytes_per_op": {
+      "median": 2120.047253396338,
+      "min": 2120.00894664304,
+      "max": 2120.0545532609885
+    },
+    "allocs_per_op": {
+      "median": 18.00015258905479,
+      "min": 18.000118133490844,
+      "max": 18.000193630401657
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6000.551784755115,
+      "min": 5934.029981932712,
+      "max": 6178.9965207837395
+    },
+    "bytes_per_op": {
+      "median": 5302.092484984619,
+      "min": 5301.242019166209,
+      "max": 5302.51086478832
+    },
+    "allocs_per_op": {
+      "median": 56.99604472874652,
+      "min": 56.99316364524202,
+      "max": 56.99819327115582
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4559.137334689725,
+      "min": 4411.34486266531,
+      "max": 5156.550612822892
+    },
+    "bytes_per_op": {
+      "median": 3182.0282400813835,
+      "min": 3181.3686215147222,
+      "max": 3182.206632756867
+    },
+    "allocs_per_op": {
+      "median": 38.99515768056968,
+      "min": 38.99306606767909,
+      "max": 38.99617497456765
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5264.304897700083,
+      "min": 5113.150056155086,
+      "max": 5610.059084916255
+    },
+    "bytes_per_op": {
+      "median": 8064.283607598028,
+      "min": 8064.272669563944,
+      "max": 8064.292983055813
+    },
+    "allocs_per_op": {
+      "median": 94.00078128814883,
+      "min": 94.00063479662093,
+      "max": 94.00087894916744
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 35663.394383394385,
+      "min": 35102.24664224664,
+      "max": 39645.88522588523
+    },
+    "bytes_per_op": {
+      "median": 27699.04371184371,
+      "min": 27673.183882783884,
+      "max": 27723.387545787547
+    },
+    "allocs_per_op": {
+      "median": 371.9274725274725,
+      "min": 371.74310134310133,
+      "max": 372.0847374847375
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 26859.43833943834,
+      "min": 26101.636141636143,
+      "max": 28350.28083028083
+    },
+    "bytes_per_op": {
+      "median": 16918.698901098902,
+      "min": 16912.212942612943,
+      "max": 16928.459096459097
+    },
+    "allocs_per_op": {
+      "median": 217.11086691086692,
+      "min": 217.06739926739928,
+      "max": 217.17802197802197
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5198.510669466283,
+      "min": 5135.450949753406,
+      "max": 5325.39674788808
+    },
+    "bytes_per_op": {
+      "median": 8064.06015918746,
+      "min": 8064.036720542996,
+      "max": 8064.307046242492
+    },
+    "allocs_per_op": {
+      "median": 94.00078128814883,
+      "min": 94.00053713560233,
+      "max": 94.00102544069534
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 43153.479853479854,
+      "min": 42205.470085470086,
+      "max": 44074.554334554334
+    },
+    "bytes_per_op": {
+      "median": 27817.455433455434,
+      "min": 27790.405860805862,
+      "max": 27823.732356532357
+    },
+    "allocs_per_op": {
+      "median": 372.6947496947497,
+      "min": 372.52673992673994,
+      "max": 372.73260073260076
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 33500.58608058608,
+      "min": 32040.1221001221,
+      "max": 36739.65811965812
+    },
+    "bytes_per_op": {
+      "median": 17015.792918192918,
+      "min": 16994.170451770453,
+      "max": 17025.406593406595
+    },
+    "allocs_per_op": {
+      "median": 217.73968253968255,
+      "min": 217.5916971916972,
+      "max": 217.82002442002442
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 50772.54518808012,
+      "min": 49238.29995114802,
+      "max": 67694.96824621398
+    },
+    "bytes_per_op": {
+      "median": 73282.83732291158,
+      "min": 73282.69662921349,
+      "max": 73285.49487054226
+    },
+    "allocs_per_op": {
+      "median": 745.0078163165608,
+      "min": 745.0063507572057,
+      "max": 745.0122129946263
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 374660.6653620352,
+      "min": 360304.1095890411,
+      "max": 383973.77690802346
+    },
+    "bytes_per_op": {
+      "median": 266735.9373776908,
+      "min": 266697.5342465753,
+      "max": 266856.5322896282
+    },
+    "allocs_per_op": {
+      "median": 3219.225048923679,
+      "min": 3218.9765166340508,
+      "max": 3220.7984344422703
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 270687.084148728,
+      "min": 249927.59295499022,
+      "max": 277225.831702544
+    },
+    "bytes_per_op": {
+      "median": 163672.57925636007,
+      "min": 163605.3072407045,
+      "max": 163739.0371819961
+    },
+    "allocs_per_op": {
+      "median": 1951.105675146771,
+      "min": 1950.8160469667318,
+      "max": 1952.146771037182
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 51800.244259892526,
+      "min": 51268.441621885686,
+      "max": 53064.33805569125
+    },
+    "bytes_per_op": {
+      "median": 73282.79042501221,
+      "min": 73282.64973131412,
+      "max": 73282.97801660968
+    },
+    "allocs_per_op": {
+      "median": 745.0073277967758,
+      "min": 745.0058622374206,
+      "max": 745.009281875916
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 426356.4705882353,
+      "min": 414825.09803921566,
+      "max": 437849.8039215686
+    },
+    "bytes_per_op": {
+      "median": 267292.26666666666,
+      "min": 267286.14901960787,
+      "max": 267373.14509803924
+    },
+    "allocs_per_op": {
+      "median": 3223.2431372549017,
+      "min": 3223.2078431372547,
+      "max": 3224.372549019608
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 327692.56360078277,
+      "min": 317623.09197651665,
+      "max": 338419.5694716243
+    },
+    "bytes_per_op": {
+      "median": 163778.2230919765,
+      "min": 163719.31115459884,
+      "max": 163861.00978473583
+    },
+    "allocs_per_op": {
+      "median": 1952.228962818004,
+      "min": 1951.8219178082193,
+      "max": 1953.2720156555772
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 673159.2156862745,
+      "min": 663696.0784313725,
+      "max": 849481.9607843137
+    },
+    "bytes_per_op": {
+      "median": 910950.7764705883,
+      "min": 910950.4,
+      "max": 910950.7764705883
+    },
+    "allocs_per_op": {
+      "median": 7081.062745098039,
+      "min": 7081.058823529412,
+      "max": 7081.062745098039
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4394709.677419355,
+      "min": 4122387.0967741935,
+      "max": 4581835.483870967
+    },
+    "bytes_per_op": {
+      "median": 3180796.129032258,
+      "min": 3161226.064516129,
+      "max": 3187711.7419354836
+    },
+    "allocs_per_op": {
+      "median": 32509.645161290322,
+      "min": 32348.16129032258,
+      "max": 32587.612903225807
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2981269.8412698414,
+      "min": 2741528.5714285714,
+      "max": 3123249.206349206
+    },
+    "bytes_per_op": {
+      "median": 1862857.7777777778,
+      "min": 1860988.4444444445,
+      "max": 1873642.0317460317
+    },
+    "allocs_per_op": {
+      "median": 19886.31746031746,
+      "min": 19876.761904761905,
+      "max": 20025.507936507936
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 666333.3333333334,
+      "min": 663482.3529411765,
+      "max": 687838.431372549
+    },
+    "bytes_per_op": {
+      "median": 910951.5294117647,
+      "min": 910951.1529411764,
+      "max": 910970.2274509803
+    },
+    "allocs_per_op": {
+      "median": 7081.070588235294,
+      "min": 7081.066666666667,
+      "max": 7081.086274509804
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5075819.354838709,
+      "min": 4860229.0322580645,
+      "max": 5130129.0322580645
+    },
+    "bytes_per_op": {
+      "median": 3187332.3870967743,
+      "min": 3182020.3870967743,
+      "max": 3196881.290322581
+    },
+    "allocs_per_op": {
+      "median": 32585.516129032258,
+      "min": 32536.1935483871,
+      "max": 32602.677419354837
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 3587580.64516129,
+      "min": 3543945.1612903224,
+      "max": 5038329.0322580645
+    },
+    "bytes_per_op": {
+      "median": 1881186.8387096773,
+      "min": 1877775.2258064516,
+      "max": 1897518.9677419355
+    },
+    "allocs_per_op": {
+      "median": 20036.935483870966,
+      "min": 19994.032258064515,
+      "max": 20106.322580645163
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6019670.9677419355,
+      "min": 5689851.612903226,
+      "max": 6154167.741935484
+    },
+    "bytes_per_op": {
+      "median": 8385153.548387097,
+      "min": 8385144.258064516,
+      "max": 8385301.677419355
+    },
+    "allocs_per_op": {
+      "median": 70265.25806451614,
+      "min": 70265.16129032258,
+      "max": 70265.32258064517
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 44503100,
+      "min": 41621800,
+      "max": 45908333.333333336
+    },
+    "bytes_per_op": {
+      "median": 31060781.333333332,
+      "min": 30004312,
+      "max": 31244141.333333332
+    },
+    "allocs_per_op": {
+      "median": 328303,
+      "min": 322534,
+      "max": 329420.6666666667
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 30481000,
+      "min": 29521828.57142857,
+      "max": 32144671.42857143
+    },
+    "bytes_per_op": {
+      "median": 18258329.14285714,
+      "min": 18105301.714285713,
+      "max": 18366830.85714286
+    },
+    "allocs_per_op": {
+      "median": 199795.42857142858,
+      "min": 198933.42857142858,
+      "max": 200618.14285714287
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5808070.9677419355,
+      "min": 5683451.612903226,
+      "max": 5841241.935483871
+    },
+    "bytes_per_op": {
+      "median": 8385304.774193549,
+      "min": 8385147.870967742,
+      "max": 8385319.741935484
+    },
+    "allocs_per_op": {
+      "median": 70265.32258064517,
+      "min": 70265.2258064516,
+      "max": 70265.45161290323
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 50006100,
+      "min": 44725233.333333336,
+      "max": 54422933.333333336
+    },
+    "bytes_per_op": {
+      "median": 30897149.333333332,
+      "min": 30668920,
+      "max": 31180466.666666668
+    },
+    "allocs_per_op": {
+      "median": 327901.3333333333,
+      "min": 326487.3333333333,
+      "max": 329376.6666666667
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 37570200,
+      "min": 33817300,
+      "max": 39911133.333333336
+    },
+    "bytes_per_op": {
+      "median": 18811786.666666668,
+      "min": 18742250.666666668,
+      "max": 18951858.666666668
+    },
+    "allocs_per_op": {
+      "median": 202777,
+      "min": 202337.66666666666,
+      "max": 204328
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 862.6242812523677,
+      "min": 820.4233432889265,
+      "max": 961.9061927790037
+    },
+    "bytes_per_op": {
+      "median": 2120.056977850366,
+      "min": 2120.052734804157,
+      "max": 2120.0603304066335
+    },
+    "allocs_per_op": {
+      "median": 18.00020658246866,
+      "min": 18.00018717600241,
+      "max": 18.00022605817833
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5687.235704868402,
+      "min": 5418.623956247864,
+      "max": 6856.674601721296
+    },
+    "bytes_per_op": {
+      "median": 5302.613604179892,
+      "min": 5301.818226210095,
+      "max": 5303.009717271351
+    },
+    "allocs_per_op": {
+      "median": 56.9978026270814,
+      "min": 56.9954587626349,
+      "max": 56.99829093217442
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4017.7740574099266,
+      "min": 3990.8723099996514,
+      "max": 4071.657772662272
+    },
+    "bytes_per_op": {
+      "median": 3182.862404520247,
+      "min": 3182.6453210561194,
+      "max": 3183.1643123713857
+    },
+    "allocs_per_op": {
+      "median": 38.99811656377524,
+      "min": 38.99626800599909,
+      "max": 38.998535105158524
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 848.134834109258,
+      "min": 816.1063201417602,
+      "max": 916.6650089066923
+    },
+    "bytes_per_op": {
+      "median": 2120.0545532609885,
+      "min": 2120.007682354186,
+      "max": 2120.091608584367
+    },
+    "allocs_per_op": {
+      "median": 18.000193630401657,
+      "min": 18.000105795131795,
+      "max": 18.000253185159732
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6282.854178111457,
+      "min": 6149.801623634255,
+      "max": 6305.316486601965
+    },
+    "bytes_per_op": {
+      "median": 5301.098455716291,
+      "min": 5300.938289690533,
+      "max": 5301.216626991393
+    },
+    "allocs_per_op": {
+      "median": 56.99352987853263,
+      "min": 56.99267533418788,
+      "max": 56.993835072941465
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4640.3621566632755,
+      "min": 4475.902339776196,
+      "max": 5129.58152253528
+    },
+    "bytes_per_op": {
+      "median": 3182.112878942014,
+      "min": 3181.404951413643,
+      "max": 3182.192309257375
+    },
+    "allocs_per_op": {
+      "median": 38.99556459816887,
+      "min": 38.99370086430002,
+      "max": 38.996256358087486
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5798.603447433957,
+      "min": 5472.703745300064,
+      "max": 6511.450894219618
+    },
+    "bytes_per_op": {
+      "median": 8304.297670784706,
+      "min": 8304.04004150644,
+      "max": 8304.539870110846
+    },
+    "allocs_per_op": {
+      "median": 94.00092777967674,
+      "min": 94.00061038881768,
+      "max": 94.00112310171396
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 41687.81440781441,
+      "min": 39162.1978021978,
+      "max": 47411.69719169719
+    },
+    "bytes_per_op": {
+      "median": 28235.201953601954,
+      "min": 28214.42148962149,
+      "max": 28241.793406593406
+    },
+    "allocs_per_op": {
+      "median": 382.54236874236875,
+      "min": 382.4112332112332,
+      "max": 382.6046398046398
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 30532.57631257631,
+      "min": 30030.891330891332,
+      "max": 31600.58608058608
+    },
+    "bytes_per_op": {
+      "median": 16876.686691086692,
+      "min": 16870.12844932845,
+      "max": 16886.372649572648
+    },
+    "allocs_per_op": {
+      "median": 216.82051282051282,
+      "min": 216.7887667887668,
+      "max": 216.9084249084249
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5755.41774500708,
+      "min": 5633.375653108062,
+      "max": 5963.157380731481
+    },
+    "bytes_per_op": {
+      "median": 8304.28829532692,
+      "min": 8304.041408271889,
+      "max": 8304.525806924166
+    },
+    "allocs_per_op": {
+      "median": 94.00083011865814,
+      "min": 94.00058596611163,
+      "max": 94.00097661018604
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 49347.09330727894,
+      "min": 47840.39072039072,
+      "max": 50218.466047874936
+    },
+    "bytes_per_op": {
+      "median": 28320.929914529916,
+      "min": 28308.538217338217,
+      "max": 28345.844650708354
+    },
+    "allocs_per_op": {
+      "median": 383.1223443223443,
+      "min": 383.03907203907204,
+      "max": 383.15779189057156
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 38267.057387057386,
+      "min": 35716.75213675214,
+      "max": 59267.07376648754
+    },
+    "bytes_per_op": {
+      "median": 16997.409523809525,
+      "min": 16938.997557401075,
+      "max": 17001.01391941392
+    },
+    "allocs_per_op": {
+      "median": 217.61660561660563,
+      "min": 217.12261846604787,
+      "max": 217.63785103785105
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 54681.63165608207,
+      "min": 53960.23448949683,
+      "max": 60808.50024425989
+    },
+    "bytes_per_op": {
+      "median": 75922.87640449438,
+      "min": 75922.74352711285,
+      "max": 75922.88422081094
+    },
+    "allocs_per_op": {
+      "median": 745.0078163165608,
+      "min": 745.0068392769907,
+      "max": 745.0083048363459
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 406267.9060665362,
+      "min": 396377.64705882355,
+      "max": 416284.70588235295
+    },
+    "bytes_per_op": {
+      "median": 281376.65882352943,
+      "min": 281060.05479452055,
+      "max": 281405.20784313726
+    },
+    "allocs_per_op": {
+      "median": 3353.121568627451,
+      "min": 3352.6470588235293,
+      "max": 3353.553816046967
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 281758.90410958906,
+      "min": 267676.32093933463,
+      "max": 287879.4520547945
+    },
+    "bytes_per_op": {
+      "median": 163559.20156555774,
+      "min": 163450.81800391388,
+      "max": 163579.45988258318
+    },
+    "allocs_per_op": {
+      "median": 1950.1585127201565,
+      "min": 1950.0802348336595,
+      "max": 1950.3679060665363
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 54615.43722520762,
+      "min": 53794.47972642892,
+      "max": 55379.0425012213
+    },
+    "bytes_per_op": {
+      "median": 75922.74352711285,
+      "min": 75920.08597948217,
+      "max": 75925.26038104543
+    },
+    "allocs_per_op": {
+      "median": 745.0068392769907,
+      "min": 745.0024425989253,
+      "max": 745.009770395701
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 467186.6666666667,
+      "min": 457225.49019607843,
+      "max": 476750.98039215687
+    },
+    "bytes_per_op": {
+      "median": 281522.3843137255,
+      "min": 281371.60784313723,
+      "max": 281544.5019607843
+    },
+    "allocs_per_op": {
+      "median": 3354.364705882353,
+      "min": 3352.780392156863,
+      "max": 3354.8705882352942
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 348756.9471624266,
+      "min": 336125.04892367905,
+      "max": 389131.89823874756
+    },
+    "bytes_per_op": {
+      "median": 163635.0371819961,
+      "min": 163326.70058708414,
+      "max": 163666.80234833658
+    },
+    "allocs_per_op": {
+      "median": 1950.890410958904,
+      "min": 1950.8062622309199,
+      "max": 1951.2407045009784
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 716185.4901960784,
+      "min": 690399.6078431372,
+      "max": 774978.431372549
+    },
+    "bytes_per_op": {
+      "median": 937590.4,
+      "min": 937573.2078431372,
+      "max": 937592.6588235294
+    },
+    "allocs_per_op": {
+      "median": 7081.066666666667,
+      "min": 7081.054901960784,
+      "max": 7081.082352941176
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4598396.774193549,
+      "min": 4526041.935483871,
+      "max": 4791816.129032258
+    },
+    "bytes_per_op": {
+      "median": 3246674.8387096776,
+      "min": 3243525.419354839,
+      "max": 3252389.419354839
+    },
+    "allocs_per_op": {
+      "median": 33807.6129032258,
+      "min": 33741.032258064515,
+      "max": 33869.6129032258
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 3249111.111111111,
+      "min": 3166236.507936508,
+      "max": 3420045.1612903224
+    },
+    "bytes_per_op": {
+      "median": 1869253.7142857143,
+      "min": 1857437.2063492064,
+      "max": 1880909.935483871
+    },
+    "allocs_per_op": {
+      "median": 19874.190476190477,
+      "min": 19780.25396825397,
+      "max": 19985.714285714286
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 681154.1176470588,
+      "min": 655596.4705882353,
+      "max": 710803.9215686275
+    },
+    "bytes_per_op": {
+      "median": 937589.6470588235,
+      "min": 937589.2705882353,
+      "max": 937591.905882353
+    },
+    "allocs_per_op": {
+      "median": 7081.050980392157,
+      "min": 7081.047058823529,
+      "max": 7081.0745098039215
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5397145.161290322,
+      "min": 5093519.354838709,
+      "max": 5493748.387096774
+    },
+    "bytes_per_op": {
+      "median": 3258464.2580645164,
+      "min": 3249683.35483871,
+      "max": 3266698.064516129
+    },
+    "allocs_per_op": {
+      "median": 33858.8064516129,
+      "min": 33831.41935483871,
+      "max": 33891.32258064516
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 3874116.129032258,
+      "min": 3678938.709677419,
+      "max": 4129119.35483871
+    },
+    "bytes_per_op": {
+      "median": 1875036.1290322582,
+      "min": 1856970.322580645,
+      "max": 1878909.935483871
+    },
+    "allocs_per_op": {
+      "median": 19911.612903225807,
+      "min": 19815.935483870966,
+      "max": 20015.548387096773
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6559700,
+      "min": 6105087.096774193,
+      "max": 7163946.666666667
+    },
+    "bytes_per_op": {
+      "median": 8651799.466666667,
+      "min": 8651781.161290323,
+      "max": 8652142.933333334
+    },
+    "allocs_per_op": {
+      "median": 70265.4,
+      "min": 70265.12903225806,
+      "max": 70265.8
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 50511866.666666664,
+      "min": 47622800,
+      "max": 61375433.333333336
+    },
+    "bytes_per_op": {
+      "median": 31654813.333333332,
+      "min": 31479677.333333332,
+      "max": 31823389.333333332
+    },
+    "allocs_per_op": {
+      "median": 341072.3333333333,
+      "min": 339518,
+      "max": 342187.6666666667
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 35962800,
+      "min": 32583985.714285713,
+      "max": 36983900
+    },
+    "bytes_per_op": {
+      "median": 18881858.666666668,
+      "min": 18219954.285714287,
+      "max": 19054232
+    },
+    "allocs_per_op": {
+      "median": 202143.33333333334,
+      "min": 199210.85714285713,
+      "max": 204069.66666666666
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6100477.419354838,
+      "min": 5886870.9677419355,
+      "max": 6780433.333333333
+    },
+    "bytes_per_op": {
+      "median": 8651950.967741935,
+      "min": 8651797.161290323,
+      "max": 8651960.258064516
+    },
+    "allocs_per_op": {
+      "median": 70265.41935483871,
+      "min": 70265.32258064517,
+      "max": 70265.53333333334
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 54301833.333333336,
+      "min": 50870966.666666664,
+      "max": 56633200
+    },
+    "bytes_per_op": {
+      "median": 31529858.666666668,
+      "min": 31439448,
+      "max": 31852733.333333332
+    },
+    "allocs_per_op": {
+      "median": 341221.6666666667,
+      "min": 339223.3333333333,
+      "max": 342373.6666666667
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 41718933.333333336,
+      "min": 40031466.666666664,
+      "max": 44182166.666666664
+    },
+    "bytes_per_op": {
+      "median": 18934328,
+      "min": 18817282.666666668,
+      "max": 19054330.666666668
+    },
+    "allocs_per_op": {
+      "median": 204028,
+      "min": 203161,
+      "max": 205330.66666666666
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 846.3340713738498,
+      "min": 797.3167946446151,
+      "max": 1168.1613672033948
+    },
+    "bytes_per_op": {
+      "median": 2120.0537450645293,
+      "min": 2120.049521559362,
+      "max": 2120.066407022031
+    },
+    "allocs_per_op": {
+      "median": 18.000183107065318,
+      "min": 18.000165386887183,
+      "max": 18.000185211688542
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5717.344596904146,
+      "min": 5512.783827335319,
+      "max": 6026.2805801064505
+    },
+    "bytes_per_op": {
+      "median": 5302.064749255334,
+      "min": 5301.973729185996,
+      "max": 5302.498364177938
+    },
+    "allocs_per_op": {
+      "median": 56.99648420333024,
+      "min": 56.9954587626349,
+      "max": 56.99697250842326
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4052.3211607547696,
+      "min": 3921.1642426144886,
+      "max": 4099.906408952187
+    },
+    "bytes_per_op": {
+      "median": 3182.6018311291964,
+      "min": 3182.1662665310273,
+      "max": 3183.089532977573
+    },
+    "allocs_per_op": {
+      "median": 38.99707021031705,
+      "min": 38.995442522889114,
+      "max": 38.997558508597535
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 847.279492856722,
+      "min": 820.7618877106747,
+      "max": 857.6690267125767
+    },
+    "bytes_per_op": {
+      "median": 2120.053516060515,
+      "min": 2120.0513204751524,
+      "max": 2120.055361457448
+    },
+    "allocs_per_op": {
+      "median": 18.00019531408947,
+      "min": 18.000159955549194,
+      "max": 18.000202049114773
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6233.571384972227,
+      "min": 6200.903375450162,
+      "max": 6339.406702069218
+    },
+    "bytes_per_op": {
+      "median": 5301.04767136666,
+      "min": 5300.714643227736,
+      "max": 5301.335774888604
+    },
+    "allocs_per_op": {
+      "median": 56.993346761887324,
+      "min": 56.99237013977904,
+      "max": 56.99420130623207
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 4572.960325534079,
+      "min": 4332.252288911495,
+      "max": 5172.18614190146
+    },
+    "bytes_per_op": {
+      "median": 3182.14998982706,
+      "min": 3181.292445920211,
+      "max": 3182.2118413021362
+    },
+    "allocs_per_op": {
+      "median": 38.995727365208545,
+      "min": 38.99272425411397,
+      "max": 38.99633774160733
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6160.4162851736555,
+      "min": 5996.410957566288,
+      "max": 6253.6043459683815
+    },
+    "bytes_per_op": {
+      "median": 9720.360373557956,
+      "min": 9720.04004150644,
+      "max": 9720.663126411524
+    },
+    "allocs_per_op": {
+      "median": 78.00103766099005,
+      "min": 78.00061038881768,
+      "max": 78.00128181651712
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 30982.222222222223,
+      "min": 29318.6568986569,
+      "max": 33024.59096459096
+    },
+    "bytes_per_op": {
+      "median": 27668.379975579977,
+      "min": 27667.428571428572,
+      "max": 27669.124297924296
+    },
+    "allocs_per_op": {
+      "median": 312.0400488400488,
+      "min": 312.0283272283272,
+      "max": 312.04175824175826
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 22188.82920278354,
+      "min": 21884.54401172018,
+      "max": 22490.257599804663
+    },
+    "bytes_per_op": {
+      "median": 16751.86814796728,
+      "min": 16751.40227078501,
+      "max": 16752.908314003173
+    },
+    "allocs_per_op": {
+      "median": 216.03027713343914,
+      "min": 216.0274691734831,
+      "max": 216.03455011598095
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6185.484953915644,
+      "min": 6044.1427804092,
+      "max": 6256.955380577428
+    },
+    "bytes_per_op": {
+      "median": 9720.360373557956,
+      "min": 9720.3023585136,
+      "max": 9720.668986144174
+    },
+    "allocs_per_op": {
+      "median": 78.00103766099005,
+      "min": 78.00085454434475,
+      "max": 78.00134285539889
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 33838.46153846154,
+      "min": 33593.57753357753,
+      "max": 34435.82417582418
+    },
+    "bytes_per_op": {
+      "median": 27668.28424908425,
+      "min": 27667.950183150184,
+      "max": 27669.042246642246
+    },
+    "allocs_per_op": {
+      "median": 312.03736263736266,
+      "min": 312.032967032967,
+      "max": 312.03809523809525
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 25027.301587301587,
+      "min": 24362.947137101695,
+      "max": 29007.350427350426
+    },
+    "bytes_per_op": {
+      "median": 16762.00634920635,
+      "min": 16751.15810035405,
+      "max": 16763.895482295484
+    },
+    "allocs_per_op": {
+      "median": 216.02686202686203,
+      "min": 216.02075702075703,
+      "max": 216.04639804639805
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 54475.76941866145,
+      "min": 50265.46165119687,
+      "max": 56734.53834880313
+    },
+    "bytes_per_op": {
+      "median": 91642.60283341476,
+      "min": 91640.17977528089,
+      "max": 91645.30727894479
+    },
+    "allocs_per_op": {
+      "median": 471.00537371763556,
+      "min": 471.00341963849536,
+      "max": 471.0102589154861
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 250174.16829745597,
+      "min": 237890.60665362034,
+      "max": 319186.4970645793
+    },
+    "bytes_per_op": {
+      "median": 264254.79452054796,
+      "min": 264170.39530332683,
+      "max": 264501.76125244616
+    },
+    "allocs_per_op": {
+      "median": 2529.344422700587,
+      "min": 2529.0704500978472,
+      "max": 2529.59686888454
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 176087.09677419355,
+      "min": 167741.83773216032,
+      "max": 179508.11339198437
+    },
+    "bytes_per_op": {
+      "median": 161217.165200391,
+      "min": 161122.42424242425,
+      "max": 161308.29325513195
+    },
+    "allocs_per_op": {
+      "median": 1948.348973607038,
+      "min": 1947.958944281525,
+      "max": 1948.392961876833
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 55170.835368832435,
+      "min": 51286.6634098681,
+      "max": 56798.92525647289
+    },
+    "bytes_per_op": {
+      "median": 91642.69662921349,
+      "min": 91640.22667318027,
+      "max": 91642.83732291158
+    },
+    "allocs_per_op": {
+      "median": 471.00635075720567,
+      "min": 471.0039081582804,
+      "max": 471.0078163165608
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 257661.05675146772,
+      "min": 253573.58121330725,
+      "max": 264207.8277886497
+    },
+    "bytes_per_op": {
+      "median": 264692.5088062622,
+      "min": 264375.02935420745,
+      "max": 264764.25831702544
+    },
+    "allocs_per_op": {
+      "median": 2530.0293542074364,
+      "min": 2529.720156555773,
+      "max": 2530.409001956947
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 187946.04105571847,
+      "min": 183958.16226783968,
+      "max": 232210.37181996086
+    },
+    "bytes_per_op": {
+      "median": 161575.62426614482,
+      "min": 161509.62267839687,
+      "max": 161625.47018572825
+    },
+    "allocs_per_op": {
+      "median": 1948.6715542521995,
+      "min": 1948.5395894428152,
+      "max": 1949.1545988258317
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 773725.0980392157,
+      "min": 760450.9803921569,
+      "max": 796462.2047244095
+    },
+    "bytes_per_op": {
+      "median": 1162000.6588235295,
+      "min": 1161999.5294117648,
+      "max": 1162022.4881889764
+    },
+    "allocs_per_op": {
+      "median": 4124.082352941176,
+      "min": 4124.070588235294,
+      "max": 4124.133858267716
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 3217519.0476190476,
+      "min": 3137623.8095238097,
+      "max": 3317874.193548387
+    },
+    "bytes_per_op": {
+      "median": 3123788.129032258,
+      "min": 3121953.6507936507,
+      "max": 3130464.2580645164
+    },
+    "allocs_per_op": {
+      "median": 25136.222222222223,
+      "min": 25061.41935483871,
+      "max": 25174.354838709678
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2222784.126984127,
+      "min": 2170490.476190476,
+      "max": 2250814.285714286
+    },
+    "bytes_per_op": {
+      "median": 1808858.5396825396,
+      "min": 1802512,
+      "max": 1817751.873015873
+    },
+    "allocs_per_op": {
+      "median": 19727.634920634922,
+      "min": 19665.571428571428,
+      "max": 19813.4126984127
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 788690.1960784313,
+      "min": 772109.8039215687,
+      "max": 1014043.3070866142
+    },
+    "bytes_per_op": {
+      "median": 1162001.4117647058,
+      "min": 1161999.5294117648,
+      "max": 1162020.9763779528
+    },
+    "allocs_per_op": {
+      "median": 4124.090196078431,
+      "min": 4124.070588235294,
+      "max": 4124.118110236221
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 3308577.419354839,
+      "min": 3180353.9682539683,
+      "max": 3325354.8387096776
+    },
+    "bytes_per_op": {
+      "median": 3132131.870967742,
+      "min": 3127492.1904761903,
+      "max": 3134692.9032258065
+    },
+    "allocs_per_op": {
+      "median": 25157.548387096773,
+      "min": 25148.935483870966,
+      "max": 25169.612903225807
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2349587.301587302,
+      "min": 2262107.9365079366,
+      "max": 2580933.3333333335
+    },
+    "bytes_per_op": {
+      "median": 1814303.492063492,
+      "min": 1813807.873015873,
+      "max": 1816541.4603174604
+    },
+    "allocs_per_op": {
+      "median": 19793.5873015873,
+      "min": 19768.04761904762,
+      "max": 19795.873015873014
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 7134733.333333333,
+      "min": 6898786.666666667,
+      "max": 8448573.333333334
+    },
+    "bytes_per_op": {
+      "median": 11554568,
+      "min": 11554556.266666668,
+      "max": 11554918.933333334
+    },
+    "allocs_per_op": {
+      "median": 40382.26666666667,
+      "min": 40382.2,
+      "max": 40382.8
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 30859771.42857143,
+      "min": 29246471.42857143,
+      "max": 31523385.714285713
+    },
+    "bytes_per_op": {
+      "median": 31075027.42857143,
+      "min": 30889249.14285714,
+      "max": 31151340.57142857
+    },
+    "allocs_per_op": {
+      "median": 253543.85714285713,
+      "min": 252372.42857142858,
+      "max": 254032.7142857143
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 21237271.42857143,
+      "min": 20443371.42857143,
+      "max": 22322585.714285713
+    },
+    "bytes_per_op": {
+      "median": 17847394.285714287,
+      "min": 17565699.42857143,
+      "max": 18096139.42857143
+    },
+    "allocs_per_op": {
+      "median": 197888.14285714287,
+      "min": 195307.14285714287,
+      "max": 199910
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6932420,
+      "min": 6698726.666666667,
+      "max": 7316686.666666667
+    },
+    "bytes_per_op": {
+      "median": 11554900.8,
+      "min": 11554561.6,
+      "max": 11554918.933333334
+    },
+    "allocs_per_op": {
+      "median": 40382.6,
+      "min": 40382.2,
+      "max": 40382.8
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 30109728.57142857,
+      "min": 29133928.57142857,
+      "max": 31917342.85714286
+    },
+    "bytes_per_op": {
+      "median": 31065813.714285713,
+      "min": 30886652.57142857,
+      "max": 31104840
+    },
+    "allocs_per_op": {
+      "median": 253561.42857142858,
+      "min": 253012.42857142858,
+      "max": 254062.2857142857
+    }
+  },
+  {
+    "variant": "optimized",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 22133428.57142857,
+      "min": 21868957.14285714,
+      "max": 23596885.714285713
+    },
+    "bytes_per_op": {
+      "median": 18012301.714285713,
+      "min": 17775282.285714287,
+      "max": 18122899.42857143
+    },
+    "allocs_per_op": {
+      "median": 199092.57142857142,
+      "min": 197883.85714285713,
+      "max": 200606.2857142857
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 441.6292098092643,
+      "min": 434.0290657083749,
+      "max": 507.28489359899953
+    },
+    "bytes_per_op": {
+      "median": 1144.0315640326976,
+      "min": 1144.0314245231607,
+      "max": 1144.0347179663484
+    },
+    "allocs_per_op": {
+      "median": 26.00010463215259,
+      "min": 26.000100272479564,
+      "max": 26.000113028578145
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2192.799739578035,
+      "min": 2149.000020345466,
+      "max": 2285.2136277882587
+    },
+    "bytes_per_op": {
+      "median": 1928.8071453276636,
+      "min": 1928.1180779047831,
+      "max": 1929.294785457061
+    },
+    "allocs_per_op": {
+      "median": 36.01175967935546,
+      "min": 36.01141380643324,
+      "max": 36.01253280706395
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1237.180629646358,
+      "min": 1188.10440039528,
+      "max": 1281.833274331962
+    },
+    "bytes_per_op": {
+      "median": 224.76504840146976,
+      "min": 224.68825204906122,
+      "max": 224.9691524554743
+    },
+    "allocs_per_op": {
+      "median": 7.002307157069788,
+      "min": 7.002081032378074,
+      "max": 7.002722201198745
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 434.592304825867,
+      "min": 424.52108247357586,
+      "max": 452.1798691581179
+    },
+    "bytes_per_op": {
+      "median": 1144.0300991825613,
+      "min": 1144.010308206327,
+      "max": 1144.0312158683519
+    },
+    "allocs_per_op": {
+      "median": 26.000091553133515,
+      "min": 26.000084186776782,
+      "max": 26.000102796492925
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 3019.7352358733688,
+      "min": 3003.377370262865,
+      "max": 3022.0166562678023
+    },
+    "bytes_per_op": {
+      "median": 1928.6141659658736,
+      "min": 1928.1391096763693,
+      "max": 1929.9013102568972
+    },
+    "allocs_per_op": {
+      "median": 36.01256001953178,
+      "min": 36.01125790087622,
+      "max": 36.01356373599544
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2018.6301575675625,
+      "min": 1911.7039457622025,
+      "max": 2191.670566214319
+    },
+    "bytes_per_op": {
+      "median": 225.15657220125078,
+      "min": 224.98559543260654,
+      "max": 225.6614921364774
+    },
+    "allocs_per_op": {
+      "median": 7.003211448532312,
+      "min": 7.002835840516837,
+      "max": 7.00421151146467
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1597.4608987563897,
+      "min": 1563.039597161822,
+      "max": 1648.7491658392878
+    },
+    "bytes_per_op": {
+      "median": 3336.1014419775693,
+      "min": 3336.0417975552987,
+      "max": 3336.1114518959334
+    },
+    "allocs_per_op": {
+      "median": 94.00033569848173,
+      "min": 94.00024414435035,
+      "max": 94.00039063135793
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 13919.741179343182,
+      "min": 13607.373947015016,
+      "max": 14141.606641435723
+    },
+    "bytes_per_op": {
+      "median": 6293.5661091441825,
+      "min": 6289.901599316323,
+      "max": 6294.536930777683
+    },
+    "allocs_per_op": {
+      "median": 176.33097301916737,
+      "min": 176.3133927481382,
+      "max": 176.36540104993284
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 11537.812321966307,
+      "min": 10826.99601204525,
+      "max": 12137.804183283144
+    },
+    "bytes_per_op": {
+      "median": 2390.848864653699,
+      "min": 2389.732888418654,
+      "max": 2391.3723447546186
+    },
+    "allocs_per_op": {
+      "median": 79.02116057621876,
+      "min": 79.01961422641817,
+      "max": 79.02286969968259
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1589.4712748912796,
+      "min": 1527.8511008028033,
+      "max": 1614.239719233997
+    },
+    "bytes_per_op": {
+      "median": 3336.1024185549704,
+      "min": 3336.0943258031625,
+      "max": 3336.180056458381
+    },
+    "allocs_per_op": {
+      "median": 94.00028992141604,
+      "min": 94.00025850555069,
+      "max": 94.00036621652552
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 22130.59455499939,
+      "min": 20318.093028934196,
+      "max": 22659.028201684778
+    },
+    "bytes_per_op": {
+      "median": 6294.241972897082,
+      "min": 6289.9660603100965,
+      "max": 6299.805151996094
+    },
+    "allocs_per_op": {
+      "median": 176.379929190575,
+      "min": 176.26333780979124,
+      "max": 176.54840678793798
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 18757.13588084483,
+      "min": 17772.616286167744,
+      "max": 20060.17580271029
+    },
+    "bytes_per_op": {
+      "median": 2394.255158100354,
+      "min": 2391.2684653888414,
+      "max": 2394.8919545843
+    },
+    "allocs_per_op": {
+      "median": 79.02844585520694,
+      "min": 79.0224636796484,
+      "max": 79.03015504822366
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 11844.738341336371,
+      "min": 11366.655815089118,
+      "max": 12438.676596264193
+    },
+    "bytes_per_op": {
+      "median": 24888.597053796697,
+      "min": 24888.54105965655,
+      "max": 24888.817482602855
+    },
+    "allocs_per_op": {
+      "median": 727.0017905102955,
+      "min": 727.0012208024741,
+      "max": 727.0026043786115
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 152836.4613880743,
+      "min": 150358.35777126098,
+      "max": 180206.35386119256
+    },
+    "bytes_per_op": {
+      "median": 49787.714565004884,
+      "min": 49683.79276637341,
+      "max": 49816.07038123167
+    },
+    "allocs_per_op": {
+      "median": 1533.928641251222,
+      "min": 1532.6539589442816,
+      "max": 1534.1984359726296
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 137043.30400782014,
+      "min": 125124.24242424243,
+      "max": 145624.43792766373
+    },
+    "bytes_per_op": {
+      "median": 24071.44477028348,
+      "min": 24054.303030303032,
+      "max": 24078.13880742913
+    },
+    "allocs_per_op": {
+      "median": 799.2561094819159,
+      "min": 799.2189638318671,
+      "max": 799.2717497556207
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 12238.00512757905,
+      "min": 12139.700496459673,
+      "max": 12577.463069222316
+    },
+    "bytes_per_op": {
+      "median": 24888.758881699425,
+      "min": 24888.229520205103,
+      "max": 24888.81357587596
+    },
+    "allocs_per_op": {
+      "median": 727.0020754486632,
+      "min": 727.0018312782322,
+      "max": 727.0023196190941
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 229984.14872798434,
+      "min": 221325.2446183953,
+      "max": 245446.96673189822
+    },
+    "bytes_per_op": {
+      "median": 49915.75733855186,
+      "min": 49827.898238747555,
+      "max": 49979.72602739726
+    },
+    "allocs_per_op": {
+      "median": 1535.0528375733854,
+      "min": 1533.8336594911937,
+      "max": 1535.6320939334637
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 219522.11350293542,
+      "min": 209765.75342465754,
+      "max": 229838.74755381604
+    },
+    "bytes_per_op": {
+      "median": 24117.07240704501,
+      "min": 24086.91976516634,
+      "max": 24146.16046966732
+    },
+    "allocs_per_op": {
+      "median": 799.3542074363992,
+      "min": 799.2837573385518,
+      "max": 799.4109589041096
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 124372.62952101661,
+      "min": 121950.73313782991,
+      "max": 136842.32649071357
+    },
+    "bytes_per_op": {
+      "median": 234846.81133919844,
+      "min": 234846.20136852394,
+      "max": 234851.67546432064
+    },
+    "allocs_per_op": {
+      "median": 7030.0205278592375,
+      "min": 7030.013685239492,
+      "max": 7030.023460410557
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1363688.9763779528,
+      "min": 1271265.3543307087,
+      "max": 1461385.8267716535
+    },
+    "bytes_per_op": {
+      "median": 476605.10236220475,
+      "min": 476593.88976377953,
+      "max": 476650.96062992123
+    },
+    "allocs_per_op": {
+      "median": 15042.88188976378,
+      "min": 15042.858267716536,
+      "max": 15043.015748031496
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1139451.1811023622,
+      "min": 1100115.748031496,
+      "max": 1212719.68503937
+    },
+    "bytes_per_op": {
+      "median": 240619.2125984252,
+      "min": 240578.0157480315,
+      "max": 240645.54330708663
+    },
+    "allocs_per_op": {
+      "median": 8001.03937007874,
+      "min": 8000.96062992126,
+      "max": 8001.141732283465
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 122685.63049853372,
+      "min": 115389.54056695993,
+      "max": 124623.16715542522
+    },
+    "bytes_per_op": {
+      "median": 234846.4203323558,
+      "min": 234846.4203323558,
+      "max": 234846.48289345062
+    },
+    "allocs_per_op": {
+      "median": 7030.015640273705,
+      "min": 7030.014662756598,
+      "max": 7030.016617790811
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2170639.6825396824,
+      "min": 1940960.3174603174,
+      "max": 2253415.873015873
+    },
+    "bytes_per_op": {
+      "median": 477130.4126984127,
+      "min": 476867.68253968254,
+      "max": 477206.34920634923
+    },
+    "allocs_per_op": {
+      "median": 15043.650793650793,
+      "min": 15042.888888888889,
+      "max": 15044.587301587302
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1833515.873015873,
+      "min": 1778976.1904761905,
+      "max": 2007336.507936508
+    },
+    "bytes_per_op": {
+      "median": 240942.85714285713,
+      "min": 240474.79365079364,
+      "max": 241099.3015873016
+    },
+    "allocs_per_op": {
+      "median": 8001.761904761905,
+      "min": 8000.666666666667,
+      "max": 8002.047619047619
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1490381.1023622048,
+      "min": 1388196.062992126,
+      "max": 1543658.2677165354
+    },
+    "bytes_per_op": {
+      "median": 2475212.472440945,
+      "min": 2475208.062992126,
+      "max": 2475212.724409449
+    },
+    "allocs_per_op": {
+      "median": 70037.15748031496,
+      "min": 70037.11811023622,
+      "max": 70037.1653543307
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 13701726.666666666,
+      "min": 12989480,
+      "max": 14768057.142857144
+    },
+    "bytes_per_op": {
+      "median": 4881253.866666666,
+      "min": 4880472,
+      "max": 4883732.571428572
+    },
+    "allocs_per_op": {
+      "median": 150065.86666666667,
+      "min": 150063.86666666667,
+      "max": 150072.2857142857
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 12634113.333333334,
+      "min": 10902906.666666666,
+      "max": 13304746.666666666
+    },
+    "bytes_per_op": {
+      "median": 2404392,
+      "min": 2403148.2666666666,
+      "max": 2405166.4
+    },
+    "allocs_per_op": {
+      "median": 80016.26666666666,
+      "min": 80013.73333333334,
+      "max": 80017
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1405556.6929133858,
+      "min": 1376066.1417322834,
+      "max": 1500725.9842519686
+    },
+    "bytes_per_op": {
+      "median": 2475212.346456693,
+      "min": 2475208.31496063,
+      "max": 2475219.149606299
+    },
+    "allocs_per_op": {
+      "median": 70037.14173228346,
+      "min": 70037.11811023622,
+      "max": 70037.22047244094
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 19896814.285714287,
+      "min": 19233171.42857143,
+      "max": 21451800
+    },
+    "bytes_per_op": {
+      "median": 4883076.571428572,
+      "min": 4880557.714285715,
+      "max": 4883573.714285715
+    },
+    "allocs_per_op": {
+      "median": 150069,
+      "min": 150062.57142857142,
+      "max": 150071
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 17890542.85714286,
+      "min": 17205614.285714287,
+      "max": 18198400
+    },
+    "bytes_per_op": {
+      "median": 2406766.8571428573,
+      "min": 2406160,
+      "max": 2408121.1428571427
+    },
+    "allocs_per_op": {
+      "median": 80021.28571428571,
+      "min": 80018.57142857143,
+      "max": 80023.28571428571
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 473.48714264921995,
+      "min": 452.7866065656041,
+      "max": 726.8348376812219
+    },
+    "bytes_per_op": {
+      "median": 1144.0355695780572,
+      "min": 1144.0078500969526,
+      "max": 1144.054434563235
+    },
+    "allocs_per_op": {
+      "median": 26.00011754972127,
+      "min": 26.000065730476873,
+      "max": 26.000143613163583
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2340.148707135723,
+      "min": 2293.4058373099547,
+      "max": 2539.869137430113
+    },
+    "bytes_per_op": {
+      "median": 1929.14065031628,
+      "min": 1928.684391708782,
+      "max": 1929.5701697924758
+    },
+    "allocs_per_op": {
+      "median": 36.012762179558315,
+      "min": 36.012518033514596,
+      "max": 36.01316169126623
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1221.7617402556184,
+      "min": 1187.1708422949484,
+      "max": 1227.0682015161317
+    },
+    "bytes_per_op": {
+      "median": 224.85250247049933,
+      "min": 224.79434563410197,
+      "max": 224.96446489825314
+    },
+    "allocs_per_op": {
+      "median": 7.002464686391908,
+      "min": 7.002404814511896,
+      "max": 7.002709994018482
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 477.5276889633834,
+      "min": 458.5836162815406,
+      "max": 494.1274127315075
+    },
+    "bytes_per_op": {
+      "median": 1144.03542449556,
+      "min": 1144.0307799424006,
+      "max": 1144.0573049673094
+    },
+    "allocs_per_op": {
+      "median": 26.000112680817498,
+      "min": 26.00008590171939,
+      "max": 26.00012446444386
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 3055.0492873928038,
+      "min": 3036.0822504950766,
+      "max": 3084.2219306009097
+    },
+    "bytes_per_op": {
+      "median": 1929.036052410276,
+      "min": 1928.4880520035401,
+      "max": 1929.1274758140812
+    },
+    "allocs_per_op": {
+      "median": 36.01285842172368,
+      "min": 36.01196325571459,
+      "max": 36.013367107150486
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2155.512604016195,
+      "min": 1970.9748906041655,
+      "max": 2498.2494689811765
+    },
+    "bytes_per_op": {
+      "median": 225.14943744786476,
+      "min": 225.0198775202946,
+      "max": 225.73921535485567
+    },
+    "allocs_per_op": {
+      "median": 7.003377347358141,
+      "min": 7.002990783503896,
+      "max": 7.004281931376416
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1856.2248225589872,
+      "min": 1783.1540031041277,
+      "max": 2435.756297858173
+    },
+    "bytes_per_op": {
+      "median": 3432.1123066459727,
+      "min": 3432.0288788518214,
+      "max": 3432.206337303594
+    },
+    "allocs_per_op": {
+      "median": 100.00029646164309,
+      "min": 100.00026158380273,
+      "max": 100.00043597300456
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 12708.936637773166,
+      "min": 12073.7039147066,
+      "max": 15364.314491515077
+    },
+    "bytes_per_op": {
+      "median": 6673.097745584764,
+      "min": 6668.9507996581615,
+      "max": 6678.631668904895
+    },
+    "allocs_per_op": {
+      "median": 185.82599495401644,
+      "min": 185.6847759736296,
+      "max": 185.86558417775606
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 9537.820460649467,
+      "min": 9398.038577358184,
+      "max": 9803.410108244487
+    },
+    "bytes_per_op": {
+      "median": 2438.30975828111,
+      "min": 2438.163913078864,
+      "max": 2438.7433873199316
+    },
+    "allocs_per_op": {
+      "median": 78.91983397086351,
+      "min": 78.87824529991047,
+      "max": 78.94783104093757
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1784.2823012399072,
+      "min": 1760.6455888251398,
+      "max": 1834.0512355474948
+    },
+    "bytes_per_op": {
+      "median": 3432.11398078231,
+      "min": 3432.027204715484,
+      "max": 3432.119840259491
+    },
+    "allocs_per_op": {
+      "median": 100.00033133948345,
+      "min": 100.00024414488254,
+      "max": 100.00036621732383
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 19104.944451226955,
+      "min": 18647.625442558907,
+      "max": 19216.13966548651
+    },
+    "bytes_per_op": {
+      "median": 6716.836527896472,
+      "min": 6716.604077646197,
+      "max": 6724.90977902576
+    },
+    "allocs_per_op": {
+      "median": 186.5115370528629,
+      "min": 186.5045781955805,
+      "max": 186.60078134537906
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 16261.946038334758,
+      "min": 15501.30631180564,
+      "max": 18522.500305213038
+    },
+    "bytes_per_op": {
+      "median": 2442.255158100354,
+      "min": 2440.448296911244,
+      "max": 2443.1947259186913
+    },
+    "allocs_per_op": {
+      "median": 78.98217555853986,
+      "min": 78.89232083994628,
+      "max": 78.98950067146869
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 13235.307044316933,
+      "min": 12872.005860090343,
+      "max": 13287.400805762421
+    },
+    "bytes_per_op": {
+      "median": 25944.801855695274,
+      "min": 25944.170919301672,
+      "max": 25944.82138932975
+    },
+    "allocs_per_op": {
+      "median": 793.0020754486632,
+      "min": 793.0013429373703,
+      "max": 793.0023196190941
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 113794.03714565004,
+      "min": 110729.61876832845,
+      "max": 140692.1798631476
+    },
+    "bytes_per_op": {
+      "median": 51706.16617790811,
+      "min": 51649.57966764418,
+      "max": 51715.33137829912
+    },
+    "allocs_per_op": {
+      "median": 1603.2678396871945,
+      "min": 1600.535679374389,
+      "max": 1603.41642228739
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 93383.68343917928,
+      "min": 90784.56277479239,
+      "max": 94917.19589643381
+    },
+    "bytes_per_op": {
+      "median": 24531.505617977527,
+      "min": 24511.89447972643,
+      "max": 24537.62579384465
+    },
+    "allocs_per_op": {
+      "median": 797.1304347826087,
+      "min": 795.8031265266243,
+      "max": 797.5339521250611
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 13328.16505921133,
+      "min": 13100.964473202295,
+      "max": 13629.764375534123
+    },
+    "bytes_per_op": {
+      "median": 25944.764741789768,
+      "min": 25944.1474789403,
+      "max": 25944.827249420094
+    },
+    "allocs_per_op": {
+      "median": 793.0017091930167,
+      "min": 793.0012208521548,
+      "max": 793.0024417043096
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 171508.79765395896,
+      "min": 166520.4301075269,
+      "max": 182470.18572825025
+    },
+    "bytes_per_op": {
+      "median": 51683.847507331375,
+      "min": 51674.35386119257,
+      "max": 51687.58553274682
+    },
+    "allocs_per_op": {
+      "median": 1603.9579667644184,
+      "min": 1603.9100684261975,
+      "max": 1604.1065493646138
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 155032.45356793745,
+      "min": 153242.13098729227,
+      "max": 168802.34604105572
+    },
+    "bytes_per_op": {
+      "median": 24583.288367546433,
+      "min": 24579.831867057674,
+      "max": 24593.391984359725
+    },
+    "allocs_per_op": {
+      "median": 798.3186705767351,
+      "min": 798.1994134897361,
+      "max": 798.5268817204301
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 135439.8826979472,
+      "min": 131404.00782013685,
+      "max": 141076.24633431085
+    },
+    "bytes_per_op": {
+      "median": 245502.31085043988,
+      "min": 245502.0293255132,
+      "max": 245502.56109481916
+    },
+    "allocs_per_op": {
+      "median": 7696.014662756598,
+      "min": 7696.011730205279,
+      "max": 7696.017595307918
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1098447.2440944882,
+      "min": 1071593.7007874015,
+      "max": 1380776.377952756
+    },
+    "bytes_per_op": {
+      "median": 492262.3622047244,
+      "min": 491334.7401574803,
+      "max": 492327.3700787402
+    },
+    "allocs_per_op": {
+      "median": 15686.401574803149,
+      "min": 15628.818897637795,
+      "max": 15689.251968503937
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 948065.3543307086,
+      "min": 904476.3779527559,
+      "max": 951450.3937007874
+    },
+    "bytes_per_op": {
+      "median": 245617.6377952756,
+      "min": 245477.29133858267,
+      "max": 245624.94488188977
+    },
+    "allocs_per_op": {
+      "median": 7978.094488188976,
+      "min": 7971.937007874016,
+      "max": 7981.795275590551
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 131514.46725317693,
+      "min": 127079.56989247311,
+      "max": 140952.98142717496
+    },
+    "bytes_per_op": {
+      "median": 245502.88954056695,
+      "min": 245502.27956989247,
+      "max": 245507.42521994136
+    },
+    "allocs_per_op": {
+      "median": 7696.0205278592375,
+      "min": 7696.013685239492,
+      "max": 7696.022482893451
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1670349.2063492064,
+      "min": 1566294.4881889764,
+      "max": 1804547.619047619
+    },
+    "bytes_per_op": {
+      "median": 492930.5396825397,
+      "min": 492556.4094488189,
+      "max": 493002.6666666667
+    },
+    "allocs_per_op": {
+      "median": 15705.587301587302,
+      "min": 15702.47619047619,
+      "max": 15708.047619047618
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1525564.5669291338,
+      "min": 1514181.8897637795,
+      "max": 2225373.015873016
+    },
+    "bytes_per_op": {
+      "median": 245817.70078740158,
+      "min": 245599.61904761905,
+      "max": 245868.8503937008
+    },
+    "allocs_per_op": {
+      "median": 7992.212598425197,
+      "min": 7952.126984126984,
+      "max": 7997.299212598426
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1721987.3015873015,
+      "min": 1595914.1732283465,
+      "max": 2151250.793650794
+    },
+    "bytes_per_op": {
+      "median": 2581907.8095238097,
+      "min": 2581865.9527559057,
+      "max": 2581912.634920635
+    },
+    "allocs_per_op": {
+      "median": 76703.20634920635,
+      "min": 76703.12598425196,
+      "max": 76703.23809523809
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 11323186.666666666,
+      "min": 10951826.666666666,
+      "max": 11534740
+    },
+    "bytes_per_op": {
+      "median": 5031606.4,
+      "min": 5031272.533333333,
+      "max": 5032216
+    },
+    "allocs_per_op": {
+      "median": 156273.53333333333,
+      "min": 156259.86666666667,
+      "max": 156316.13333333333
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 8969773.333333334,
+      "min": 8838526.666666666,
+      "max": 9654360
+    },
+    "bytes_per_op": {
+      "median": 2449518.4,
+      "min": 2448901.8666666667,
+      "max": 2449765.8666666667
+    },
+    "allocs_per_op": {
+      "median": 79594.6,
+      "min": 79567.4,
+      "max": 79634.6
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1590603.1746031747,
+      "min": 1524884.251968504,
+      "max": 1666614.2857142857
+    },
+    "bytes_per_op": {
+      "median": 2581905.777777778,
+      "min": 2581869.3543307087,
+      "max": 2581909.587301587
+    },
+    "allocs_per_op": {
+      "median": 76703.19047619047,
+      "min": 76703.1811023622,
+      "max": 76703.22222222222
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 16051014.285714285,
+      "min": 15389885.714285715,
+      "max": 17381285.714285713
+    },
+    "bytes_per_op": {
+      "median": 5036235.428571428,
+      "min": 5034884.571428572,
+      "max": 5038598.857142857
+    },
+    "allocs_per_op": {
+      "median": 156530.2857142857,
+      "min": 156477.57142857142,
+      "max": 156636.14285714287
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "diamonds",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 15003685.714285715,
+      "min": 14087820,
+      "max": 15507914.285714285
+    },
+    "bytes_per_op": {
+      "median": 2452694.4,
+      "min": 2450836.5714285714,
+      "max": 2454563.4285714286
+    },
+    "allocs_per_op": {
+      "median": 79775,
+      "min": 79744.14285714286,
+      "max": 79829.53333333334
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 447.07939932261775,
+      "min": 428.2993850155956,
+      "max": 471.1258619816019
+    },
+    "bytes_per_op": {
+      "median": 1144.0293655314792,
+      "min": 1144.0090061171065,
+      "max": 1144.0341265719396
+    },
+    "allocs_per_op": {
+      "median": 26.000085663744105,
+      "min": 26.00007685943314,
+      "max": 26.000124290324443
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2385.799578293197,
+      "min": 2241.7179003440237,
+      "max": 2756.63673602257
+    },
+    "bytes_per_op": {
+      "median": 1929.0191987570747,
+      "min": 1928.1056886308766,
+      "max": 1929.3677505271335
+    },
+    "allocs_per_op": {
+      "median": 36.01242925313506,
+      "min": 36.01114939098825,
+      "max": 36.01271778936855
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1231.3736739950439,
+      "min": 1205.960588269488,
+      "max": 1298.5852511468331
+    },
+    "bytes_per_op": {
+      "median": 224.8653482903512,
+      "min": 224.63360148439313,
+      "max": 225.07579438225565
+    },
+    "allocs_per_op": {
+      "median": 7.002492836308033,
+      "min": 7.001977563202676,
+      "max": 7.002966344804014
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 472.4279429647262,
+      "min": 465.9085988566796,
+      "max": 485.74738504990546
+    },
+    "bytes_per_op": {
+      "median": 1144.0334330644582,
+      "min": 1144.0055645893121,
+      "max": 1144.0591684817732
+    },
+    "allocs_per_op": {
+      "median": 26.000100528973885,
+      "min": 26.000041458032953,
+      "max": 26.000138825725845
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 3049.7246561592924,
+      "min": 2966.538263299243,
+      "max": 3063.362529374065
+    },
+    "bytes_per_op": {
+      "median": 1929.2020725388602,
+      "min": 1928.3543932940888,
+      "max": 1930.2612994781334
+    },
+    "allocs_per_op": {
+      "median": 36.012909329508346,
+      "min": 36.01204459756395,
+      "max": 36.014221625415814
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 2067.5449126162234,
+      "min": 1864.6181748426138,
+      "max": 2313.25934968372
+    },
+    "bytes_per_op": {
+      "median": 225.20184736831396,
+      "min": 224.93691663380096,
+      "max": 225.32507891111382
+    },
+    "allocs_per_op": {
+      "median": 7.00329596549409,
+      "min": 7.0026480365090995,
+      "max": 7.003365711595138
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1346.563355306272,
+      "min": 1290.9358415892475,
+      "max": 1896.396041091517
+    },
+    "bytes_per_op": {
+      "median": 3192.0944707862714,
+      "min": 3192.089125322848,
+      "max": 3192.1182414032714
+    },
+    "allocs_per_op": {
+      "median": 76.00030839212059,
+      "min": 76.00025699343382,
+      "max": 76.00032552524856
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 8731.862944575567,
+      "min": 8420.810612842843,
+      "max": 8924.432326849515
+    },
+    "bytes_per_op": {
+      "median": 6692.2451371368115,
+      "min": 6685.626759990234,
+      "max": 6694.751851550419
+    },
+    "allocs_per_op": {
+      "median": 159.69862456254577,
+      "min": 159.6766501180109,
+      "max": 159.71514608936275
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 6218.537508392847,
+      "min": 6148.678508209729,
+      "max": 6419.868156015382
+    },
+    "bytes_per_op": {
+      "median": 2144.0786180797168,
+      "min": 2142.3968748092534,
+      "max": 2145.5718732832815
+    },
+    "allocs_per_op": {
+      "median": 63.55319538546054,
+      "min": 63.4452176036135,
+      "max": 63.62851736556186
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1367.8598071262902,
+      "min": 1325.1892114156483,
+      "max": 1411.4489942626176
+    },
+    "bytes_per_op": {
+      "median": 3192.089085409687,
+      "min": 3192.020662272079,
+      "max": 3192.1596158802067
+    },
+    "allocs_per_op": {
+      "median": 76.00025699343382,
+      "min": 76.00016704573198,
+      "max": 76.00032552524856
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 13517.372726162861,
+      "min": 13144.146013917714,
+      "max": 13924.441460139176
+    },
+    "bytes_per_op": {
+      "median": 6621.190086680503,
+      "min": 6617.8244414601395,
+      "max": 6624.542058356733
+    },
+    "allocs_per_op": {
+      "median": 159.7488707117568,
+      "min": 159.70907093151018,
+      "max": 159.78513002075448
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 10270.635631154879,
+      "min": 10015.203060144868,
+      "max": 10458.10205908684
+    },
+    "bytes_per_op": {
+      "median": 2154.334174330593,
+      "min": 2153.637503052006,
+      "max": 2154.4070969317163
+    },
+    "allocs_per_op": {
+      "median": 64.09733865060633,
+      "min": 64.07153902498575,
+      "max": 64.11426711158134
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 9339.969073003987,
+      "min": 8894.009929193457,
+      "max": 11855.636038089036
+    },
+    "bytes_per_op": {
+      "median": 23304.577520957107,
+      "min": 23304.19858386913,
+      "max": 23305.020265321073
+    },
+    "allocs_per_op": {
+      "median": 529.0015463498006,
+      "min": 529.0015463498006,
+      "max": 529.0023602181167
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 68315.58378114314,
+      "min": 63442.598925256476,
+      "max": 69969.80947728382
+    },
+    "bytes_per_op": {
+      "median": 54836.830483634585,
+      "min": 54776.629213483146,
+      "max": 54897.70004885198
+    },
+    "allocs_per_op": {
+      "median": 1236.3160723009282,
+      "min": 1235.3385442110405,
+      "max": 1236.9682462139717
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 55828.38299951148,
+      "min": 53627.6502198339,
+      "max": 56978.55398143625
+    },
+    "bytes_per_op": {
+      "median": 25692.84611626771,
+      "min": 25654.913531998045,
+      "max": 25740.595994137762
+    },
+    "allocs_per_op": {
+      "median": 621.3981436248168,
+      "min": 621.228138739619,
+      "max": 621.6038104543234
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 9229.396923577766,
+      "min": 8968.080084642304,
+      "max": 9415.203060144868
+    },
+    "bytes_per_op": {
+      "median": 23304.60226255392,
+      "min": 23304.563196874744,
+      "max": 23304.62309758281
+    },
+    "allocs_per_op": {
+      "median": 529.0019532839586,
+      "min": 529.0016277366323,
+      "max": 529.0021160576218
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 71846.70249145091,
+      "min": 69053.10210063508,
+      "max": 73338.54421104054
+    },
+    "bytes_per_op": {
+      "median": 56071.558378114314,
+      "min": 56026.454323400096,
+      "max": 56089.3170493405
+    },
+    "allocs_per_op": {
+      "median": 1254.3370786516855,
+      "min": 1253.5368832437714,
+      "max": 1254.5290669272106
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 100,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 59137.51831949194,
+      "min": 56454.90962383977,
+      "max": 60183.68343917929
+    },
+    "bytes_per_op": {
+      "median": 26432.871519296532,
+      "min": 26393.406936980948,
+      "max": 26454.061553492917
+    },
+    "allocs_per_op": {
+      "median": 619.2686858817782,
+      "min": 619.1113825109917,
+      "max": 619.5671714704446
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 95144.89496824621,
+      "min": 91045.33463605276,
+      "max": 102087.39002932551
+    },
+    "bytes_per_op": {
+      "median": 218859.8651685393,
+      "min": 218859.7088422081,
+      "max": 218862.6549364614
+    },
+    "allocs_per_op": {
+      "median": 5032.010747435271,
+      "min": 5032.008793356131,
+      "max": 5032.017595307918
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 694897.2549019608,
+      "min": 690587.0588235294,
+      "max": 705119.2156862745
+    },
+    "bytes_per_op": {
+      "median": 498855.3725490196,
+      "min": 498224.9411764706,
+      "max": 499404.39215686277
+    },
+    "allocs_per_op": {
+      "median": 11347.8,
+      "min": 11342.113725490197,
+      "max": 11351.549019607843
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 589982.3529411765,
+      "min": 553627.0588235294,
+      "max": 716647.0588235294
+    },
+    "bytes_per_op": {
+      "median": 255684.04705882352,
+      "min": 254544.5019607843,
+      "max": 255820.86274509804
+    },
+    "allocs_per_op": {
+      "median": 6180.976470588235,
+      "min": 6166.172549019608,
+      "max": 6188.03137254902
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 92164.43575964826,
+      "min": 91778.45627747924,
+      "max": 93489.98534440645
+    },
+    "bytes_per_op": {
+      "median": 218859.7713727406,
+      "min": 218859.67757694187,
+      "max": 218862.46018563752
+    },
+    "allocs_per_op": {
+      "median": 5032.009770395701,
+      "min": 5032.009281875916,
+      "max": 5032.014167073767
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 703051.7647058824,
+      "min": 684732.5490196078,
+      "max": 708055.2941176471
+    },
+    "bytes_per_op": {
+      "median": 505576.25098039216,
+      "min": 504378.35294117645,
+      "max": 506114.00784313725
+    },
+    "allocs_per_op": {
+      "median": 11352.56862745098,
+      "min": 11343.137254901962,
+      "max": 11359.254901960785
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 1000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 601701.1764705882,
+      "min": 578484.7058823529,
+      "max": 615636.0784313725
+    },
+    "bytes_per_op": {
+      "median": 259299.73333333334,
+      "min": 258711.43529411763,
+      "max": 259531.29411764705
+    },
+    "allocs_per_op": {
+      "median": 6144.917647058824,
+      "min": 6138.882352941177,
+      "max": 6148.062745098039
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1138965.3543307087,
+      "min": 1085063.779527559,
+      "max": 1166646.4566929133
+    },
+    "bytes_per_op": {
+      "median": 2315226.7086614175,
+      "min": 2315225.070866142,
+      "max": 2315229.228346457
+    },
+    "allocs_per_op": {
+      "median": 50039.13385826772,
+      "min": 50039.11811023622,
+      "max": 50039.15748031496
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 7111300,
+      "min": 6763686.666666667,
+      "max": 7859020
+    },
+    "bytes_per_op": {
+      "median": 5400044.266666667,
+      "min": 5374354.133333334,
+      "max": 5401101.333333333
+    },
+    "allocs_per_op": {
+      "median": 112750.93333333333,
+      "min": 112689,
+      "max": 112880.66666666667
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5489474.193548387,
+      "min": 5335874.193548387,
+      "max": 5987322.580645162
+    },
+    "bytes_per_op": {
+      "median": 2750497.290322581,
+      "min": 2737162.064516129,
+      "max": 2755725.1612903224
+    },
+    "allocs_per_op": {
+      "median": 61644.709677419356,
+      "min": 61600.12903225807,
+      "max": 61803.354838709674
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 1067148.8188976378,
+      "min": 1034724.4094488189,
+      "max": 1202436.220472441
+    },
+    "bytes_per_op": {
+      "median": 2315226.0787401577,
+      "min": 2315224.188976378,
+      "max": 2315230.2362204725
+    },
+    "allocs_per_op": {
+      "median": 50039.12598425197,
+      "min": 50039.10236220472,
+      "max": 50039.16535433071
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 7020753.333333333,
+      "min": 7014706.666666667,
+      "max": 7441853.333333333
+    },
+    "bytes_per_op": {
+      "median": 5409600,
+      "min": 5385626.666666667,
+      "max": 5421268.266666667
+    },
+    "allocs_per_op": {
+      "median": 112250.93333333333,
+      "min": 112084.6,
+      "max": 112640.46666666666
+    }
+  },
+  {
+    "variant": "taskflow",
+    "shape": "wide",
+    "nodes": 10000,
+    "rounds": 256,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5994138.70967742,
+      "min": 5910406.451612903,
+      "max": 6468703.225806451
+    },
+    "bytes_per_op": {
+      "median": 2788937.806451613,
+      "min": 2755651.870967742,
+      "max": 2799747.35483871
+    },
+    "allocs_per_op": {
+      "median": 61423.32258064516,
+      "min": 61319.903225806454,
+      "max": 61463.903225806454
+    }
+  },
+  {
+    "variant": "validation",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "build",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 5974051.612903226,
+      "min": 5662361.29032258,
+      "max": 6752926.666666667
+    },
+    "bytes_per_op": {
+      "median": 8385147.354838709,
+      "min": 8385141.161290322,
+      "max": 8385157.161290322
+    },
+    "allocs_per_op": {
+      "median": 70265.19354838709,
+      "min": 70265.12903225806,
+      "max": 70265.33333333333
+    }
+  },
+  {
+    "variant": "validation",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "e2e",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 45547066.666666664,
+      "min": 43990933.333333336,
+      "max": 51564033.333333336
+    },
+    "bytes_per_op": {
+      "median": 31391522.666666668,
+      "min": 31135421.333333332,
+      "max": 31698749.333333332
+    },
+    "allocs_per_op": {
+      "median": 397496.6666666667,
+      "min": 395114,
+      "max": 399310.3333333333
+    }
+  },
+  {
+    "variant": "validation",
+    "shape": "chain",
+    "nodes": 10000,
+    "rounds": 1,
+    "mode": "reuse",
+    "samples": 5,
+    "ok": 5,
+    "statuses": {
+      "ok": 5
+    },
+    "ns_per_op": {
+      "median": 33835600,
+      "min": 31403228.57142857,
+      "max": 38097166.666666664
+    },
+    "bytes_per_op": {
+      "median": 19500440,
+      "min": 18750116.57142857,
+      "max": 19517576
+    },
+    "allocs_per_op": {
+      "median": 273490.6666666667,
+      "min": 269007.85714285716,
+      "max": 273783
+    }
+  }
+]
