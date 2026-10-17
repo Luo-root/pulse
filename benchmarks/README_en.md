@@ -78,7 +78,7 @@ The same sampler runs the Durable adapter from the other repository:
 python benchmarks/tools/run_matrix.py --suite workflow --module ../pulse-durable/benchmarks/workflow --binary ../pulse-durable/benchmarks/workflow/workflow.exe --out ../pulse-durable/benchmarks/results/local-workflow --sizes 1,10,100,1000,10000 --rounds 1 --repeats 5 --procs 4 --parallelism 4
 ```
 
-Use absolute paths if the repositories are not siblings. File-backend scratch data lives in the output directory's `work/`; checkpoint/database files are not committed. Retain the measurement data, manifests and plots.
+Use absolute paths if the repositories are not siblings. File-backend scratch data lives in the output directory's `work/`. Retain raw JSONL, full environment manifests, diagnostic logs and generated plot sets locally or in a separate evidence archive; `benchmarks/results/` is not tracked. Do not commit checkpoints, databases or binaries either. The source repository keeps reproduction tools, concise statistics/version summaries in `benchmarks/reports/`, and one PNG for each chart actually used by the site.
 
 ## Interpret the data
 

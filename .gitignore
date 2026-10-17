@@ -45,6 +45,9 @@ go.work.sum
 # Local scratch (docs preview, temp artifacts)
 tmp/
 benchmarks/dag/dag
-benchmarks/results/*/work/
+# Raw benchmark samples, local diagnostics and generated plot sets stay local.
+benchmarks/results/
+# Published performance pages keep one curated PNG per chart.
+site/public/performance/**/*.svg
 benchmarks/**/__pycache__/
 

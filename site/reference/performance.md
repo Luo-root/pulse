@@ -20,15 +20,15 @@
 
 Pulse 的 10000 节点长链在 reuse 模式为 **44.8ms**，e2e 为 **119ms**；累计 Go 分配分别约 **23.4MiB / 31.5MiB**。同点 Taskflow 分别为 **13.6ms / 14.5ms**。这说明复用已有定义有实际价值；这些独立模式的中位数之差不等于经过 profiler 分解的“纯装配时间”。
 
-![三种图形的构建并运行耗时](/performance/2026-10-17/dag-e2e-r1-time.svg)
+![三种图形的构建并运行耗时](/performance/2026-10-17/dag-e2e-r1-time.png)
 
-![复用定义后的整图耗时](/performance/2026-10-17/dag-reuse-r1-time.svg)
+![复用定义后的整图耗时](/performance/2026-10-17/dag-reuse-r1-time.png)
 
-![每个业务节点的摊销时间](/performance/2026-10-17/dag-e2e-r1-per-node.svg)
+![每个业务节点的摊销时间](/performance/2026-10-17/dag-e2e-r1-per-node.png)
 
-![整图累计 Go 分配](/performance/2026-10-17/dag-e2e-r1-allocations.svg)
+![整图累计 Go 分配](/performance/2026-10-17/dag-e2e-r1-allocations.png)
 
-![固定较多业务计算时的成本](/performance/2026-10-17/dag-e2e-r256-time.svg)
+![固定较多业务计算时的成本](/performance/2026-10-17/dag-e2e-r256-time.png)
 
 图表保留 wide、diamonds 和 rounds=256 的结果，不以这张长链表代替全部矩阵。点的横轴按倍数增加，并不预设耗时必须按指数增长。没有数值的点保留预算说明，不把未测成的性能画成零。
 
@@ -44,7 +44,7 @@ Pulse 的 10000 节点长链在 reuse 模式为 **44.8ms**，e2e 为 **119ms**�
 
 整组 DAG 保留 **1800 条计划样本**：1700 条成功、20 条案例超时、80 条后续未重复。20 个超时均来自 Azure 的运行模式测点；每个这样的配置保留首次超时和其余 4 条 `not_repeated`。没有 checksum 不符或采样器错误被当成成功。
 
-原始资料：[样本 JSONL](https://github.com/Luo-root/pulse/blob/main/benchmarks/results/2026-10-17-dag/samples.jsonl) · [版本与环境清单](https://github.com/Luo-root/pulse/blob/main/benchmarks/results/2026-10-17-dag/manifest.json) · [CSV 汇总](https://github.com/Luo-root/pulse/blob/main/benchmarks/results/2026-10-17-dag/figures/summary.csv)。
+精简资料：[CSV 汇总](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-dag.csv) · [版本与原始数据摘要](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-dag.json)。完整原始样本、诊断清单和生成图集另存证据包，不随源码仓分发；复跑会在被忽略的 `benchmarks/results/` 生成它们。原始样本 SHA256 为 `fc31f4a71d8bd3cff4d85b6697a71935cb52982cf570593e115371c8ca689ffd`。
 
 ## 相同任务是什么
 
@@ -92,4 +92,4 @@ B/op 与 allocs/op 是进程累计 Go 分配差值/完成次数，不是峰值�
 
 执行前通过 192 个小规模图/计算量/并发/引擎组合的逐节点检查及 race；direct/Pulse/Taskflow 的三种 10000 节点图也完成非 race 逐节点校验。独立复审进一步核对业务等价、复用、超时与采样器错误处理。超过预算的 Azure 点不因为没完成就被算成正确性通过。
 
-报告层保留原始 JSONL、配置、模块版本/校验和、二进制 SHA256、机器说明、CSV 和 SVG。Go 的本次 JSON 清单没有给出 Origin；另附 `module-origins.json` 查询同版本公共代理的实际元数据，未提供/获取失败均明确标记。复跑不使用 `@latest`；改变并发、工具链、业务函数或后端，应另存矩阵。此基线没有修改调度、缩减必要语义或先优化后只展示有利数字。
+完整证据包保留原始 JSONL、配置、模块版本/校验和、二进制 SHA256、机器说明、CSV 和图集；源码仓仅保留精简统计、版本摘要与报告实际引用的图。Go 的本次 JSON 清单没有给出 Origin；另附 `module-origins.json` 查询同版本公共代理的实际元数据，未提供/获取失败均明确标记。复跑不使用 `@latest`；改变并发、工具链、业务函数或后端，应另存矩阵。此基线没有修改调度、缩减必要语义或先优化后只展示有利数字。
