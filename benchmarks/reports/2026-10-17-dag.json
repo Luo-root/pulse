@@ -1,0 +1,18 @@
+{
+  "measured_at": "2026-10-17",
+  "kind": "historical-dag-baseline",
+  "pulse": "v0.4.2-0.20261016143631-7d70e1e14771",
+  "azure": "v0.1.13",
+  "taskflow": "v1.2.0",
+  "go": "go1.25.0 windows/amd64",
+  "cpu": "Intel Core i9-14900HX",
+  "gomaxprocs": 4,
+  "business_parallelism": 4,
+  "planned_samples": 1800,
+  "statuses": {
+    "ok": 1700,
+    "timeout": 20,
+    "not_repeated": 80
+  },
+  "raw_sha256": "fc31f4a71d8bd3cff4d85b6697a71935cb52982cf570593e115371c8ca689ffd"
+}

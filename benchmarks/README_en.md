@@ -40,7 +40,7 @@ Direct Go computation is a business-cost reference, not a fourth workflow engine
 | Azure/go-workflow | `v0.1.13` |
 | noneback/go-taskflow | `v1.2.0` |
 
-Do not use `@latest` to reproduce this baseline. Retain `go.sum` and the module list, download checksums and Origin SHAs in the sampling manifest. Results describe these versions, not every version of a project.
+Do not use `@latest` to reproduce this baseline. Retain `go.sum` and module versions, download checksums and binary SHA256 in the sampling manifest. Supplementary `module-origins.json` queries actual Origin metadata from the same-version public module proxy; missing/failed entries are explicit, with no invented hashes. Results describe these versions, not every version of a project.
 
 The full local matrix fixes `GOMAXPROCS=4` and a business concurrency limit of 4. Threads, concurrent business nodes and total graph size are different dimensions; save a separate matrix when changing any of them. Do not run compilers, race tests, profilers or other benchmark processes alongside timing samples. Power, temperature and unrelated workstation activity can still introduce variation; the measurements are not a production SLO.
 
@@ -64,6 +64,7 @@ After correctness checks, sample serially from the repository root:
 
 ```sh
 python benchmarks/tools/run_matrix.py --suite dag --module benchmarks/dag --binary benchmarks/dag/dag.exe --out benchmarks/results/local-dag --sizes 1,10,100,1000,10000 --rounds 1,256 --repeats 5 --procs 4 --parallelism 4
+python benchmarks/tools/capture_origins.py benchmarks/results/local-dag/manifest.json --out benchmarks/results/local-dag/module-origins.json
 python benchmarks/tools/summarize.py benchmarks/results/local-dag/samples.jsonl --out benchmarks/results/local-dag/figures
 ```
 
@@ -77,11 +78,11 @@ The same sampler runs the Durable adapter from the other repository:
 python benchmarks/tools/run_matrix.py --suite workflow --module ../pulse-durable/benchmarks/workflow --binary ../pulse-durable/benchmarks/workflow/workflow.exe --out ../pulse-durable/benchmarks/results/local-workflow --sizes 1,10,100,1000,10000 --rounds 1 --repeats 5 --procs 4 --parallelism 4
 ```
 
-Use absolute paths if the repositories are not siblings. File-backend scratch data lives in the output directory's `work/`; checkpoint/database files are not committed. Retain the measurement data, manifests and plots.
+Use absolute paths if the repositories are not siblings. File-backend scratch data lives in the output directory's `work/`. Retain raw JSONL, full environment manifests, diagnostic logs and generated plot sets locally or in a separate evidence archive; `benchmarks/results/` is not tracked. Do not commit checkpoints, databases or binaries either. The source repository keeps reproduction tools, concise statistics/version summaries in `benchmarks/reports/`, and one PNG for each chart actually used by the site.
 
 ## Interpret the data
 
-- `manifest.json` contains fixed configuration, Go/OS, module versions/Origins/checksums, binary SHA256 and source status. Compilation and module downloads are outside timing.
+- `manifest.json` contains fixed configuration, Go/OS, module versions/checksums, binary SHA256 and source status. Compilation and module downloads are outside timing. Separate `module-origins.json` records supplementary metadata, its capture time, and missing/failed statuses.
 - `samples.jsonl` retains each planned sample's original stdout/stderr, command, exit status and parsed fields. The Go program measures its internal operation time; `wall_seconds` also includes process launch and sampler waiting and is a different metric.
 - `summary.csv` / `summary.json` group full configurations and report valid sample counts, median and observed minimum/maximum. Repeated batch means are not individual request p95/p99 latency.
 - SVGs show whole-task time, time per business node and cumulative Go allocations. Error bars show observed min–max, not confidence intervals.

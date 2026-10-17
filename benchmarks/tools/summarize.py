@@ -68,7 +68,7 @@ def draw(rows, destination, selected_modes, selected_rounds):
                             axis = axes[si][bi]
                             panel = [r for r in subset if r["shape"] == shape and r["backend"] == backend]
                             sizes = sorted({r["nodes"] for r in panel})
-                            limits, positive = [], False
+                            limits, positive, measured_bounds = [], False, []
                             configurations = sorted({(r["engine"], r["parallelism"], r["procs"]) for r in panel})
                             multiple_configs = len({(p, g) for _, p, g in configurations}) > 1
                             for engine, parallelism, procs in configurations:
@@ -82,27 +82,34 @@ def draw(rows, destination, selected_modes, selected_rounds):
                                     if not row or not row["samples_ok"] or row[f"{metric}_median"] == "":
                                         ys.append(float("nan")); low.append(0); high.append(0)
                                         if row:
-                                            statuses = "/".join(k for k in json.loads(row["statuses"]) if k != "not_repeated")
+                                            statuses = "not collected" if row["samples_ok"] else "/".join(k for k in json.loads(row["statuses"]) if k != "not_repeated")
                                             limits.append(f"{label} N={nodes}: {statuses}")
                                         continue
                                     factor = 1e-3 / nodes if normalized else scale
                                     mid = row[f"{metric}_median"] * factor
                                     positive = positive or mid > 0
+                                    measured_bounds.extend((row[f"{metric}_min"] * factor, row[f"{metric}_max"] * factor))
                                     ys.append(mid)
                                     low.append(mid - row[f"{metric}_min"] * factor)
                                     high.append(row[f"{metric}_max"] * factor - mid)
                                     if row["samples_ok"] < (5 if suite == "dag" else 3):
                                         incomplete_x.append(nodes); incomplete_y.append(mid)
                                 axis.errorbar(sizes, ys, yerr=[low, high], label=label, marker="o", markersize=4,
-                                              capsize=3, linewidth=1.5, color=COLORS.get(engine))
+                                              capsize=3, linewidth=1.5, color=COLORS.get(engine), clip_on=False)
                                 if incomplete_x:
                                     axis.scatter(incomplete_x, incomplete_y, s=70, facecolors="none", edgecolors="red",
                                                  label=f"{label}: few samples")
                             axis.set_xscale("log")
                             axis.set_xticks(sizes)
                             axis.xaxis.set_major_formatter(ScalarFormatter())
-                            if metric == "bytes_per_op":
-                                axis.set_yscale("symlog", linthresh=0.001)
+                            if metric == "bytes_per_op" and measured_bounds:
+                                if min(measured_bounds) > 0:
+                                    axis.set_yscale("log")
+                                    axis.set_ylim(min(measured_bounds) / 2, max(measured_bounds) * 2)
+                                else:
+                                    # Reuse can genuinely allocate zero; keep that point visible without a negative half-axis.
+                                    axis.set_yscale("symlog", linthresh=0.001)
+                                    axis.set_ylim(0, max(measured_bounds) * 2 or 1)
                             elif positive:
                                 axis.set_yscale("log")
                             else:
@@ -115,12 +122,16 @@ def draw(rows, destination, selected_modes, selected_rounds):
                             axis.grid(True, which="major", alpha=0.22)
                             axis.legend(fontsize=8, loc="best")
                             if limits:
-                                axis.text(0, -0.29, "\n".join(limits), transform=axis.transAxes, fontsize=8, color="#9b1c20")
+                                axis.text(0, -0.29, "\n".join(limits), transform=axis.transAxes, fontsize=8, color="#9b1c20", va="top")
                     figure.suptitle(f"{suite} / {mode} / rounds={rounds}: {title}", fontsize=13)
                     figure.tight_layout(rect=(0, 0.04, 1, 0.97), h_pad=4)
                     figure.text(0.02, 0.01, "Median of repeated batch means; bars: observed min–max. Limits have no fabricated value.", fontsize=9)
                     name = "per-node" if normalized else ("time" if metric == "ns_per_op" else "allocations")
-                    figure.savefig(destination / f"{suite}-{mode}-r{rounds}-{name}.svg", metadata={"Date": None})
+                    svg_path = destination / f"{suite}-{mode}-r{rounds}-{name}.svg"
+                    figure.savefig(svg_path, metadata={"Date": None})
+                    # Matplotlib emits trailing XML-path spaces; keep generated source reviewable.
+                    svg_text = svg_path.read_text(encoding="utf-8")
+                    svg_path.write_text("\n".join(line.rstrip() for line in svg_text.splitlines()) + "\n", encoding="utf-8", newline="\n")
                     plt.close(figure)
 
 
@@ -141,9 +152,9 @@ def main():
     fieldnames += [f"{metric}_{suffix}" for metric in METRICS for suffix in ("median", "min", "max")]
     fieldnames += ["ns_per_node", "nodes_per_second", "allocated_bytes_per_node"]
     with (args.out / "summary.csv").open("w", encoding="utf-8", newline="") as output:
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader(); writer.writerows(rows)
-    (args.out / "summary.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (args.out / "summary.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
     if not args.no_plots:
         draw(rows, args.out, set(filter(None, args.modes.split(","))), set(filter(None, args.rounds.split(","))))
     print(json.dumps({"samples": len(records), "groups": len(rows), "statuses": dict(Counter(r["status"] for r in records))}))

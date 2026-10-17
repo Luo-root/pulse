@@ -40,7 +40,7 @@ x = input XOR ((id + 1) * 0x9e3779b97f4a7c15)
 | Azure/go-workflow | `v0.1.13` |
 | noneback/go-taskflow | `v1.2.0` |
 
-不得使用 `@latest` 复跑此基线。`go.sum`、采样 manifest 中的模块列表、下载校验和与 Origin SHA 一起保留。版本仅表示此轮测量对象，不能据此推断其他版本的性能。
+不得使用 `@latest` 复跑此基线。`go.sum` 和采样 manifest 保留模块版本、下载校验和与二进制 SHA256；补充的 `module-origins.json` 再从同版本公共代理查询实际 Origin，未提供或获取失败的条目明确标记，不编造 Hash。版本仅表示此轮测量对象，不能据此推断其他版本的性能。
 
 本机完整矩阵固定 `GOMAXPROCS=4` 和业务并发上限 4。线程数、节点并发限制和节点总数是不同维度；改变其中一项应另存一次矩阵。服务进程、编译器、race 或 profiler 不与正式样本并行运行。普通工作站的电源、温度与其他程序仍会带来波动，结果不构成线上 SLO。
 
@@ -64,6 +64,7 @@ Linux/macOS 将输出名改为 `dag`。Windows PowerShell 可先设 `$env:GOWORK
 
 ```sh
 python benchmarks/tools/run_matrix.py --suite dag --module benchmarks/dag --binary benchmarks/dag/dag.exe --out benchmarks/results/local-dag --sizes 1,10,100,1000,10000 --rounds 1,256 --repeats 5 --procs 4 --parallelism 4
+python benchmarks/tools/capture_origins.py benchmarks/results/local-dag/manifest.json --out benchmarks/results/local-dag/module-origins.json
 python benchmarks/tools/summarize.py benchmarks/results/local-dag/samples.jsonl --out benchmarks/results/local-dag/figures
 ```
 
@@ -77,11 +78,11 @@ Durable 的适配器在另一仓库，但使用相同采样脚本：
 python benchmarks/tools/run_matrix.py --suite workflow --module ../pulse-durable/benchmarks/workflow --binary ../pulse-durable/benchmarks/workflow/workflow.exe --out ../pulse-durable/benchmarks/results/local-workflow --sizes 1,10,100,1000,10000 --rounds 1 --repeats 5 --procs 4 --parallelism 4
 ```
 
-两个仓库的实际相对位置不同则传入绝对路径。文件后端的临时数据位于输出目录的 `work/`，不提交检查点和数据库；结果数据、清单和图表应保留。
+两个仓库的实际相对位置不同则传入绝对路径。文件后端的临时数据位于输出目录的 `work/`。原始 JSONL、完整环境清单、诊断日志和整套生成图保留在本地或单独的证据包，`benchmarks/results/` 不入源码仓；检查点、数据库和二进制同样不提交。仓库只保留复跑代码、`benchmarks/reports/` 的精简统计与版本摘要，以及站点实际引用的单份 PNG。
 
 ## 读懂数据
 
-- `manifest.json`：固定配置、Go/OS、模块版本/Origin/校验和、二进制 SHA256 和源码状态。编译与模块下载发生在计时外。
+- `manifest.json`：固定配置、Go/OS、模块版本/校验和、二进制 SHA256 和源码状态。编译与模块下载发生在计时外。`module-origins.json` 是单独获取的补充元数据，保存其获取时间与未提供/失败状态。
 - `samples.jsonl`：每个计划样本的原始 stdout/stderr、命令、退出状态及解析字段。主耗时由 Go 程序内部测量；`wall_seconds` 还包括进程启动和采样器等待，不能替换为同一指标。
 - `summary.csv` / `summary.json`：按完整配置分组，给有效样本数、中位数与观察到的最小/最大值。重复批次均值不是单次请求的 p95/p99。
 - SVG：整任务耗时、每节点摊销和累计 Go 分配曲线。误差棒只表示本次样本的 min–max，不是置信区间。
