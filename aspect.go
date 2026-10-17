@@ -73,6 +73,9 @@ func (e *nodePanicError) Unwrap() error {
 }
 
 func isPanicFailure(err error) bool {
+	if err == nil {
+		return false
+	}
 	var failure *nodePanicError
 	return errors.As(err, &failure)
 }

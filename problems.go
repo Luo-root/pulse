@@ -36,12 +36,23 @@ func (g *Graph) problemsAtLocked(at string, chain mountChain, capacity int) []er
 // validateRunLocked 与定义检查共用判据，只额外提供这次已确认的外部 skip。
 // 子执行的 Start 也走这里，不能在递归运行时重新丢失已供给的输入状态。
 func (g *Graph) validateRunLocked(capacity int, known streamKnownInputs) error {
+	if g.canReusePlainValidationLocked() {
+		return nil
+	}
 	chain := mountChain{g}
 	streams := g.problemsStreamLocked("", chain, capacity, known)
 	if problems := g.problemsWithStreamsAtLocked("", chain, capacity, streams); len(problems) != 0 {
 		return problems[0]
 	}
 	return nil
+}
+
+// canReusePlainValidationLocked 只复用已成功封口、没有 Sub 或流的普通图。
+// 这类定义的来源、出口和依赖环此后都不再变化；每轮输入仍由 Start 独立核验。
+// 流与 Sub 的判据还依赖本轮额度、skip、宿主订阅及 checkpoint，不能只看 sealed。
+// 调用方持 g.mu；needsWaitTreeLocked 仍只读扫描声明，不引入执行状态或缓存失效协议。
+func (g *Graph) canReusePlainValidationLocked() bool {
+	return g.sealed && !g.needsWaitTreeLocked()
 }
 
 // problemsWithStreamsAt 是递归子图的加锁入口：父图持有自己的锁，子图自己取锁。

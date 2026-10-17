@@ -292,7 +292,11 @@ func (g *Graph) checkExecutionInputLocked(ref keyRef) error {
 // 接口是合法的）。「既没人产出、也不是声明过的进口」那种键归静态校验（`Validate` / `Start`
 // 报 nothing provides it），这里不重复。
 func (g *Graph) requiredInputsLocked() map[string]keyRef {
-	required := make(map[string]keyRef, len(g.nodes))
+	// 只有声明过的进口才可能成为本轮必需输入；无进口时无需扫描节点或分配大表。
+	if len(g.inPorts) == 0 {
+		return nil
+	}
+	required := make(map[string]keyRef, len(g.inPorts))
 	for _, n := range g.nodes {
 		for _, k := range n.requires {
 			if src, ok := g.producer[k.name]; ok && src.kind == sourceNode {
