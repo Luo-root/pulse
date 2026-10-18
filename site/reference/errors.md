@@ -26,28 +26,31 @@
 
 可靠检查点错误即使包装 ErrSkipped 也仍是失败。需要分类时，必须先判断 CheckpointError。
 
-## 可靠错误优先分类
+## 按实际执行终态分类
 
-以下函数可放入导入 `context`、`errors` 和 `pulse` 的程序，用于应用展示。它只给错误分类，不决定持久重试预算：
+以下函数可放入导入 `errors` 和 `pulse` 的程序，用于应用展示。成功 Start 并等待 Wait 返回后再调用；Snapshot 中的图级终态已经区分完成、失败和取消。它不决定持久重试预算：
 
 ```go
-func classify(err error) string {
-	if err == nil {
+func classify(e *pulse.Execution) string {
+	state := e.Snapshot().Graph
+	switch state.Status {
+	case pulse.GraphStatusCompleted:
 		return "success"
+	case pulse.GraphStatusCanceled:
+		return "canceled"
+	case pulse.GraphStatusFailed:
+		var checkpointErr *pulse.CheckpointError
+		if errors.As(state.Err, &checkpointErr) {
+			return "checkpoint failure"
+		}
+		return "failure"
+	default:
+		return "not finalized"
 	}
-	var checkpointErr *pulse.CheckpointError
-	if errors.As(err, &checkpointErr) {
-		return "checkpoint failure"
-	}
-	if errors.Is(err, pulse.ErrSkipped) {
-		return "normal absence"
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return "cancellation or deadline"
-	}
-	return "failure"
 }
 ```
+
+正常跳过不会让整轮 Wait 返回错误。节点内部需要判断缺值时，可对本次 Get / WaitAll 的返回值用 `errors.As` 匹配 `*pulse.SkipError`，先排除 `CheckpointError`，其余错误原样返回。这个局部缺值判据不能用于给 Wait 的结果定终态：`panic(pulse.ErrSkipped)` 是失败，执行上下文仍有效时独立 RPC 包装的 `context.Canceled` 也是失败，不能只凭错误链将它们降格。
 
 CheckpointError 保留 Operation 与原始原因。钩子返回错误或 panic 会停止整棵执行树；父 Retry 或外层切面不能通过吞掉该错误使执行成功。存储可能已经写成却未返回确认，因此停止后应重新读取权威记录，而不是直接重新 Commit 或清空历史。
 

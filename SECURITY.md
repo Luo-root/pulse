@@ -73,8 +73,10 @@ and declarative assembly (`pulse/yaml`):
 - Secret scanning and push protection are enabled on this repository.
 - `.env`, `.env.*`, `*.pem` and `*.secrets` are gitignored.
 - `observe.Record` has no `map[string]any` escape hatch, and `Attrs` only accepts scalars
-  (`~string | ~int64 | ~float64 | ~bool`) — payloads cannot enter an observation record by
-  construction, only keys and scalar values can.
+  (`~string | ~int64 | ~float64 | ~bool`), so arbitrary objects, slices and attachment bytes
+  cannot be attached directly. This does not filter content: string attributes and `Record.Err`
+  can still contain prompts, credentials or other sensitive text. Hosts must classify and
+  redact them before recording.
 - The suite runs offline and needs no credentials: `go.mod` requires only `gopkg.in/yaml.v3`,
   and no test performs network or filesystem IO beyond what it creates itself.
 
@@ -147,7 +149,8 @@ Pulse 目前仍在 1.0 之前（`v0.x`）。本文件说明漏洞上报方式与
 - 仓库已开启 secret scanning 与 push protection。
 - `.env`、`.env.*`、`*.pem`、`*.secrets` 均在 .gitignore 中。
 - `observe.Record` 没有 `map[string]any` 逃生舱，`Attrs` 只接受标量
-  （`~string | ~int64 | ~float64 | ~bool`）——载荷在类型上就无法进入观测记录，能进的只有
-  key 与标量值。
+  （`~string | ~int64 | ~float64 | ~bool`），不能直接附加任意对象、切片或附件字节。
+  这不提供内容过滤：字符串属性和 `Record.Err` 仍能携带提示词、凭据等敏感文本，
+  宿主须先分类、脱敏后再记录。
 - 整套测试离线可跑、不需要凭据：`go.mod` 只 require `gopkg.in/yaml.v3`，且没有任何测试
   去做它自己没创建的 IO。

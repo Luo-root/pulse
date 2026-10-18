@@ -26,28 +26,31 @@ Get, WaitAll, and Batch.Get may return `*SkipError`, whose Keys names normally a
 
 Reliable checkpoint errors remain failures even when they wrap ErrSkipped. Classify CheckpointError first.
 
-## Classify reliable errors first
+## Classify the actual execution outcome
 
-This display helper can be added to a program importing `context`, `errors`, and `pulse`. It classifies errors but does not decide persistent retry budgets:
+This display helper can be added to a program importing `errors` and `pulse`. Call it after successful Start and after Wait returns: the snapshot's graph status already distinguishes completion, failure, and cancellation. It does not decide persistent retry budgets:
 
 ```go
-func classify(err error) string {
-	if err == nil {
+func classify(e *pulse.Execution) string {
+	state := e.Snapshot().Graph
+	switch state.Status {
+	case pulse.GraphStatusCompleted:
 		return "success"
+	case pulse.GraphStatusCanceled:
+		return "canceled"
+	case pulse.GraphStatusFailed:
+		var checkpointErr *pulse.CheckpointError
+		if errors.As(state.Err, &checkpointErr) {
+			return "checkpoint failure"
+		}
+		return "failure"
+	default:
+		return "not finalized"
 	}
-	var checkpointErr *pulse.CheckpointError
-	if errors.As(err, &checkpointErr) {
-		return "checkpoint failure"
-	}
-	if errors.Is(err, pulse.ErrSkipped) {
-		return "normal absence"
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return "cancellation or deadline"
-	}
-	return "failure"
 }
 ```
+
+Normal skipping does not make the run's Wait return an error. Within a node, match `*pulse.SkipError` with `errors.As` on that Get / WaitAll result when absence needs special handling; exclude `CheckpointError` first and preserve other errors. Do not apply that local absence test to the overall Wait outcome: `panic(pulse.ErrSkipped)` is a failure, and an independent RPC wrapping `context.Canceled` while the execution context remains valid is also a failure. The error chain alone must not downgrade either one.
 
 CheckpointError retains Operation and the original cause. Hook errors or panics stop the entire execution tree. Parent Retry or an outer aspect cannot make the execution succeed by swallowing that error. Storage may have committed without returning confirmation, so reread authoritative records instead of blindly repeating Commit or clearing history.
 

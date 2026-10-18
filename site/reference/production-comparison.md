@@ -105,7 +105,7 @@ CSV另保留复用期累计Go分配；Temporal该数字不含独立Server，不�
 
 ## 可靠运行与存储增长
 
-SQLite均配置 WAL/FULL，保留原生保存粒度；Pulse/Durable与Eino通过现有Store接口接入的SQLite属于评测宿主，不是新增正式后端。Durable整份RunRecord以JSON CAS保存，运行独占复用filestore系统锁，不提供分布式租约或fencing。Temporal是CLI内嵌真实单机Service；[官方生产部署](https://docs.temporal.io/production-deployment)仍需生产Service，本轮不是集群/HA或生产数据库测试。普通矩阵显式提高历史计数error至200000、warn至100000，不称默认配置。
+SQLite均配置 WAL/FULL，保留原生保存粒度；Pulse/Durable与Eino通过现有Store接口接入的SQLite属于评测宿主，不是新增正式后端。Durable将整份RunRecord编码为JSON，存入SQLite表的record BLOB列并以Revision做CAS；只复用filestore的系统锁，不调用其Load/Save，不额外写一份JSON运行文件，也不提供分布式租约或fencing。Temporal是CLI内嵌真实单机Service；[官方生产部署](https://docs.temporal.io/production-deployment)仍需生产Service，本轮不是集群/HA或生产数据库测试。普通矩阵显式提高历史计数error至200000、warn至100000，不称默认配置。
 
 长链rounds=1的可靠复用中位数如下，保持同三列。Durable独立重复3次；Temporal引用上面本轮原生持久化的同点数据（5批），没有伪造第二份同义实验。
 

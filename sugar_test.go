@@ -489,7 +489,8 @@ func TestSugarTypeMismatchFailsToCompile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("go", "build", "./testdata/compilefail")
+	// 只验证类型错误，避免工作树的 VCS 元数据先使坏例构建失败。
+	cmd := exec.Command("go", "build", "-buildvcs=false", "./testdata/compilefail")
 	cmd.Dir = wd
 	out, err := cmd.CombinedOutput()
 	if err == nil {
