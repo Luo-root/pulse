@@ -569,26 +569,36 @@ func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 	if len(contexts) != 0 && contexts[0] != nil {
 		ctx = contexts[0]
 	}
-	initialize := false
 	checkpoint.once.Do(func() {
 		checkpoint.ready = make(chan struct{})
-		initialize = true
+		root := checkpoint.exec.checkpoint.failure.root
+		if !root.beginStreamWork() {
+			checkpoint.err = fmt.Errorf("pulse: stream initialization after execution completion")
+			close(checkpoint.ready)
+			return
+		}
+		// 发起者和其他等待者都只等 ready；单次取消不能成为共享 Open 的取消域。
+		go func() {
+			defer root.streamWork.Done()
+			defer close(checkpoint.ready)
+			checkpoint.err = s.initializeCheckpoint(root.ctx)
+		}()
 	})
-	if !initialize {
-		// sync.Once 不包住同步钩子，否则并发等待者不能独立响应取消。
-		select {
-		case <-checkpoint.ready:
-			return checkpoint.err
-		default:
-		}
-		select {
-		case <-checkpoint.ready:
-			return checkpoint.err
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	select {
+	case <-checkpoint.ready:
+		return checkpoint.err
+	default:
 	}
-	defer close(checkpoint.ready)
+	select {
+	case <-checkpoint.ready:
+		return checkpoint.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *managedStream[T]) initializeCheckpoint(ctx context.Context) error {
+	checkpoint := s.checkpoint
 	descriptor := checkpoint.descriptor
 	site := checkpoint.exec.site
 	site.Graph, site.Path = descriptor.Graph, descriptor.Path
@@ -624,8 +634,7 @@ func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 			err = checkpoint.exec.stopCheckpoint("restore stream", err)
 		}
 	}
-	checkpoint.err = err
-	return checkpoint.err
+	return err
 }
 
 // sendCheckpointValue 由 Send/SendAt 共用；钩子在流锁外，确认前不改序号、不入队。

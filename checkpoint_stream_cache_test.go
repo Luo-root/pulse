@@ -2,9 +2,11 @@ package pulse
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -281,6 +283,190 @@ func TestCheckpointLateScopeHistoricalEmptyTerminal(t *testing.T) {
 				t.Fatalf("historical empty terminal did not reuse the authoritative source: err=%v opens=%d same=%t repeated=%d cached=%d", err, opens, same, repeated, cached)
 			}
 		})
+	}
+}
+
+func TestCheckpointHostRestoreOwnsSharedOpen(t *testing.T) {
+	for _, mode := range []string{"host-first", "root-first", "store-error", "execution-cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			g := mustNew(t, ctx, "host-restore")
+			key := NewKey[Stream[int]]("output")
+			declareOut(t, g, NewPort(key))
+			mustAdd(t, g, NewNode("source", "", nil, Provides(key), func(*RunCtx) error {
+				return errors.New("restored source reran")
+			}))
+			history := CheckpointStreamDescriptor{
+				ID:    CheckpointStreamID{Scope: "root", NodeID: "source", Key: "output", Group: "default", Generation: 1},
+				Graph: "host-restore", Attempt: "source-attempt", Element: reflect.TypeFor[int](),
+				Source: CheckpointStreamSource{ID: "finite"}, Capacity: 1, Terminal: StreamCompleted,
+			}
+			entered, release := make(chan context.Context, 1), make(chan struct{})
+			var opens, acks atomic.Int32
+			cause := errors.New("generation save failed")
+			hooks := checkpointStreamTestHooks(&checkpointProbe{})
+			hooks.StreamHooks.Open = func(openCtx context.Context, req CheckpointStreamOpen) (CheckpointStreamRecord, error) {
+				opens.Add(1)
+				entered <- openCtx
+				select {
+				case <-release:
+				case <-openCtx.Done():
+					return CheckpointStreamRecord{}, openCtx.Err()
+				}
+				if mode == "store-error" {
+					return CheckpointStreamRecord{}, cause
+				}
+				saved := *req.Restore
+				saved.ID.Generation++
+				return CheckpointStreamRecord{Stream: saved, Resumed: true, LastSequence: 1,
+					Pending: []CheckpointStreamMessage{{Sequence: 1, Value: 7}}}, nil
+			}
+			hooks.StreamHooks.Commit = func(_ context.Context, commit CheckpointMessageCommit) error {
+				if len(commit.Inputs) != 1 || commit.Inputs[0].Stream.Generation != 2 {
+					return errors.New("Ack used wrong generation")
+				}
+				acks.Add(1)
+				return nil
+			}
+			callCtx, cancelCall := context.WithCancel(ctx)
+			defer cancelCall()
+			first := make(chan error, 1)
+			var sub *StreamSubscription[int]
+			var e *Execution
+			read := func() { _, err := sub.Receive(callCtx); first <- err }
+			cancelRead := func() {
+				openCtx := waitCheckpointSignal(t, ctx, entered)
+				cancelCall()
+				if err := waitCheckpointSignal(t, ctx, first); !errors.Is(err, context.Canceled) {
+					t.Errorf("single Receive = %v", err)
+				}
+				if openCtx != e.Context() || openCtx.Err() != nil || e.Context().Err() != nil {
+					t.Errorf("shared Open did not retain healthy execution context: open=%v execution=%v", openCtx.Err(), e.Context().Err())
+				}
+				if mode == "execution-cancel" {
+					e.Cancel()
+				}
+				close(release)
+			}
+			observer := ObserverFunc{GraphStarted: func(Site) {
+				if mode != "root-first" {
+					go read()
+					cancelRead() // 必须先返回单次取消，才允许共享 Open 完成。
+				}
+			}}
+			var err error
+			e, err = g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks), WithExecObserver(observer))
+			messageTestOK(t, err)
+			defer e.Cancel()
+			sub, err = SubscribeStream(e, key)
+			messageTestOK(t, err)
+			messageTestOK(t, e.RestoreNodes([]NodeCheckpoint{{NodeID: "source", Reason: NodeCompleted, Outputs: []CheckpointOutput{
+				{Key: checkpointKey(key.asRef()), State: SlotStateReady, Stream: &history},
+			}}}))
+			messageTestOK(t, e.Start())
+			if mode == "root-first" {
+				// 根恢复进入 Open 后才启动宿主；不让宿主抢初始化所有权。
+				openCtx := waitCheckpointSignal(t, ctx, entered)
+				entered <- openCtx
+				go read()
+				cancelRead()
+			}
+			if mode == "store-error" || mode == "execution-cancel" {
+				err = e.Wait()
+				if mode == "store-error" && (!isCheckpointFailure(err) || !errors.Is(err, cause)) {
+					t.Fatalf("Open failure lost: %v", err)
+				}
+				if mode == "execution-cancel" && !errors.Is(err, context.Canceled) {
+					t.Fatalf("execution cancel lost: %v", err)
+				}
+			} else {
+				delivery, err := sub.Receive(ctx)
+				messageTestOK(t, err)
+				if delivery.Sequence != 1 || delivery.Value != 7 {
+					t.Fatalf("restored tail=%+v", delivery)
+				}
+				messageTestOK(t, delivery.Ack())
+				messageTestOK(t, e.Wait())
+				if _, err := sub.Receive(ctx); err != io.EOF {
+					t.Fatalf("tail repeated after Wait: %v", err)
+				}
+				if acks.Load() != 1 {
+					t.Fatalf("reliable Acks=%d", acks.Load())
+				}
+			}
+			if opens.Load() != 1 {
+				t.Fatalf("Open calls=%d", opens.Load())
+			}
+		})
+	}
+}
+
+func TestCheckpointWaitJoinsCanceledSharedOpen(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "join-open")
+	key := NewKey[Stream[int]]("output")
+	declareOut(t, g, NewPort(key))
+	mustAdd(t, g, NewNode("source", "", nil, Provides(key), nil))
+	history := CheckpointStreamDescriptor{
+		ID:    CheckpointStreamID{Scope: "root", NodeID: "source", Key: "output", Group: "default", Generation: 1},
+		Graph: "join-open", Attempt: "source-attempt", Element: reflect.TypeFor[int](),
+		Source: CheckpointStreamSource{ID: "finite"}, Capacity: 1, Terminal: StreamCompleted,
+	}
+	entered, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	hooks := checkpointStreamTestHooks(&checkpointProbe{})
+	hooks.StreamHooks.Open = func(openCtx context.Context, _ CheckpointStreamOpen) (CheckpointStreamRecord, error) {
+		close(entered)
+		// 模拟需要收尾的 Store；执行取消后仍等正常屏障释放，不能放任其越过 Wait。
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		close(returned)
+		return CheckpointStreamRecord{}, openCtx.Err()
+	}
+	e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+	messageTestOK(t, err)
+	defer e.Cancel()
+	_, err = SubscribeStream(e, key)
+	messageTestOK(t, err)
+	messageTestOK(t, e.RestoreNodes([]NodeCheckpoint{{NodeID: "source", Reason: NodeCompleted, Outputs: []CheckpointOutput{
+		{Key: checkpointKey(key.asRef()), State: SlotStateReady, Stream: &history},
+	}}}))
+	messageTestOK(t, e.Start())
+	waitCheckpointSignal(t, ctx, entered)
+	e.Cancel()
+	e.wg.Wait() // 节点与宿主等待者已经响应取消，只有共享钩子仍被屏障挡住。
+	result := make(chan error, 1)
+	go func() { result <- e.Wait() }()
+	for {
+		e.mu.Lock()
+		closing, done := e.streamClosing, e.done
+		e.mu.Unlock()
+		if done {
+			t.Fatal("Wait finalized before shared Open returned")
+		}
+		if closing {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatal(ctx.Err())
+		}
+		runtime.Gosched()
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("Wait escaped a running shared Open: %v", err)
+	default:
+	}
+	releaseOnce.Do(func() { close(release) })
+	if err := waitCheckpointSignal(t, ctx, result); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Open result=%v", err)
+	}
+	waitCheckpointSignal(t, ctx, returned)
+	if !isCheckpointFailure(e.checkpointErr()) || !errors.Is(e.Err(), context.Canceled) {
+		t.Fatalf("Open failure was not joined or cancellation changed: latch=%v Err=%v", e.checkpointErr(), e.Err())
 	}
 }
 
