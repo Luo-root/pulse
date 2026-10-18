@@ -333,6 +333,11 @@ func (b *messageOutput[T]) publishLocked() {
 	}
 	for _, value := range b.values {
 		s.last++
+		if s.checkpoint != nil {
+			// 消息批次只允许 Send；对应可靠追加的 Cursor 为 nil。
+			// 与序号一起在确认后安装，不能沿用此前 SendAt 的位置。
+			s.checkpoint.cursor = nil
+		}
 		message := &managedMessage[T]{value: value, sequence: s.last}
 		s.addPendingLocked(message)
 		s.enqueueLocked(message)
