@@ -1,10 +1,15 @@
 package pulse
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"testing"
+	"time"
 )
 
 type inputMapKey string
@@ -229,5 +234,195 @@ func TestNamedDynamicInputRejectsNilInterface(t *testing.T) {
 	}
 	if err := (&Inputs{}).setArrived(NewKey[any]("arrived").asRef(), nil, false); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type inputRecursiveMap map[string]inputRecursiveMap
+type inputRecursiveSlice []inputRecursiveSlice
+type inputRecursivePointer *inputRecursivePointer
+type inputIndirectPointer *inputIndirectPointerTail
+type inputIndirectPointerTail *inputIndirectPointer
+type inputMixedMap map[string]inputMixedSlice
+type inputMixedSlice []inputMixedMap
+type inputPointerTree *[1]inputPointerTree
+
+// 崩溃型回归只在小栈子进程里跑；即使判环失效，也不能耗尽整套测试的栈内存。
+func TestInputConversionCycles(t *testing.T) {
+	const envKey = "PULSE_TEST_INPUT_CONVERSION_CYCLE"
+	if mode := os.Getenv(envKey); mode != "" {
+		debug.SetMaxStack(128 * 1024)
+		shape, entry, _ := strings.Cut(mode, "/")
+		fixed := entry == "fix"
+		switch shape {
+		case "map", "indirect-map":
+			raw := map[string]any{}
+			if shape == "map" {
+				raw["private-cycle-key"] = raw
+			} else {
+				raw["private-cycle-key"] = map[string]any{"private-cycle-key": raw}
+			}
+			inputConversionRejectsCycle[inputRecursiveMap](t, raw, fixed, "map value")
+		case "slice", "indirect-slice":
+			raw := make([]any, 1)
+			if shape == "slice" {
+				raw[0] = raw
+			} else {
+				raw[0] = []any{raw}
+			}
+			inputConversionRejectsCycle[inputRecursiveSlice](t, raw, fixed, "element 0")
+		case "mixed":
+			raw := map[string]any{}
+			raw["private-cycle-key"] = []any{raw}
+			inputConversionRejectsCycle[inputMixedMap](t, raw, fixed, "map value", "element 0")
+		case "pointer":
+			inputConversionRejectsCycle[inputRecursivePointer](t, 1, fixed)
+		case "indirect-pointer":
+			inputConversionRejectsCycle[inputIndirectPointer](t, [1]int{1}, fixed)
+		default:
+			t.Fatalf("unknown conversion cycle case %q", mode)
+		}
+		return
+	}
+	for _, shape := range []string{"map", "indirect-map", "slice", "indirect-slice", "mixed", "pointer", "indirect-pointer"} {
+		for _, entry := range []string{"seed", "fix"} {
+			mode := shape + "/" + entry
+			t.Run(mode, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestInputConversionCycles$", "-test.timeout=2s")
+				cmd.Env = append(os.Environ(), envKey+"="+mode, "GOTRACEBACK=single",
+					"GORACE="+os.Getenv("GORACE")+" atexit_sleep_ms=0")
+				output, err := cmd.CombinedOutput()
+				if err != nil {
+					if len(output) > 1600 {
+						output = output[:1600]
+					}
+					t.Fatalf("cyclic conversion did not return an error safely: %v\n%s", err, output)
+				}
+			})
+		}
+	}
+}
+
+func inputConversionRejectsCycle[T any](t *testing.T, raw any, fixed bool, context ...string) {
+	t.Helper()
+	reg := NewRegistry()
+	key := NewKey[T]("cycle")
+	MustRegisterKey(reg, key)
+	tag, _ := reg.TypeTagOf(key.Name())
+	var in Inputs
+	if err := Seed(&in, NewKey[int]("kept"), 7); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	if fixed {
+		var bind SubBind
+		bind, err = FixByName(reg, key.Name(), tag, raw)
+		if bind.fix != nil || bind.child.valid() || bind.parent.valid() || bind.in || bind.push != nil {
+			t.Fatal("rejected conversion left a partial binding")
+		}
+	} else {
+		err = SeedByName(&in, reg, key.Name(), tag, raw)
+	}
+	if err == nil {
+		t.Fatal("non-terminating conversion accepted")
+	}
+	for _, want := range append(context, key.Name(), "cyclic conversion", reflect.TypeFor[T]().String()) {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("conversion error missing %q: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "private-cycle-key") {
+		t.Fatalf("conversion error exposed business map data: %v", err)
+	}
+	if len(in.entries) != 1 || in.entries["kept"].value != 7 {
+		t.Fatal("rejected conversion changed Inputs")
+	}
+	if err := SeedByName(&in, reg, key.Name(), tag, *new(T)); err != nil {
+		t.Fatalf("failed conversion prevented a later valid input: %v", err)
+	}
+}
+
+func TestInputConversionAcyclic(t *testing.T) {
+	sharedMap := map[string]any{"leaf": nil}
+	sharedSlice := []any{nil}
+	view := make([]any, 1)
+	view[0] = view[:0]
+	cyclicMap := map[string]any{}
+	cyclicMap["self"] = cyclicMap
+	cyclicSlice := make([]any, 1)
+	cyclicSlice[0] = cyclicSlice
+	pointerLeaf := inputPointerTree(new([1]inputPointerTree))
+	for _, test := range []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{"recursive-map", func(t *testing.T) {
+			namedDynamicInputs(t, map[string]any{"nil": nil, "empty": map[string]any{}}, inputRecursiveMap{"nil": nil, "empty": {}})
+		}},
+		{"recursive-slice", func(t *testing.T) {
+			namedDynamicInputs(t, []any{[]any{nil}, []any{}, []any(nil)}, inputRecursiveSlice{{nil}, {}, nil})
+		}},
+		{"shared-map", func(t *testing.T) {
+			namedDynamicInputs(t, map[string]any{"left": sharedMap, "right": sharedMap}, inputRecursiveMap{"left": {"leaf": nil}, "right": {"leaf": nil}})
+		}},
+		{"shared-slice", func(t *testing.T) {
+			namedDynamicInputs(t, []any{sharedSlice, sharedSlice}, inputRecursiveSlice{{nil}, {nil}})
+		}},
+		{"same-backing-slice-view", func(t *testing.T) {
+			namedDynamicInputs(t, view, inputRecursiveSlice{{}})
+		}},
+		{"map-target-changes", func(t *testing.T) {
+			namedDynamicInputs(t, cyclicMap, map[string]map[string]map[string]any{"self": {"self": cyclicMap}})
+		}},
+		{"slice-target-changes", func(t *testing.T) {
+			namedDynamicInputs(t, cyclicSlice, [][][]any{{cyclicSlice}})
+		}},
+		{"recursive-pointer-tree", func(t *testing.T) {
+			namedDynamicInputs(t, [1]any{[1]any{nil}}, inputPointerTree(&[1]inputPointerTree{pointerLeaf}))
+		}},
+		{"nil-map", func(t *testing.T) { namedDynamicInputs(t, map[string]any(nil), inputRecursiveMap(nil)) }},
+		{"empty-map", func(t *testing.T) { namedDynamicInputs(t, map[string]any{}, inputRecursiveMap{}) }},
+		{"nil-slice", func(t *testing.T) { namedDynamicInputs(t, []any(nil), inputRecursiveSlice(nil)) }},
+		{"empty-slice", func(t *testing.T) { namedDynamicInputs(t, []any{}, inputRecursiveSlice{}) }},
+	} {
+		t.Run(test.name, test.run)
+	}
+}
+
+func TestInputConversionAssignableCycles(t *testing.T) {
+	// 未命名容器/指针可赋值给同底层命名类型；入口必须保留原引用，不能继续遍历。
+	rawMap := map[string]inputRecursiveMap{}
+	rawMap["self"] = rawMap
+	rawSlice := make([]inputRecursiveSlice, 1)
+	rawSlice[0] = rawSlice
+	var rawPointer inputRecursivePointer
+	rawPointer = &rawPointer
+	t.Run("map", func(t *testing.T) { inputAssignableCycle[inputRecursiveMap](t, rawMap) })
+	t.Run("slice", func(t *testing.T) { inputAssignableCycle[inputRecursiveSlice](t, rawSlice) })
+	t.Run("pointer", func(t *testing.T) { inputAssignableCycle[inputRecursivePointer](t, &rawPointer) })
+}
+
+func inputAssignableCycle[T any](t *testing.T, raw any) {
+	t.Helper()
+	reg := NewRegistry()
+	key := NewKey[T]("value")
+	MustRegisterKey(reg, key)
+	tag, _ := reg.TypeTagOf(key.Name())
+	for _, fixed := range []bool{false, true} {
+		var in Inputs
+		if fixed {
+			bind, err := FixByName(reg, key.Name(), tag, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in = bind.fix.in
+		} else if err := SeedByName(&in, reg, key.Name(), tag, raw); err != nil {
+			t.Fatal(err)
+		}
+		got := reflect.ValueOf(in.entries[key.Name()].value)
+		if got.Type() != reflect.TypeFor[T]() || got.UnsafePointer() != reflect.ValueOf(raw).UnsafePointer() {
+			t.Fatalf("fixed=%t: assignable cyclic value lost its declared type or reference", fixed)
+		}
 	}
 }
