@@ -377,6 +377,10 @@ func (e *Execution) finishCheckpointChain(n *Node, rc *RunCtx, ws *writeSet, roo
 			}
 		}
 	}
+	// 取门后的复核可能取得新原因；取消和可靠失败仍不能落入业务失败确认。
+	if isCheckpointFailure(err) || isExecutionCancellation(err) || e.ctx.Err() != nil {
+		return err
+	}
 	if !normal {
 		// 在 fail 取消执行域之前区分外部中断与最终真实失败。
 		if !isCheckpointFailure(err) && e.ctx.Err() == nil {
