@@ -92,6 +92,8 @@ A real business failure still requires confirmation using the owning Execution's
 
 Before starting a reliable commit, check its applicable context; cancellation prevents a new commit. Real failure confirmation uses the owning Execution context described above. If storage commits but returns an error, this run stops without automatically retrying Commit or rolling the record back. Resume rereads authoritative results. Later cancellation does not withdraw confirmed records. Persistent attempts need not save raw error text that may contain sensitive business data.
 
+A node's completed or normal skipped conclusion is fixed before reliable Commit. After Commit and publication succeed, node finalization and engine observation reuse the confirmed conclusion without inspecting that business error again. Later host cancellation or real failures from other nodes still determine the run's terminal state; confirmed records remain available.
+
 ## Incremental managed-stream confirmation
 
 The ordinary four-hook configuration remains valid. `Key[Stream[T]]` additionally requires complete StreamHooks. Hooks execute synchronously outside engine locks with the same concurrency, panic, and reliable-failure-latching contract:
