@@ -63,6 +63,9 @@ type Execution struct {
 	// states 是本次运行的节点读数，受 mu 保护；输出顺序由 graph.nodes 决定。
 	states map[*Node]nodeRuntime
 	wg     sync.WaitGroup
+	// 流共享初始化由根执行拥有；入口与封口同用 mu，封口后不再 Add。
+	streamWork    sync.WaitGroup
+	streamClosing bool
 	// finishOnce 让「发一次 OnGraphFinished」与「所有 Wait 都等到它落地」同时
 	// 成立：sync.Once 会阻塞后来的调用者直到第一个调用返回（比自己的 done
 	// 门闩强——那个只保证不重发，先返回的 Wait 会把出口先关掉）。
@@ -530,6 +533,10 @@ func (e *Execution) Wait() error {
 	}
 	e.wg.Wait()
 	e.mu.Lock()
+	e.streamClosing = true
+	e.mu.Unlock()
+	e.streamWork.Wait()
+	e.mu.Lock()
 	if !e.done {
 		// 先锁存终态，再标记结束：没有节点捕获的真实取消也属于本轮结果。
 		// 先置 done 再问 Err 会把这次取消与后面的资源释放一起忽略。
@@ -548,6 +555,17 @@ func (e *Execution) Wait() error {
 	})
 	e.cancel()
 	return err
+}
+
+// beginStreamWork 在执行封口前登记可靠流工作；不能把可能调用用户钩子的工作放在 mu 内。
+func (e *Execution) beginStreamWork() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.streamClosing {
+		return false
+	}
+	e.streamWork.Add(1)
+	return true
 }
 
 // Err 返回首个节点错误或取消原因。不含单纯的跳过。Wait 收尾时先锁存终态：
