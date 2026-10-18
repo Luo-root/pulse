@@ -188,17 +188,17 @@ reg.MustRegister("summarize", summarizeRun)
 pulse.MustRegisterKey(reg, Docs)
 ```
 
-**声明式**（`pulse/yaml`，拓扑归 YAML）：
+**声明式**（`pulse/yaml`，拓扑归 YAML）：下面假定 `Doc` 定义在 `main` 包，因此 `Docs` 的登记类型标签为 `[]main.Doc`。实际项目以 `reg.TypeTagOf("docs")` 返回值为准；命名类型的包名不能省略。
 
 ```yaml
 version: 1
 seeds:
-  - key: {name: docs, type: "[]Doc"}
+  - key: {name: docs, type: "[]main.Doc"}
     from: {kind: file, path: docs.json}
 nodes:
   - id: summarize
     uses: summarize          # → Registry 上的具名 Run 工厂
-    requires: [{name: docs, type: "[]Doc"}]
+    requires: [{name: docs, type: "[]main.Doc"}]
     provides: [{name: summary, type: string}]
     timeout: 30s
     retry: {attempts: 3, delay: 100ms}
@@ -707,9 +707,9 @@ g, _ := pulse.New("demo", "演示图", pulse.WithObserver(obs))
 
 ## 13. 隐私边界
 
-`Record` 没有 `map[string]any` 逃生舱：`Attrs` 的写入面只有泛型 `Set`（标量约束 `~string|~int64|~float64|~bool`），prompt、附件字节、密钥、思维链**在类型上就无法进入**。
+`Record` 没有 `map[string]any` 逃生舱：`Attrs` 的写入面只有泛型 `Set`（标量约束 `~string|~int64|~float64|~bool`），因此不能直接附加任意业务对象、切片或附件字节；引擎也不会自动把输入输出值写成属性。
 
-边界的残余部分要说清：`Err` 是调用方传入的 `error`——所以**适配层不得把上游原始错误体直接塞进 `Err`**，应传已分类的摘要。
+**类型约束不提供内容过滤。** 字符串属性仍能携带 prompt、密钥或思维链；`Err` 也由调用方传入。宿主须先做内容筛选和脱敏，适配层不得把敏感原文或上游原始错误体直接写入，应只记录允许公开的标量与已分类摘要。
 
 ---
 
