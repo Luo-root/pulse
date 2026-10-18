@@ -95,7 +95,7 @@ Pulse 的产品方向是**数据驱动、可观测、可组合的 Go workflow-en
 
 **落地进度**（按 [#311](https://github.com/Luo-root/pulse/issues/311) 分阶段，细则见 [`object-model.md`](object-model.md)）：阶段 1 静态组合（`Sub` 挂现成子图 + 端口 + 整棵子树封口）、阶段 2 `Execution` 拆分（定义不含任何运行态、每处挂载一份子执行）、阶段 3 事务性 `Retry`（attempt 写集：失败那一次的写不发布给下游）**都已落地**；阶段 4（快照 / 观测 / YAML 对齐）已实现（#319，静态接口、执行快照、Mermaid 与 YAML Analyze 均已具备）：静态结构看 Topology，运行进度看 Execution 的无值快照；Mermaid 从结构派生，YAML Analyze 不依赖注册表。阶段 5 负责迁移与发布收口。
 
-**代价**：迁移期公开面会动（0.x 允许 minor 破坏），文档必须说清哪份描述**现状**、哪份描述**目标**，每批改动同步示例与迁移说明。阶段完成不自动发版：Pulse 能力与 Durable 桥接定稿、整套联调通过后发布 Pulse v0.5.0 / Durable v0.1.0；之后继续 0.x 小步迭代，达到项目目标且不再有可预见的系统性重大变更后，完善详细文档并发布 v1.0.0，基本固定 API 与实现。具体闸门见 [`workflow-foundation.md`](workflow-foundation.md) §8。
+**代价**：迁移期公开面会动（0.x 允许 minor 破坏），文档必须说清哪份描述**现状**、哪份描述**目标**，每批改动同步示例与迁移说明。阶段完成不自动发版：Pulse 完成约定能力、文档、候选审核与 Durable 桥接联调后，准备 v0.5.0。两仓不再共用发布闸门；Durable 保持未发布，待维护的数据库 Store [#40](https://github.com/Luo-root/pulse-durable/issues/40) 完成并验收后，再考虑首发 v0.1.0，仅供评测的 SQLite 适配器不算这项交付。Core tag 可下载后，Durable 可以对齐依赖并复核，不因此触发发版。发版由维护者决定；之后继续 0.x 小步迭代，达到项目目标且不再有可预见的系统性重大变更后，完善详细文档并发布 v1.0.0，基本固定 API 与实现。具体闸门见 [`workflow-foundation.md`](workflow-foundation.md) §8。
 
 ## 因此刻意不做
 

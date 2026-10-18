@@ -83,9 +83,9 @@ An exact ErrStreamStopped from a ConsumeStream callback first Acks the successfu
 
 ## Runtime failure, cancellation, and outputs
 
-A real node error latches the first error and cancels the execution. Wait returns that cause after every node ends. Other concurrent nodes may complete or cancel without overwriting the first captured error. A business-body panic becomes a node error.
+A real node error latches the first error and cancels the execution. Wait returns that cause after every node ends. Other concurrent nodes may complete or cancel without overwriting the first captured error. A business-body panic becomes a node error. Panics from a custom error's Is/As/Unwrap methods during engine error classification also become node failures, and the engine stops traversing that faulty error. This protection does not cover panics in user-created goroutines.
 
-Timeout checks its own context after the inner function exits on either completion path. An expired deadline produces an error naming the node and limit, with failed status and no context.DeadlineExceeded wrapper, including when both paths are ready together. Before cancellation or expiry it retains the original inner error; parent cancellation retains the context cancellation cause. Interpret canceled status together with the host context, node deadlines, and actual cause.
+After the inner function exits, Timeout checks its own time limit and parent cancellation. Actual expiry of that limit produces an error naming the node and limit, with failed status and no context.DeadlineExceeded wrapper, including when both completion paths are ready together. Inner local Cancel cleanup does not overwrite an obtained success, normal skip, or real failure. Parent cancellation still retains the context cancellation cause. Interpret canceled status together with the host context, node deadlines, and actual cause.
 
 Host cancellation, host deadline expiry, or cancellation caused by another node's failure can also produce canceled status. Cancellation is cooperative: an unresponsive body may delay Wait. Timeout likewise waits for the inner function and does not forcibly terminate a business goroutine.
 

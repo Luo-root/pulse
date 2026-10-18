@@ -533,7 +533,7 @@ func (s Stream[T]) pulseReaderFinished(rc *RunCtx, err error) error {
 	}
 	if cause == nil {
 		cause = fmt.Errorf("pulse: stream reading group finished at node %q without fulfilling its reading obligations "+
-			"(production finished=%t, unacknowledged=%d); consume and Ack the stream or explicitly Stop", id.node, state.finished, len(state.pending))
+			"(production finished=%t, unacknowledged=%d); continue to Receive and Ack until EOF or explicitly Stop", id.node, state.finished, len(state.pending))
 	}
 	// err 已在锁外归因，sendErr 也在首次记录时归因；新建的义务错误始终是失败。
 	state.readerErr = cause

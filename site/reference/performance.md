@@ -14,7 +14,7 @@
 
 1. [#423 节点 ID 索引](https://github.com/Luo-root/pulse/pull/423)：逐个 Add 原先反复扫描已有节点，10000 个无重名节点累计比较 49,995,000 次。改用只登记成功提交节点的私有索引。单节点不单独建表；成功提交使节点总数超过 1 时才建表并回填。整批校验完成后再登记，失败批次仍不占名字，错误优先级与声明顺序不变。
 2. [#424 静态检查复用与输入表分配](https://github.com/Luo-root/pulse/pull/424)：已成功封口、没有 Sub/流声明的普通图复用不再变化的静态检查。每轮输入、宿主输入、checkpoint、动态值和恢复检查仍执行。无声明进口时不建必需输入表，有进口时按进口数预分配。快路仍扫描声明，不能理解为 O(1) Start；新建图的首次启动不会命中封口复用。
-3. [#425 成功路径空错误分类](https://github.com/Luo-root/pulse/pull/425)：三处错误分类只对真正的 nil 接口直接返回 false。非 nil 路径仍执行原 `errors.As`，包括 typed nil、自定义 As、包装/Join 以及 Unwrap panic，保留原返回与异常行为。
+3. [#425 成功路径空错误分类](https://github.com/Luo-root/pulse/pull/425)：三处错误分类只对真正的 nil 接口直接返回 false。该历史候选的非 nil 路径仍执行原 `errors.As`，包括 typed nil、自定义 As、包装/Join，当时也保留了 Unwrap panic 的异常行为。当前开发版另将引擎错误分类期间的 Is/As/Unwrap panic 转为节点失败，并停止遍历该故障 error；这不扩大为对用户自建 goroutine 的 panic 隔离。下面的实测仍固定于该历史候选，不代表新增保护后的性能。
 
 没有调整调度模型、节点工作量、状态维护、正常 skip、取消优先、Retry 预算或 checkpoint 确认后发布规则。Graph 继续复用，每轮创建独立 Execution，根包运行依赖闭包仍仅标准库。
 

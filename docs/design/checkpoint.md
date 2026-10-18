@@ -1,6 +1,6 @@
 # 检查点桥接与子图恢复（方案 A）
 
-服务 [Pulse #307](https://github.com/Luo-root/pulse/issues/307)、[Pulse #370](https://github.com/Luo-root/pulse/issues/370) 与 [Durable #2](https://github.com/Luo-root/pulse-durable/issues/2)。本文描述当前代码的实现契约：Core 提供完整节点链及可选增量流检查点桥；Durable 提供 Store/Codec、Run/Resume、方案 A 子图恢复、本机文件后端，以及受管流存储与进程恢复，集成跟踪见 [Durable #21](https://github.com/Luo-root/pulse-durable/issues/21)。使用与文档匹配的本地检出，发布状态以维护者实际 tag/release 为准。首次桥接发布目标仍是 Pulse v0.5.0 / Durable v0.1.0，发版由维护者决定。持久等待和分布式运行管理不在本次实现内。
+服务 [Pulse #307](https://github.com/Luo-root/pulse/issues/307)、[Pulse #370](https://github.com/Luo-root/pulse/issues/370) 与 [Durable #2](https://github.com/Luo-root/pulse-durable/issues/2)。本文描述当前代码的实现契约：Core 提供完整节点链及可选增量流检查点桥；Durable 提供 Store/Codec、Run/Resume、方案 A 子图恢复、本机文件后端，以及受管流存储与进程恢复，集成跟踪见 [Durable #21](https://github.com/Luo-root/pulse-durable/issues/21)。使用与文档匹配的本地检出，发布状态以维护者实际 tag/release 为准。Pulse 准备 v0.5.0；两仓不再共用发布闸门。Durable 保持未发布，待维护的数据库 Store [#40](https://github.com/Luo-root/pulse-durable/issues/40) 完成并验收后，再考虑首发 v0.1.0；仅供评测的 SQLite 适配器不算这项交付。发版由维护者决定。持久等待和分布式运行管理不在本次实现内。
 
 ## 谁使用这个入口
 
@@ -58,11 +58,15 @@ Scope 不是 Path 或 ExecutionID 的拼接。Durable 在原子存储变更中�
 
 根完整链的 Limit=1。未被切面处理的最终真实失败会确认根失败；以后 Resume 不能通过换根作用域刷新内层 Retry 次数，新的 RunID 才获得新的完整运行预算。内层失败若被外层 Retry 处理，外层按自己的持久次数继续。
 
-宿主上下文取消、进程突然退出和可靠钩子失败留下活跃尝试，恢复时从权威记录继续。业务 RPC 返回 context.Canceled/DeadlineExceeded、但执行上下文仍正常时，是已知业务失败，仍要确认根失败；不能仅凭错误链含 context 哨兵推断宿主中断。失败确认使用该节点所属 Execution 的持久化上下文，与最终失败分类一致；业务 `defer rc.Cancel()` 只清理节点上下文，不阻断已知失败的确认，不让后续 Resume 重新获得根预算。
+宿主上下文取消、进程突然退出和可靠钩子失败留下活跃尝试，恢复时从权威记录继续。节点本地调用 `rc.Cancel()` 后返回 nil 或正常 skip，若完整节点链自身的上下文已经取消，同样按可恢复中断处理：不提交成功或跳过终态，不确认业务失败，也不消耗持久尝试预算；记录保持 active，Resume 认回同一尝试。
+
+只清理内层 Fork 或 Timeout 交给业务体的局部上下文，不应覆盖已经取得的返回结果；若完整节点链的上下文仍有效，已有的成功、正常 skip 或真实失败继续按原结果处理。Timeout 自身的时限真正到期、或父域已经取消时，超时与取消规则仍然生效。
+
+真实业务失败即使伴随 `defer rc.Cancel()` 这样的本地清理，仍要确认失败；失败确认使用该节点所属 Execution 的持久化上下文，本地清理不能让后续 Resume 重新获得根预算。业务 RPC 返回 context.Canceled/DeadlineExceeded、但所属执行上下文仍正常时，也属于已知业务失败；不能仅凭错误链含 context 哨兵推断宿主中断。
 
 Store/Codec/恢复钩子的错误或 panic 是 CheckpointError。即使错误链含 ErrSkipped，仍必须失败，errors.Is/As 保留原原因。整棵执行树共享可靠失败锁存，父 Retry 或外层切面吞掉返回值也不能让运行继续提交并假称成功。
 
-已知取消时不开始新提交；确认已经成功后，随后发生的取消不撤销记录。Store 实际写成却报错时，本次停止，不重试、不回滚，Resume 重读权威记录。持久尝试只记录失败状态，不自动保存可能含业务敏感值的错误文本；跨进程遇到耗尽状态返回明确的次数耗尽错误。
+可靠操作在开始提交前检查其适用的上下文，已取消时不开始新提交；真实失败的确认仍以上述所属 Execution 上下文为准。确认已经成功后，随后发生的取消不撤销记录。Store 实际写成却报错时，本次停止，不重试、不回滚，Resume 重读权威记录。持久尝试只记录失败状态，不自动保存可能含业务敏感值的错误文本；跨进程遇到耗尽状态返回明确的次数耗尽错误。
 
 ## 恢复先整批核验
 

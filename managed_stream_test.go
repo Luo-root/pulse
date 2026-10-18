@@ -450,6 +450,52 @@ func TestManagedReaderExitWakesSend(t *testing.T) {
 	}
 }
 
+func TestManagedReaderCompletionObligations(t *testing.T) {
+	t.Run("active-production-with-no-pending-messages", func(t *testing.T) {
+		writer, stream, _, readerRC := managedTestEndpoint[int](t, 1)
+		managedTestOK(t, writer.Send(1))
+		delivery, err := stream.Receive(readerRC)
+		managedTestOK(t, err)
+		managedTestOK(t, delivery.Ack())
+		if got := stream.Snapshot(); got.InFlight != 0 || got.Terminal != "" {
+			t.Fatalf("expected active production with no pending messages: %+v", got)
+		}
+		err = readerRC.finishStreams(nil)
+		if err == nil || !strings.Contains(err.Error(), "production finished=false, unacknowledged=0") ||
+			!strings.Contains(err.Error(), "Receive and Ack until EOF") || !strings.Contains(err.Error(), "Stop") {
+			t.Fatalf("active stream accepted early exit or gave incomplete guidance: %v", err)
+		}
+	})
+	t.Run("receive-and-ack-through-eof", func(t *testing.T) {
+		writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 1)
+		managedTestOK(t, writer.Send(1))
+		managedTestOK(t, writerRC.finishStreams(nil))
+		delivery, err := stream.Receive(readerRC)
+		managedTestOK(t, err)
+		managedTestOK(t, delivery.Ack())
+		if _, err := stream.Receive(readerRC); err != io.EOF {
+			t.Fatalf("completed and acknowledged stream Receive = %v", err)
+		}
+		managedTestOK(t, readerRC.finishStreams(nil))
+		if got := stream.Snapshot(); got.Terminal != StreamCompleted || got.AckedThrough != 1 || got.Stopped {
+			t.Fatalf("normal consumption changed terminal or acknowledgement: %+v", got)
+		}
+	})
+	t.Run("explicit-stop-before-production-finishes", func(t *testing.T) {
+		writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 1)
+		managedTestOK(t, writer.Send(1))
+		managedTestOK(t, stream.Stop(readerRC))
+		managedTestOK(t, readerRC.finishStreams(nil))
+		if err := writer.Send(2); err != ErrStreamStopped {
+			t.Fatalf("Send after explicit Stop = %v", err)
+		}
+		managedTestOK(t, writerRC.finishStreams(nil))
+		if got := stream.Snapshot(); got.Terminal != StreamStopped || got.InFlight != 0 || got.AckedThrough != 0 {
+			t.Fatalf("explicit Stop changed acknowledgements: %+v", got)
+		}
+	})
+}
+
 func TestManagedWorkerExitRequeuesOnlyOwnedDeliveries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()

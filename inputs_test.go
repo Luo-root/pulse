@@ -207,7 +207,8 @@ func TestCoreNilReadKeepsSlotStatesAndPermissions(t *testing.T) {
 func TestCoreInputsKeepHostNilContract(t *testing.T) {
 	k := NewKey[any]("value")
 	var in Inputs
-	if err := Seed[any](&in, k, nil); err == nil || !strings.Contains(err.Error(), "nil value") {
+	if err := Seed[any](&in, k, nil); err == nil || !strings.Contains(err.Error(), "nil value") ||
+		!strings.Contains(err.Error(), "SkipSeed") || strings.Contains(err.Error(), "FixSkip") {
 		t.Fatalf("Seed nil interface = %v", err)
 	}
 	if len(in.entries) != 0 {

@@ -102,6 +102,15 @@ func Sub(g *Graph, id, description string, binds []SubBind, child *Graph, aspect
 		return err
 	}
 
+	// 装配锁仍在：封口状态不会在这次检查与 addAllLocked 之间改变。
+	// 在 Sub 入口报封口，避免透出内部 Add 的操作名；锁序仍是 assemblyMu → g.mu。
+	g.mu.Lock()
+	sealed := g.sealed
+	g.mu.Unlock()
+	if sealed {
+		return fmt.Errorf("pulse: Sub %q: %w", id, errSealed("Sub"))
+	}
+
 	// 这一步的体就是「跑子图 + 桥回」，**没有自己的重入账**：一个节点在同一次执行里
 	// 只允许成功推进一次，那条判据在最内层的推进闸上、所有节点共用一处（见
 	// `RunCtx.beginAdvance`）。`Retry` 每次尝试都开一条新的写暂存，于是它的重入是
@@ -402,10 +411,13 @@ func (b SubBind) fixKeys() []keyRef {
 // 已经有来源」三条判据都是共用的。
 func Fix[T any](child Key[T], v T) SubBind {
 	var b fixBind
-	if err := b.in.set(child.asRef(), any(v), false); err != nil {
+	ref := child.asRef()
+	if ref.valid() && any(v) == nil {
+		b.bad = fmt.Errorf("pulse: input %s: nil value: use FixSkip to say \"no value for this mount\"", ref)
+	} else if err := b.in.set(ref, any(v), false); err != nil {
 		b.bad = err
 	}
-	return SubBind{child: child.asRef(), fix: &b}
+	return SubBind{child: ref, fix: &b}
 }
 
 // FixSkip 与 `Fix` 同形：给子图的某条进口一个**固定的跳过**。
