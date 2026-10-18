@@ -80,6 +80,7 @@ func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 
 	newRec := func(event, status string, d time.Duration, err error) Record {
 		return Record{
+			Time:     time.Now(), // 在入队前记录事件时间，不让异步叶子出口补成投递时间。
 			HostID:   cfg.HostID,
 			TraceID:  cfg.TraceID,
 			Source:   SourceObserver,

@@ -559,6 +559,77 @@ func TestRecordObserverGraphFinishedWithoutStarted(t *testing.T) {
 	}
 }
 
+// 生命周期时间属于产生记录的回调，而不是异步 worker 排空队列的时刻。
+// 阻塞叶子出口后直接检查原始记录，不依赖 sleep 或叶子自动补时制造时间差。
+func TestRecordObserverCapturesTimeBeforeAsyncDelivery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	inner := &gateSink{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	async := NewAsyncSink(inner, WithCapacity(16))
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(inner.release) }) }
+	t.Cleanup(func() {
+		release()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cleanupCancel()
+		if err := async.Close(cleanupCtx); err != nil {
+			t.Errorf("close async sink: %v", err)
+		}
+	})
+	async.Write(Record{Event: "test.blocker"})
+	select {
+	case <-inner.entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	obs, err := NewRecordObserver(ObserveConfig{Sink: async})
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := pulse.Site{Graph: "event-time", Execution: "event-time#1"}
+	before := time.Now()
+	obs.OnGraphStarted(site)
+	obs.OnNodeWaiting(site, "n")
+	obs.OnNodeRunning(site, "n")
+	aspectTime := time.Now()
+	obs.(pulse.AspectObserver).OnAspectEvent(pulse.AspectEvent{
+		Site: site, NodeID: "n", Time: aspectTime, Kind: pulse.AspectRetry,
+	})
+	obs.OnNodeFinished(site, "n", pulse.NodeCompleted, nil)
+	obs.OnGraphFinished(site, pulse.NodeCompleted, nil)
+	obs.OnNodeFinished(site, "short-circuit", pulse.NodeFailed, errors.New("failed before Running"))
+	after := time.Now()
+	if inner.count() != 0 {
+		t.Fatal("leaf sink escaped the delivery barrier")
+	}
+	release()
+	if err := async.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	inner.mu.Lock()
+	records := append([]Record(nil), inner.records...)
+	inner.mu.Unlock()
+	if len(records) != 7 {
+		t.Fatalf("records=%d, want blocker plus five lifecycle records and one aspect", len(records))
+	}
+	var graphStart time.Time
+	for _, rec := range records[1:] {
+		if rec.Time.IsZero() || rec.Time.Before(before) || rec.Time.After(after) {
+			t.Errorf("event %s timestamp=%v, want callback time in [%v, %v]", rec.Event, rec.Time, before, after)
+		}
+		if rec.Event == EventGraphStarted {
+			graphStart = rec.Time
+		}
+		if rec.Event == EventAspect && !rec.Time.Equal(aspectTime) {
+			t.Errorf("aspect timestamp=%v, want original event time %v", rec.Time, aspectTime)
+		}
+	}
+	if graphStart.After(aspectTime) {
+		t.Errorf("graph started at %v after its aspect at %v", graphStart, aspectTime)
+	}
+}
+
 func eventsOf(recs []Record) []string {
 	out := make([]string, 0, len(recs))
 	for _, rec := range recs {
