@@ -1,5 +1,7 @@
 # Scale and performance
 
+> This page retains historical versions and optimization evidence. The [unified workflow comparison](./production-comparison.md) uses the merged latest Pulse/Durable with Eino and Temporal across dimensions. Go Taskflow does not enter that new comparison.
+
 This baseline gives different Go engines the same deterministic integer task and measures cost from 1 to 10000 nodes. It helps developers selecting an execution library understand small-graph fixed overhead, large-graph growth, reuse and cumulative allocation costs, without assuming Pulse wins.
 
 Measured on **2026-10-17**. Pulse is pinned to `v0.4.2-0.20261016143631-7d70e1e14771`, main integration commit `7d70e1e1477192669d5008d47729e3c8c19a336f`. This is a public development revision during v0.5.0 preparation, not an uncreated release tag. Comparisons pin Azure/go-workflow [v0.1.13](https://github.com/Azure/go-workflow/releases/tag/v0.1.13) and go-taskflow [v1.2.0](https://github.com/noneback/go-taskflow/releases/tag/v1.2.0), using their tagged public APIs.

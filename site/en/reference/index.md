@@ -10,6 +10,7 @@ These documents describe the development object model. The latest published vers
 
 | Question | Page |
 |---|---|
+| Latest execution, observation, resource and recovery costs with Eino and Temporal | [Unified workflow comparison](./production-comparison.md) |
 | When definitions seal, which states exist, how often callbacks occur | [Lifecycle](./lifecycle.md) |
 | What errors mean and whether to change declarations or handle a runtime failure | [Errors](./errors.md) |
 | When outputs are confirmed and published, what recovery restores, how retry budgets persist | [Checkpoints](./checkpoint.md) |

@@ -1,0 +1,134 @@
+{
+  "schema": 1,
+  "benchmark_commit": "f3348294a1e57b9e2f1efed780cfe6d2a89b4b2c",
+  "benchmark_binary_sha256": "f64ce5af49f7bc9e1ef7b1b2ec3fc7d360bb5d1699f88f0ddb0c2f4d62b728bc",
+  "temporal_binary_sha256": "c49d7f0d9f6a7ae5aed3b97a259070c1cee7bf7e7543be9b4c602109caf3c806",
+  "scripts": {
+    "run_production.py": "6a1ef84805d3085f66ee8ed7f9971d881d36795cdf9d03e0497347b3e8708743",
+    "run_recovery.py": "c78bb333d6bdf43c1edb1bccf0589ce26861bd74bc6e9af679bd1bfd071ae4a1",
+    "run_matrix.py": "24ad24f348c6c2c6d123d06520d71e12d0dbe50f47b1b54126f9932b15502acf"
+  },
+  "summary_tool_sha256": "5f1183b55d96596cf6bd79b22a5d3a8de25821e245dea4e94236fade6791e561",
+  "versions": {
+    "pulse": "v0.4.2-0.20261017111210-aa02dd107a43",
+    "pulse_durable": "v0.0.0-20261017105818-71c693fc82ef",
+    "eino": "v0.9.21",
+    "temporal_sdk": "v1.50.0",
+    "sqlite": "v1.60.1",
+    "toolchain": "go1.26.0"
+  },
+  "temporal": {
+    "cli": "1.9.1",
+    "server": "1.32.0",
+    "build_go": "go1.26.8",
+    "provenance": "go version -m retained in external temporal-build.txt"
+  },
+  "collection": {
+    "started_at": "2026-10-17T12:12:07.994499+00:00",
+    "ended_at": "2026-10-17T14:10:43.162076+00:00",
+    "gomaxprocs_per_go_process": 4,
+    "business_parallelism": 4,
+    "os": "Windows 11 10.0.26200",
+    "cpu": "Intel Core i9-14900HX"
+  },
+  "records": 1062,
+  "groups": 234,
+  "datasets": {
+    "native": {
+      "raw_sha256": "c65f31cc2a25dea9f49cf3af89be450bd75233a1239ad56b5763d82e10f68220",
+      "manifest_sha256": "77345c62d5e18da9b70b8741ff13fe1a6af1d065b3962dfc0876f8bb378203e5",
+      "records": 900,
+      "groups": 180,
+      "statuses": {
+        "deadline": 1,
+        "hard_timeout": 19,
+        "not_repeated": 80,
+        "ok": 800
+      },
+      "matrix": {
+        "engines": "pulse,eino,temporal",
+        "modes": "plain,observe",
+        "shapes": "chain,wide,diamonds",
+        "nodes": "1,10,100,1000,10000",
+        "rounds": "1,256",
+        "repeats": 5,
+        "parallelism": 4,
+        "gomaxprocs": 4,
+        "fixed_iterations": null
+      }
+    },
+    "resources": {
+      "raw_sha256": "cf616bf8c439d4b6cea8614d0fdfe60eb4a333165421ed25535f6db05f204365",
+      "manifest_sha256": "2943691e89c14e4d12a8102214fa8e6b9fc5be133cc2c897e7a9c62af933eeb4",
+      "records": 81,
+      "groups": 27,
+      "statuses": {
+        "deadline": 1,
+        "hard_timeout": 1,
+        "not_repeated": 4,
+        "ok": 75
+      },
+      "matrix": {
+        "engines": "pulse,eino,temporal",
+        "modes": "plain",
+        "shapes": "chain,wide,diamonds",
+        "nodes": "1,100,1000",
+        "rounds": "1",
+        "repeats": 3,
+        "parallelism": 4,
+        "gomaxprocs": 4,
+        "fixed_iterations": 1
+      }
+    },
+    "checkpoint": {
+      "raw_sha256": "12c3f5b415b20b364ad11009bb273d0fda8b0b94dacbc56072c4049aec92a2e3",
+      "manifest_sha256": "6b0eaddbfb3f165f548f210185e795419849ae3bc2e1d83d7c024f45c2f56465",
+      "records": 45,
+      "groups": 15,
+      "statuses": {
+        "deadline": 3,
+        "not_repeated": 6,
+        "ok": 36
+      },
+      "matrix": {
+        "engines": "pulse",
+        "modes": "checkpoint",
+        "shapes": "chain,wide,diamonds",
+        "nodes": "1,10,100,1000,10000",
+        "rounds": "1",
+        "repeats": 3,
+        "parallelism": 4,
+        "gomaxprocs": 4,
+        "fixed_iterations": null
+      }
+    },
+    "recovery": {
+      "raw_sha256": "c21672762e4b916131f292bcb3207c34940e55ea09b0c47c586c6cdc984a0b02",
+      "manifest_sha256": "0c12b471009ed34391858099b96b9afa2db61a1dc80a77ca2ce8b0fdf8952dda",
+      "records": 36,
+      "groups": 12,
+      "statuses": {
+        "ok": 36
+      },
+      "matrix": {
+        "nodes": "10,100,1000",
+        "rounds": 256,
+        "repeats": 3,
+        "parallelism": 4,
+        "gomaxprocs": 4
+      }
+    }
+  },
+  "summary_sha256": "72302c1b3946def655dd8ef8c8657a57479b017d7c7d9be12073b52bfe9518ae",
+  "scopes": {
+    "run_ns": "Mean of one completed reuse batch; median/min/max across ok repeats, without iteration weighting.",
+    "resources": "Fixed batch=1: whole case includes setup, common harness, first execution and one reuse; Temporal includes its Server.",
+    "job_cpu_s": "Windows Job user+kernel CPU, including exited descendants; native unequal batches are not CPU comparisons.",
+    "sampled_tree_peak_rss_bytes": "Maximum observed process-tree RSS sum at 25 ms polling; not an exact RSS peak.",
+    "alloc_bytes_per_run": "Go process-local reuse allocations; Temporal Server excluded. Not whole-engine memory.",
+    "store_bytes": "File-length snapshots include SQLite main/WAL/SHM, not bytes written or bytes per node.",
+    "observations": "Counts cover first plus completed reuse executions; Pulse lifecycle callbacks, Eino Graph/Lambda start/end/error, Temporal replay-filtered Workflow and Activity interceptors. Surfaces differ.",
+    "recovery": "Pulse confirmed-prefix hard kill; Eino active interrupt; Temporal worker kill with Server alive or restarted. Separate scenarios, no overall ranking.",
+    "checkpoint": "Only Pulse+Durable is sampled here. Eino ordinary success has no per-node checkpoint; Temporal native/plain already persists. Refer to native rows without copying them into checkpoint rows."
+  }
+}

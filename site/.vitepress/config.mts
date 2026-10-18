@@ -33,7 +33,8 @@ function sidebar(prefix: string, en: boolean) {
       ['检查点桥', 'Checkpoint bridge', 'reference/checkpoint'],
       ['版本与迁移', 'Versions and migration', 'reference/migration'],
       ['v0.5.0 发布说明', 'v0.5.0 release notes', 'reference/release-v0.5.0'],
-      ['规模与性能', 'Scale and performance', 'reference/performance'],
+      ['统一生产框架对照', 'Unified workflow comparison', 'reference/production-comparison'],
+      ['历史规模与优化', 'Historical scale and optimization', 'reference/performance'],
       ['设计理念', 'Design philosophy', 'guide/philosophy'],
     ]) },
     { text: labels[3], collapsed: true, items: pages([

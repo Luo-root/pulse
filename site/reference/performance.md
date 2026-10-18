@@ -1,5 +1,7 @@
 # 规模与性能
 
+> 本页保留旧版本的历史基线与优化证据。基于合并后最新版、固定 Pulse／Durable、Eino、Temporal 三列的跨维度新结果见[统一工作流对照](./production-comparison.md)；Go Taskflow 不参与新一轮对照。
+
 这份基线把同一串确定性整数计算交给不同 Go 引擎，观察节点数从 1 到 10000 时的成本。它面向正在选择执行库的开发者：既看小图固定开销，也看大图增长、复用收益与累计分配，不预设 Pulse 最快。
 
 测量日期为 **2026-10-17**。Pulse 固定为 `v0.4.2-0.20261016143631-7d70e1e14771`，对应 main 集成提交 `7d70e1e1477192669d5008d47729e3c8c19a336f`；这是 v0.5.0 发布准备期间的公开开发版本，不是尚未创建的正式 tag。对照固定 Azure/go-workflow [v0.1.13](https://github.com/Azure/go-workflow/releases/tag/v0.1.13)、go-taskflow [v1.2.0](https://github.com/noneback/go-taskflow/releases/tag/v1.2.0)，使用各 tag 的公开 API。
