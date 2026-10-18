@@ -163,7 +163,7 @@ func coerceSeedValue(v any, target reflect.Type) (any, error) {
 	if !rv.IsValid() {
 		return nil, fmt.Errorf("nil value")
 	}
-	out, err := convertValue(rv, target)
+	out, err := convertValue(rv, target, make(map[inputConversionVisit]bool))
 	if err != nil {
 		return nil, err
 	}
@@ -188,8 +188,18 @@ func valueForType(v reflect.Value, target reflect.Type) (reflect.Value, bool) {
 	return out, true
 }
 
+// inputConversionVisit 标记当前递归链上的来源与目标，而不是整次转换见过的对象。
+// 容器按引用身份判等；切片还要区分视图。其它来源保留 Value 身份，以识别
+// 递归指针目标不消耗来源（例如 int → P，type P *P）的无终止转换。
+type inputConversionVisit struct {
+	source, target   reflect.Type
+	ptr              uintptr
+	length, capacity int
+	value            reflect.Value
+}
+
 // convertValue 递归转换：容器逐元素 / 逐键值，标量走 convertScalar。
-func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
+func convertValue(v reflect.Value, target reflect.Type, visiting map[inputConversionVisit]bool) (reflect.Value, error) {
 	// null / nil 元素（YAML 的 null、JSON 的 null）：落到目标零值。
 	// 与 encoding/json 的 null 语义一致，不报错。
 	if !v.IsValid() || (v.Kind() == reflect.Interface && v.IsNil()) {
@@ -204,6 +214,21 @@ func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 		return out, nil
 	}
 
+	visit := inputConversionVisit{source: v.Type(), target: target}
+	switch v.Kind() {
+	case reflect.Map:
+		visit.ptr = uintptr(v.UnsafePointer())
+	case reflect.Slice:
+		visit.ptr, visit.length, visit.capacity = v.Pointer(), v.Len(), v.Cap()
+	default:
+		visit.value = v
+	}
+	if visiting[visit] {
+		return reflect.Value{}, fmt.Errorf("cyclic conversion from %s to %s", v.Type(), target)
+	}
+	visiting[visit] = true
+	defer delete(visiting, visit) // 兄弟分支共享同一来源仍然合法。
+
 	switch target.Kind() {
 	case reflect.Slice:
 		if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
@@ -213,7 +238,7 @@ func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 			}
 			out := reflect.MakeSlice(target, v.Len(), v.Len())
 			for i := 0; i < v.Len(); i++ {
-				ev, err := convertValue(v.Index(i), target.Elem())
+				ev, err := convertValue(v.Index(i), target.Elem(), visiting)
 				if err != nil {
 					return reflect.Value{}, fmt.Errorf("element %d: %w", i, err)
 				}
@@ -225,7 +250,7 @@ func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 		if (v.Kind() == reflect.Slice || v.Kind() == reflect.Array) && v.Len() == target.Len() {
 			out := reflect.New(target).Elem()
 			for i := 0; i < target.Len(); i++ {
-				ev, err := convertValue(v.Index(i), target.Elem())
+				ev, err := convertValue(v.Index(i), target.Elem(), visiting)
 				if err != nil {
 					return reflect.Value{}, fmt.Errorf("element %d: %w", i, err)
 				}
@@ -242,14 +267,14 @@ func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 			out := reflect.MakeMapWithSize(target, v.Len())
 			iter := v.MapRange()
 			for iter.Next() {
-				k, err := convertValue(iter.Key(), target.Key())
+				k, err := convertValue(iter.Key(), target.Key(), visiting)
 				if err != nil {
 					return reflect.Value{}, fmt.Errorf("map key: %w", err)
 				}
 				if out.MapIndex(k).IsValid() {
 					return reflect.Value{}, fmt.Errorf("map key: conversion from %s to %s collides with another key", iter.Key().Type(), target.Key())
 				}
-				ev, err := convertValue(iter.Value(), target.Elem())
+				ev, err := convertValue(iter.Value(), target.Elem(), visiting)
 				if err != nil {
 					return reflect.Value{}, fmt.Errorf("map value of %s: %w", target, err)
 				}
@@ -259,7 +284,7 @@ func convertValue(v reflect.Value, target reflect.Type) (reflect.Value, error) {
 		}
 	case reflect.Pointer:
 		// 指针目标：分配一个元素再转换（null 已在上面落到 nil）。
-		ev, err := convertValue(v, target.Elem())
+		ev, err := convertValue(v, target.Elem(), visiting)
 		if err != nil {
 			return reflect.Value{}, err
 		}
