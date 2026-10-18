@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -462,5 +464,353 @@ func TestLifecycleTimeoutPreservesReliableFailureAfterCancel(t *testing.T) {
 	var typed *CheckpointError
 	if !errors.Is(err, cause) || !errors.As(err, &typed) || typed != failure || finishReason(err) != NodeFailed {
 		t.Fatalf("Timeout discarded reliable failure: %v", err)
+	}
+}
+
+// 隐去 cancelCtx 的私有 Value，使标准 context 通过公开 AfterFunc 协议注册取消。
+// 计数只描述仍注册的回调，不依赖标准库私有 children 字段，也不声称保留业务载荷。
+type lifecycleTrackingContext struct {
+	context.Context
+	mu     sync.Mutex
+	active int
+}
+
+func (c *lifecycleTrackingContext) Value(any) any { return nil }
+
+func (c *lifecycleTrackingContext) AfterFunc(f func()) func() bool {
+	c.mu.Lock()
+	c.active++
+	c.mu.Unlock()
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			c.mu.Lock()
+			c.active--
+			c.mu.Unlock()
+		})
+	}
+	stop := context.AfterFunc(c.Context, func() { release(); f() })
+	return func() bool {
+		stopped := stop()
+		if stopped {
+			release()
+		}
+		return stopped
+	}
+}
+
+func (c *lifecycleTrackingContext) registrations() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.active
+}
+
+func TestLifecycleRunCleansRejectedStart(t *testing.T) {
+	for _, shape := range []string{"missing-source", "cycle", "missing-output", "checkpoint-hooks"} {
+		t.Run(shape, func(t *testing.T) {
+			parent, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			tracked := &lifecycleTrackingContext{Context: parent}
+			g := mustNew(t, parent, "rejected-start")
+			x, y := NewKey[int]("x"), NewKey[int]("y")
+			var opts []ExecOption
+			switch shape {
+			case "missing-source":
+				mustAdd(t, g, NewNode("n", "缺来源", Requires(x), nil, nil))
+			case "cycle":
+				mustAdd(t, g, NewNode("a", "环的一边", Requires(x), Provides(y), nil))
+				mustAdd(t, g, NewNode("b", "环的另一边", Requires(y), Provides(x), nil))
+			case "missing-output":
+				declareOut(t, g, NewPort(x))
+			case "checkpoint-hooks":
+				opts = append(opts, WithExecCheckpoint("root", CheckpointHooks{}))
+			}
+			for range 20 {
+				if err := g.Run(tracked, Inputs{}, opts...); err == nil {
+					t.Fatal("invalid Start accepted")
+				}
+			}
+			if got := tracked.registrations(); got != 0 {
+				t.Fatalf("20 rejected Run calls retained %d host cancellation registrations", got)
+			}
+			if g.sealed || parent.Err() != nil {
+				t.Fatal("rejected Run sealed the definition or canceled the host")
+			}
+		})
+	}
+}
+
+func TestLifecycleRunCleansTerminalExecution(t *testing.T) {
+	for _, shape := range []string{"success", "failure", "cancel"} {
+		t.Run(shape, func(t *testing.T) {
+			parent, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			tracked := &lifecycleTrackingContext{Context: parent}
+			g := mustNew(t, parent, "terminal-run")
+			cause := errors.New("business failure")
+			mustAdd(t, g, NewNode("n", "终态清理", nil, nil, func(rc *RunCtx) error {
+				switch shape {
+				case "failure":
+					return cause
+				case "cancel":
+					cancel()
+					<-rc.Context().Done()
+					return rc.Context().Err()
+				}
+				return nil
+			}))
+			err := g.Run(tracked, Inputs{})
+			if (shape == "success" && err != nil) || (shape == "failure" && !errors.Is(err, cause)) || (shape == "cancel" && !errors.Is(err, context.Canceled)) {
+				t.Fatalf("%s Run = %v", shape, err)
+			}
+			if got := tracked.registrations(); got != 0 {
+				t.Fatalf("terminal Run retained %d registrations", got)
+			}
+		})
+	}
+}
+
+func TestLifecycleRejectedExecutionStartCanBeRepaired(t *testing.T) {
+	for _, restore := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restore=%v", restore), func(t *testing.T) {
+			parent, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			tracked := &lifecycleTrackingContext{Context: parent}
+			g := mustNew(t, parent, "repair-start")
+			x, y := NewKey[int]("x"), NewKey[int]("y")
+			mustAdd(t, g, NewNode("n", "补装配后能启动", Requires(x), Provides(y), func(rc *RunCtx) error { return Set(rc, y, 2) }))
+			var opts []ExecOption
+			if restore {
+				opts = append(opts, WithExecCheckpoint("root", (&checkpointProbe{}).hooks()))
+			}
+			e, err := g.NewExecution(tracked, Inputs{}, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer e.Cancel()
+			if restore {
+				if err := e.RestoreNodes([]NodeCheckpoint{{NodeID: "n", Reason: NodeCompleted, Outputs: []CheckpointOutput{{Key: CheckpointKey{Name: "y", Type: reflect.TypeFor[int]()}, State: SlotStateReady, Value: 2}}}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !restore {
+				if err := e.Start(); err == nil {
+					t.Fatal("missing source accepted")
+				}
+			}
+			mustAdd(t, g, NewNode("source", "补来源", nil, Provides(x), func(rc *RunCtx) error { return Set(rc, x, 1) }))
+			if restore {
+				if err := e.Start(); err == nil {
+					t.Fatal("late-invalidated restore accepted")
+				}
+				if err := e.RestoreNodes(nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if e.Context().Err() != nil || e.started || g.sealed || tracked.registrations() != 1 {
+				t.Fatalf("rejected standalone Start lost repairability: ctx=%v started=%v sealed=%v registrations=%d", e.Context().Err(), e.started, g.sealed, tracked.registrations())
+			}
+			if err := e.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			if got := tracked.registrations(); got != 0 {
+				t.Fatalf("repaired Execution retained %d registrations", got)
+			}
+		})
+	}
+}
+
+type lifecycleInspectUnwrap struct {
+	exec  *Execution
+	cause error
+}
+
+func (e *lifecycleInspectUnwrap) Error() string { return "ordinary business failure" }
+func (e *lifecycleInspectUnwrap) Unwrap() error {
+	_ = e.exec.Err()
+	return e.cause
+}
+
+type lifecycleInspectIs struct{ exec *Execution }
+
+func (*lifecycleInspectIs) Error() string { return "ordinary business failure" }
+func (e *lifecycleInspectIs) Is(error) bool {
+	_ = e.exec.Err()
+	return false
+}
+
+type lifecycleInspectAs struct{ exec *Execution }
+
+func (*lifecycleInspectAs) Error() string { return "ordinary business failure" }
+func (e *lifecycleInspectAs) As(any) bool {
+	_ = e.exec.Err()
+	return false
+}
+
+func TestLifecycleFailureErrorMethodsCanInspectExecution(t *testing.T) {
+	// 错误方法会同步重入 Err；子进程隔离让锁回归有明确栈和时限，
+	// 而不是把一条永久阻塞的 goroutine 留在其余测试里。
+	if kind := os.Getenv("PULSE_TEST_FAILURE_REENTRY"); kind != "" {
+		g := mustNew(t, t.Context(), "failure-reentry")
+		var cause error
+		mustAdd(t, g, NewNode("work", "错误链可观察执行状态", nil, nil, func(*RunCtx) error { return cause }))
+		e, err := g.NewExecution(t.Context(), Inputs{})
+		managedTestOK(t, err)
+		defer e.Cancel()
+		sentinel := errors.New("business cause")
+		switch kind {
+		case "Unwrap":
+			cause = &lifecycleInspectUnwrap{exec: e, cause: sentinel}
+		case "Is":
+			cause = &lifecycleInspectIs{exec: e}
+		case "As":
+			cause = &lifecycleInspectAs{exec: e}
+		default:
+			t.Fatalf("unknown child mode %q", kind)
+		}
+		managedTestOK(t, e.Start())
+		if got := e.Wait(); got != cause || e.Err() != cause {
+			t.Fatalf("first error changed: %v", got)
+		}
+		if snapshot := e.Snapshot(); snapshot.Graph.Status != GraphStatusFailed || snapshot.Graph.Err != cause {
+			t.Fatalf("failure snapshot changed: %+v", snapshot.Graph)
+		}
+		if kind == "Unwrap" && !errors.Is(e.Err(), sentinel) {
+			t.Fatal("original cause lost")
+		}
+		return
+	}
+	for _, kind := range []string{"Unwrap", "Is", "As"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLifecycleFailureErrorMethodsCanInspectExecution$", "-test.timeout=3s")
+			cmd.Env = append(os.Environ(), "PULSE_TEST_FAILURE_REENTRY="+kind)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("error.%s could not inspect Execution.Err: %v\n%s", kind, err, output)
+			}
+		})
+	}
+}
+
+func classificationDetectors() []struct {
+	name      string
+	detect    func(error) bool
+	reference func(error) bool
+} {
+	return []struct {
+		name      string
+		detect    func(error) bool
+		reference func(error) bool
+	}{
+		{"checkpoint", isCheckpointFailure, func(err error) bool { var target *CheckpointError; return errors.As(err, &target) }},
+		{"panic", isPanicFailure, func(err error) bool { var target *nodePanicError; return errors.As(err, &target) }},
+		{"cancellation", isExecutionCancellation, func(err error) bool { var target *executionCancellation; return errors.As(err, &target) }},
+	}
+}
+
+// nil是每个成功节点都会经过的路径；这里约束分配，不设墙钟阈值。
+func TestFailureClassificationNilDoesNotAllocate(t *testing.T) {
+	for _, detector := range classificationDetectors() {
+		t.Run(detector.name, func(t *testing.T) {
+			if detector.detect(nil) {
+				t.Fatal("nil classified as failure")
+			}
+			if allocations := testing.AllocsPerRun(200, func() { detector.detect(nil) }); allocations != 0 {
+				t.Fatalf("nil classification allocated %g objects, want 0", allocations)
+			}
+		})
+	}
+}
+
+type classificationResult struct {
+	matched   bool
+	panicked  bool
+	panicText string
+}
+
+func classificationObserve(detect func(error) bool, err error) (result classificationResult) {
+	result.panicked = true
+	defer func() {
+		value := recover()
+		if result.panicked {
+			result.panicText = fmt.Sprint(value)
+		}
+	}()
+	result.matched = detect(err)
+	result.panicked = false
+	return result
+}
+
+type classificationUnwrapPanic struct{}
+
+func (classificationUnwrapPanic) Error() string { return "unwrap probe" }
+func (classificationUnwrapPanic) Unwrap() error { panic("classification unwrap") }
+
+// 非nil接口值保留errors.As的原始行为，包括typed nil和会panic的自定义错误链。
+func TestFailureClassificationNonNilKeepsErrorsAsBehavior(t *testing.T) {
+	plain := errors.New("business")
+	var nilCheckpoint *CheckpointError
+	var nilPanic *nodePanicError
+	var nilCancellation *executionCancellation
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"nil", nil},
+		{"business", plain},
+		{"context", context.Canceled},
+		{"checkpoint", &CheckpointError{Operation: "save", Err: plain}},
+		{"panic", &nodePanicError{nodeID: "node", value: plain}},
+		{"cancellation", &executionCancellation{cause: context.Canceled}},
+		{"wrapped-checkpoint", fmt.Errorf("outer: %w", &CheckpointError{Operation: "save", Err: plain})},
+		{"joined", errors.Join(plain, &nodePanicError{nodeID: "node", value: plain}, &executionCancellation{cause: context.Canceled})},
+		{"typed-nil-checkpoint", nilCheckpoint},
+		{"typed-nil-panic", nilPanic},
+		{"typed-nil-cancellation", nilCancellation},
+		{"panicking-unwrap", classificationUnwrapPanic{}},
+	}
+	for _, detector := range classificationDetectors() {
+		for _, test := range cases {
+			t.Run(detector.name+"/"+test.name, func(t *testing.T) {
+				got := classificationObserve(detector.detect, test.err)
+				want := classificationObserve(detector.reference, test.err)
+				if got != want {
+					t.Fatalf("got %+v, original errors.As behavior %+v", got, want)
+				}
+			})
+		}
+	}
+}
+
+type classificationAsProbe struct{ calls int }
+
+func (*classificationAsProbe) Error() string { return "custom As" }
+func (p *classificationAsProbe) As(any) bool { p.calls++; return false }
+
+func TestFailureClassificationNonNilStillCallsCustomAs(t *testing.T) {
+	for _, detector := range classificationDetectors() {
+		t.Run(detector.name, func(t *testing.T) {
+			probe := &classificationAsProbe{}
+			if detector.detect(probe) || probe.calls != 1 {
+				t.Fatalf("custom As: calls=%d, want one unsuccessful lookup", probe.calls)
+			}
+		})
+	}
+}
+
+func BenchmarkFailureClassificationNil(b *testing.B) {
+	for _, detector := range classificationDetectors() {
+		b.Run(detector.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				if detector.detect(nil) {
+					b.Fatal("nil classified as failure")
+				}
+			}
+		})
 	}
 }
