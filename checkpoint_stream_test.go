@@ -45,6 +45,106 @@ func waitCheckpointSignal[T any](t *testing.T, ctx context.Context, signal <-cha
 	}
 }
 
+func TestCheckpointConfirmationFreezesStreamResult(t *testing.T) {
+	for _, stopped := range []bool{false, true} {
+		for _, payload := range []string{"string", "nil", "self"} {
+			t.Run(fmt.Sprintf("stop=%t/%s", stopped, payload), func(t *testing.T) {
+				ctx := checkpointTestContext(t)
+				g := mustNew(t, ctx, "confirmed-stream-result")
+				key := NewKey[Stream[int]]("stream")
+				producer := &checkpointConfirmedSkip{payload: payload}
+				consumer := &checkpointConfirmedSkip{payload: payload}
+				stopDone := make(chan struct{})
+				var stream Stream[int]
+				mustAdd(t, g, NewNode("source", "确认后完成写端", nil, Provides(key), func(rc *RunCtx) error {
+					writer, err := OpenStream(rc, key, WithStreamSource("one", true))
+					if err != nil {
+						return err
+					}
+					if err := writer.SendAt(7, "one"); err != nil {
+						return err
+					}
+					if stopped {
+						select {
+						case <-stopDone:
+						case <-rc.Context().Done():
+							return rc.Context().Err()
+						}
+					}
+					return producer
+				}))
+				mustAdd(t, g, NewNode("sink", "确认前完成读取义务", Requires(key), nil, func(rc *RunCtx) error {
+					var err error
+					stream, err = Get(rc, key)
+					if err != nil {
+						return err
+					}
+					delivery, err := stream.Receive(rc)
+					if err != nil {
+						return err
+					}
+					if delivery.Value != 7 {
+						return fmt.Errorf("wrong message %d", delivery.Value)
+					}
+					if stopped {
+						if err := stream.Stop(rc); err != nil {
+							return err
+						}
+						close(stopDone)
+					} else {
+						if err := delivery.Ack(); err != nil {
+							return err
+						}
+						if _, err := stream.Receive(rc); err != io.EOF {
+							return fmt.Errorf("expected EOF, got %v", err)
+						}
+					}
+					return consumer
+				}))
+				probe := &checkpointProbe{}
+				hooks := checkpointStreamTestHooks(probe)
+				commit := hooks.Commit
+				hooks.Commit = func(ctx context.Context, request CheckpointCommit) error {
+					if request.Node.Reason != NodeSkipped {
+						t.Errorf("confirmed reason=%s, want skipped", request.Node.Reason)
+					}
+					if request.Node.NodeID == "source" {
+						producer.confirmed.Store(true)
+					} else {
+						consumer.confirmed.Store(true)
+					}
+					return commit(ctx, request)
+				}
+				e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+				managedTestOK(t, err)
+				managedTestOK(t, e.Start())
+				managedTestOK(t, e.Wait())
+				state := e.Snapshot()
+				for _, node := range state.Nodes {
+					want := error(producer)
+					if node.ID == "sink" {
+						want = consumer
+					}
+					if node.Status != NodeStatusSkipped || node.Err != want {
+						t.Errorf("node %s changed confirmed identity/reason: %s %T", node.ID, node.Status, node.Err)
+					}
+				}
+				snapshot := stream.Snapshot()
+				wantTerminal, wantAck := StreamCompleted, uint64(1)
+				if stopped {
+					wantTerminal, wantAck = StreamStopped, 0
+				}
+				if snapshot.Terminal != wantTerminal || snapshot.AckedThrough != wantAck || snapshot.InFlight != 0 || snapshot.Err != nil || snapshot.Stopped != stopped {
+					t.Fatalf("stream changed confirmed progress: %+v", snapshot)
+				}
+				if state.Graph.Status != GraphStatusCompleted || len(probe.commits) != 2 || len(probe.failures) != 0 || producer.lateCalls.Load() != 0 || consumer.lateCalls.Load() != 0 || !producer.confirmed.Load() || !consumer.confirmed.Load() {
+					t.Fatalf("confirmed stream revisited error: graph=%s commits=%d failures=%v late-source=%d late-sink=%d", state.Graph.Status, len(probe.commits), probe.failures, producer.lateCalls.Load(), consumer.lateCalls.Load())
+				}
+			})
+		}
+	}
+}
+
 func TestCheckpointStreamConfirmsAppendAndTerminalBeforePublishing(t *testing.T) {
 	ctx := checkpointTestContext(t)
 	g := mustNew(t, ctx, "stream-confirmation")

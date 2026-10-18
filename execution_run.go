@@ -161,7 +161,14 @@ func (e *Execution) runNode(n *Node) {
 
 	var err error
 	if e.checkpoint != nil {
-		err = e.runCheckpointChain(n, rc, chain)
+		var confirmed NodeFinishReason
+		err, confirmed = e.runCheckpointChain(n, rc, chain)
+		if confirmed != "" {
+			// 可靠路径已检查读取义务、收敛输出并安装写端终态；确认后只复用
+			// 同一结论，不能重查用户 error 再推翻已保存的成功/跳过。
+			e.finishNode(n, confirmed, err)
+			return
+		}
 	} else {
 		err = e.classifyFailure(chain(rc))
 	}

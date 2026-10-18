@@ -70,6 +70,115 @@ func checkpointTestContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// Commit 是确定性屏障：确认后任何错误方法都不能再由引擎调用。
+// 不依赖检查次数，避免把第 26 次异常简单挪到第 27 次。
+type checkpointConfirmedSkip struct {
+	confirmed atomic.Bool
+	lateCalls atomic.Int32
+	payload   string
+}
+
+func (e *checkpointConfirmedSkip) inspect() {
+	if !e.confirmed.Load() {
+		return
+	}
+	e.lateCalls.Add(1)
+	switch e.payload {
+	case "nil":
+		panic(nil)
+	case "self":
+		panic(e)
+	default:
+		panic("error inspected after checkpoint confirmation")
+	}
+}
+func (e *checkpointConfirmedSkip) Error() string { e.inspect(); return "confirmed skip" }
+func (e *checkpointConfirmedSkip) Is(target error) bool {
+	e.inspect()
+	return target == ErrSkipped
+}
+func (e *checkpointConfirmedSkip) As(any) bool   { e.inspect(); return false }
+func (e *checkpointConfirmedSkip) Unwrap() error { e.inspect(); return nil }
+
+func TestCheckpointConfirmationFreezesNodeResult(t *testing.T) {
+	for _, observed := range []bool{false, true} {
+		for _, shape := range []string{"ordinary", "timeout", "retry"} {
+			for _, payload := range []string{"string", "nil", "self"} {
+				t.Run(fmt.Sprintf("observed=%t/%s/%s", observed, shape, payload), func(t *testing.T) {
+					ctx := checkpointTestContext(t)
+					g := mustNew(t, ctx, "confirmed-node-result")
+					key := NewKey[int]("result")
+					cause := &checkpointConfirmedSkip{payload: payload}
+					var aspects []Aspect
+					if shape == "timeout" {
+						aspects = []Aspect{Timeout(time.Hour)}
+					} else if shape == "retry" {
+						aspects = []Aspect{Retry(2, 0)}
+					}
+					mustAdd(t, g, NewNode("source", "确认后复用完整节点结论", nil, Provides(key), func(rc *RunCtx) error {
+						if err := Set(rc, key, 7); err != nil {
+							return err
+						}
+						return cause
+					}, aspects...))
+					managedTestOK(t, g.DeclareOutput(NewPort(key)))
+					probe := &checkpointProbe{}
+					hooks := probe.hooks()
+					commit := hooks.Commit
+					hooks.Commit = func(ctx context.Context, request CheckpointCommit) error {
+						if request.Node.Reason != NodeSkipped {
+							t.Errorf("confirmed reason=%s, want skipped", request.Node.Reason)
+						}
+						cause.confirmed.Store(true)
+						return commit(ctx, request)
+					}
+					var counts [5]atomic.Int32
+					opts := []ExecOption{WithExecCheckpoint("root", hooks)}
+					if observed {
+						opts = append(opts, WithExecObserver(ObserverFunc{
+							GraphStarted: func(Site) { counts[0].Add(1) },
+							Waiting:      func(Site, string) { counts[1].Add(1) },
+							Running:      func(Site, string) { counts[2].Add(1) },
+							Finished: func(_ Site, _ string, reason NodeFinishReason, err error) {
+								counts[3].Add(1)
+								if reason != NodeSkipped || err != cause {
+									t.Errorf("node lost confirmed reason/identity: reason=%s err=%T", reason, err)
+								}
+							},
+							GraphFinished: func(_ Site, reason NodeFinishReason, err error) {
+								counts[4].Add(1)
+								if reason != NodeCompleted || err != nil {
+									t.Errorf("graph changed confirmed success: reason=%s err=%T", reason, err)
+								}
+							},
+						}))
+					}
+					e, err := g.NewExecution(ctx, Inputs{}, opts...)
+					managedTestOK(t, err)
+					managedTestOK(t, e.Start())
+					managedTestOK(t, e.Wait())
+					managedTestOK(t, e.Wait())
+					state := e.Snapshot()
+					if state.Graph.Status != GraphStatusCompleted || state.Nodes[0].Status != NodeStatusSkipped || state.Nodes[0].Err != cause {
+						t.Fatalf("confirmed result changed: graph=%s node=%s err=%T", state.Graph.Status, state.Nodes[0].Status, state.Nodes[0].Err)
+					}
+					value, slot, err := ReadOutput(e, key)
+					if err != nil || value != 7 || slot != SlotStateReady || len(probe.commits) != 1 || len(probe.failures) != 0 || !cause.confirmed.Load() || cause.lateCalls.Load() != 0 {
+						t.Fatalf("confirmation changed after publication: value=%d slot=%s err=%T commits=%d failures=%v confirmed=%t late-calls=%d", value, slot, err, len(probe.commits), probe.failures, cause.confirmed.Load(), cause.lateCalls.Load())
+					}
+					if observed {
+						for index := range counts {
+							if count := counts[index].Load(); count != 1 {
+								t.Errorf("callback %d count=%d, want 1", index, count)
+							}
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestCheckpointPublishesOnlyAfterConfirmation(t *testing.T) {
 	ctx := checkpointTestContext(t)
 	g := mustNew(t, ctx, "confirmation")

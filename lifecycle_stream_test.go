@@ -266,13 +266,17 @@ func TestCheckpointWriterInstallsTerminalWithinOperation(t *testing.T) {
 	defer e.Cancel()
 	rc := newRunCtx(e, node, ctx)
 	defer rc.Cancel()
-	messageTestOK(t, e.runCheckpointChain(node, rc, func(rc *RunCtx) error {
+	err, confirmed := e.runCheckpointChain(node, rc, func(rc *RunCtx) error {
 		writer, err := OpenStream(rc, key, WithStreamSource("empty", true))
 		if err == nil {
 			stream = Stream[int]{state: writer.state}
 		}
 		return err
-	}))
+	})
+	messageTestOK(t, err)
+	if confirmed != NodeCompleted {
+		t.Fatalf("completed writer has no confirmed result: %s", confirmed)
+	}
 	if snapshot := stream.Snapshot(); snapshot.Terminal != StreamCompleted || len(stream.state.operation.gate) != 0 {
 		t.Fatalf("confirmed terminal was not installed before unlocking: %+v", snapshot)
 	}
@@ -680,11 +684,70 @@ func TestLifecycleStreamFinishClassifiesLatchedFailure(t *testing.T) {
 
 type lifecycleFinishWitness struct {
 	cause   error
+	inspect func() error
 	publish func(error)
 }
 
-func (w lifecycleFinishWitness) failure() error   { return w.cause }
+func (w lifecycleFinishWitness) failure() error {
+	if w.inspect != nil {
+		return w.inspect()
+	}
+	return w.cause
+}
 func (w lifecycleFinishWitness) finish(err error) { w.publish(err) }
+
+func TestCheckpointRechecksStreamFailureAfterAcquiringOperation(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "locked-stream-conclusion")
+	key := NewKey[Stream[int]]("stream")
+	node := NewNode("source", "取门后确定写端结论", nil, Provides(key), nil)
+	mustAdd(t, g, node)
+	probe := &checkpointProbe{}
+	e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", checkpointStreamTestHooks(probe)))
+	managedTestOK(t, err)
+	defer e.Cancel()
+	rc := newRunCtx(e, node, ctx)
+	defer rc.Cancel()
+	opened := make(chan *managedStream[int], 1)
+	checked := make(chan struct{})
+	type result struct {
+		err       error
+		confirmed NodeFinishReason
+	}
+	finished := make(chan result, 1)
+	go func() {
+		err, confirmed := e.runCheckpointChain(node, rc, func(rc *RunCtx) error {
+			writer, err := OpenStream(rc, key, WithStreamSource("empty", true))
+			if err != nil {
+				return err
+			}
+			if err := writer.state.operation.lock(rc); err != nil {
+				return err
+			}
+			opened <- writer.state
+			var once sync.Once
+			// 真实写端在 witness 之前被检查；其首次检查已看到 nil 后才开放屏障。
+			rc.streams.add(lifecycleFinishWitness{inspect: func() error {
+				once.Do(func() { close(checked) })
+				return nil
+			}, publish: func(error) {}})
+			return nil
+		})
+		finished <- result{err: err, confirmed: confirmed}
+	}()
+	stream := waitCheckpointSignal(t, ctx, opened)
+	waitCheckpointSignal(t, ctx, checked)
+	cause := errors.New("reading group failed while writer waited for its operation")
+	stream.recordFailure(cause)
+	stream.operation.unlock()
+	got := waitCheckpointSignal(t, ctx, finished)
+	stream.mu.Lock()
+	terminal, terminalErr := stream.terminal, stream.err
+	stream.mu.Unlock()
+	if got.err != cause || got.confirmed != "" || len(probe.commits) != 0 || len(probe.failures) != 1 || terminal != StreamFailed || terminalErr != cause {
+		t.Fatalf("stale result was confirmed: err=%T confirmed=%s commits=%d failures=%v terminal=%s cause=%T", got.err, got.confirmed, len(probe.commits), probe.failures, terminal, terminalErr)
+	}
+}
 
 func TestLifecycleStreamOriginIsLatchedBeforePublication(t *testing.T) {
 	for _, message := range []bool{false, true} {

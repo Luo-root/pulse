@@ -296,13 +296,15 @@ func invokeCheckpointChain(chain func(*RunCtx) error, rc *RunCtx) error {
 	return invokeNode(rc, chain)
 }
 
-func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) error) error {
+// 非空 confirmed 是已经可靠确认、发布并完成流安装的成功结论；调用方只复用它，
+// 不再运行会重新遍历用户 error 的通用收尾。其余路径仍走完整的失败/中断收尾。
+func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) error) (err error, confirmed NodeFinishReason) {
 	root, err := rc.openCheckpointAttempt(e.checkpoint.scope, "", 1)
 	if err != nil {
-		return err
+		return err, ""
 	}
 	if root.Exhausted {
-		return fmt.Errorf("pulse: checkpoint node %q already failed; start a new durable run for a new retry budget", n.id)
+		return fmt.Errorf("pulse: checkpoint node %q already failed; start a new durable run for a new retry budget", n.id), ""
 	}
 	rc.checkpointAttempt = root
 	rc.checkpointEntries = &checkpointEntryLedger{}
@@ -321,24 +323,26 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 	err = e.classifyFailure(invokeCheckpointChain(chain, rc))
 	returned, failed := false, false
 	err = inspectNodeError(func() error {
-		result := e.finishCheckpointChain(n, rc, ws, root, err, &failed)
+		result := e.finishCheckpointChain(n, rc, ws, root, err, &failed, &confirmed)
 		returned = true
 		return result
 	})
 	if !returned {
 		// 实际收尾检查异常后，以不再关联原 error 的失败确认完整节点根预算。
 		// 已确认的失败不重复确认；可靠钩子的不确定结果仍由树闩立即截断。
-		return inspectNodeError(func() error { return e.finishCheckpointChain(n, rc, ws, root, err, &failed) })
+		err = inspectNodeError(func() error { return e.finishCheckpointChain(n, rc, ws, root, err, &failed, &confirmed) })
 	}
-	return err
+	return err, confirmed
 }
 
-func (e *Execution) finishCheckpointChain(n *Node, rc *RunCtx, ws *writeSet, root CheckpointAttempt, err error, failed *bool) error {
-	err = e.classifyFailure(checkpointChainResult(rc, err))
+func (e *Execution) finishCheckpointChain(n *Node, rc *RunCtx, ws *writeSet, root CheckpointAttempt, err error, failed *bool, confirmed *NodeFinishReason) error {
+	err = checkpointChainResult(rc, err)
 	if failure := e.checkpointErr(); failure != nil {
 		err = failure
 	}
-	if (err == nil || isSkipped(err)) && rc.ctx.Err() != nil {
+	err, reason := e.classifyResult(err)
+	normal := reason == NodeCompleted || reason == NodeSkipped
+	if normal && rc.ctx.Err() != nil {
 		// 本地清理没有形成业务失败；不再提交，也不能确认失败耗掉根预算。
 		err = &executionCancellation{cause: rc.ctx.Err()}
 	}
@@ -346,7 +350,7 @@ func (e *Execution) finishCheckpointChain(n *Node, rc *RunCtx, ws *writeSet, roo
 		return err // 可靠失败或执行中断不再尝试新的确认。
 	}
 	finishRC := rc
-	if err != nil && !isSkipped(err) {
+	if !normal {
 		// 节点局部清理不能阻断真实失败确认，取门与 Finish 共用执行取消域。
 		copy := *rc
 		copy.ctx = e.ctx
@@ -357,7 +361,23 @@ func (e *Execution) finishCheckpointChain(n *Node, rc *RunCtx, ws *writeSet, roo
 		return lockErr
 	}
 	defer unlock()
-	if err != nil && !isSkipped(err) {
+	if normal && rc.streams != nil {
+		// 等操作门期间读取组可能已经失败；持门后复核，避免把旧的成功采样
+		// 确认后再让 finish 从 sendErr 改判。业务体已退出，不再有本节点写入。
+		rc.streams.mu.Lock()
+		outputs := append([]streamLifecycle(nil), rc.streams.outputs...)
+		rc.streams.mu.Unlock()
+		for _, output := range outputs {
+			if cause := output.failure(); cause != nil {
+				err, reason = e.classifyResult(cause)
+				normal = reason == NodeCompleted || reason == NodeSkipped
+				if !normal {
+					break
+				}
+			}
+		}
+	}
+	if !normal {
 		// 在 fail 取消执行域之前区分外部中断与最终真实失败。
 		if !isCheckpointFailure(err) && e.ctx.Err() == nil {
 			for _, terminal := range checkpointFinishes(rc, err) {
@@ -384,8 +404,10 @@ func (e *Execution) finishCheckpointChain(n *Node, rc *RunCtx, ws *writeSet, roo
 		}
 	}
 	e.settleUnwritten(n, rc)
-	terminals := checkpointFinishes(rc, err)
-	r := NodeCheckpoint{NodeID: n.id, Reason: finishReason(err), Outputs: make([]CheckpointOutput, 0, len(n.provides))}
+	// normal 已包含检查过的读取义务、消息失败和输出失败；成功流只需安装完成/停止，
+	// 无须在可靠确认之后再检查节点的原始 skip。节点事件仍保留原 error 身份。
+	terminals := checkpointFinishes(rc, nil)
+	r := NodeCheckpoint{NodeID: n.id, Reason: reason, Outputs: make([]CheckpointOutput, 0, len(n.provides))}
 	for _, ref := range n.provides {
 		st, value := rc.readTarget(ref).snapshot()
 		o := checkpointOutput(ref, st, value)
@@ -415,7 +437,8 @@ func (e *Execution) finishCheckpointChain(n *Node, rc *RunCtx, ws *writeSet, roo
 	if cerr := ws.commit(e); cerr != nil {
 		return e.stopCheckpoint("publish", cerr)
 	}
-	installCheckpointStreamFinishes(rc, err)
+	installCheckpointStreamFinishes(rc, nil)
+	*confirmed = reason
 	return err
 }
 
