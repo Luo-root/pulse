@@ -326,6 +326,21 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 	if (err == nil || isSkipped(err)) && rc.ctx.Err() != nil {
 		err = rc.ctx.Err()
 	}
+	if isCheckpointFailure(err) || e.ctx.Err() != nil {
+		return err // 可靠失败或执行中断不再尝试新的确认。
+	}
+	finishRC := rc
+	if err != nil && !isSkipped(err) {
+		// 节点局部清理不能阻断真实失败确认，取门与 Finish 共用执行取消域。
+		copy := *rc
+		copy.ctx = e.ctx
+		finishRC = &copy
+	}
+	unlock, lockErr := lockCheckpointStreamFinishes(finishRC)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	if err != nil && !isSkipped(err) {
 		// 在 fail 取消执行域之前区分外部中断与最终真实失败。
 		if !isCheckpointFailure(err) && e.ctx.Err() == nil {
@@ -339,6 +354,7 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 			if ferr := rc.failCheckpointAttempt(root.Scope); ferr != nil {
 				return ferr
 			}
+			installCheckpointStreamFinishes(rc, err)
 		}
 		return err
 	}
@@ -380,6 +396,7 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 	if cerr := ws.commit(e); cerr != nil {
 		return e.stopCheckpoint("publish", cerr)
 	}
+	installCheckpointStreamFinishes(rc, err)
 	return err
 }
 

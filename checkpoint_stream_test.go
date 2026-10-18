@@ -215,7 +215,7 @@ func TestCheckpointStreamFailedAspectConfirmsTerminalBeforeFinish(t *testing.T) 
 			g := mustNew(t, ctx, "failed-stream-terminal")
 			key := NewKey[Stream[int]]("stream")
 			business := errors.New("outer aspect failed after sending")
-			acked := make(chan struct{}, 1)
+			acked := make(chan struct{})
 			outer := func(rc *RunCtx, next func(*RunCtx) error) error {
 				if err := next(rc); err != nil {
 					return err
@@ -227,7 +227,17 @@ func TestCheckpointStreamFailedAspectConfirmsTerminalBeforeFinish(t *testing.T) 
 				if err != nil {
 					return err
 				}
-				return writer.Send(1)
+				if err := writer.Send(1); err != nil {
+					return err
+				}
+				// Finish 确认期间持有流操作门；先让唯一消息的 Ack 完成，
+				// 再结束生产链，避免测试反过来要求 Ack 穿过 Finish 屏障。
+				select {
+				case <-acked:
+					return nil
+				case <-rc.Context().Done():
+					return rc.Context().Err()
+				}
 			}, outer))
 			mustAdd(t, g, NewNode("sink", "失败不能变成 EOF", Requires(key), nil, func(rc *RunCtx) error {
 				stream, err := Get(rc, key)
@@ -245,7 +255,7 @@ func TestCheckpointStreamFailedAspectConfirmsTerminalBeforeFinish(t *testing.T) 
 					if err := delivery.Ack(); err != nil {
 						return err
 					}
-					acked <- struct{}{}
+					close(acked)
 				}
 			}))
 			entered, release := make(chan CheckpointStreamFinish, 1), make(chan struct{})

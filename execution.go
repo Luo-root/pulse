@@ -63,7 +63,7 @@ type Execution struct {
 	// states 是本次运行的节点读数，受 mu 保护；输出顺序由 graph.nodes 决定。
 	states map[*Node]nodeRuntime
 	wg     sync.WaitGroup
-	// 流共享初始化由根执行拥有；入口与封口同用 mu，封口后不再 Add。
+	// 流共享初始化和已接受的宿主可靠操作；入口与封口同用 mu，封口后不再 Add。
 	streamWork    sync.WaitGroup
 	streamClosing bool
 	// finishOnce 让「发一次 OnGraphFinished」与「所有 Wait 都等到它落地」同时
