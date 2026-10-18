@@ -405,27 +405,37 @@ func (a *assembler) addSubNode(g *pulse.Graph, n NodeSpec, m mount, aspects []pu
 	if err != nil {
 		return err
 	}
-	// 顺序：接线形状的毛病先报（它们更贴使用者刚写下的那一行，也不必先钻进子图里
-	// 找），再让这一张子图过静态判据。
+	// 接线形状当场核对；静态判据等整棵校验树装完，由 checkSubgraphs 从根视图检查。
+	// 此处单独 child.Validate 会丢掉挂载点的 FixSkip、父侧别名与继承环境。
 	if err := pulse.Sub(g, n.ID, n.Description, binds, child, aspects...); err != nil {
 		return fmt.Errorf("pulse/yaml: %s%w", at(m.where), err)
 	}
-	// 校验树这一遍：这一张子图实例**连同它的子树**当场过一遍静态判据（`Validate`
-	// 与 `Start` 共用同一套判据，所以报文与它跑到那一层被拒时逐字相同）。
-	//
-	// 为什么是「每张实例各自校验」而不是「最后校验一次根图」：根图那一层**不能**
-	// 在这一刻查——它的外部输入是宿主在 `Load` 之后种进去的（`SeedPlan.Inputs`），
-	// 装图期看它当然是「没人提供、没人 seed」，任何一份正常文档都会被误报。
-	// 「声明归端口、值归运行输入」是阶段 2 随 `Execution` 落地的事，所以根层自己那
-	// 几条判据仍在 `Start` 那一刻报（与今天一致）。子图这一层没有这个问题：它们的
-	// 输入面就是引用点的 `in:`，装配期已经声明成端口了（declarePorts）。
-	//
-	// 报文带上**绝对挂载路径**：同一张 spec 挂两处，两处看到的含义不同，照着路径
-	// 才找得到该改的那一处。子图里再嵌一层时，内层先报（内层在装配时就校验过了，
-	// 错误一路往上返回，不再包第二层）。
-	if a.check {
-		if err := child.Validate(); err != nil {
-			return fmt.Errorf("pulse/yaml: graph %q%s: %w", n.Graph, mountedAt(cm.path), err)
+	return nil
+}
+
+// checkSubgraphs 只读整树视图中的已挂载子图，复用核心同一次检查的挂载事实。
+// 根层的问题仍由宿主补装后判断；声明入口不要求装配期已提供本轮输入。
+// 深层先报，保留 YAML 的 spec 名与绝对挂载路径，不重复包装祖先层。
+func (a *assembler) checkSubgraphs(top *pulse.Topology, specs []NodeSpec) error {
+	// 宿主 Option 可预置节点，完整图的下标不一定等于 spec 的下标；每层只建一次索引。
+	children := make(map[string]*pulse.Topology, len(top.Nodes))
+	for _, n := range top.Nodes {
+		children[n.ID] = n.Sub
+	}
+	for _, n := range specs {
+		if n.Graph == "" {
+			continue
+		}
+		child := children[n.ID]
+		if child == nil {
+			return fmt.Errorf("pulse/yaml: graph %q%s: node %q has no mounted subgraph in topology",
+				n.Graph, mountedAt(joinPath(top.Graph.Path, n.ID)), n.ID)
+		}
+		if err := a.checkSubgraphs(child, a.doc.Graphs[n.Graph].Nodes); err != nil {
+			return err
+		}
+		if len(child.Problems) != 0 {
+			return fmt.Errorf("pulse/yaml: graph %q%s: %w", n.Graph, mountedAt(child.Graph.Path), child.Problems[0])
 		}
 	}
 	return nil
@@ -454,16 +464,9 @@ func (a *assembler) buildChild(n NodeSpec, cm mount) (*pulse.Graph, error) {
 			opts = append(opts, pulse.WithObserver(o))
 		}
 	}
-	var (
-		child *pulse.Graph
-		err   error
-	)
-	if a.check {
-		// 校验图与真图**同额度**（理由见 checkGraph）；它同样带 opts.Graph 那批选项。
-		child, err = checkGraph(cm.id, a.opts)
-	} else {
-		child, err = pulse.New(cm.id, spec.Description, opts...)
-	}
+	// 两遍的子图都继承根选项：逐层重声明会把共享额度池拆开，也会重复叠加图级切面。
+	// 校验树只省去 ObserverFor，额度和切面由完整树按真实挂载关系推导。
+	child, err := pulse.New(cm.id, spec.Description, opts...)
 	if err != nil {
 		return nil, err
 	}

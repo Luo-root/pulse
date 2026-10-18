@@ -23,6 +23,388 @@ import (
 //   - 只装不跑的校验树不建出口：宿主的 `ObserverFor` 不会因为多校验一遍而多收到回调；
 //   - 根层自己的静态判据仍在 `Start` 那一刻报（它的外部输入是宿主在 Load 之后种的）。
 
+// 宿主 Option 可先装普通节点或 Sub；YAML 挂载点必须按 ID 关联，不能靠声明下标。
+func TestLoadGraphOptionPrefixNodes(t *testing.T) {
+	const valid = `
+graphs:
+  child:
+    nodes: [{id: leaf, uses: emit, provides: [{name: child.out, type: int}]}]
+nodes: [{id: mount, graph: child, out: {child.out: result}}]
+`
+	for _, hostSub := range []bool{false, true} {
+		for _, tc := range []struct {
+			name string
+			doc  string
+			want string
+		}{
+			{"valid", valid, ""},
+			{"missing-source", strings.Replace(valid, "uses: emit,", "uses: emit, requires: [{name: missing, type: int}],", 1), `graph "child" (mounted at "mount"): pulse: node "leaf" requires "missing"`},
+			{"duplicate-id", strings.Replace(valid, "id: mount,", "id: host-prefix,", 1), `duplicate node id "host-prefix"`},
+			{"invalid-id", strings.Replace(valid, "id: mount,", "id: bad/id,", 1), "must not contain '/'"},
+		} {
+			for _, entry := range []string{"Load", "Analyze"} {
+				t.Run(fmt.Sprintf("hostSub=%t/%s/%s", hostSub, tc.name, entry), func(t *testing.T) {
+					var hostCalls, factoryCalls atomic.Int32
+					prefix := pulse.Option(func(g *pulse.Graph) {
+						must := func(err error) {
+							if err != nil {
+								panic(err)
+							}
+						}
+						run := func(*pulse.RunCtx) error { hostCalls.Add(1); return nil }
+						if !hostSub {
+							must(g.Add(pulse.NewNode("host-prefix", "host definition", nil, nil, run)))
+							return
+						}
+						child, err := pulse.New("host-child", "")
+						must(err)
+						input := pulse.NewKey[int]("host.input")
+						must(child.DeclareInput(pulse.NewPort(input)))
+						must(child.Add(pulse.NewNode("host-leaf", "", pulse.Requires(input), nil, run)))
+						must(pulse.Sub(g, "host-prefix", "host mount", []pulse.SubBind{pulse.Fix(input, 1)}, child))
+					})
+					reg := pulse.NewRegistry()
+					out, result := pulse.NewKey[int]("child.out"), pulse.NewKey[int]("result")
+					pulse.MustRegisterKey(reg, out)
+					pulse.MustRegisterKey(reg, result)
+					pulse.MustRegisterKey(reg, pulse.NewKey[int]("missing"))
+					reg.MustRegister("emit", func(rc *pulse.RunCtx) error { factoryCalls.Add(1); return pulse.Set(rc, out, 9) })
+					observerCalls := 0
+					opts := pulseyaml.LoadOptions{GraphID: "prefix", Graph: []pulse.Option{prefix}, ObserverFor: func(string) pulse.Observer { observerCalls++; return nil }}
+					var g *pulse.Graph
+					var plan *pulseyaml.SeedPlan
+					var top *pulse.Topology
+					var err error
+					func() {
+						defer func() {
+							if recovered := recover(); recovered != nil {
+								t.Errorf("%s panicked with a valid host Option: %v", entry, recovered)
+							}
+						}()
+						if entry == "Load" {
+							g, plan, err = pulseyaml.Load([]byte(tc.doc), reg, opts)
+						} else {
+							top, err = pulseyaml.Analyze([]byte(tc.doc), opts)
+						}
+					}()
+					if t.Failed() {
+						return
+					}
+					if tc.want != "" {
+						if err == nil || !strings.Contains(err.Error(), tc.want) {
+							t.Fatalf("must retain assembly rejection %q: %v", tc.want, err)
+						}
+						if g != nil || plan != nil || top != nil || observerCalls != 0 || hostCalls.Load() != 0 || factoryCalls.Load() != 0 {
+							t.Fatal("invalid document must have no partial result or observer/body side effects")
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantObservers := 0
+					if entry == "Load" {
+						top = g.Topology()
+						wantObservers = 1
+					}
+					if observerCalls != wantObservers || hostCalls.Load() != 0 || factoryCalls.Load() != 0 {
+						t.Fatal("assembly/analysis must not execute bodies or duplicate observer creation")
+					}
+					if len(top.Problems) != 0 || len(top.Nodes) != 2 || top.Nodes[0].ID != "host-prefix" || (top.Nodes[0].Sub != nil) != hostSub || top.Nodes[1].ID != "mount" || top.Nodes[1].Sub == nil {
+						t.Fatalf("must preserve host prefix and YAML mount: %+v", top)
+					}
+					if sub := top.Nodes[1].Sub; sub.Graph.Path != "mount" || len(sub.Nodes) != 1 || sub.Nodes[0].ID != "leaf" {
+						t.Fatalf("YAML mount must retain its own subtree: %+v", sub)
+					}
+					if entry == "Analyze" {
+						return
+					}
+					if err := g.DeclareOutput(pulse.NewPort(result)); err != nil {
+						t.Fatal(err)
+					}
+					ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+					defer cancel()
+					e, err := g.NewExecution(ctx, pulse.Inputs{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := e.Start(); err != nil {
+						t.Fatal(err)
+					}
+					if err := e.Wait(); err != nil {
+						t.Fatal(err)
+					}
+					if value, state, err := pulse.ReadOutput(e, result); err != nil || value != 9 || state != pulse.SlotStateReady || hostCalls.Load() != 1 || factoryCalls.Load() != 1 {
+						t.Fatalf("host and YAML bodies must run once with result 9: value=%d state=%s host=%d factory=%d err=%v", value, state, hostCalls.Load(), factoryCalls.Load(), err)
+					}
+				})
+			}
+		}
+	}
+}
+
+// 固定 skip 是挂载点的输入事实：子图不能再脱离它被单独当根校验（#441）。
+const fixedSkipMountDoc = `
+graphs:
+  child:
+    seeds: [{key: {name: flag, type: int}, skip: true}]
+    nodes:
+      - id: writer
+        uses: writer
+        requires: [{name: flag, type: int}]
+        provides: [{name: stream, type: "pulse.Stream[int]"}, {name: out, type: int}]
+nodes: [{id: mount, graph: child, out: {out: result}}]
+`
+
+func TestLoadFixedSkipMountStreamContext(t *testing.T) {
+	reg := pulse.NewRegistry()
+	flag, out, result := pulse.NewKey[int]("flag"), pulse.NewKey[int]("out"), pulse.NewKey[int]("result")
+	stream := pulse.NewKey[pulse.Stream[int]]("stream")
+	pulse.MustRegisterKey(reg, flag)
+	pulse.MustRegisterKey(reg, out)
+	pulse.MustRegisterKey(reg, result)
+	pulse.MustRegisterKey(reg, stream)
+	var calls atomic.Int32
+	run := func(*pulse.RunCtx) error {
+		calls.Add(1)
+		return errors.New("all inputs skipped: body must not run")
+	}
+	reg.MustRegister("writer", run)
+	child, err := pulse.New("child", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.DeclareInput(pulse.NewPort(flag)); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.DeclareOutput(pulse.NewPort(out)); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Add(pulse.NewNode("writer", "", pulse.Requires(flag), append(pulse.Provides(stream), pulse.Provides(out)...), run)); err != nil {
+		t.Fatal(err)
+	}
+	for _, skip := range []bool{true, false} {
+		t.Run(fmt.Sprintf("skip=%t", skip), func(t *testing.T) {
+			bind := pulse.FixSkip(flag)
+			doc := fixedSkipMountDoc
+			if !skip {
+				bind = pulse.Fix(flag, 1)
+				doc = strings.Replace(doc, "skip: true", "from: {value: 1}", 1)
+			}
+			root, err := pulse.New("equivalent", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := pulse.Sub(root, "mount", "", []pulse.SubBind{bind, pulse.Out(out, result)}, child); err != nil {
+				t.Fatal(err)
+			}
+			opts := pulseyaml.LoadOptions{GraphID: "equivalent"}
+			observerCalls := 0
+			opts.ObserverFor = func(string) pulse.Observer { observerCalls++; return nil }
+			top, err := pulseyaml.Analyze([]byte(doc), opts)
+			if err != nil || len(top.Problems) != 0 || observerCalls != 0 {
+				t.Fatalf("Analyze keeps labels without guessing Go stream types or calling observers: top=%v err=%v calls=%d", top, err, observerCalls)
+			}
+			g, plan, loadErr := pulseyaml.Load([]byte(doc), reg, opts)
+			goErr := root.Validate()
+			if !skip {
+				for _, err := range []error{loadErr, goErr} {
+					if err == nil || !strings.Contains(err.Error(), `provides "stream" but nothing consumes it`) || !strings.Contains(err.Error(), `mounted at "mount"`) {
+						t.Fatalf("ready stream must still be rejected at its mount: %v", err)
+					}
+				}
+				if g != nil || plan != nil || observerCalls != 0 || calls.Load() != 0 {
+					t.Fatal("invalid document produced a partial result or side effects")
+				}
+				return
+			}
+			if loadErr != nil || goErr != nil {
+				t.Fatalf("fixed skip must agree with equivalent Go tree: Load=%v Go=%v", loadErr, goErr)
+			}
+			if len(g.Topology().Problems) != 0 || !reflect.DeepEqual(top, g.Topology()) || observerCalls != 1 {
+				t.Fatal("Load/Analyze should share the same mounted shape without static problems")
+			}
+			// 真图保持开放：宿主可在 Load 之后声明出口、继续装普通节点。
+			if err := g.DeclareOutput(pulse.NewPort(result)); err != nil {
+				t.Fatal(err)
+			}
+			if err := g.Add(pulse.NewNode("extra", "", nil, nil, func(*pulse.RunCtx) error { return nil })); err != nil {
+				t.Fatal(err)
+			}
+			if err := g.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			e, err := g.NewExecution(ctx, pulse.Inputs{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			if _, state, err := pulse.ReadOutput(e, result); err != nil || state != pulse.SlotStateSkipped || calls.Load() != 0 {
+				t.Fatalf("normal skip must succeed without entering body: state=%s calls=%d err=%v", state, calls.Load(), err)
+			}
+		})
+	}
+}
+
+// 同一 leaf spec 在两层挂载中分别接 Fix / FixSkip，倒序声明也不能串用事实。
+func TestLoadNestedMountSkipFactsStayLocal(t *testing.T) {
+	const relay = `      - {id: relay, uses: work, requires: [{name: flag, type: int}], provides: [{name: routed, type: int}]}
+`
+	const writer = `      - {id: writer, uses: work, requires: [{name: routed, type: int}], provides: [{name: stream, type: "pulse.Stream[int]"}, {name: out, type: int}]}
+`
+	for _, reverse := range []bool{false, true} {
+		for _, ready := range []bool{false, true} {
+			t.Run(fmt.Sprintf("reverse=%t/ready=%t", reverse, ready), func(t *testing.T) {
+				leafNodes := relay + writer
+				if reverse {
+					leafNodes = writer + relay
+				}
+				seed := "skip: true"
+				if ready {
+					seed = "from: {value: 1}"
+				}
+				left := "  - {id: left, graph: skipped, out: {out: left}}\n"
+				right := "  - {id: right, graph: other, out: {out: right}}\n"
+				mounts := left + right
+				if reverse {
+					mounts = right + left
+				}
+				doc := fmt.Sprintf(`
+graphs:
+  leaf:
+    nodes:
+%s  skipped:
+    seeds: [{key: {name: flag, type: int}, skip: true}]
+    nodes: [{id: nested, graph: leaf, in: {flag: flag}, out: {out: out}}]
+  other:
+    seeds: [{key: {name: flag, type: int}, %s}]
+    nodes: [{id: nested, graph: leaf, in: {flag: flag}, out: {out: out}}]
+nodes:
+%s`, leafNodes, seed, mounts)
+				reg := pulse.NewRegistry()
+				for _, name := range []string{"flag", "routed", "out", "left", "right"} {
+					pulse.MustRegisterKey(reg, pulse.NewKey[int](name))
+				}
+				pulse.MustRegisterKey(reg, pulse.NewKey[pulse.Stream[int]]("stream"))
+				var calls atomic.Int32
+				reg.MustRegister("work", func(*pulse.RunCtx) error { calls.Add(1); return errors.New("body must not run") })
+				observerCalls := 0
+				opts := pulseyaml.LoadOptions{GraphID: "local-facts", ObserverFor: func(string) pulse.Observer { observerCalls++; return nil }}
+				g, _, err := pulseyaml.Load([]byte(doc), reg, opts)
+				if ready {
+					if err == nil || !strings.Contains(err.Error(), `graph "leaf" (mounted at "right/nested")`) || !strings.Contains(err.Error(), "nothing consumes it") {
+						t.Fatalf("only the ready mount has an unread live stream: %v", err)
+					}
+					if observerCalls != 0 || calls.Load() != 0 {
+						t.Fatal("invalid nested tree must be rejected before side effects")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				top, err := pulseyaml.Analyze([]byte(doc), opts)
+				if err != nil || !reflect.DeepEqual(top, g.Topology()) || observerCalls != 4 {
+					t.Fatalf("same mounted declarations without observer duplication: top=%v err=%v calls=%d", top, err, observerCalls)
+				}
+				leftKey, rightKey := pulse.NewKey[int]("left"), pulse.NewKey[int]("right")
+				if err := g.DeclareOutput(pulse.NewPort(leftKey), pulse.NewPort(rightKey)); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				e, err := g.NewExecution(ctx, pulse.Inputs{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := e.Start(); err != nil {
+					t.Fatal(err)
+				}
+				if err := e.Wait(); err != nil {
+					t.Fatal(err)
+				}
+				for _, key := range []pulse.Key[int]{leftKey, rightKey} {
+					if _, state, err := pulse.ReadOutput(e, key); err != nil || state != pulse.SlotStateSkipped || calls.Load() != 0 {
+						t.Fatalf("both mounts must normally skip: state=%s calls=%d err=%v", state, calls.Load(), err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// 去掉孤立 Validate 不能变成取消校验；即使有固定 skip，结构错误仍在观察出口前拒绝。
+func TestLoadMountedChecksRemainAtomic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{"missing-source", strings.Replace(fixedSkipMountDoc, "requires: [{name: flag, type: int}]", "requires: [{name: flag, type: int}, {name: missing, type: int}]", 1), `requires "missing" but nothing provides it`},
+		{"missing-outlet", strings.Replace(fixedSkipMountDoc, "out: {out: result}", "out: {missing: result}", 1), `declared output "missing" is never produced`},
+		{"bad-inlet", strings.Replace(fixedSkipMountDoc, "out: {out: result}", "in: {missing: missing}, out: {out: result}", 1), `reads "missing" in the binding but no node of it requires`},
+		{"cycle", strings.Replace(fixedSkipMountDoc, "      - id: writer", "      - {id: a, uses: writer, requires: [{name: b, type: int}], provides: [{name: a, type: int}]}\n      - {id: b, uses: writer, requires: [{name: a, type: int}], provides: [{name: b, type: int}]}\n      - id: writer", 1), "dependency cycle"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := pulse.NewRegistry()
+			for _, name := range []string{"flag", "out", "result", "missing", "a", "b"} {
+				pulse.MustRegisterKey(reg, pulse.NewKey[int](name))
+			}
+			pulse.MustRegisterKey(reg, pulse.NewKey[pulse.Stream[int]]("stream"))
+			reg.MustRegister("writer", func(*pulse.RunCtx) error { t.Error("must not run factory"); return nil })
+			observerCalls := 0
+			opts := pulseyaml.LoadOptions{GraphID: "atomic", ObserverFor: func(string) pulse.Observer { observerCalls++; return nil }}
+			g, plan, le := pulseyaml.Load([]byte(tc.doc), reg, opts)
+			top, ae := pulseyaml.Analyze([]byte(tc.doc), opts)
+			if le == nil || ae == nil || le.Error() != ae.Error() || !strings.Contains(le.Error(), tc.want) {
+				t.Fatalf("shared structural check must still reject %q: Load=%v Analyze=%v", tc.want, le, ae)
+			}
+			if !strings.Contains(le.Error(), `mounted at "mount"`) && !strings.Contains(le.Error(), `node "mount"`) {
+				t.Fatalf("must retain mount context: %v", le)
+			}
+			if g != nil || plan != nil || top != nil || observerCalls != 0 {
+				t.Fatal("invalid document must return no partial result or observer side effects")
+			}
+		})
+	}
+}
+
+func TestLoadUnusedTreeKeepsMountedSkipContext(t *testing.T) {
+	for _, skip := range []bool{true, false} {
+		t.Run(fmt.Sprintf("skip=%t", skip), func(t *testing.T) {
+			doc := strings.Replace(fixedSkipMountDoc, "nodes: [{id: mount, graph: child, out: {out: result}}]", "  unused:\n    nodes: [{id: mount, graph: child, out: {out: result}}]\nnodes: [{id: root, uses: writer}]", 1)
+			if !skip {
+				doc = strings.Replace(doc, "skip: true", "from: {value: 1}", 1)
+			}
+			reg := pulse.NewRegistry()
+			for _, name := range []string{"flag", "out", "result"} {
+				pulse.MustRegisterKey(reg, pulse.NewKey[int](name))
+			}
+			pulse.MustRegisterKey(reg, pulse.NewKey[pulse.Stream[int]]("stream"))
+			reg.MustRegister("writer", func(*pulse.RunCtx) error { t.Error("must not run factory"); return nil })
+			opts := pulseyaml.LoadOptions{GraphID: "unused-context"}
+			_, _, le := pulseyaml.Load([]byte(doc), reg, opts)
+			_, ae := pulseyaml.Analyze([]byte(doc), opts)
+			if ae != nil {
+				t.Fatal(ae)
+			}
+			if skip && le != nil {
+				t.Fatalf("unused check tree must retain its nested FixSkip: %v", le)
+			}
+			if !skip && (le == nil || !strings.Contains(le.Error(), `graph "child" (mounted at "mount")`) || !strings.Contains(le.Error(), "nothing consumes it")) {
+				t.Fatalf("unused trees still reject real live streams: %v", le)
+			}
+		})
+	}
+}
+
 // staticDoc 是「同一张 spec 挂两处、每处再嵌一层」的形状：根层 left / right 各挂一次
 // mid，mid 里再挂一次 inner —— 一共四个挂载点（根两个、第二层两个）。
 const staticDoc = `

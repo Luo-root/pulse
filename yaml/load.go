@@ -305,14 +305,9 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 	if err != nil {
 		return nil, nil, err
 	}
-	// 这一遍装的是**根层**的装配：根侧那些接线处的毛病（绑了一条没登记的键、`in` 喂的键
-	// 子图根本不读、工厂节点写了 `in` / `out`……）由 `subBinds` / `Sub` / `Add` 点着节点
-	// id 报出来。子图那一层在它自己的 `buildChild` 里当场校验（连同子树）。
-	//
-	// 根图**自己**那几条静态判据（每个 `Requires` 有来源 / 依赖无环 / 流式）不在这里查：
-	// 根层的外部输入是宿主在 `Load` 之后种进去的（`SeedPlan.Inputs`），装图期看它当然是
-	// 「没人提供」——任何一份 `seeds:` 正常的文档都会被误报。「声明归端口、值归运行输入」
-	// 是阶段 2 随 `Execution` 落地的事，所以根层那几条仍在 `Start` 那一刻报（与今天一致）。
+	// 先完成整树装配与入口声明，再用根视图核对各挂载点。接线形状仍由
+	// subBinds / Sub / Add 当场报；静态事实不能在子图未接入完整祖先链时判断。
+	// 根层自己的来源 / 环 / 流式问题仍留给宿主补装后的 Topology / Validate / Start。
 	if err := a.addNodes(checkRoot, doc.Nodes, mount{id: opts.GraphID}); err != nil {
 		return nil, nil, err
 	}
@@ -320,6 +315,9 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 	// 这里只声明入口，不取值，也不扩大成根图的完整 Validate。
 	if err := declareSeedInputs(checkRoot, doc.Seeds, reg); err != nil {
 		return nil, nil, fmt.Errorf("pulse/yaml: seeds: %w", err)
+	}
+	if err := a.checkSubgraphs(checkRoot.Topology(), doc.Nodes); err != nil {
+		return nil, nil, err
 	}
 	// 谁也引用不到的 spec：它**没有挂载点**，因此**没有接口面**——里面那些「没人提供」的键
 	// 究竟是「等将来挂上去时由那一处的 `in:` 喂」还是「名字写错了」，装配期判不了。按闭合图
@@ -354,6 +352,9 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 		if err := a.declareSpecInputs(g, name); err != nil {
 			return nil, nil, err
 		}
+		if err := a.checkSubgraphs(g.Topology(), spec.Nodes); err != nil {
+			return nil, nil, err
+		}
 		if err := g.Validate(); err != nil {
 			return nil, nil, fmt.Errorf("pulse/yaml: graph %q: %w", name, err)
 		}
@@ -384,9 +385,7 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 	//
 	// ctx 两边都不碰：图是定义，一次运行在谁的取消域里跑是 `Run` / `NewExecution` 的事。
 	//
-	// 另外校验树那遍会逐张挂载点调 `child.Validate()`（见 addSubNode），真图那遍不调——
-	// 校验树已经把整棵子树判过并**封口**了（Validate 封的是整棵子树），而封口只挡「改定义」，
-	// 不挡运行：`Load` 交出去的真图照样能跑很多次（`Run` / `NewExecution`）。
+	// 静态判据只读校验树的完整 Topology；真图保持开放，宿主仍可 DeclareOutput 或继续装配。
 	a.check = false
 	rootOpts := append([]pulse.Option(nil), opts.Graph...)
 	if opts.MaxRunning > 0 {
