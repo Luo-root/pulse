@@ -640,6 +640,83 @@ func TestMessageCheckpointResumesBudgetAndCommitsOnceBeforePublish(t *testing.T)
 	}
 }
 
+func TestMessageCheckpointBatchInstallsAcceptedCursor(t *testing.T) {
+	for _, mode := range []string{"no-prefix", "direct", "message", "retry", "callback-error", "commit-error"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newMessageTestFixture(t, 3)
+			delivery := f.delivery(t, 7)
+			cause := errors.New("failed batch")
+			var accepted []CheckpointStreamAppend
+			messageTestCheckpoint(f, &CheckpointStreamHooks{
+				Append: func(_ context.Context, record CheckpointStreamAppend) error {
+					accepted = append(accepted, record)
+					return nil
+				},
+				OpenMessage: func(context.Context, CheckpointMessageAttemptRequest) (CheckpointMessageAttempt, error) {
+					return CheckpointMessageAttempt{Attempt: CheckpointAttempt{Scope: "message", Index: 1}}, nil
+				},
+				FailMessage: func(context.Context, string) error { return nil },
+				Commit: func(_ context.Context, record CheckpointMessageCommit) error {
+					if mode == "commit-error" {
+						return cause
+					}
+					accepted = append(accepted, record.Outputs...)
+					return nil
+				},
+			})
+			if mode != "no-prefix" {
+				messageTestOK(t, f.writer.SendAt(-1, 99))
+			}
+			before := f.writer.Position()
+			calls := 0
+			var err error
+			if mode == "direct" {
+				err = f.writer.Send(70)
+			} else {
+				err = HandleMessage(f.rc, delivery, func(_ *RunCtx, value int) error {
+					calls++
+					if got := f.writer.Position(); got != before {
+						t.Fatalf("unconfirmed attempt changed position: %+v, want %+v", got, before)
+					}
+					if err := f.writer.Send(value * 10); err != nil {
+						return err
+					}
+					if mode == "callback-error" || (mode == "retry" && calls == 1) {
+						return cause
+					}
+					return nil
+				}, WithMessageRetry(2, 0))
+			}
+			if mode == "callback-error" || mode == "commit-error" {
+				if !errors.Is(err, cause) || f.writer.Position() != before || len(accepted) != 1 {
+					t.Fatalf("failed batch changed position: position=%+v accepted=%+v err=%v", f.writer.Position(), accepted, err)
+				}
+				return
+			}
+			messageTestOK(t, err)
+			position := f.writer.Position()
+			last := accepted[len(accepted)-1]
+			if position.Sequence != before.Sequence+1 || position.Sequence != last.Message.Sequence || position.Cursor != last.Cursor || position.Cursor != nil {
+				t.Fatalf("local and accepted positions differ: position=%+v append=%+v", position, last)
+			}
+			if mode == "retry" && calls != 2 {
+				t.Fatalf("retry callbacks = %d, want 2", calls)
+			}
+			finish, ok := f.writer.state.checkpointFinish(nil)
+			if !ok || finish.LastSequence != position.Sequence || finish.Cursor != position.Cursor {
+				t.Fatalf("complete-chain finish used stale position: %+v", finish)
+			}
+			for _, record := range accepted {
+				got, err := f.output.Receive(f.sinkRC)
+				messageTestOK(t, err)
+				if got.Sequence != record.Message.Sequence || got.Value != record.Message.Value {
+					t.Fatalf("published delivery=%+v, accepted=%+v", got, record)
+				}
+			}
+		})
+	}
+}
+
 func TestMessageCheckpointCommitExcludesConcurrentNack(t *testing.T) {
 	f := newMessageTestFixture(t, 1)
 	delivery := f.delivery(t, 1)
