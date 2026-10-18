@@ -64,3 +64,36 @@ jobs:
       - name: Check sampling evidence contracts
         run: python ../tools/test_tools.py
       # Full timing matrices run manually on one machine; CI latency is not a performance gate.
+
+  production-correctness:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: benchmarks/production
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: benchmarks/production/go.mod
+          cache-dependency-path: benchmarks/production/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install resource-sampler dependency
+        run: python -m pip install psutil==7.2.2
+      - name: Build isolated production adapters
+        run: go build -mod=readonly ./...
+      - name: Vet production adapters
+        run: go vet -mod=readonly ./...
+      - name: Check results, reuse, cancellation and persistent-host contracts
+        run: go test -mod=readonly -race -count=1 -timeout=180s ./...
+      - name: Check production sampling contracts
+        run: python ../tools/test_production_tools.py
+      # Live Temporal checks require a real Server; full timing/recovery matrices stay manual.
