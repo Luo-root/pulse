@@ -60,6 +60,8 @@ type Execution struct {
 	started bool
 	done    bool // Wait 返回过：此后 cancel 只是收尾，不再算运行结果
 	err     error
+	// errReason 与首错一起锁存；Wait/Snapshot 不再遍历用户 error 的方法。
+	errReason NodeFinishReason
 	// states 是本次运行的节点读数，受 mu 保护；输出顺序由 graph.nodes 决定。
 	states map[*Node]nodeRuntime
 	wg     sync.WaitGroup
@@ -542,16 +544,20 @@ func (e *Execution) Wait() error {
 		// 先置 done 再问 Err 会把这次取消与后面的资源释放一起忽略。
 		if e.err == nil {
 			e.err = e.ctx.Err()
+			e.errReason = NodeCompleted
+			if e.err != nil {
+				e.errReason = NodeCanceled
+			}
 		}
 		e.done = true
 	}
 	// 并发 / 重复 Wait 只读已锁存结果，不能重新捕获前一次的收尾 cancel。
-	err := e.err
+	err, reason := e.err, e.errReason
 	e.mu.Unlock()
 	e.finishOnce.Do(func() {
 		// 图级终态只会是 completed / failed / canceled：跳过是节点级的事实
 		// （fail 不收跳过，Err 也不含它），升不到这一层。
-		e.notify(func(o Observer) { o.OnGraphFinished(e.site, finishReason(err), err) })
+		e.notify(func(o Observer) { o.OnGraphFinished(e.site, reason, err) })
 	})
 	e.cancel()
 	return err

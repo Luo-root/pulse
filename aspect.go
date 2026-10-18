@@ -58,16 +58,45 @@ func invokeNode(rc *RunCtx, run func(*RunCtx) error) (err error) {
 	return err
 }
 
+// inspectNodeError 只包围引擎实际执行的错误检查与控制收尾。业务 next 已有
+// invokeNode 保护；这里的异常不能携带故障 error，也不能被外层 Retry 当作业务失败重跑。
+func inspectNodeError(inspect func() error) (err error) {
+	returned := false
+	defer func() {
+		if rec := recover(); !returned {
+			err = &nodePanicError{value: fmt.Sprintf("%T", rec), inspection: true}
+		}
+	}()
+	err = inspect()
+	returned = true
+	return err
+}
+
+func isErrorInspectionFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var failure *nodePanicError
+	return errors.As(err, &failure) && failure != nil && failure.inspection
+}
+
 type nodePanicError struct {
-	nodeID string
-	value  any
+	nodeID     string
+	value      any
+	inspection bool // 错误方法异常只保存 panic 值的类型，不再遍历故障错误链。
 }
 
 func (e *nodePanicError) Error() string {
+	if e.inspection {
+		return fmt.Sprintf("pulse: panic while inspecting node error (%s)", e.value)
+	}
 	return fmt.Sprintf("pulse: panic in node %s: %v", e.nodeID, e.value)
 }
 
 func (e *nodePanicError) Unwrap() error {
+	if e.inspection {
+		return nil
+	}
 	cause, _ := e.value.(error)
 	return cause
 }
@@ -92,7 +121,7 @@ func Timeout(d time.Duration) Aspect {
 		o, rc := beginAspect(rc, AspectTimeout, "", 0)
 		o.base.Timeout = d
 		o.emit(AspectEvent{Phase: AspectStarted, Timeout: d})
-		return o.run(rc, func(rc *RunCtx) error {
+		return o.runControl(rc, func(rc *RunCtx) error {
 			child := rc.Fork()
 			defer child.Cancel() // deadline 子层结束不等于释放 Fork 在父 ctx 上的注册
 			timeoutErr := fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
@@ -129,9 +158,8 @@ func Timeout(d time.Duration) Aspect {
 			if parentErr := rc.Context().Err(); parentErr != nil {
 				return &executionCancellation{cause: parentErr}
 			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
+			// Fork 的局部 Cancel 也用于清理。它既不是本层计时器到期，
+			// 也不是父域中断，不能覆盖内层已经取得的成功、跳过或业务错误。
 			return err
 		})
 	}
@@ -181,7 +209,7 @@ func Retry(attempts int, delay time.Duration) Aspect {
 	return func(rc *RunCtx, next func(*RunCtx) error) error {
 		o, rc := beginAspect(rc, AspectRetry, "", attempts)
 		o.emit(AspectEvent{Phase: AspectStarted})
-		return o.run(rc, func(rc *RunCtx) error {
+		return o.runControl(rc, func(rc *RunCtx) error {
 			if rc.exec.checkpoint != nil {
 				return retryCheckpoint(rc, next, attempts, delay, o)
 			}
@@ -209,11 +237,10 @@ func Retry(attempts int, delay time.Duration) Aspect {
 					if cerr := ws.commit(rc.exec); cerr != nil {
 						err = cerr
 					}
-					o.attempt(AspectAttemptFinished, a, "", err, start)
-					return err
+					return o.attempt(AspectAttemptFinished, a, "", err, start)
 				}
-				o.attempt(AspectAttemptFinished, a, "", err, start)
-				if isCheckpointFailure(err) || rc.ctx.Err() != nil {
+				err = o.attempt(AspectAttemptFinished, a, "", err, start)
+				if isCheckpointFailure(err) || isExecutionCancellation(err) || isErrorInspectionFailure(err) || rc.ctx.Err() != nil {
 					return err
 				}
 				if i < attempts {

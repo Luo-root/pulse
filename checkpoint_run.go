@@ -72,12 +72,16 @@ func (e *Execution) callCheckpoint(op string, fn func() error) (err error) {
 	if err := e.checkpointErr(); err != nil {
 		return err
 	}
+	returned := false
 	defer func() {
-		if rec := recover(); rec != nil {
+		if rec := recover(); !returned {
+			// 不能凭 recover() != nil 判断：panicnil=1 时 panic(nil) 也未正常返回。
 			err = e.stopCheckpoint(op, fmt.Errorf("hook panicked (%T)", rec))
 		}
 	}()
-	if err = fn(); err != nil {
+	err = fn()
+	returned = true
+	if err != nil {
 		return e.stopCheckpoint(op, err)
 	}
 	return e.checkpointErr()
@@ -287,13 +291,9 @@ func (rc *RunCtx) enterCheckpointRetry() error {
 	return nil
 }
 
-func invokeCheckpointChain(chain func(*RunCtx) error, rc *RunCtx) (err error) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			err = fmt.Errorf("pulse: panic in node chain %s: %v", rc.NodeID(), rec)
-		}
-	}()
-	return chain(rc)
+func invokeCheckpointChain(chain func(*RunCtx) error, rc *RunCtx) error {
+	// 与业务体/切面共用正常返回判据，也保留 panic 的失败身份。
+	return invokeNode(rc, chain)
 }
 
 func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) error) error {
@@ -319,14 +319,30 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 	rc.confirmCheckpointValues(root.Values)
 	defer rc.forgetCheckpointValues()
 	err = e.classifyFailure(invokeCheckpointChain(chain, rc))
+	returned, failed := false, false
+	err = inspectNodeError(func() error {
+		result := e.finishCheckpointChain(n, rc, ws, root, err, &failed)
+		returned = true
+		return result
+	})
+	if !returned {
+		// 实际收尾检查异常后，以不再关联原 error 的失败确认完整节点根预算。
+		// 已确认的失败不重复确认；可靠钩子的不确定结果仍由树闩立即截断。
+		return inspectNodeError(func() error { return e.finishCheckpointChain(n, rc, ws, root, err, &failed) })
+	}
+	return err
+}
+
+func (e *Execution) finishCheckpointChain(n *Node, rc *RunCtx, ws *writeSet, root CheckpointAttempt, err error, failed *bool) error {
 	err = e.classifyFailure(checkpointChainResult(rc, err))
 	if failure := e.checkpointErr(); failure != nil {
 		err = failure
 	}
 	if (err == nil || isSkipped(err)) && rc.ctx.Err() != nil {
-		err = rc.ctx.Err()
+		// 本地清理没有形成业务失败；不再提交，也不能确认失败耗掉根预算。
+		err = &executionCancellation{cause: rc.ctx.Err()}
 	}
-	if isCheckpointFailure(err) || e.ctx.Err() != nil {
+	if isCheckpointFailure(err) || isExecutionCancellation(err) || e.ctx.Err() != nil {
 		return err // 可靠失败或执行中断不再尝试新的确认。
 	}
 	finishRC := rc
@@ -351,8 +367,11 @@ func (e *Execution) runCheckpointChain(n *Node, rc *RunCtx, chain func(*RunCtx) 
 					return ferr
 				}
 			}
-			if ferr := rc.failCheckpointAttempt(root.Scope); ferr != nil {
-				return ferr
+			if !*failed {
+				if ferr := rc.failCheckpointAttempt(root.Scope); ferr != nil {
+					return ferr
+				}
+				*failed = true
 			}
 			installCheckpointStreamFinishes(rc, err)
 		}
@@ -481,26 +500,23 @@ func retryCheckpoint(rc *RunCtx, next func(*RunCtx) error, attempts int, delay t
 			err = failure
 		}
 		if (err == nil || isSkipped(err)) && rc.ctx.Err() != nil {
-			err = rc.ctx.Err()
+			err = &executionCancellation{cause: rc.ctx.Err()}
 		}
 		if err == nil || isSkipped(err) {
 			if cerr := ws.commit(rc.exec); cerr != nil {
 				err = cerr
 			}
-			o.attempt(AspectAttemptFinished, attempt, parent.Scope, err, start)
-			return err
+			return o.attempt(AspectAttemptFinished, attempt, parent.Scope, err, start)
 		}
-		if isCheckpointFailure(err) || rc.ctx.Err() != nil {
-			o.attempt(AspectAttemptFinished, attempt, parent.Scope, err, start)
-			return err
+		if isCheckpointFailure(err) || isExecutionCancellation(err) || isErrorInspectionFailure(err) || rc.ctx.Err() != nil {
+			return o.attempt(AspectAttemptFinished, attempt, parent.Scope, err, start)
 		}
 		// 确认失败先于下一轮；可靠失败本身也作为本次尝试的失败结果报告。
 		if ferr := rc.failCheckpointAttempt(attempt.Scope); ferr != nil {
-			o.attempt(AspectAttemptFinished, attempt, parent.Scope, ferr, start)
-			return ferr
+			return o.attempt(AspectAttemptFinished, attempt, parent.Scope, ferr, start)
 		}
-		o.attempt(AspectAttemptFinished, attempt, parent.Scope, err, start)
-		if attempt.Index == attempts {
+		err = o.attempt(AspectAttemptFinished, attempt, parent.Scope, err, start)
+		if isErrorInspectionFailure(err) || attempt.Index == attempts {
 			return err
 		}
 		lastIndex = attempt.Index
