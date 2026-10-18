@@ -269,78 +269,6 @@ func TestConsumeSkipsWhenUpstreamSkips(t *testing.T) {
 	}
 }
 
-// Only：写选中的那条，其余出口自动作废。
-func TestOnlyWritesChosenAndSkipsRest(t *testing.T) {
-	a := NewKey[string]("s.onlya")
-	b := NewKey[string]("s.onlyb")
-	obs := &recordingObserver{}
-	g := mustNew(t, context.Background(), "only", WithObserver(obs))
-
-	if err := g.Add(NewNode("route", "", nil, Provides(a, b), func(rc *RunCtx) error {
-		return Only(rc, a, "走A")
-	})); err != nil {
-		t.Fatal(err)
-	}
-	useA, useB := false, false
-	if err := g.Add(NewNode("useA", "", Requires(a), nil, func(rc *RunCtx) error {
-		useA = true
-		v, err := Get(rc, a)
-		if err != nil {
-			return err
-		}
-		if v != "走A" {
-			return fmt.Errorf("useA got %q", v)
-		}
-		return nil
-	})); err != nil {
-		t.Fatal(err)
-	}
-	if err := g.Add(NewNode("useB", "", Requires(b), nil, func(rc *RunCtx) error {
-		useB = true
-		return nil
-	})); err != nil {
-		t.Fatal(err)
-	}
-	if err := runOn(g); err != nil {
-		t.Fatal(err)
-	}
-	if !useA {
-		t.Fatal("选中的那条下游应当执行")
-	}
-	if useB {
-		t.Fatal("未选中的那条下游不该执行")
-	}
-	log := obs.snapshot()
-	if countPref(log, "F:useB:skipped") != 1 {
-		t.Fatalf("未选中的下游应以 skipped 收尾：%v", log)
-	}
-}
-
-// Only 与手写 Set 并用 → 重复表态**变吵**（手写 Set 两次是静默忽略的）。
-func TestOnlyConflictsWithEarlierSet(t *testing.T) {
-	a := NewKey[string]("s.dup_a")
-	b := NewKey[string]("s.dup_b")
-	g := mustNew(t, context.Background(), "onlydup")
-
-	if err := g.Add(NewNode("route", "", nil, Provides(a, b), func(rc *RunCtx) error {
-		if err := Set(rc, b, "先写了B"); err != nil {
-			return err
-		}
-		return Only(rc, a, "又想走A") // 会给已就绪的 b 补一次 Skip → ErrConflict
-	})); err != nil {
-		t.Fatal(err)
-	}
-	err := runOn(g)
-	if !errors.Is(err, ErrConflict) {
-		t.Fatalf("Run = %v, want ErrConflict", err)
-	}
-	// 冲突是在**发布之前**预检出来的：不能为了报这个错先把选中的出口发出去
-	// （下游可能已被唤醒，而引擎不回滚已发布的值）。
-	if st := execOn(g).slotOf(a.asRef()).state; st == slotReady {
-		t.Fatal("Only 在已知冲突时仍然发布了选中的出口")
-	}
-}
-
 // 名额是「同时活着」的约束，而糖的局部检查看不全组合图。
 //
 // 实测（修之前）：`WithMaxRunning(2)` 下 `Produce → Tee([a]) → Consume(a)`
@@ -857,5 +785,100 @@ func TestStreamAspectsConfigIsolation(t *testing.T) {
 	}
 	if got != 7 || calls.Load() != 3 {
 		t.Fatalf("value=%d aspect calls=%d, want 7 / 3", got, calls.Load())
+	}
+}
+
+func TestNativeConsumeNormalSkipDrainsFiniteSource(t *testing.T) {
+	for _, tee := range []bool{false, true} {
+		for _, buffer := range []int{0, 2} {
+			t.Run(fmt.Sprintf("tee=%t/buffer=%d", tee, buffer), func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+				defer cancel()
+				var sent, skippedCalls, siblingCalls atomic.Int32
+				var readerReason NodeFinishReason
+				g, err := New("native-skip", "", WithObserver(ObserverFunc{Finished: func(_ Site, id string, reason NodeFinishReason, _ error) {
+					if id == "skip-reader" {
+						readerReason = reason
+					}
+				}}))
+				managedTestOK(t, err)
+				input := NewKey[<-chan int]("input")
+				managedTestOK(t, Produce(g, "source", "", input, func(_ *RunCtx, send func(int) error) error {
+					for i := 1; i <= 3; i++ {
+						if err := send(i); err != nil {
+							return err
+						}
+						sent.Add(1)
+					}
+					return nil
+				}, WithBuffer(buffer)))
+				readerInput := input
+				if tee {
+					readerInput = NewKey[<-chan int]("skip-branch")
+					sibling := NewKey[<-chan int]("sibling-branch")
+					managedTestOK(t, Tee(g, "tee", "", input, []Key[<-chan int]{readerInput, sibling}, WithBuffer(buffer)))
+					managedTestOK(t, Consume(g, "sibling", "", sibling, func(*RunCtx, int) error {
+						siblingCalls.Add(1)
+						return nil
+					}))
+				}
+				skip := NoValue("consumer has no result")
+				managedTestOK(t, Consume(g, "skip-reader", "", readerInput, func(*RunCtx, int) error {
+					skippedCalls.Add(1)
+					return skip
+				}))
+				if err := g.Run(ctx, Inputs{}); err != nil {
+					t.Fatalf("normal consumer skip became execution failure: %v (sent=%d callbacks=%d)", err, sent.Load(), skippedCalls.Load())
+				}
+				if sent.Load() != 3 || skippedCalls.Load() != 1 || readerReason != NodeSkipped {
+					t.Fatalf("sent=%d callbacks=%d reader=%s", sent.Load(), skippedCalls.Load(), readerReason)
+				}
+				if tee && siblingCalls.Load() != 3 {
+					t.Fatalf("skipped branch interrupted sibling delivery: %d", siblingCalls.Load())
+				}
+			})
+		}
+	}
+}
+
+// 已开始排空后遇到的真实生产失败/取消不能降成前面的正常缺失。
+func TestNativeConsumeSkipDrainPreservesFailureAndCancel(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprint(canceled), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			g, err := New("native-skip-failure", "")
+			managedTestOK(t, err)
+			key := NewKey[<-chan int]("input")
+			callback := make(chan struct{})
+			failure := errors.New("producer failed after reader skip")
+			managedTestOK(t, Produce(g, "source", "", key, func(rc *RunCtx, send func(int) error) error {
+				if err := send(1); err != nil {
+					return err
+				}
+				select {
+				case <-callback:
+				case <-rc.Context().Done():
+					return rc.Context().Err()
+				}
+				if canceled {
+					cancel()
+					return rc.Context().Err()
+				}
+				return failure
+			}))
+			managedTestOK(t, Consume(g, "sink", "", key, func(*RunCtx, int) error {
+				close(callback)
+				return NoValue()
+			}))
+			err = g.Run(ctx, Inputs{})
+			want := failure
+			if canceled {
+				want = context.Canceled
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("post-skip failure/cancel lost: got %v, want %v", err, want)
+			}
+		})
 	}
 }

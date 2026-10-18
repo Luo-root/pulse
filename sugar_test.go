@@ -3,6 +3,7 @@ package pulse
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"sort"
@@ -501,5 +502,287 @@ func TestSugarTypeMismatchFailsToCompile(t *testing.T) {
 	msg := string(out)
 	if !strings.Contains(msg, "Batch[int]") || !strings.Contains(msg, "Batch[string]") {
 		t.Fatalf("编译失败的原因不是那处类型不匹配（可能坏例本身坏了）：\n%s", msg)
+	}
+}
+
+// Only：写选中的那条，其余出口自动作废。
+func TestOnlyWritesChosenAndSkipsRest(t *testing.T) {
+	a := NewKey[string]("s.onlya")
+	b := NewKey[string]("s.onlyb")
+	obs := &recordingObserver{}
+	g := mustNew(t, context.Background(), "only", WithObserver(obs))
+
+	if err := g.Add(NewNode("route", "", nil, Provides(a, b), func(rc *RunCtx) error {
+		return Only(rc, a, "走A")
+	})); err != nil {
+		t.Fatal(err)
+	}
+	useA, useB := false, false
+	if err := g.Add(NewNode("useA", "", Requires(a), nil, func(rc *RunCtx) error {
+		useA = true
+		v, err := Get(rc, a)
+		if err != nil {
+			return err
+		}
+		if v != "走A" {
+			return fmt.Errorf("useA got %q", v)
+		}
+		return nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Add(NewNode("useB", "", Requires(b), nil, func(rc *RunCtx) error {
+		useB = true
+		return nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := runOn(g); err != nil {
+		t.Fatal(err)
+	}
+	if !useA {
+		t.Fatal("选中的那条下游应当执行")
+	}
+	if useB {
+		t.Fatal("未选中的那条下游不该执行")
+	}
+	log := obs.snapshot()
+	if countPref(log, "F:useB:skipped") != 1 {
+		t.Fatalf("未选中的下游应以 skipped 收尾：%v", log)
+	}
+}
+
+// Only 与手写 Set 并用 → 重复表态**变吵**（手写 Set 两次是静默忽略的）。
+func TestOnlyConflictsWithEarlierSet(t *testing.T) {
+	a := NewKey[string]("s.dup_a")
+	b := NewKey[string]("s.dup_b")
+	g := mustNew(t, context.Background(), "onlydup")
+
+	if err := g.Add(NewNode("route", "", nil, Provides(a, b), func(rc *RunCtx) error {
+		if err := Set(rc, b, "先写了B"); err != nil {
+			return err
+		}
+		return Only(rc, a, "又想走A") // 会给已就绪的 b 补一次 Skip → ErrConflict
+	})); err != nil {
+		t.Fatal(err)
+	}
+	err := runOn(g)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Run = %v, want ErrConflict", err)
+	}
+	// 冲突是在**发布之前**预检出来的：不能为了报这个错先把选中的出口发出去
+	// （下游可能已被唤醒，而引擎不回滚已发布的值）。
+	if st := execOn(g).slotOf(a.asRef()).state; st == slotReady {
+		t.Fatal("Only 在已知冲突时仍然发布了选中的出口")
+	}
+}
+
+func TestOnlyPreflightWriteFrames(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		checkpoint bool
+		depth      int
+		outer      bool
+	}{
+		{"ordinary", false, 0, false},
+		{"retry-current", false, 1, false},
+		{"retry-final-slot", false, 1, true},
+		{"nested-current", false, 2, false},
+		{"nested-outer", false, 2, true},
+		{"checkpoint-current", true, 0, false},
+		{"checkpoint-outer", true, 1, true},
+		{"checkpoint-nested", true, 2, true},
+	} {
+		for _, skipped := range []bool{false, true} {
+			for _, recoverConflict := range []bool{false, true} {
+				name := fmt.Sprintf("%s/skipped=%t/recover=%t", test.name, skipped, recoverConflict)
+				t.Run(name, func(t *testing.T) {
+					ctx := checkpointTestContext(t)
+					g := mustNew(t, ctx, "only-frame")
+					a, b := NewKey[int]("a"), NewKey[int]("b")
+					declareOut(t, g, NewPort(a))
+					declareOut(t, g, NewPort(b))
+					writeSibling := func(rc *RunCtx) error {
+						if skipped {
+							return Skip(rc, b)
+						}
+						return Set(rc, b, 2)
+					}
+					inspect := func(rc *RunCtx, next func(*RunCtx) error) error {
+						err := next(rc)
+						if !skipped && errors.Is(err, ErrConflict) {
+							if _, ready, absent, rerr := TryGet(rc, a); rerr != nil || ready || absent {
+								return fmt.Errorf("inner aspect saw selected output after conflict: ready=%t skipped=%t err=%v", ready, absent, rerr)
+							}
+							if recoverConflict {
+								return nil
+							}
+						}
+						return err
+					}
+					var aspects []Aspect
+					for i := 0; i < test.depth; i++ {
+						if test.outer && i == test.depth-1 {
+							aspects = append(aspects, func(rc *RunCtx, next func(*RunCtx) error) error {
+								if err := writeSibling(rc); err != nil {
+									return err
+								}
+								return next(rc)
+							})
+						}
+						aspects = append(aspects, Retry(1, 0))
+					}
+					aspects = append(aspects, inspect)
+					mustAdd(t, g, NewNode("route", "", nil, Provides(a, b), func(rc *RunCtx) error {
+						if !test.outer {
+							if err := writeSibling(rc); err != nil {
+								return err
+							}
+						}
+						before := make(map[*writeSet]int)
+						for ws := rc.writes; ws != nil; ws = ws.outer {
+							ws.mu.Lock()
+							before[ws] = len(ws.staged)
+							ws.mu.Unlock()
+						}
+						err := Only(rc, a, 1)
+						if skipped {
+							return err
+						}
+						if !errors.Is(err, ErrConflict) {
+							return fmt.Errorf("Only must reject an already-ready sibling before writing: %v", err)
+						}
+						if _, ready, absent, rerr := TryGet(rc, a); rerr != nil || ready || absent {
+							return fmt.Errorf("Only changed selected output before rejecting sibling: ready=%t skipped=%t err=%v", ready, absent, rerr)
+						}
+						for ws, count := range before {
+							ws.mu.Lock()
+							after := len(ws.staged)
+							ws.mu.Unlock()
+							if after != count {
+								return fmt.Errorf("Only preflight created write entries: before=%d after=%d", count, after)
+							}
+						}
+						return err
+					}, aspects...))
+					var options []ExecOption
+					if test.checkpoint {
+						options = append(options, WithExecCheckpoint("root", (&checkpointProbe{}).hooks()))
+					}
+					e, err := g.NewExecution(ctx, Inputs{}, options...)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := e.Start(); err != nil {
+						t.Fatal(err)
+					}
+					err = e.Wait()
+					if !skipped && !recoverConflict {
+						if !errors.Is(err, ErrConflict) {
+							t.Fatalf("Wait = %v, want original conflict", err)
+						}
+						if state, _ := e.slotOf(a.asRef()).snapshot(); state == slotReady {
+							t.Fatal("failed Only published its selected output")
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					got, state, err := ReadOutput(e, a)
+					if skipped {
+						if err != nil || state != SlotStateReady || got != 1 {
+							t.Fatalf("idempotent sibling skip rejected: (%d, %s, %v)", got, state, err)
+						}
+					} else if err != nil || state != SlotStateSkipped {
+						t.Fatalf("recovered conflict retained selected output: (%d, %s, %v)", got, state, err)
+					}
+					got, state, err = ReadOutput(e, b)
+					if skipped {
+						if err != nil || state != SlotStateSkipped {
+							t.Fatalf("sibling skip changed: (%d, %s, %v)", got, state, err)
+						}
+					} else if err != nil || state != SlotStateReady || got != 2 {
+						t.Fatalf("recovered sibling value changed: (%d, %s, %v)", got, state, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestOnlyPreflightRestoredCheckpointSibling(t *testing.T) {
+	for _, retry := range []bool{false, true} {
+		t.Run(fmt.Sprint("retry=", retry), func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			g := mustNew(t, ctx, "only-restored-sibling")
+			a, b := NewKey[int]("a"), NewKey[int]("b")
+			declareOut(t, g, NewPort(a))
+			var aspects []Aspect
+			if retry {
+				aspects = append(aspects, Retry(1, 0))
+			}
+			mustAdd(t, g, NewNode("route", "", nil, Provides(a, b), func(rc *RunCtx) error {
+				err := Only(rc, a, 1)
+				if !errors.Is(err, ErrConflict) {
+					return fmt.Errorf("Only ignored restored ready sibling: %v", err)
+				}
+				if _, ready, skipped, err := TryGet(rc, a); err != nil || ready || skipped {
+					return fmt.Errorf("recovered conflict retained a: ready=%t skipped=%t err=%v", ready, skipped, err)
+				}
+				return nil // 恢复冲突也不能把 Only 失败前的新写入提交出去。
+			}, aspects...))
+			hooks := (&checkpointProbe{}).hooks()
+			open := hooks.OpenAttempt
+			hooks.OpenAttempt = func(ctx context.Context, req CheckpointAttemptRequest) (CheckpointAttempt, error) {
+				attempt, err := open(ctx, req)
+				if req.Boundary == "" {
+					attempt.Values = []CheckpointOutput{{Key: checkpointKey(b.asRef()), State: SlotStateReady, Value: 2}}
+				}
+				return attempt, err
+			}
+			e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			if _, state, err := ReadOutput(e, a); err != nil || state != SlotStateSkipped {
+				t.Fatalf("recovered Only published a: state=%s err=%v", state, err)
+			}
+		})
+	}
+}
+
+func TestOnlyPreflightChecksShadowedOuterWrites(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "only-shadowed")
+	a, b := NewKey[int]("a"), NewKey[int]("b")
+	outer := func(rc *RunCtx, next func(*RunCtx) error) error {
+		if err := Set(rc, b, 2); err != nil {
+			return err
+		}
+		return next(rc)
+	}
+	mustAdd(t, g, NewNode("route", "", nil, Provides(a, b), func(rc *RunCtx) error {
+		// 本层 skipped 不能遮住最终提交时仍会撞到的外层 ready。
+		if err := Skip(rc, b); err != nil {
+			return err
+		}
+		err := Only(rc, a, 1)
+		if !errors.Is(err, ErrConflict) {
+			return fmt.Errorf("Only ignored shadowed ready sibling: %v", err)
+		}
+		if _, ready, skipped, rerr := TryGet(rc, a); rerr != nil || ready || skipped {
+			return fmt.Errorf("Only changed selected output: ready=%t skipped=%t err=%v", ready, skipped, rerr)
+		}
+		return err
+	}, Retry(1, 0), outer, Retry(1, 0)))
+	if err := g.Run(ctx, Inputs{}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Wait = %v, want conflict without a selected output", err)
 	}
 }
