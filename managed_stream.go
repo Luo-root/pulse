@@ -311,6 +311,24 @@ func (s Stream[T]) Stop(rc *RunCtx) error {
 		return err
 	}
 	state := s.state
+	state.mu.Lock()
+	stopped := state.stopped
+	state.mu.Unlock()
+	if stopped {
+		return nil // 已停止读取组的重复 Stop 不再产生可靠写。
+	}
+	if state.checkpoint != nil && rc.host {
+		if !rc.exec.beginStreamWork() {
+			state.mu.Lock()
+			stopped = state.stopped
+			state.mu.Unlock()
+			if stopped {
+				return nil
+			}
+			return fmt.Errorf("pulse: Stop: execution has completed")
+		}
+		defer rc.exec.streamWork.Done()
+	}
 	if err := state.operation.lock(rc); err != nil {
 		return err
 	}

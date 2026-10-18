@@ -801,6 +801,64 @@ func (s *managedStream[T]) checkpointFinish(err error) (CheckpointStreamFinish, 
 		Stream: checkpoint.descriptor.ID, Terminal: terminal, LastSequence: s.last, Cursor: checkpoint.cursor}, true
 }
 
+// lockCheckpointStreamFinishes 与消息事务按状态锁地址取同一组操作门。
+// 完整链从终态取样直到可靠确认、本地安装都持门；Stop 只能在整段之前或之后发生。
+func lockCheckpointStreamFinishes(rc *RunCtx) (func(), error) {
+	if rc.streams == nil {
+		return func() {}, nil
+	}
+	rc.streams.mu.Lock()
+	outputs := append([]streamLifecycle(nil), rc.streams.outputs...)
+	rc.streams.mu.Unlock()
+	operations := make(map[*sync.Mutex]*streamOperation)
+	for _, output := range outputs {
+		if stream, ok := output.(interface {
+			checkpointFinishOperation() (*sync.Mutex, *streamOperation)
+		}); ok {
+			mu, operation := stream.checkpointFinishOperation()
+			operations[mu] = operation
+		}
+	}
+	locks := make([]*sync.Mutex, 0, len(operations))
+	for mu := range operations {
+		locks = append(locks, mu)
+	}
+	sort.Slice(locks, func(i, j int) bool {
+		return reflect.ValueOf(locks[i]).Pointer() < reflect.ValueOf(locks[j]).Pointer()
+	})
+	for i, mu := range locks {
+		if err := operations[mu].lock(rc); err != nil {
+			for j := i - 1; j >= 0; j-- {
+				operations[locks[j]].unlock()
+			}
+			return nil, err
+		}
+	}
+	return func() {
+		for i := len(locks) - 1; i >= 0; i-- {
+			operations[locks[i]].unlock()
+		}
+	}, nil
+}
+
+func (s *managedStream[T]) checkpointFinishOperation() (*sync.Mutex, *streamOperation) {
+	return &s.mu, &s.operation
+}
+
+// installCheckpointStreamFinishes 在完整链确认之后、释放操作门之前安装写端终态。
+// 外层 finishStreams 随后仍做原有收尾，端点的 finish 按已安装事实幂等。
+func installCheckpointStreamFinishes(rc *RunCtx, err error) {
+	if rc.streams == nil {
+		return
+	}
+	rc.streams.mu.Lock()
+	outputs := append([]streamLifecycle(nil), rc.streams.outputs...)
+	rc.streams.mu.Unlock()
+	for _, output := range outputs {
+		output.finish(err)
+	}
+}
+
 func checkpointFinishes(rc *RunCtx, err error) []CheckpointStreamFinish {
 	if rc.streams == nil {
 		return nil

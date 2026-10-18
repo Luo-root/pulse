@@ -67,6 +67,18 @@ func (d Delivery[T]) Ack() error {
 	if !active {
 		return ErrDeliveryExpired
 	}
+	if s.checkpoint != nil && rc != nil && rc.host {
+		if !rc.exec.beginStreamWork() {
+			s.mu.Lock()
+			acknowledged := ack.state == deliveryAcknowledged
+			s.mu.Unlock()
+			if acknowledged {
+				return nil
+			}
+			return fmt.Errorf("pulse: Ack: execution has completed")
+		}
+		defer rc.exec.streamWork.Done()
+	}
 	if err := s.operation.lock(rc); err != nil {
 		return err
 	}
