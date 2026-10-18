@@ -34,7 +34,7 @@ func TestCheckMountedSubgraphsKeepsInheritedQuota(t *testing.T) {
 			}
 			spec.Nodes = append(spec.Nodes, NodeSpec{ID: "writer"}, NodeSpec{ID: "reader"})
 			a.doc.Graphs["child"] = spec
-			root, err := checkGraph("quota-context", a.opts)
+			root, err := newRootGraph("quota-context", "", a.opts)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -59,7 +59,7 @@ func TestCheckMountedSubgraphsKeepsInheritedQuota(t *testing.T) {
 
 // 校验图必须与真图**同额度**，否则流式那道判据在装配期是空的。
 //
-// 这条只能在包内测：`checkGraph` 未导出，而公开面上也**看不见**这件事——`Produce` /
+// 这条只能在包内测：`newRootGraph` 未导出，而公开面上也**看不见**这件事——`Produce` /
 // `Consume` / `Tee` 是 Go 糖，而 YAML 的工厂拿到的是 `*RunCtx`，装配期连 `*Graph` 都
 // 摸不到，所以声明式那条路今天表达不了流。它是给「YAML 也能声明流」那天留的闸门，
 // 也钉住「校验图 = 真图的选项」这件事。
@@ -67,7 +67,7 @@ func TestCheckMountedSubgraphsKeepsInheritedQuota(t *testing.T) {
 // 额度不足时拒在**装配那一刻**（`Produce` 自己的快速检查就按容量判），不是等 `Validate`。
 func TestCheckGraphCarriesCapacity(t *testing.T) {
 	build := func(maxRunning int) (*pulse.Graph, error) {
-		g, err := checkGraph("chk", LoadOptions{MaxRunning: maxRunning})
+		g, err := newRootGraph("chk", "", LoadOptions{MaxRunning: maxRunning})
 		if err != nil {
 			return nil, err
 		}

@@ -174,23 +174,22 @@ type LoadOptions struct {
 	ObserverFor func(path string) pulse.Observer
 }
 
-// checkGraph 起一张**只装不跑**的校验图，并且带上与真图**同一份额度**。
+// newRootGraph 为根图或未引用模板带上同一份静态选项。
 //
 // 额度必须一起给：核心的流式检查展开整棵挂载树，沿 In/Out/透传追踪 channel
 // 别名和实际读取者，按共享额度池身份计数（Sub 不占额），并检查已知发送/关闭、
 // 子图完成与 Wait 后 Out 桥回形成的生命周期等待环。校验树与真图必须使用同一套
-// 静态选项推导（与下方 rootOpts 一致），否则继承池和有效容量的判断会漂。
+// 静态选项推导，否则继承池和有效容量的判断会漂。
 //
 // YAML 目前没有 Produce/Consume/Tee 声明语法，普通工厂只提供 Run；静态装配不能
 // 推断工厂回调或切面中隐藏的 channel 等待和手写关闭时机。此处不声称能校验那些
 // 行为；它保留校验树与真图的静态配置一致性（TestCheckGraphCarriesCapacity）。
-func checkGraph(id string, opts LoadOptions) (*pulse.Graph, error) {
+func newRootGraph(id, description string, opts LoadOptions) (*pulse.Graph, error) {
 	o := append([]pulse.Option(nil), opts.Graph...)
 	if opts.MaxRunning > 0 {
 		o = append(o, pulse.WithMaxRunning(opts.MaxRunning))
 	}
-	// 描述给空串：校验图只装不跑，装完就丢，任何出口都不会拿它去见人。
-	return pulse.New(id, "", o...)
+	return pulse.New(id, description, o...)
 }
 
 // Load 把 YAML 文档装成 Graph + SeedPlan。
@@ -202,7 +201,7 @@ func Load(data []byte, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *Se
 	if err != nil {
 		return nil, nil, err
 	}
-	return loadDocument(doc, reg, opts)
+	return loadDocument(doc, reg, opts, newRootGraph, nil)
 }
 
 // configInteger 只校验配置整数，不改变公开 Document / RetrySpec 的 int 字段。
@@ -279,7 +278,9 @@ func decodeDocument(data []byte, opts LoadOptions) (Document, error) {
 }
 
 // loadDocument 共用装配器，不把已解码的声明再编码成 YAML。
-func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.Graph, *SeedPlan, error) {
+// newRoot 只区分真实定义与 Analyze 的占位定义，后续接线和结构检查仍共用。
+// inspect 可选地检查已装完的校验树（包括未引用模板）；Analyze 用它核对宿主绑定的标签。
+func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions, newRoot func(string, string, LoadOptions) (*pulse.Graph, error), inspect func(*pulse.Topology, GraphSpec) error) (*pulse.Graph, *SeedPlan, error) {
 	referenced := referencedGraphs(doc)
 
 	// 装图分两遍，判据只写一份：先装一棵**只装不跑的校验树**（子图一律静态挂、不建出口），
@@ -301,7 +302,7 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 	// `in:` / `out:` / `seeds:` 声明（见 assembler.declarePorts），所以两处看到的接口面
 	// 本来就是两份，报错点的是各自那条挂载路径（`step1/inner`）。
 	a := &assembler{doc: doc, reg: reg, opts: opts, check: true}
-	checkRoot, err := checkGraph(opts.GraphID, opts)
+	checkRoot, err := newRoot(opts.GraphID, "", opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -316,8 +317,14 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 	if err := declareSeedInputs(checkRoot, doc.Seeds, reg); err != nil {
 		return nil, nil, fmt.Errorf("pulse/yaml: seeds: %w", err)
 	}
-	if err := a.checkSubgraphs(checkRoot.Topology(), doc.Nodes); err != nil {
+	checkTop := checkRoot.Topology()
+	if err := a.checkSubgraphs(checkTop, doc.Nodes); err != nil {
 		return nil, nil, err
+	}
+	if inspect != nil {
+		if err := inspect(checkTop, GraphSpec{Seeds: doc.Seeds, Nodes: doc.Nodes}); err != nil {
+			return nil, nil, err
+		}
 	}
 	// 谁也引用不到的 spec：它**没有挂载点**，因此**没有接口面**——里面那些「没人提供」的键
 	// 究竟是「等将来挂上去时由那一处的 `in:` 喂」还是「名字写错了」，装配期判不了。按闭合图
@@ -332,7 +339,7 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 			continue
 		}
 		spec := doc.Graphs[name]
-		g, err := checkGraph(name, opts)
+		g, err := newRoot(name, "", opts)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -352,11 +359,17 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 		if err := a.declareSpecInputs(g, name); err != nil {
 			return nil, nil, err
 		}
-		if err := a.checkSubgraphs(g.Topology(), spec.Nodes); err != nil {
+		top := g.Topology()
+		if err := a.checkSubgraphs(top, spec.Nodes); err != nil {
 			return nil, nil, err
 		}
 		if err := g.Validate(); err != nil {
 			return nil, nil, fmt.Errorf("pulse/yaml: graph %q: %w", name, err)
+		}
+		if inspect != nil {
+			if err := inspect(top, spec); err != nil {
+				return nil, nil, fmt.Errorf("pulse/yaml: graph %q: %w", name, err)
+			}
 		}
 	}
 
@@ -387,11 +400,7 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions) (*pulse.G
 	//
 	// 静态判据只读校验树的完整 Topology；真图保持开放，宿主仍可 DeclareOutput 或继续装配。
 	a.check = false
-	rootOpts := append([]pulse.Option(nil), opts.Graph...)
-	if opts.MaxRunning > 0 {
-		rootOpts = append(rootOpts, pulse.WithMaxRunning(opts.MaxRunning)) // 放最后：整棵树的额度压过 Graph 里的每层一份
-	}
-	g, err := pulse.New(opts.GraphID, doc.Description, rootOpts...)
+	g, err := newRoot(opts.GraphID, doc.Description, opts)
 	if err != nil {
 		return nil, nil, err
 	}

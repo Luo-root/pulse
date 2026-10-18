@@ -262,7 +262,7 @@ func describe(doc []byte) error {
 }
 ```
 
-Analyze shares decoding, assembly, ports, binds and core static checks that do not depend on real key types with Load, and returns *pulse.Topology. It creates no Execution, runs no factories or aspects, resolves no external seeds and invokes neither ObserverFor nor Observer. Graph / MaxRunning static options follow Load.
+Analyze shares decoding, assembly, ports, binds and core static checks that do not depend on real key types with Load, and returns *pulse.Topology. It creates no Execution, runs no factories or aspects, resolves no external seeds and invokes neither ObserverFor nor Observer. Graph options are still applied; their preinstalled nodes, ports and Sub binds also become `any` placeholders so they can assemble with same-name YAML keys. Labels propagate across non-fixed host Sub binds; host internal keys are scoped by mount position, and a fixed input does not connect a same-name parent key. Host Go types do not participate in document label checks; Load / Validate / Start must still check actual types and runtime configuration.
 
 | Check | Analyze | Load / Inputs / Validate / Start |
 |---|---|---|

@@ -1,10 +1,13 @@
 package yaml_test
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Luo-root/pulse"
 	pulseyaml "github.com/Luo-root/pulse/yaml"
@@ -158,6 +161,226 @@ func TestAnalyzeMatchesLoadAndGoTopology(t *testing.T) {
 	}
 	if !reflect.DeepEqual(again, loaded.Topology()) {
 		t.Fatal("前一份分析结果污染了下一次结果")
+	}
+}
+
+// 宿主 Option 先装的 typed key 与文档同名时，Analyze 仍只判断标签与接线。
+// Load 使用真实类型装配并运行，证明预置节点和端口确实供给了 YAML 的输入。
+func TestAnalyzeTypedGraphOptions(t *testing.T) {
+	const read = "nodes: [{id: read, uses: read, requires: [{name: value, type: int}]}]\n"
+	const seed = "seeds: [{key: {name: value, type: int}, from: {kind: context, key: caller}}]\n"
+	const emit = "nodes: [{id: emit, uses: emit, provides: [{name: value, type: int}]}]\n"
+	const mounted = `
+graphs:
+  child:
+    nodes: [{id: read, uses: read, requires: [{name: child.value, type: int}], provides: [{name: result, type: int}]}]
+nodes: [{id: mount, graph: child, in: {child.value: value}, out: {result: result}}]
+`
+	for _, tc := range []struct {
+		name      string
+		doc       string
+		wantHost  int32
+		duplicate bool
+	}{
+		{"provider", read, 1, false},
+		{"inlet", read, 0, false},
+		{"host-sub", read, 1, false},
+		{"mount-input", mounted, 1, false},
+		{"consumer", emit, 1, false},
+		{"outlet", emit, 0, false},
+		{"unrelated", seed + read, 1, false},
+		{"config-only", seed + read, 0, false},
+		{"duplicate-root-seed", strings.Replace(seed, "]\n", ", {key: {name: value, type: int}, from: {value: 8}}]\n", 1) + read, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value := pulse.NewKey[int]("value")
+			var hostCalls, factoryCalls, observerCalls, aspectCalls atomic.Int32
+			must := func(err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			check := func(rc *pulse.RunCtx, k pulse.Key[int]) error {
+				v, err := pulse.Get(rc, k)
+				if err == nil && v != 7 {
+					return fmt.Errorf("%s = %d, want 7", k.Name(), v)
+				}
+				return err
+			}
+			host := pulse.Option(func(g *pulse.Graph) {
+				switch tc.name {
+				case "provider", "mount-input", "unrelated":
+					key := value
+					if tc.name == "unrelated" {
+						key = pulse.NewKey[int]("host.only")
+					}
+					must(g.Add(pulse.NewNode("host", "host provider", nil, pulse.Provides(key), func(rc *pulse.RunCtx) error {
+						hostCalls.Add(1)
+						return pulse.Set(rc, key, 7)
+					})))
+				case "inlet", "duplicate-root-seed":
+					must(g.DeclareInput(pulse.NewPort(value)))
+				case "consumer":
+					must(g.Add(pulse.NewNode("host", "host consumer", pulse.Requires(value), nil, func(rc *pulse.RunCtx) error {
+						hostCalls.Add(1)
+						return check(rc, value)
+					})))
+				case "outlet":
+					must(g.DeclareOutput(pulse.NewPort(value)))
+				case "host-sub":
+					child, err := pulse.New("host-child", "host definition")
+					must(err)
+					in, out := pulse.NewKey[int]("host.in"), pulse.NewKey[int]("host.out")
+					fixed, pass := pulse.NewKey[int]("host.fixed"), pulse.NewKey[int]("host.pass")
+					parent, echo := pulse.NewKey[int]("host.parent"), pulse.NewKey[int]("host.echo")
+					must(g.DeclareInput(pulse.NewPort(parent)))
+					must(child.DeclareInput(pulse.NewPort(in), pulse.NewPort(fixed), pulse.NewPort(pass)))
+					must(child.DeclareOutput(pulse.NewPort(out), pulse.NewPort(pass)))
+					must(child.Add(pulse.NewNode("host-leaf", "host work", pulse.Requires(in, fixed), pulse.Provides(out), func(rc *pulse.RunCtx) error {
+						hostCalls.Add(1)
+						for _, key := range []pulse.Key[int]{in, fixed} {
+							if err := check(rc, key); err != nil {
+								return err
+							}
+						}
+						return pulse.Set(rc, out, 7)
+					})))
+					must(pulse.Sub(g, "host", "host mount", []pulse.SubBind{
+						pulse.In(parent, in), pulse.Fix(fixed, 7), pulse.Out(out, value), pulse.In(parent, pass), pulse.Out(pass, echo),
+					}, child))
+				}
+			})
+			obs := pulse.ObserverFunc{GraphStarted: func(pulse.Site) { observerCalls.Add(1) }}
+			outletCalls := 0
+			opts := pulseyaml.LoadOptions{
+				GraphID: "typed-options", MaxRunning: 3,
+				Graph: []pulse.Option{pulse.WithMaxRunning(2), pulse.WithObserver(obs), pulse.WithAspects(func(rc *pulse.RunCtx, next func(*pulse.RunCtx) error) error {
+					aspectCalls.Add(1)
+					return next(rc)
+				}), host},
+				ObserverFor: func(string) pulse.Observer { outletCalls++; return obs },
+			}
+			data := []byte("description: option graph\n" + tc.doc)
+			top, err := pulseyaml.Analyze(data, opts)
+			must(err)
+			if len(top.Problems) != 0 || outletCalls != 0 || observerCalls.Load() != 0 || aspectCalls.Load() != 0 || hostCalls.Load() != 0 {
+				t.Fatalf("Analyze must preserve sources without execution or observer side effects: top=%+v", top)
+			}
+			reg := pulse.NewRegistry()
+			pulse.MustRegisterKey(reg, value)
+			input := value
+			if tc.name == "mount-input" {
+				input = pulse.NewKey[int]("child.value")
+				pulse.MustRegisterKey(reg, input)
+				pulse.MustRegisterKey(reg, pulse.NewKey[int]("result"))
+			}
+			reg.MustRegister("read", func(rc *pulse.RunCtx) error {
+				factoryCalls.Add(1)
+				if err := check(rc, input); err != nil {
+					return err
+				}
+				if tc.name == "mount-input" {
+					return pulse.Set(rc, pulse.NewKey[int]("result"), 7)
+				}
+				return nil
+			})
+			reg.MustRegister("emit", func(rc *pulse.RunCtx) error { factoryCalls.Add(1); return pulse.Set(rc, value, 7) })
+			g, plan, err := pulseyaml.Load(data, reg, opts)
+			must(err)
+			loaded := g.Topology()
+			// 宿主键只接受 YAML 通过绑定传播的标签：host.out 连接到文档的 value；
+			// 其余内部键仍未知，不能从宿主 Go 类型补标签。
+			var clearHostTypes func(*pulse.Topology)
+			clearHostTypes = func(top *pulse.Topology) {
+				clear := func(keys []pulse.KeyShape) {
+					for i := range keys {
+						if strings.HasPrefix(keys[i].Name, "host.") && keys[i].Name != "host.out" {
+							keys[i].Type = ""
+						}
+					}
+				}
+				clear(top.Graph.InPorts)
+				clear(top.Graph.OutPorts)
+				for _, n := range top.Nodes {
+					clear(n.Requires)
+					clear(n.Provides)
+					if n.Sub != nil {
+						clearHostTypes(n.Sub)
+					}
+				}
+			}
+			clearHostTypes(loaded)
+			if !reflect.DeepEqual(top, loaded) {
+				t.Fatalf("host declarations, ports, binds and source edges must match Load: Analyze=%+v Load=%+v", top, loaded)
+			}
+			wantOutlets := 0
+			if tc.name == "mount-input" {
+				wantOutlets = 1
+			}
+			if outletCalls != wantOutlets || observerCalls.Load() != 0 || aspectCalls.Load() != 0 || hostCalls.Load() != 0 || factoryCalls.Load() != 0 {
+				t.Fatal("Load must only construct observers for YAML mounts, without executing bodies")
+			}
+			resolved := 0
+			in, err := plan.Inputs(func(from pulseyaml.SeedFrom) (any, error) {
+				resolved++
+				if from.Kind != "context" || from.Key != "caller" {
+					return nil, fmt.Errorf("unexpected seed: %+v", from)
+				}
+				return 7, nil
+			})
+			if tc.duplicate {
+				if err == nil || !strings.Contains(err.Error(), "already set") || factoryCalls.Load() != 0 {
+					t.Fatalf("duplicate root seeds must still fail only at Inputs: %v", err)
+				}
+				return
+			}
+			must(err)
+			if tc.name == "inlet" {
+				must(pulse.Seed(&in, value, 7))
+			}
+			if tc.name == "host-sub" {
+				must(pulse.Seed(&in, pulse.NewKey[int]("host.parent"), 7))
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			must(g.Run(ctx, in))
+			wantResolved := 0
+			if tc.name == "unrelated" || tc.name == "config-only" {
+				wantResolved = 1
+			}
+			if hostCalls.Load() != tc.wantHost || factoryCalls.Load() != 1 || resolved != wantResolved || observerCalls.Load() == 0 || aspectCalls.Load() == 0 {
+				t.Fatalf("Load must run the actual typed graph with value 7: host=%d factory=%d resolver=%d observer=%d aspect=%d", hostCalls.Load(), factoryCalls.Load(), resolved, observerCalls.Load(), aspectCalls.Load())
+			}
+		})
+	}
+}
+
+// 同名宿主 Go 类型不会充当文档标签；真正跨类型的 Load 与文档标签冲突仍拒绝。
+func TestAnalyzeTypedGraphOptionsKeepTypeBoundaries(t *testing.T) {
+	value := pulse.NewKey[int]("value")
+	opts := pulseyaml.LoadOptions{GraphID: "type-boundary", Graph: []pulse.Option{func(g *pulse.Graph) {
+		if err := g.Add(pulse.NewNode("host", "", nil, pulse.Provides(value), func(*pulse.RunCtx) error {
+			t.Error("analysis must not run the host body")
+			return nil
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}}}
+	data := []byte("nodes: [{id: read, uses: read, requires: [{name: value, type: string}]}]\n")
+	top, err := pulseyaml.Analyze(data, opts)
+	if err != nil || len(top.Problems) != 0 || top.Nodes[0].Provides[0].Type != "string" || top.Nodes[1].Requires[0].Type != "string" {
+		t.Fatalf("only the YAML label is authoritative during Analyze: top=%+v err=%v", top, err)
+	}
+	reg := pulse.NewRegistry()
+	pulse.MustRegisterKey(reg, pulse.NewKey[string]("value"))
+	reg.MustRegister("read", func(*pulse.RunCtx) error { t.Error("must not run real factory"); return nil })
+	if g, plan, err := pulseyaml.Load(data, reg, opts); err == nil || !strings.Contains(err.Error(), "already registered as int, cannot reuse as string") || g != nil || plan != nil {
+		t.Fatalf("Load must retain actual Go type rejection: graph=%v plan=%v err=%v", g, plan, err)
+	}
+	conflict := append([]byte("seeds: [{key: {name: value, type: int}}]\n"), data...)
+	if top, err := pulseyaml.Analyze(conflict, opts); err == nil || !strings.Contains(err.Error(), "conflicting type tags") || top != nil {
+		t.Fatalf("document label conflicts must still be rejected: top=%v err=%v", top, err)
 	}
 }
 
