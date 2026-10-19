@@ -24,7 +24,9 @@
 
 `Skip(rc, key)` 只跳过一条输出；节点返回 nil 仍是 completed。`NoValue` 表示整个节点本次正常无值。真实业务故障不得转换为 NoValue；这会让调用方失去失败原因。
 
-可靠检查点错误即使包装 ErrSkipped 也仍是失败。需要分类时，必须先判断 CheckpointError。
+单层包装的 skip、以及每个分支都正常 skip 的 `errors.Join` 或多 `%w` 错误仍是正常到达。混合错误不同：`errors.Join(pulse.NoValue(), businessErr)` 含真实失败，整棵树仍失败，不因其中一条路径匹配 ErrSkipped 而成功。包装层自定义 Is 也不能盖住 Unwrap 中的失败分支；无内层原因的叶子仍可通过 Is 声明正常跳过。Retry 会按真实失败继续尝试，失败写集不发布；检查点不把这次失败保存成成功或 skip。普通模式下失败前已直接发布的值不回滚。
+
+可靠检查点错误和 panic 即使包装 ErrSkipped 也仍是失败。`errors.Is` / `errors.As` 只能说明某条路径匹配，不能据此给混合错误或执行终态定性；应用展示应读取下面的实际执行结果。
 
 ## 按实际执行终态分类
 

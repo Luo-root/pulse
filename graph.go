@@ -469,8 +469,34 @@ func (g *Graph) effectiveCapacity(inherited int) int {
 	return inherited
 }
 
+// isSkipped 只接受整棵错误树都是正常跳过；Join 中任一真实失败不能降格。
+// errors.Is 的「存在一条匹配路径」不足以证明这一点。可靠失败和 panic 优先，
+// 业务 Is/As/Unwrap 的异常仍由调用处既有的 inspectNodeError 边界隔离。
 func isSkipped(err error) bool {
-	return !isCheckpointFailure(err) && !isPanicFailure(err) && errors.Is(err, ErrSkipped)
+	return err != nil && !isCheckpointFailure(err) && !isPanicFailure(err) && onlySkipped(err)
+}
+
+func onlySkipped(err error) bool {
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		found := false
+		for _, branch := range e.Unwrap() {
+			if branch == nil {
+				continue
+			}
+			found = true
+			if !onlySkipped(branch) {
+				return false
+			}
+		}
+		return found // 空树不是一次正常跳过。
+	case interface{ Unwrap() error }:
+		if cause := e.Unwrap(); cause != nil {
+			return onlySkipped(cause)
+		}
+	}
+	// 到叶子才按哨兵或自定义 Is 判断；包装层自己的 Is 不得遮住失败分支。
+	return errors.Is(err, ErrSkipped)
 }
 
 // isCanceled 判「这一轮被从外面拆了」：主动取消与父 ctx 的截止时间到期同属

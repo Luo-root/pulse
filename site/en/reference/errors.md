@@ -24,7 +24,9 @@ Get, WaitAll, and Batch.Get may return `*SkipError`, whose Keys names normally a
 
 `Skip(rc, key)` skips one output only; a nil node return remains completed. NoValue declares normal absence for the whole node. Do not convert real business failures into NoValue, which loses the failure cause.
 
-Reliable checkpoint errors remain failures even when they wrap ErrSkipped. Classify CheckpointError first.
+A wrapped skip, or an `errors.Join` / multiple-`%w` tree whose every branch is a normal skip, remains normal arrival. A mixed tree is different: `errors.Join(pulse.NoValue(), businessErr)` still fails because it contains a real failure, even though one path matches ErrSkipped. A wrapper's custom Is cannot hide failing Unwrap branches; a leaf with no underlying cause may still declare normal skipping through Is. Retry continues on the real failure without publishing its failed write set, and checkpointing does not save that failure as success or skip. Ordinary execution does not retract values already published directly before failure.
+
+Reliable checkpoint errors and panics remain failures even when they wrap ErrSkipped. `errors.Is` / `errors.As` only establishes a matching path, not the classification of a mixed tree or execution outcome. Use the actual execution result below for application display.
 
 ## Classify the actual execution outcome
 

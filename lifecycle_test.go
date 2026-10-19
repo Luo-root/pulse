@@ -1019,6 +1019,176 @@ func TestLifecycleReturnedErrorPanicContained(t *testing.T) {
 	}
 }
 
+// Is 可声明叶子是 skip；即使多错误包装自身声称 skip，也不能盖住真实失败分支。
+type lifecycleSkipTree struct{ branches []error }
+
+func (*lifecycleSkipTree) Error() string        { return "skip tree" }
+func (*lifecycleSkipTree) Is(target error) bool { return target == ErrSkipped }
+func (e *lifecycleSkipTree) Unwrap() []error    { return e.branches }
+
+func TestLifecycleSkipErrorTree(t *testing.T) {
+	business := errors.New("business failed")
+	for _, tc := range []struct {
+		name string
+		err  error
+		skip bool
+	}{
+		{"nil", nil, false},
+		{"plain", NoValue(), true},
+		{"wrapped", fmt.Errorf("wrapped: %w", NoValue()), true},
+		{"all-skip", errors.Join(NoValue(), fmt.Errorf("wrapped: %w", NoValue())), true},
+		{"nested-skip", fmt.Errorf("outer: %w", errors.Join(NoValue(), errors.Join(NoValue()))), true},
+		{"leaf-Is", &checkpointConfirmedSkip{}, true},
+		{"nil-branch", &lifecycleSkipTree{[]error{nil, NoValue()}}, true},
+		{"empty-branches", &lifecycleSkipTree{}, false},
+		{"business", business, false},
+		{"skip-first", errors.Join(NoValue(), business), false},
+		{"failure-first", errors.Join(business, NoValue()), false},
+		{"multi-wrap", fmt.Errorf("two: %w and %w", NoValue(), business), false},
+		{"nested", fmt.Errorf("outer: %w", errors.Join(NoValue(), errors.Join(NoValue(), business))), false},
+		{"parent-Is", &lifecycleSkipTree{[]error{NoValue(), business}}, false},
+		{"checkpoint", errors.Join(NoValue(), &CheckpointError{Operation: "save", Err: NoValue()}), false},
+		{"panic", errors.Join(NoValue(), &nodePanicError{value: NoValue()}), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSkipped(tc.err); got != tc.skip {
+				t.Fatalf("isSkipped(%v)=%t, want %t", tc.err, got, tc.skip)
+			}
+		})
+	}
+}
+
+func TestLifecycleJoinedSkipKeepsBusinessFailure(t *testing.T) {
+	business := errors.New("business failed")
+	for _, tc := range []struct {
+		name string
+		err  error
+		skip bool
+	}{
+		{"plain-skip", NoValue(), true},
+		{"wrapped-skip", fmt.Errorf("wrapped: %w", NoValue()), true},
+		{"all-skip", errors.Join(NoValue(), fmt.Errorf("wrapped: %w", NoValue())), true},
+		{"business", business, false},
+		{"skip-first", errors.Join(NoValue(), business), false},
+		{"failure-first", errors.Join(business, NoValue()), false},
+		{"multi-wrap", fmt.Errorf("two: %w and %w", NoValue(), business), false},
+		{"nested", fmt.Errorf("outer: %w", errors.Join(NoValue(), errors.Join(NoValue(), business))), false},
+	} {
+		for _, checkpoint := range []bool{false, true} {
+			for _, retry := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/checkpoint=%t/retry=%t", tc.name, checkpoint, retry), func(t *testing.T) {
+					ctx := checkpointTestContext(t)
+					g := mustNew(t, ctx, "mixed-skip")
+					key := NewKey[int]("result")
+					calls := 0
+					var aspects []Aspect
+					if retry {
+						aspects = []Aspect{Retry(2, 0)}
+					}
+					mustAdd(t, g, NewNode("work", "skip不能盖住真实失败", nil, Provides(key), func(rc *RunCtx) error {
+						calls++
+						if err := Set(rc, key, 42); err != nil {
+							return err
+						}
+						return tc.err
+					}, aspects...))
+					managedTestOK(t, g.DeclareOutput(NewPort(key)))
+					probe := &checkpointProbe{}
+					var opts []ExecOption
+					if checkpoint {
+						opts = append(opts, WithExecCheckpoint("root", probe.hooks()))
+					}
+					nodeReason, graphReason := NodeFinishReason(""), NodeFinishReason("")
+					opts = append(opts, WithExecObserver(ObserverFunc{
+						Finished:      func(_ Site, _ string, reason NodeFinishReason, _ error) { nodeReason = reason },
+						GraphFinished: func(_ Site, reason NodeFinishReason, _ error) { graphReason = reason },
+					}))
+					e, err := g.NewExecution(ctx, Inputs{}, opts...)
+					managedTestOK(t, err)
+					managedTestOK(t, e.Start())
+					err = e.Wait()
+					wantCalls, wantNode, wantGraph := 1, NodeSkipped, NodeCompleted
+					wantStatus := GraphStatusCompleted
+					if !tc.skip {
+						wantNode, wantGraph, wantStatus = NodeFailed, NodeFailed, GraphStatusFailed
+						if retry {
+							wantCalls = 2
+						}
+						if !errors.Is(err, business) {
+							t.Errorf("business error lost: %v", err)
+						}
+					} else if err != nil {
+						t.Errorf("pure skip failed: %v", err)
+					}
+					state := e.Snapshot()
+					if calls != wantCalls || nodeReason != wantNode || graphReason != wantGraph || state.Graph.Status != wantStatus || string(state.Nodes[0].Status) != string(wantNode) {
+						t.Errorf("calls=%d node=%s graph=%s snapshot=%s/%s; want %d/%s/%s", calls, nodeReason, graphReason, state.Graph.Status, state.Nodes[0].Status, wantCalls, wantNode, wantGraph)
+					}
+					// 没有暂存时已经发布的值不回滚；Retry/检查点的失败写集不得发布。
+					if slot, _ := e.slotOf(key.asRef()).snapshot(); slot == slotReady && !tc.skip && (retry || checkpoint) {
+						t.Error("failed attempt published its staged output")
+					}
+					if tc.skip {
+						value, slot, readErr := ReadOutput(e, key)
+						if value != 42 || slot != SlotStateReady || readErr != nil {
+							t.Errorf("normal skip lost output: %d/%s/%v", value, slot, readErr)
+						}
+					}
+					if checkpoint {
+						wantCommits, wantFailures := 1, 0
+						if !tc.skip {
+							wantCommits, wantFailures = 0, 1
+							if retry {
+								wantFailures += wantCalls
+							}
+						}
+						if len(probe.commits) != wantCommits || len(probe.failures) != wantFailures {
+							t.Errorf("commits=%d failures=%d, want %d/%d", len(probe.commits), len(probe.failures), wantCommits, wantFailures)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestLifecycleJoinedSkipRetriesBeforePublishing(t *testing.T) {
+	for _, checkpoint := range []bool{false, true} {
+		t.Run(fmt.Sprintf("checkpoint=%t", checkpoint), func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			g := mustNew(t, ctx, "retry-mixed-skip")
+			key := NewKey[int]("result")
+			calls := 0
+			mustAdd(t, g, NewNode("work", "混合失败后只发布成功尝试", nil, Provides(key), func(rc *RunCtx) error {
+				calls++
+				if state, _ := rc.exec.slotOf(key.asRef()).snapshot(); state != slotPending {
+					t.Error("failed attempt became visible before retry succeeded")
+				}
+				if err := Set(rc, key, calls); err != nil {
+					return err
+				}
+				if calls == 1 {
+					return errors.Join(NoValue(), errors.New("try again"))
+				}
+				return errors.Join(NoValue(), fmt.Errorf("normal absence: %w", NoValue()))
+			}, Retry(2, 0)))
+			managedTestOK(t, g.DeclareOutput(NewPort(key)))
+			var opts []ExecOption
+			if checkpoint {
+				opts = []ExecOption{WithExecCheckpoint("root", (&checkpointProbe{}).hooks())}
+			}
+			e, err := g.NewExecution(ctx, Inputs{}, opts...)
+			managedTestOK(t, err)
+			managedTestOK(t, e.Start())
+			managedTestOK(t, e.Wait())
+			value, state, err := ReadOutput(e, key)
+			if err != nil || calls != 2 || value != 2 || state != SlotStateReady || e.Snapshot().Nodes[0].Status != NodeStatusSkipped {
+				t.Fatalf("mixed error ended retry early or published stale output: calls=%d output=%d/%s err=%v", calls, value, state, err)
+			}
+		})
+	}
+}
+
 func BenchmarkFailureClassificationNil(b *testing.B) {
 	for _, detector := range classificationDetectors() {
 		b.Run(detector.name, func(b *testing.B) {
