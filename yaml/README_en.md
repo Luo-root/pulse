@@ -352,6 +352,8 @@ Each child's sources, declared outlets and dependencies use the core Validate / 
 
 Every graphs declaration is checked. A spec with no references has no mount interface: an unresolved Requires could become a future in inlet, so missing sources are not judged there. Known literal / skip seeds are still real external sources; a node providing the same key makes both Load and Analyze reject it with ErrDuplicateSource. Empty nodes, duplicate IDs, known source conflicts, reference cycles and dependency cycles remain checked. Load also checks its registered factories and actual types. Concrete nested references inside templates are still checked against their wiring.
 
+An unreferenced template borrows only the validation root's applied default declarations (Defaults). It never replays Graph Options or imports host-preinstalled nodes, ports, or Sub wiring. Template count does not increase root Option calls, and root and template nodes may have the same ID in their separate definitions. Load retains quota and graph-aspect facts for static stream checks; Analyze still does not prove real stream constraints. Template checks read Topology.Problems without calling the sealing Validate operation: neither success nor a later template failure seals a shared host child through this path. The loader does not roll back arbitrary external effects of root Options themselves.
+
 ### Subgraph timeout and retry
 
 Timeout / retry on a graph node applies to the parent mount node, controlling the entire child-graph step. Configuration on a factory node inside the child controls only that internal node.

@@ -352,6 +352,8 @@ nodes:
 
 所有 graphs 声明都会检查。没有任何引用的 spec 缺少挂载接口：未解决的 Requires 可能是未来的 in 输入，因此不判缺来源。已知 literal / skip seed 仍是真实外部来源；同键再有节点 Provides 时，Load 与 Analyze 都以 `ErrDuplicateSource` 拒绝。空节点、重复 id、已知来源冲突、引用与依赖环等仍检查，Load 还检查其工厂登记和实际类型。模板中的具体嵌套引用仍按其接线检查。
 
+未引用模板只借用校验根已应用的默认声明（Defaults），不会重放 Graph Option，也不会带入宿主预置的节点、端口或 Sub 接线；模板数量不增加根 Option 的调用次数，根与模板可各自拥有同名节点。Load 保留额度和图级切面对静态流检查的影响，Analyze 仍不证明真实流约束。模板检查只读 Topology.Problems，不调用 Validate 封口；成功或后续模板失败都不会因此封住宿主持有的共享子图。根 Option 本身的任意外部副作用不由加载器回滚。
+
 ### 子图的 timeout 与 retry
 
 写在 graph 节点上的 timeout / retry 作用于父侧挂载节点，控制整张子图这一步；写在子图内部工厂节点上的配置只控制该内部节点。

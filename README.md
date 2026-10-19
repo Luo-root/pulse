@@ -110,6 +110,8 @@ func main() {
 
 只需要等待完成、不需要执行句柄时，可以调用 `g.Run(ctx, in)`。需要查询状态、读取输出或分步控制生命周期时，使用上例的 `NewExecution`、`Start` 和 `Wait`。完整步骤与解释见[快速开始](site/guide/quickstart.md)。
 
+只复用默认策略而不复用结构时，可把 `g.Defaults()` 返回的 Option 传给另一张图的 New。它在调用时快照已应用的图级切面、观察者与额度声明，不重放原 Option、不复制节点/端口/身份/封口状态，也不封源图；这不是父执行继承或 ExecOption 覆盖后的有效环境。它替换目标整组默认声明，其后的 WithMaxRunning / WithObserver 仍可覆盖，WithAspects 仍追加；切片独立，闭包与观察者引用的对象仍由宿主管理。
+
 连续数据使用 `Key[pulse.Stream[T]]` 与 `ProduceStream` / `ConsumeStream` / `TeeStream`。受管等待会暂时让出业务额度，显式 Ack 才释放在途容量；[完整流示例](site/guide/streams.md)用一个额度广播到两个消费端，各得到总和 6。需要宿主实时接收时，在 `NewExecution` 后、`Start` 前调用 `SubscribeStream` 并持续确认；`Wait` 也等已登记读取组完成或 Stop。Sub 的实时流出口提前接通，普通值仍等子执行成功后桥回。旧 `Key[<-chan T]` 与 Produce/Consume/Tee 保留原生兼容语义，无消息确认、自动倒带或持久流保证。
 
 ## 阅读文档

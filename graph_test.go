@@ -12,6 +12,136 @@ import (
 	"testing"
 )
 
+// 默认声明可复用，但结构、身份与封口状态不能跟着复制；取快照也不应封源树。
+func TestGraphDefaultsDoesNotCopyOrSealStructure(t *testing.T) {
+	for _, sealed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sealed=%t", sealed), func(t *testing.T) {
+			calls := 0
+			run := func(*RunCtx) error { t.Error("defaults must not execute a body"); return nil }
+			child, err := New("source-child", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			input, out := NewKey[int]("input"), NewKey[int]("out")
+			if err := child.DeclareInput(NewPort(input)); err != nil {
+				t.Fatal(err)
+			}
+			source, err := New("source", "source description", func(g *Graph) {
+				calls++
+				if err := g.DeclareInput(NewPort(input)); err != nil {
+					t.Fatal(err)
+				}
+				if err := g.Add(NewNode("host", "", nil, Provides(out), run)); err != nil {
+					t.Fatal(err)
+				}
+				if err := g.DeclareOutput(NewPort(out)); err != nil {
+					t.Fatal(err)
+				}
+				if err := Sub(g, "mount", "", []SubBind{Fix(input, 1)}, child); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sealed {
+				if err := source.Validate(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			target, err := New("target", "target description", source.Defaults())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || source.sealed != sealed || child.sealed != sealed {
+				t.Fatal("Defaults replayed an Option or changed source-tree sealing")
+			}
+			if target.ID() != "target" || target.Description() != "target description" || target.sealed ||
+				len(target.nodes) != 0 || len(target.nodeIDs) != 0 || len(target.keys.seen) != 0 ||
+				len(target.producer) != 0 || len(target.inPorts) != 0 || len(target.outPorts) != 0 ||
+				len(target.inPortOrder) != 0 || len(target.outPortOrder) != 0 {
+				t.Fatal("Defaults copied source identity, structure or sealing")
+			}
+			if err := target.Add(NewNode("host", "", nil, nil, run)); err != nil {
+				t.Fatalf("target must remain independently mutable: %v", err)
+			}
+			if !sealed {
+				for _, g := range []*Graph{source, child} {
+					if err := g.Add(NewNode("after-snapshot", "", nil, nil, run)); err != nil {
+						t.Fatalf("snapshot must leave source tree mutable: %v", err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestGraphDefaultsSnapshotAndOptionOrder(t *testing.T) {
+	var order []string
+	aspect := func(name string) Aspect {
+		return func(rc *RunCtx, next func(*RunCtx) error) error {
+			order = append(order, name)
+			return next(rc)
+		}
+	}
+	first, later := aspect("snapshot"), aspect("later")
+	observerCalls := 0
+	observer := &ObserverFunc{GraphStarted: func(Site) { observerCalls++ }}
+	source, err := New("defaults-source", "", WithAspects(first), WithoutAspects(), WithObserver(observer), WithMaxRunning(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := source.Defaults()
+	if observerCalls != 0 || len(order) != 0 {
+		t.Fatal("taking a defaults snapshot must not invoke aspects or observers")
+	}
+	// 白盒修改源声明，证明调用时就已复制，不延迟读取源，也不与目标共享切片。
+	source.aspects[0] = later
+	source.maxRunning = 7
+	one, err := New("defaults-one", "", snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	one.aspects[0] = later
+	two, err := New("defaults-two", "", snapshot, WithMaxRunning(3), WithAspects(later))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !one.limSet || one.maxRunning != 2 || !two.limSet || two.maxRunning != 3 || !two.aspectsCut || two.observer != observer || len(two.aspects) != 2 {
+		t.Fatal("snapshot must retain original declarations and later options must override/append")
+	}
+	if err := two.Add(NewNode("body", "", nil, nil, func(*RunCtx) error {
+		order = append(order, "body")
+		return nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := two.Run(t.Context(), Inputs{}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(order, []string{"snapshot", "later", "body"}) || observerCalls != 1 {
+		t.Fatalf("independent snapshot must execute its own aspect order and observer: order=%v observer=%d", order, observerCalls)
+	}
+	empty, err := New("no-declarations", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := New("replaced", "", WithMaxRunning(9), WithAspects(first), WithoutAspects(), WithObserver(observer), empty.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.limSet || replaced.maxRunning != 0 || replaced.aspectsCut || len(replaced.aspects) != 0 || replaced.observer != nil {
+		t.Fatal("later Defaults must replace the whole declaration set, including absent declarations")
+	}
+	overridden, err := New("overridden", "", snapshot, WithMaxRunning(0), WithObserver(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !overridden.limSet || overridden.maxRunning != 0 || overridden.observer != nil {
+		t.Fatal("later explicit unlimited quota and nil observer must still override the snapshot")
+	}
+}
+
 func TestLinear(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
 	mustAdd(t, g, NewNode("n1", "", nil, Provides(kA), func(rc *RunCtx) error {
