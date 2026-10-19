@@ -86,9 +86,13 @@ Restored nodes execute no body, aspects, or Commit. After GraphStarted, they onl
 
 Runtime hook or restoration-protocol failures use CheckpointError. A chain containing ErrSkipped or context sentinels still means reliable failure. A shared tree failure latch prevents parent Retry or aspects from swallowing it into success. Pre-start configuration and plan errors instead return contract errors without starting.
 
-A business function returning context.Canceled while its actual Execution context remains valid is a known business failure requiring failure and budget confirmation. Host cancellation, process exit, and reliable-hook faults leave active attempts for authoritative recovery records to resolve. The RPC error chain alone cannot decide this classification.
+Host cancellation, process exit, and reliable-hook faults leave active attempts for authoritative recovery records to resolve. A node returning nil or normal skip after local Cancel also remains active if the complete node chain's own context is canceled: no success/skip commit, no business-failure confirmation, and no persistent-budget consumption. Cleaning up an inner local context while the complete chain's context remains valid preserves the obtained result. Actual expiry of this layer's Timeout and parent cancellation still apply.
 
-If storage commits but returns an error, this run stops without automatically retrying Commit or rolling the record back. Resume rereads authoritative results. Later cancellation does not withdraw confirmed records. Persistent attempts need not save raw error text that may contain sensitive business data.
+A real business failure still requires confirmation using the owning Execution's context even after node-local cleanup; cleanup must not replenish its budget. An RPC returning context.Canceled/DeadlineExceeded while the owning execution context remains valid is also a business failure. The RPC error chain alone cannot decide this classification.
+
+Before starting a reliable commit, check its applicable context; cancellation prevents a new commit. Real failure confirmation uses the owning Execution context described above. If storage commits but returns an error, this run stops without automatically retrying Commit or rolling the record back. Resume rereads authoritative results. Later cancellation does not withdraw confirmed records. Persistent attempts need not save raw error text that may contain sensitive business data.
+
+A node's completed or normal skipped conclusion is fixed before reliable Commit. After Commit and publication succeed, node finalization and engine observation reuse the confirmed conclusion without inspecting that business error again. Later host cancellation or real failures from other nodes still determine the run's terminal state; confirmed records remain available.
 
 ## Incremental managed-stream confirmation
 

@@ -105,6 +105,31 @@ func subContractFixedValue[T any](t *testing.T, value T) {
 	}
 }
 
+func TestSubRejectsSealedDefinitionAtItsOwnEntry(t *testing.T) {
+	for _, seal := range []string{"Validate", "Start"} {
+		t.Run(seal, func(t *testing.T) {
+			parent, child := coreContractGraph(t, "sealed-parent"), coreContractGraph(t, "mountable-child")
+			in, out := NewKey[int]("child-in"), NewKey[int]("parent-out")
+			coreContractOK(t, child.DeclareInput(NewPort(in)))
+			coreContractOK(t, child.DeclareOutput(NewPort(in)))
+			if seal == "Validate" {
+				coreContractOK(t, parent.Validate())
+			} else {
+				coreContractRun(t, parent, Inputs{})
+			}
+			err := Sub(parent, "late", "", []SubBind{Fix(in, 1), Out(in, out)}, child)
+			if !errors.Is(err, ErrGraphStarted) || !strings.Contains(err.Error(), "Sub") ||
+				!strings.Contains(err.Error(), "sealed") || strings.Contains(err.Error(), "Add") {
+				t.Fatalf("sealed Sub = %v, want Sub diagnostic wrapping ErrGraphStarted", err)
+			}
+			if len(parent.nodes) != 0 || len(parent.nodeIDs) != 0 || len(parent.producer) != 0 {
+				t.Fatal("rejected Sub changed the parent definition")
+			}
+			coreContractOK(t, child.Add(NewNode("still-open", "", nil, nil, func(*RunCtx) error { return nil })))
+		})
+	}
+}
+
 func TestSubContractFixedInputsKeepHostNilRule(t *testing.T) {
 	c, out := NewKey[any]("child"), NewKey[any]("out")
 	child, parent := coreContractGraph(t, "fixed-nil-child"), coreContractGraph(t, "fixed-nil-parent")
@@ -112,7 +137,8 @@ func TestSubContractFixedInputsKeepHostNilRule(t *testing.T) {
 	coreContractOK(t, child.DeclareOutput(NewPort(c)))
 	coreContractOK(t, parent.DeclareOutput(NewPort(out)))
 	err := Sub(parent, "mount", "", []SubBind{Fix[any](c, nil), Out(c, out)}, child)
-	if err == nil || !strings.Contains(err.Error(), "nil value") || len(parent.Topology().Nodes) != 0 {
+	if err == nil || !strings.Contains(err.Error(), "nil value") ||
+		!strings.Contains(err.Error(), "FixSkip") || strings.Contains(err.Error(), "SkipSeed") || len(parent.Topology().Nodes) != 0 {
 		t.Fatalf("Fix nil = %v", err)
 	}
 	coreContractOK(t, Sub(parent, "mount", "", []SubBind{FixSkip(c), Out(c, out)}, child))

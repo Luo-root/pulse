@@ -191,7 +191,7 @@ WaitStream 回调**只能等待和记录结果**，不能处理业务、重入�
 
 `Snapshot()` 给出 `Terminal`、`Err`、`LastSequence`、连续确认前沿 `AckedThrough`、`InFlight` 和 `Stopped`，不含业务值。`Done()` 在实际生产节点**完整 Aspect 链**结束后关闭；完成、失败、取消、停止分别为 completed/failed/canceled/stopped。Done 不表示尾部已消费；别名共享同一本进度账，祖先 Sub 不是 EOF 边界，child 正常清理不会撤销尾部。
 
-Receive 仅在正常生产结束且交付义务已清，或明确 Stop 后返回 io.EOF；生产失败返回原因。空流是 ready 端点、零条消息，正常成功；skipped 是没有端点，沿普通缺值语义处理。最后一个读取者提前返回却未消费并 Ack 完、也未 Stop，会成为读取义务错误。
+Receive 仅在正常生产结束且交付义务已清，或明确 Stop 后返回 io.EOF；生产失败返回原因。空流是 ready 端点、零条消息，正常成功；skipped 是没有端点，沿普通缺值语义处理。读取者应继续 Receive 并 Ack，直到 io.EOF，或明确 Stop。仅 InFlight=0 不代表生产结束，生产者仍可能继续发送；最后一个读取者此时提前返回会成为读取义务错误。若实际生产已正常结束且消息全部 Ack，收尾已满足条件，不强制额外读取一次 EOF。
 
 `stream.Stop(rc)` 显式结束整个读取组，作废剩余消息并唤醒生产者，不把清理算作 Ack。ConsumeStream 回调直接返回**精确的** `pulse.ErrStreamStopped` 表示当前条成功：先 Ack 当前条，再 Stop。包装的停止错误仍是失败。ProduceStream 仅在写端真的已 Stop 且回调返回精确 ErrStreamStopped 时正常结束；手写生产节点需自己处理正常停止，真实包装错误不能洗掉。TeeStream 单支 Stop 后其余支继续，全支 Stop 后正常 Stop 上游。
 

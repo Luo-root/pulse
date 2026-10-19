@@ -67,8 +67,8 @@ func (in *Inputs) set(ref keyRef, v any, skip bool) error {
 	return in.setEntry(ref, v, skip, false)
 }
 
-// setArrived 转送父槽已经确认的到达状态：ready 的 nil 接口仍是值，不能改成 skipped。
-// 只供子图的 In 桥接用；宿主与固定值入口仍走 set，拒绝 nil 接口。
+// setArrived 将已经确认的到达状态装入 Inputs：ready 的 nil 接口仍是值，不能改成 skipped。
+// 生产 In 直接绑定父侧来源槽，不经过这个 helper；宿主与固定值入口仍走 set，拒绝 nil 接口。
 func (in *Inputs) setArrived(ref keyRef, v any, skip bool) error {
 	return in.setEntry(ref, v, skip, true)
 }
