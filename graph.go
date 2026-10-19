@@ -182,6 +182,28 @@ func (g *Graph) ID() string { return g.id }
 // Description 是 New 时给的说明（`""` = 没写）。
 func (g *Graph) Description() string { return g.desc }
 
+// Defaults 快照这张定义已应用的默认声明，返回可传给 New 的 Option。
+//
+// 它只复制图级切面（含不继承声明）、观察者与额度声明，不重放原来的 Option，
+// 不复制身份、说明、节点、键、端口、接线或封口状态，也不校验、封口或执行源图。
+// 这不是某次执行的有效环境：不包含父执行继承或 ExecOption 覆盖。
+//
+// 返回的 Option 替换目标的整组默认声明（包括「未声明」），选项顺序照常生效：
+// 放在其后的 WithMaxRunning / WithObserver 覆盖对应声明，WithAspects 追加切面。
+// 快照与每个目标各持独立切片；切面闭包、观察者及其引用的对象仍由调用方管理。
+func (g *Graph) Defaults() Option {
+	g.mu.Lock()
+	aspects := append([]Aspect(nil), g.aspects...)
+	aspectsCut, observer := g.aspectsCut, g.observer
+	maxRunning, limSet := g.maxRunning, g.limSet
+	g.mu.Unlock()
+	return func(target *Graph) {
+		target.aspects = append([]Aspect(nil), aspects...)
+		target.aspectsCut, target.observer = aspectsCut, observer
+		target.maxRunning, target.limSet = maxRunning, limSet
+	}
+}
+
 // assemblyMu 是**装配锁**：所有「改这张图的定义」的入口（`Add` / `DeclareInput` /
 // `DeclareOutput` / `Sub`）与「判完整棵树再封口」的入口（`Validate` / `Execution.Start`）共用它。
 //

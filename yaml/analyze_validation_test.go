@@ -391,14 +391,10 @@ nodes: [{id: yaml, uses: f}]
 				doc = strings.Replace(doc, "name: right, type: example.A", "name: right, type: example.B", 1)
 			}
 			top, err := pulseyaml.Analyze([]byte(doc), opts)
-			if conflict {
-				if err == nil || top != nil || !strings.Contains(err.Error(), "does not match") || !strings.Contains(err.Error(), "unused") {
-					t.Fatalf("unused template must also check its host binding labels: top=%+v err=%v", top, err)
-				}
-				return
-			}
+			// left/right 在模板内没有绑定：根 Option 的宿主 Sub 不能泄入这里，
+			// 因而两条不同标签也不冲突。真实根 Sub 标签检查由 TestAnalyzeHostBindingTypeLabels 钉住。
 			if err != nil || len(top.Problems) != 0 {
-				t.Fatalf("matching labels in an unused template must pass: top=%+v err=%v", top, err)
+				t.Fatalf("unused template must not inherit root host bindings: top=%+v err=%v", top, err)
 			}
 			if top.Nodes[0].Requires[0].Type != "" || top.Nodes[0].Provides[0].Type != "" || top.Nodes[0].Sub.Graph.InPorts[0].Type != "" {
 				t.Fatalf("unused template labels must not leak into the unrelated root host graph: %+v", top)

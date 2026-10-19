@@ -110,6 +110,8 @@ A `Key[T]` identifies typed data. A `Node` declares read/write permissions and a
 
 Use `g.Run(ctx, in)` when you only need to wait for completion. Use `NewExecution`, `Start`, and `Wait` as above when you need the execution handle, output values, or lifecycle control. See the [quick start](site/en/guide/quickstart.md) for the full walkthrough.
 
+To reuse default policies without structure, pass the Option returned by `g.Defaults()` to another graph's New. It snapshots the applied graph aspects, observer, and quota declarations at the call, without replaying original Options, copying nodes/ports/identity/sealing, or sealing the source. This is not an execution's effective environment after parent inheritance or ExecOption overrides. It replaces the target's complete default declarations; later WithMaxRunning / WithObserver still override and WithAspects still appends. Slices are independent; objects referenced by closures and observers remain host-managed.
+
 For continuous data, use `Key[pulse.Stream[T]]` and `ProduceStream` / `ConsumeStream` / `TeeStream`. Managed waits temporarily release business quota; explicit Ack releases in-flight capacity. The [complete stream example](site/en/guide/streams.md) broadcasts to two consumers with one quota slot, each summing to 6. For live host consumption, call `SubscribeStream` after `NewExecution` and before `Start`, then consume and acknowledge. `Wait` also waits for registered reading groups to complete or Stop. Sub connects live stream outputs early; ordinary values still bridge after successful child completion. Existing `Key[<-chan T]` and Produce/Consume/Tee keep native compatibility semantics without message acknowledgement, automatic rewind, or persistent-stream guarantees.
 
 ## Documentation

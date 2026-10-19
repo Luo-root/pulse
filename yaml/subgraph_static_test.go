@@ -143,6 +143,212 @@ nodes: [{id: mount, graph: child, out: {child.out: result}}]
 	}
 }
 
+// 根 Option 装的节点只属于根：模板内同名节点无论是否挂载，都不应撞名。
+func TestLoadTemplateKeepsHostNodesAtRoot(t *testing.T) {
+	for _, entry := range []string{"Load", "Analyze"} {
+		for _, referenced := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/referenced=%t", entry, referenced), func(t *testing.T) {
+				reg := pulse.NewRegistry()
+				for _, name := range []string{"out", "result"} {
+					pulse.MustRegisterKey(reg, pulse.NewKey[int](name))
+				}
+				run := func(*pulse.RunCtx) error { t.Error("assembly must not run bodies"); return nil }
+				reg.MustRegister("f", run)
+				opts := pulseyaml.LoadOptions{GraphID: "isolated-template", Graph: []pulse.Option{func(g *pulse.Graph) {
+					if err := g.Add(pulse.NewNode("host", "", nil, nil, run)); err != nil {
+						t.Fatal(err)
+					}
+				}}}
+				doc := "graphs: {template: {nodes: [{id: host, uses: f, provides: [{name: out, type: int}]}]}}\n"
+				if referenced {
+					doc += "nodes: [{id: mount, graph: template, out: {out: result}}]\n"
+				} else {
+					doc += "nodes: [{id: root, uses: f}]\n"
+				}
+				var top *pulse.Topology
+				var err error
+				if entry == "Load" {
+					var g *pulse.Graph
+					g, _, err = pulseyaml.Load([]byte(doc), reg, opts)
+					if err == nil {
+						top = g.Topology()
+					}
+				} else {
+					top, err = pulseyaml.Analyze([]byte(doc), opts)
+				}
+				if err != nil || top == nil || len(top.Nodes) != 2 || top.Nodes[0].ID != "host" {
+					t.Fatalf("host and template nodes belong to different graph definitions: top=%+v err=%v", top, err)
+				}
+				if referenced && (top.Nodes[1].Sub == nil || len(top.Nodes[1].Sub.Nodes) != 1 || top.Nodes[1].Sub.Nodes[0].ID != "host") {
+					t.Fatalf("mounted template must retain its own host node: %+v", top.Nodes[1])
+				}
+			})
+		}
+	}
+}
+
+// 模板数不能改变根 Option 调用次数，也不能要求登记只在宿主节点中出现的键。
+func TestLoadTemplateDoesNotReplayHostOptions(t *testing.T) {
+	for _, entry := range []string{"Load", "Analyze"} {
+		for _, hostOnlyKey := range []bool{false, true} {
+			var baseline int
+			for _, templates := range []int{0, 1, 2} {
+				t.Run(fmt.Sprintf("%s/hostOnlyKey=%t/templates=%d", entry, hostOnlyKey, templates), func(t *testing.T) {
+					reg := pulse.NewRegistry()
+					run := func(*pulse.RunCtx) error { t.Error("assembly must not run bodies"); return nil }
+					reg.MustRegister("f", run)
+					calls := 0
+					opts := pulseyaml.LoadOptions{GraphID: "option-count", Graph: []pulse.Option{func(g *pulse.Graph) {
+						calls++
+						var requires []pulse.Key[int]
+						if hostOnlyKey {
+							requires = append(requires, pulse.NewKey[int]("host.only"))
+						}
+						if err := g.Add(pulse.NewNode("host", "", pulse.Requires(requires...), nil, run)); err != nil {
+							t.Fatal(err)
+						}
+					}}}
+					doc := "nodes: [{id: root, uses: f}]\n"
+					if templates > 0 {
+						doc += "graphs:\n"
+						for i := 0; i < templates; i++ {
+							doc += fmt.Sprintf("  unused%d: {nodes: [{id: template, uses: f}]}\n", i)
+						}
+					}
+					var err error
+					if entry == "Load" {
+						_, _, err = pulseyaml.Load([]byte(doc), reg, opts)
+					} else {
+						_, err = pulseyaml.Analyze([]byte(doc), opts)
+					}
+					if err != nil {
+						t.Fatalf("unrelated templates must not inspect host-only keys: %v", err)
+					}
+					if templates == 0 {
+						baseline = calls
+					} else if calls != baseline {
+						t.Fatalf("root Option calls=%d with %d templates, want unchanged baseline=%d", calls, templates, baseline)
+					}
+				})
+			}
+		}
+	}
+}
+
+// 校验未引用模板只读定义；即使后面的模板出错，也不能先封住宿主持有的子图。
+func TestLoadTemplateDoesNotSealHostChild(t *testing.T) {
+	for _, entry := range []string{"Load", "Analyze"} {
+		for _, outcome := range []string{"no-template", "unused", "later-duplicate", "later-unknown-factory"} {
+			if entry == "Analyze" && outcome == "later-unknown-factory" {
+				continue // Analyze 不检查真实工厂注册；上面的重复 ID 在两入口都必须拒绝。
+			}
+			t.Run(entry+"/"+outcome, func(t *testing.T) {
+				run := func(*pulse.RunCtx) error { t.Error("assembly must not run bodies"); return nil }
+				child, err := pulse.New("shared-host-child", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				input := pulse.NewKey[int]("host.input")
+				if err := child.DeclareInput(pulse.NewPort(input)); err != nil {
+					t.Fatal(err)
+				}
+				if err := child.Add(pulse.NewNode("leaf", "", pulse.Requires(input), nil, run)); err != nil {
+					t.Fatal(err)
+				}
+				reg := pulse.NewRegistry()
+				reg.MustRegister("f", run)
+				opts := pulseyaml.LoadOptions{GraphID: "shared-child", Graph: []pulse.Option{func(g *pulse.Graph) {
+					if err := pulse.Sub(g, "host", "", []pulse.SubBind{pulse.Fix(input, 1)}, child); err != nil {
+						t.Fatal(err)
+					}
+				}}}
+				doc := "nodes: [{id: root, uses: f}]\n"
+				if outcome != "no-template" {
+					doc += "graphs:\n  a_good: {nodes: [{id: template, uses: f}]}\n"
+				}
+				want := ""
+				switch outcome {
+				case "later-duplicate":
+					doc += "  z_bad: {nodes: [{id: twice, uses: f}, {id: twice, uses: f}]}\n"
+					want = "duplicate node id"
+				case "later-unknown-factory":
+					doc += "  z_bad: {nodes: [{id: unknown, uses: not-registered}]}\n"
+					want = "unknown factory"
+				}
+				var g *pulse.Graph
+				var plan *pulseyaml.SeedPlan
+				var top *pulse.Topology
+				if entry == "Load" {
+					g, plan, err = pulseyaml.Load([]byte(doc), reg, opts)
+				} else {
+					top, err = pulseyaml.Analyze([]byte(doc), opts)
+				}
+				if want == "" {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), want) || g != nil || plan != nil || top != nil {
+					t.Fatalf("invalid template must fail without a partial result: want=%q err=%v", want, err)
+				}
+				if err := child.Add(pulse.NewNode("after-load", "", nil, nil, run)); err != nil {
+					t.Fatalf("%s must leave the shared host child open after %s: %v", entry, outcome, err)
+				}
+			})
+		}
+	}
+}
+
+// 未引用模板仍保留图级切面事实：切面可能写 Provides，不能把 FixSkip 当作流一定不存在。
+func TestLoadTemplateKeepsGraphAspectFacts(t *testing.T) {
+	for _, withAspect := range []bool{false, true} {
+		for _, skip := range []bool{false, true} {
+			t.Run(fmt.Sprintf("aspect=%t/skip=%t", withAspect, skip), func(t *testing.T) {
+				doc := `
+graphs:
+  child:
+    seeds: [{key: {name: flag, type: int}, skip: true}]
+    nodes:
+      - {id: relay, uses: writer, requires: [{name: flag, type: int}], provides: [{name: routed, type: int}]}
+      - {id: writer, uses: writer, requires: [{name: routed, type: int}], provides: [{name: stream, type: "pulse.Stream[int]"}, {name: out, type: int}]}
+  unused:
+    nodes: [{id: mount, graph: child, out: {out: result}}]
+nodes: [{id: root, uses: writer}]
+`
+				if !skip {
+					doc = strings.Replace(doc, "skip: true", "from: {value: 1}", 1)
+				}
+				reg := pulse.NewRegistry()
+				for _, name := range []string{"flag", "routed", "out", "result"} {
+					pulse.MustRegisterKey(reg, pulse.NewKey[int](name))
+				}
+				pulse.MustRegisterKey(reg, pulse.NewKey[pulse.Stream[int]]("stream"))
+				reg.MustRegister("writer", func(*pulse.RunCtx) error { t.Error("static checks must not run factories"); return nil })
+				opts := pulseyaml.LoadOptions{GraphID: "aspect-facts", ObserverFor: func(string) pulse.Observer {
+					t.Error("unused template checks must not create observers")
+					return nil
+				}}
+				if withAspect {
+					opts.Graph = []pulse.Option{pulse.WithAspects(func(*pulse.RunCtx, func(*pulse.RunCtx) error) error {
+						t.Error("static checks must not invoke aspects")
+						return nil
+					})}
+				}
+				g, plan, err := pulseyaml.Load([]byte(doc), reg, opts)
+				if withAspect || !skip {
+					if err == nil || !strings.Contains(err.Error(), "nothing consumes it") || !strings.Contains(err.Error(), `mounted at "mount"`) || g != nil || plan != nil {
+						t.Fatalf("a potentially live unread stream must still fail: %v", err)
+					}
+				} else if err != nil {
+					t.Fatalf("fixed skip without aspects proves the stream absent: %v", err)
+				}
+				if _, err := pulseyaml.Analyze([]byte(doc), opts); err != nil {
+					t.Fatalf("Analyze still does not infer real stream types from labels: %v", err)
+				}
+			})
+		}
+	}
+}
+
 // 固定 skip 是挂载点的输入事实：子图不能再脱离它被单独当根校验（#441）。
 const fixedSkipMountDoc = `
 graphs:

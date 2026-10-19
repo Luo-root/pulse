@@ -174,7 +174,7 @@ type LoadOptions struct {
 	ObserverFor func(path string) pulse.Observer
 }
 
-// newRootGraph 为根图或未引用模板带上同一份静态选项。
+// newRootGraph 为校验根与真实根应用同一份选项。未引用模板只取校验根的 Defaults。
 //
 // 额度必须一起给：核心的流式检查展开整棵挂载树，沿 In/Out/透传追踪 channel
 // 别名和实际读取者，按共享额度池身份计数（Sub 不占额），并检查已知发送/关闭、
@@ -190,6 +190,11 @@ func newRootGraph(id, description string, opts LoadOptions) (*pulse.Graph, error
 		o = append(o, pulse.WithMaxRunning(opts.MaxRunning))
 	}
 	return pulse.New(id, description, o...)
+}
+
+// newTemplateGraph 只借用根的默认声明；模板不携带宿主节点、端口或共享子图。
+func newTemplateGraph(id string, root *pulse.Graph) (*pulse.Graph, error) {
+	return pulse.New(id, "", root.Defaults())
 }
 
 // Load 把 YAML 文档装成 Graph + SeedPlan。
@@ -334,12 +339,15 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions, newRoot f
 	// 照旧，**来源那条不作数**——它的接口面按「读到的都当入口」补上（declareSpecInputs，
 	// 补在一张只装不跑的校验图上）。等它被引用时，接口面由**那一处**的 `in:` / `out:` 定，
 	// 来源判据在那时按引用点生效（见 addSubNode 与 #298 的口径）。
+	//
+	// 只借用已经应用的默认声明，不重放可能 Add / Sub 的根 Option：宿主结构不属于模板，
+	// 但额度与图级切面仍参与流检查。Analyze 的校验根已归一为 any，仍不证明真实流约束。
 	for _, name := range sortedNames(doc.Graphs) {
 		if referenced[name] {
 			continue
 		}
 		spec := doc.Graphs[name]
-		g, err := newRoot(name, "", opts)
+		g, err := newTemplateGraph(name, checkRoot)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -363,8 +371,9 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions, newRoot f
 		if err := a.checkSubgraphs(top, spec.Nodes); err != nil {
 			return nil, nil, err
 		}
-		if err := g.Validate(); err != nil {
-			return nil, nil, fmt.Errorf("pulse/yaml: graph %q: %w", name, err)
+		// 复用同一次只读检查的 Problems；装图不需要 Validate 的整树封口副作用。
+		if len(top.Problems) != 0 {
+			return nil, nil, fmt.Errorf("pulse/yaml: graph %q: %w", name, top.Problems[0])
 		}
 		if inspect != nil {
 			if err := inspect(top, spec); err != nil {

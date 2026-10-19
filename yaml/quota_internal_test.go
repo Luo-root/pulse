@@ -42,16 +42,24 @@ func TestLoadOptionsQuotaPrecedence(t *testing.T) {
 	need2 := func(rc *pulse.RunCtx, send func(int) error) error { return nil }
 
 	for _, c := range cases {
-		g, err := newRootGraph("quota-probe", "", c.opts)
-		if err != nil {
-			t.Fatalf("%s: newRootGraph: %v", c.name, err)
-		}
-		err = pulse.Produce(g, "p", "", src, need2)
-		if rejected := err != nil; rejected != c.wantRejected {
-			t.Fatalf("%s: 装配期 %v，want rejected=%v（err=%v）", c.name, rejected, c.wantRejected, err)
-		}
-		if err != nil && !strings.Contains(err.Error(), "cannot host this stream") {
-			t.Fatalf("%s: 拒的理由不对：%v", c.name, err)
+		for _, template := range []bool{false, true} {
+			g, err := newRootGraph("quota-probe", "", c.opts)
+			if err != nil {
+				t.Fatalf("%s: newRootGraph: %v", c.name, err)
+			}
+			if template {
+				g, err = newTemplateGraph("template-probe", g)
+				if err != nil {
+					t.Fatalf("%s: newTemplateGraph: %v", c.name, err)
+				}
+			}
+			err = pulse.Produce(g, "p", "", src, need2)
+			if rejected := err != nil; rejected != c.wantRejected {
+				t.Fatalf("%s (template=%t): 装配期 %v，want rejected=%v（err=%v）", c.name, template, rejected, c.wantRejected, err)
+			}
+			if err != nil && !strings.Contains(err.Error(), "cannot host this stream") {
+				t.Fatalf("%s: 拒的理由不对：%v", c.name, err)
+			}
 		}
 	}
 }
