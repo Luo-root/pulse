@@ -47,6 +47,10 @@ type CheckpointHooks struct {
 
 四个钩子必须全部提供，并使用非空根 scope。它们在引擎锁外同步调用，可以并发，必须线程安全。OpenAttempt 返回持久 Scope、Index 与 Exhausted，active 完整节点根 attempt 还可带下文的 Values 子集；FailAttempt 先确认真实失败，才允许下一次尝试；OpenChild 核对实际子图及输入并返回该作用域的恢复成果；Commit 确认完整节点链成果。
 
+OpenChild 有一个严格的业务结果信号：桥在完整校验历史、可靠确认 scope 内已存在最终业务失败后，可直接返回 `*CheckpointScopeFailure{Scope: request.Attempt}`，且不返回成果。Core 在安装恢复计划之前将它交给父完整链，父 Retry 可按剩余预算推进，父切面也可接住它；不重新运行已确认别名或重开失败流。只有非 nil、非空且精确匹配请求的直接信号被接受；包装、错 scope、同时返回成果或其他钩子使用该类型仍是可靠失败。根 scope 由集成层在解码、恢复事件与 Start 之前返回相同业务失败；这时执行尚未启动，不应伪造完成状态。恢复不还原原业务错误文本或身份。
+
+跨更深层 Sub 的已确认流别名还可恢复来源的已确认 failed descriptor，但只能建立不含消息、不会调用 Open 的本地只读失败端点；接收传播业务失败，不返回成功 EOF，不允许生产或确认。只有 Sub 别名可携带这种失败引用，普通来源节点不能以 failed descriptor 冒充成功成果；canceled 引用仍不作为已确认业务失败接受。集成层必须先核对历史身份、来源根 failed 和有效祖先，不得为了恢复放宽 Open/Send/Ack。
+
 ## 子图作用域与重试预算
 
 持久 Scope 不等于挂载 Path，也不等于进程内 Execution ID。集成层为持久尝试分配稳定身份；同一挂载路径在不同父尝试下具有不同作用域。重启后活跃尝试认回同一 Scope/Index，已确认失败后才能推进 Index。
@@ -81,6 +85,8 @@ return e.Wait()
 ```
 
 已恢复节点不运行业务体、切面或 Commit。GraphStarted 后仅迁移终态并发一次 Finished，不伪造 Waiting、Running、未创建的 Child 或子图生命周期。Snapshot 不包含值，也不承担恢复计划职责。
+
+桥仅在调用上下文已取消、且任何可靠操作尚未开始时，可直接返回 `*CheckpointNotStarted`。Core 还要求所属 Execution 已取消，才将其保持为中断；健康执行、包装信号或普通 context 错误仍为可靠失败。尤其不能把已经调用 Store 后的错误改成此信号，即使原因是 context.Canceled，也可能写成未确认。此信号不保存业务失败或补充预算。
 
 ## 失败、中断与不确定确认
 

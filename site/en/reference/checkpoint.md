@@ -47,6 +47,10 @@ type CheckpointHooks struct {
 
 All four hooks and a nonempty root scope are required. Hooks run synchronously outside engine locks, may be concurrent, and must be concurrency-safe. OpenAttempt returns persistent Scope, Index, and Exhausted; an active complete-node root attempt may also carry the Values subset described below. FailAttempt confirms a real failure before another attempt opens. OpenChild verifies the actual child and inputs and returns results for that scope. Commit confirms the complete node chain's result.
 
+OpenChild has one strict business-result signal: after fully validating history and reliably confirming a final business failure in the scope, the bridge may directly return `*CheckpointScopeFailure{Scope: request.Attempt}` with no results. Before installing a restore plan, Core returns that failure to the parent chain: parent Retry may advance within its remaining budget, and a parent aspect may catch it. Confirmed aliases do not rerun and failed streams do not reopen. Only a nonnil, nonempty, exact-scope direct signal is accepted; wrapping it, returning a wrong scope or accompanying results, or using the type from another hook remains a reliable failure. For a root scope the integration returns the same business failure before decoding, restore events, and Start; the execution has not started, so no completed status is invented. Recovery does not reconstruct the original business error text or identity.
+
+A confirmed stream alias across deeper Sub layers may also restore its source's confirmed failed descriptor, but only as a local read-only failed endpoint with no messages and no Open call. Receiving propagates business failure rather than successful EOF; production and acknowledgement remain forbidden. Only Sub aliases may carry this failed reference; an ordinary source node cannot present it as a successful checkpoint. Canceled references are still not accepted as confirmed business failure. The integration must verify historical identity, the failed source root, and valid ancestry without relaxing Open/Send/Ack.
+
 ## Child scopes and retry budgets
 
 A persistent Scope is neither a mounting Path nor a process-local Execution ID. The integration assigns stable attempt identities. The same mount path has a different scope under another parent attempt. After restart, an active attempt reclaims its Scope/Index; advancing Index requires a confirmed failure.
@@ -81,6 +85,8 @@ return e.Wait()
 ```
 
 Restored nodes execute no body, aspects, or Commit. After GraphStarted, they only move to terminal state and emit Finished once. They invent no Waiting, Running, uncreated Child, or child lifecycle. Snapshot contains no values and is not a recovery-plan interface.
+
+The bridge may directly return `*CheckpointNotStarted` only when the call context was canceled before any reliable operation began. Core additionally requires the owning Execution to be canceled before retaining interruption semantics. A healthy execution, wrapped signal, or ordinary context error remains a reliable failure. Never use this signal after calling Store: even context.Canceled can follow an unacknowledged write. The signal confirms no business failure and replenishes no budget.
 
 ## Failure, interruption, and uncertain confirmation
 

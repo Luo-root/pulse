@@ -63,6 +63,286 @@ func (p *checkpointProbe) hooks() CheckpointHooks {
 	}
 }
 
+func TestCheckpointScopeFailureReturnsToParentChain(t *testing.T) {
+	for _, mode := range []string{"failed", "retry", "caught"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			child := mustNew(t, ctx, "failed-scope-child")
+			input := NewKey[int]("scope-input")
+			managedTestOK(t, child.DeclareInput(NewPort(input)))
+			bodies := 0
+			mustAdd(t, child, NewNode("body", "已失败scope不能重跑", nil, nil, func(*RunCtx) error { bodies++; return nil }))
+			root := mustNew(t, ctx, "failed-scope-parent")
+			var aspects []Aspect
+			if mode == "retry" {
+				aspects = []Aspect{Retry(2, 0)}
+			} else if mode == "caught" {
+				aspects = []Aspect{func(rc *RunCtx, next func(*RunCtx) error) error { _ = next(rc); return nil }}
+			}
+			managedTestOK(t, Sub(root, "mount", "父链处理已确认的子失败", []SubBind{Fix(input, 1)}, child, aspects...))
+			probe := &checkpointProbe{}
+			hooks := probe.hooks()
+			opens := 0
+			var failure *CheckpointScopeFailure
+			hooks.OpenChild = func(_ context.Context, req CheckpointChild) ([]NodeCheckpoint, error) {
+				opens++
+				if opens == 1 {
+					failure = &CheckpointScopeFailure{Scope: req.Attempt}
+					return nil, failure
+				}
+				return nil, nil
+			}
+			e, err := root.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+			managedTestOK(t, err)
+			managedTestOK(t, e.Start())
+			err = e.Wait()
+			if e.checkpointErr() != nil || isCheckpointFailure(err) {
+				t.Fatalf("confirmed business failure latched reliability failure: %v", err)
+			}
+			if mode == "failed" {
+				if !errors.Is(err, failure) || bodies != 0 || len(probe.failures) != 1 || len(probe.commits) != 0 {
+					t.Fatalf("failed scope reran/committed: err=%v bodies=%d failures=%v commits=%d", err, bodies, probe.failures, len(probe.commits))
+				}
+			} else {
+				wantBodies, wantOpens := 0, 1
+				if mode == "retry" {
+					wantBodies, wantOpens = 1, 2
+				}
+				if err != nil || bodies != wantBodies || opens != wantOpens {
+					t.Fatalf("parent decision lost: err=%v bodies=%d opens=%d", err, bodies, opens)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckpointScopeFailureRejectsMisuse(t *testing.T) {
+	for _, shape := range []string{"wrong", "empty", "nil", "wrapped", "joined", "records", "panic", "other-hook"} {
+		t.Run(shape, func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			child := mustNew(t, ctx, "scope-misuse-child")
+			input := NewKey[int]("scope-input")
+			managedTestOK(t, child.DeclareInput(NewPort(input)))
+			mustAdd(t, child, NewNode("body", "不得运行", nil, nil, func(*RunCtx) error { t.Error("invalid signal ran child"); return nil }))
+			root := mustNew(t, ctx, "scope-misuse-parent")
+			managedTestOK(t, Sub(root, "mount", "可靠错误不能被吞", []SubBind{Fix(input, 1)}, child,
+				func(rc *RunCtx, next func(*RunCtx) error) error { _ = next(rc); return nil }, Retry(2, 0)))
+			probe := &checkpointProbe{}
+			hooks := probe.hooks()
+			if shape == "other-hook" {
+				hooks.OpenAttempt = func(context.Context, CheckpointAttemptRequest) (CheckpointAttempt, error) {
+					return CheckpointAttempt{}, &CheckpointScopeFailure{Scope: "root"}
+				}
+			}
+			hooks.OpenChild = func(_ context.Context, req CheckpointChild) ([]NodeCheckpoint, error) {
+				failure := &CheckpointScopeFailure{Scope: req.Attempt}
+				switch shape {
+				case "wrong":
+					failure.Scope = "another-scope"
+				case "empty":
+					failure.Scope = ""
+				case "nil":
+					return nil, (*CheckpointScopeFailure)(nil)
+				case "wrapped":
+					return nil, fmt.Errorf("backend: %w", failure)
+				case "joined":
+					return nil, errors.Join(failure, errors.New("save failed"))
+				case "records":
+					return []NodeCheckpoint{{NodeID: "body", Reason: NodeCompleted}}, failure
+				case "panic":
+					panic(failure)
+				}
+				return nil, failure
+			}
+			e, err := root.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+			managedTestOK(t, err)
+			managedTestOK(t, e.Start())
+			err = e.Wait()
+			if !isCheckpointFailure(err) || len(probe.failures) != 0 || len(probe.commits) != 0 {
+				t.Fatalf("invalid signal escaped reliability latch: type=%T failures=%v commits=%d", err, probe.failures, len(probe.commits))
+			}
+		})
+	}
+}
+
+func TestCheckpointFailedAliasRestoresReadOnly(t *testing.T) {
+	for _, terminal := range []StreamTerminal{StreamFailed, StreamCanceled} {
+		t.Run(string(terminal), func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			input, alias := NewKey[Stream[int]]("input"), NewKey[Stream[int]]("alias")
+			child := mustNew(t, ctx, "failed-alias-pass")
+			managedTestOK(t, child.DeclareInput(NewPort(input)))
+			managedTestOK(t, child.DeclareOutput(NewPort(input)))
+			root := mustNew(t, ctx, "failed-alias-root")
+			managedTestOK(t, root.DeclareInput(NewPort(input)))
+			managedTestOK(t, Sub(root, "pass", "已确认透传别名", []SubBind{In(input, input), Out(input, alias)}, child))
+			calls := 0
+			mustAdd(t, root, NewNode("reader", "只读失败引用", Requires(alias), nil, func(rc *RunCtx) error {
+				calls++
+				stream, err := Get(rc, alias)
+				if err != nil {
+					return err
+				}
+				if snapshot := stream.Snapshot(); snapshot.Terminal != StreamFailed || snapshot.LastSequence != 0 {
+					t.Errorf("failed alias loaded messages or lost terminal: %+v", snapshot)
+				}
+				stopErr := stream.Stop(rc)
+				var stoppedFailure *CheckpointScopeFailure
+				if !errors.As(stopErr, &stoppedFailure) || isCheckpointFailure(stopErr) {
+					t.Errorf("read-only failed alias Stop wrote or lost failure: %v", stopErr)
+				}
+				_, err = stream.Receive(rc)
+				return err
+			}))
+			probe := &checkpointProbe{}
+			hooks := probe.hooks()
+			hooks.StreamHooks = &CheckpointStreamHooks{
+				Open: func(context.Context, CheckpointStreamOpen) (CheckpointStreamRecord, error) {
+					t.Error("failed alias reopened source")
+					return CheckpointStreamRecord{}, errors.New("must not open")
+				},
+				Append: func(context.Context, CheckpointStreamAppend) error { t.Error("failed alias appended"); return nil },
+				OpenMessage: func(context.Context, CheckpointMessageAttemptRequest) (CheckpointMessageAttempt, error) {
+					t.Error("failed alias opened message")
+					return CheckpointMessageAttempt{}, nil
+				},
+				FailMessage: func(context.Context, string) error { t.Error("failed alias failed message"); return nil },
+				Commit: func(context.Context, CheckpointMessageCommit) error {
+					t.Error("failed alias acked/stopped")
+					return nil
+				},
+				Finish: func(context.Context, CheckpointStreamFinish) error { t.Error("alias owns no writer"); return nil },
+			}
+			var in Inputs
+			managedTestOK(t, SkipSeed(&in, input))
+			e, err := root.NewExecution(ctx, in, WithExecCheckpoint("root", hooks))
+			managedTestOK(t, err)
+			descriptor := &CheckpointStreamDescriptor{ID: CheckpointStreamID{Scope: "producer-scope", NodeID: "source", Key: "source-stream", Group: "default", Generation: 1}, Graph: "producer", Attempt: "failed-root", Element: reflect.TypeFor[int](), Source: CheckpointStreamSource{ID: "finite"}, Capacity: 1, Terminal: terminal}
+			err = e.RestoreNodes([]NodeCheckpoint{{NodeID: "pass", Reason: NodeCompleted, Outputs: []CheckpointOutput{{Key: checkpointKey(alias.asRef()), State: SlotStateReady, Stream: descriptor}}}})
+			if terminal == StreamCanceled {
+				if err == nil {
+					t.Fatal("canceled alias accepted as confirmed business failure")
+				}
+				return
+			}
+			managedTestOK(t, err)
+			managedTestOK(t, e.Start())
+			err = e.Wait()
+			var failure *CheckpointScopeFailure
+			if calls != 1 || !errors.As(err, &failure) || failure.Scope != "producer-scope" || isCheckpointFailure(err) {
+				t.Fatalf("failed alias did not propagate business failure without hooks: calls=%d err=%v", calls, err)
+			}
+		})
+	}
+}
+
+func TestCheckpointNotStartedCancellationIsNarrow(t *testing.T) {
+	for _, shape := range []string{"direct-canceled", "direct-healthy", "wrapped", "raw-canceled", "nil", "latched"} {
+		t.Run(shape, func(t *testing.T) {
+			g := mustNew(t, t.Context(), "not-started-check")
+			e, err := g.NewExecution(t.Context(), Inputs{}, WithExecCheckpoint("root", (&checkpointProbe{}).hooks()))
+			managedTestOK(t, err)
+			defer e.Cancel()
+			if shape != "direct-healthy" {
+				e.Cancel()
+			}
+			cause := error(&CheckpointNotStarted{})
+			switch shape {
+			case "wrapped":
+				cause = fmt.Errorf("save: %w", cause)
+			case "raw-canceled":
+				cause = context.Canceled
+			case "nil":
+				cause = (*CheckpointNotStarted)(nil)
+			case "latched":
+				_ = e.stopCheckpoint("save", errors.New("uncertain save"))
+			}
+			err = e.callCheckpoint("open attempt", func() error { return cause })
+			if shape == "direct-canceled" {
+				if !isExecutionCancellation(err) || e.checkpointErr() != nil {
+					t.Fatalf("pre-operation cancel became reliable failure: %v", err)
+				}
+			} else if !isCheckpointFailure(err) || e.checkpointErr() == nil {
+				t.Fatalf("unsafe cancellation downgraded: %s: %T", shape, err)
+			}
+		})
+	}
+}
+
+func TestCheckpointFailedAliasSiblingCancelCanRetry(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	input, alias := NewKey[Stream[int]]("in"), NewKey[Stream[int]]("alias")
+	pass := mustNew(t, ctx, "sibling-pass")
+	managedTestOK(t, pass.DeclareInput(NewPort(input)))
+	managedTestOK(t, pass.DeclareOutput(NewPort(input)))
+	child := mustNew(t, ctx, "sibling-child")
+	managedTestOK(t, child.DeclareInput(NewPort(input)))
+	managedTestOK(t, Sub(child, "pass", "", []SubBind{In(input, input), Out(input, alias)}, pass))
+	entered := make(chan struct{})
+	mustAdd(t, child, NewNode("reader", "等待兄弟进入hook后才失败", Requires(alias), nil, func(rc *RunCtx) error {
+		select {
+		case <-entered:
+		case <-rc.Context().Done():
+			return rc.Context().Err()
+		}
+		stream, err := Get(rc, alias)
+		if err != nil {
+			return err
+		}
+		_, err = stream.Receive(rc)
+		return err
+	}))
+	var bodies atomic.Int32
+	mustAdd(t, child, NewNode("sibling", "第二次才进入业务", nil, nil, func(*RunCtx) error { bodies.Add(1); return nil }))
+	parent := mustNew(t, ctx, "sibling-parent")
+	managedTestOK(t, Sub(parent, "mount", "父Retry仍可推进", []SubBind{FixSkip(input)}, child, Retry(2, 0)))
+	probe := &checkpointProbe{}
+	hooks := probe.hooks()
+	openAttempt := hooks.OpenAttempt
+	var siblingCalls atomic.Int32
+	hooks.OpenAttempt = func(ctx context.Context, req CheckpointAttemptRequest) (CheckpointAttempt, error) {
+		if req.NodeID == "sibling" && siblingCalls.Add(1) == 1 {
+			close(entered)
+			<-ctx.Done()
+			return CheckpointAttempt{}, &CheckpointNotStarted{} // 严格未进入存储，非普通Save取消。
+		}
+		return openAttempt(ctx, req)
+	}
+	opens := 0
+	hooks.OpenChild = func(_ context.Context, req CheckpointChild) ([]NodeCheckpoint, error) {
+		if req.Graph != "sibling-child" {
+			return nil, nil
+		}
+		opens++
+		if opens > 1 {
+			return nil, nil
+		}
+		descriptor := &CheckpointStreamDescriptor{ID: CheckpointStreamID{Scope: "failed-source", NodeID: "source", Key: "stream", Group: "default", Generation: 1}, Graph: "producer", Attempt: "source-root", Element: reflect.TypeFor[int](), Source: CheckpointStreamSource{ID: "finite"}, Capacity: 1, Terminal: StreamFailed}
+		return []NodeCheckpoint{{NodeID: "pass", Reason: NodeCompleted, Outputs: []CheckpointOutput{{Key: checkpointKey(alias.asRef()), State: SlotStateReady, Stream: descriptor}}}}, nil
+	}
+	hooks.StreamHooks = &CheckpointStreamHooks{
+		Open: func(context.Context, CheckpointStreamOpen) (CheckpointStreamRecord, error) {
+			t.Error("failed source Open")
+			return CheckpointStreamRecord{}, nil
+		},
+		Append: func(context.Context, CheckpointStreamAppend) error { t.Error("failed source Append"); return nil },
+		OpenMessage: func(context.Context, CheckpointMessageAttemptRequest) (CheckpointMessageAttempt, error) {
+			t.Error("failed source OpenMessage")
+			return CheckpointMessageAttempt{}, nil
+		},
+		FailMessage: func(context.Context, string) error { t.Error("failed source FailMessage"); return nil },
+		Commit:      func(context.Context, CheckpointMessageCommit) error { t.Error("failed source Commit"); return nil },
+		Finish:      func(context.Context, CheckpointStreamFinish) error { t.Error("alias has no writer"); return nil },
+	}
+	e, err := parent.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+	managedTestOK(t, err)
+	managedTestOK(t, e.Start())
+	managedTestOK(t, e.Wait())
+	if e.checkpointErr() != nil || opens != 2 || bodies.Load() != 1 {
+		t.Fatalf("sibling cleanup blocked remaining retry: opens=%d bodies=%d latch=%v", opens, bodies.Load(), e.checkpointErr())
+	}
+}
+
 func checkpointTestContext(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

@@ -66,6 +66,12 @@ Scope 不是 Path 或 ExecutionID 的拼接。Durable 在原子存储变更中�
 
 Store/Codec/恢复钩子的错误或 panic 是 CheckpointError。即使错误链含 ErrSkipped，仍必须失败，errors.Is/As 保留原原因。整棵执行树共享可靠失败锁存，父 Retry 或外层切面吞掉返回值也不能让运行继续提交并假称成功。
 
+更深层 Sub 的已确认流别名可携带经过集成层完整核验的 failed 来源 descriptor：Core 只恢复不含消息、不调用 Open 的本地失败端点，接收传播业务失败；不能生产/确认，也不视作成功 EOF。仅 Sub 别名允许这一引用，来源节点的完整成功成果和 canceled 来源仍拒绝。集成层须验证来源根已 failed、祖先有效、历史身份一致，不能放宽 failed source 的 Open/Send/Ack。
+
+唯一的显式业务恢复信号是 OpenChild 直接返回非 nil `*CheckpointScopeFailure`：Scope 非空且匹配本次 Attempt、成果集合为空，桥已完整校验并可靠确认该 scope 内的最终业务失败。Core 不安装恢复计划，将它交给父完整链处理；不替父 Retry/切面确认结论，不复活 failed 流或重跑 confirmed 别名。包装、错 scope、同时返回成果或其他 hook 使用该类型仍是可靠失败。根作用域由集成层在解码/恢复事件/Start 前返回相同业务失败，此时执行未启动；原错误文本/身份不恢复。
+
+桥在任何可靠操作尚未开始、调用域已取消时可直接返回 CheckpointNotStarted；Core 仅在所属 Execution 也已取消时保持为中断。包装信号、健康执行或普通 context 错误仍可靠失败，Store 已被调用后的错误绝不能标为未开始。
+
 可靠操作在开始提交前检查其适用的上下文，已取消时不开始新提交；真实失败的确认仍以上述所属 Execution 上下文为准。确认已经成功后，随后发生的取消不撤销记录。Store 实际写成却报错时，本次停止，不重试、不回滚，Resume 重读权威记录。持久尝试只记录失败状态，不自动保存可能含业务敏感值的错误文本；跨进程遇到耗尽状态返回明确的次数耗尽错误。
 
 完成或正常跳过的节点结论在可靠 Commit 前确定。Commit 与发布成功后，节点收尾和引擎观测复用已确认结论，不再检查同一业务错误对象来改判。宿主后续取消或其他节点的真实失败仍按各自的整轮终态处理，已确认记录保留。
