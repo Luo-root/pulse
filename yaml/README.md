@@ -352,7 +352,9 @@ nodes:
 
 所有 graphs 声明都会检查。没有任何引用的 spec 缺少挂载接口：未解决的 Requires 可能是未来的 in 输入，因此不判缺来源。已知 literal / skip seed 仍是真实外部来源；同键再有节点 Provides 时，Load 与 Analyze 都以 `ErrDuplicateSource` 拒绝。空节点、重复 id、已知来源冲突、引用与依赖环等仍检查，Load 还检查其工厂登记和实际类型。模板中的具体嵌套引用仍按其接线检查。
 
-未引用模板只借用校验根已应用的默认声明（Defaults），不会重放 Graph Option，也不会带入宿主预置的节点、端口或 Sub 接线；模板数量不增加根 Option 的调用次数，根与模板可各自拥有同名节点。Load 保留额度和图级切面对静态流检查的影响，Analyze 仍不证明真实流约束。模板检查只读 Topology.Problems，不调用 Validate 封口；成功或后续模板失败都不会因此封住宿主持有的共享子图。根 Option 本身的任意外部副作用不由加载器回滚。
+未引用模板自身的 seeds 也保留固定输入事实：Load 用只装不跑的临时宿主，将它们翻成与实际挂载相同的 Fix / FixSkip；未知入口只用普通 In，仍是未知，不要求未来的运行输入。无有效切面时，核心可沿普通值 relay 和嵌套绑定传播确定的 skip，免报实际不会产生的无人读取流。literal-ready 或未知输入仍可能产生流；有效切面也可能写输出，不能只凭业务体会跳过就豁免读取检查。Analyze 仍不从类型标签证明这些真实流约束。
+
+未引用模板只借用校验根已应用的默认声明（Defaults），不会重放 Graph Option，也不会带入宿主预置的节点、端口或 Sub 接线；临时宿主不再声明一份默认值，模板数量不增加根 Option 的调用次数，根与模板可各自拥有同名节点。Load 保留额度和图级切面对静态流检查的影响。模板检查只读 Topology.Problems，不创建 Execution，也不调用 Validate 封口；临时宿主不进入返回的根图或 SeedPlan，成功或后续模板失败都不会因此封住宿主持有的共享子图。根 Option 本身的任意外部副作用不由加载器回滚。
 
 ### 子图的 timeout 与 retry
 

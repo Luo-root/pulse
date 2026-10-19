@@ -980,8 +980,8 @@ nodes:
 	}
 }
 
-// `skip: true` 的 seed 只把槽标成跳过，`from` 没有语义——装配期的 `seedOne`
-// 与运行期的装配都是直接 `SkipSeed` 并忽略 `from`，顶层的
+// `skip: true` 的 seed 只把槽标成跳过，`from` 没有语义——装配期的 `seedBinds`
+// 以 FixSkip 保留 skip 并忽略 `from`，顶层的
 // `SeedPlan.Inputs` 也一样。所以子图里 `skip: true` 带着 `env` / `file` /
 // `context` 不该被拒；只有**要种值**的那条才必须给得出 `literal`。
 func TestLoadSubgraphSkipSeedIgnoresFrom(t *testing.T) {

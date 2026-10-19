@@ -241,7 +241,17 @@ func subBinds(n NodeSpec, graphName string, child GraphSpec, reg *pulse.Registry
 	// 子图自己声明的 `seeds:` **不再写进子图定义**（值属于一次运行）：它翻成这个挂载点上
 	// 的一组 `pulse.Fix` 绑定——「这一步给子图那条进口一个常量」。声明那一半（端口）由
 	// `declarePorts` 在子图那侧补上（见那里）。顺序按键名排序，报文才稳定。
-	for _, s := range sortedSeeds(child.Seeds) {
+	seededBinds, err := seedBinds(reg, graphName, child.Seeds)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", n.ID, err)
+	}
+	return append(binds, seededBinds...), nil
+}
+
+// seedBinds 供实际挂载与未引用模板共用：一次构造同时对账类型/值并保留固定 skip 事实。
+func seedBinds(reg *pulse.Registry, graphName string, seeds []SeedSpec) ([]pulse.SubBind, error) {
+	binds := make([]pulse.SubBind, 0, len(seeds))
+	for _, s := range sortedSeeds(seeds) {
 		var (
 			b   pulse.SubBind
 			err error
@@ -252,7 +262,7 @@ func subBinds(n NodeSpec, graphName string, child GraphSpec, reg *pulse.Registry
 			b, err = pulse.FixByName(reg, s.Key.Name, s.Key.Type, s.From.Value)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("node %q: graph %q seed %q: %w", n.ID, graphName, s.Key.Name, err)
+			return nil, fmt.Errorf("graph %q seed %q: %w", graphName, s.Key.Name, err)
 		}
 		binds = append(binds, b)
 	}
@@ -566,8 +576,10 @@ func (a *assembler) ports(nodeID string, keys map[string]string, side string) ([
 // 那条键自己来（`KeyShape.Type` 就是登记表的类型记号），形状与真被引用时由 `in:` 声明的一致。
 //
 // 收集顺序是确定的（节点声明序 × Requires 顺序 × 首次出现），所以端口表与报文顺序都稳定。
-func (a *assembler) declareSpecInputs(g *pulse.Graph, name string) error {
+// 同时返回校验宿主的入口与普通 In 绑定，仍不为未知入口编造值或 skip。
+func (a *assembler) declareSpecInputs(g *pulse.Graph, name string) ([]pulse.Port, []pulse.SubBind, error) {
 	var ports []pulse.Port
+	var binds []pulse.SubBind
 	seen := make(map[string]struct{})
 	for _, ns := range g.Topology().Nodes {
 		for _, ks := range ns.Requires {
@@ -580,49 +592,55 @@ func (a *assembler) declareSpecInputs(g *pulse.Graph, name string) error {
 			seen[ks.Name] = struct{}{}
 			ref, err := a.reg.ResolveKey(ks.Name, ks.Type)
 			if err != nil {
-				return fmt.Errorf("%s%w", at(name), err)
+				return nil, nil, fmt.Errorf("%s%w", at(name), err)
 			}
 			ports = append(ports, pulse.PortRef(ref))
+			// 校验宿主用普通 In 接入口，不制造值或 skip；未来输入仍是未知。
+			binds = append(binds, pulse.InRef(ref, ref))
 		}
 	}
 	if err := g.DeclareInput(ports...); err != nil {
-		return fmt.Errorf("%s%w", at(name), err)
+		return nil, nil, fmt.Errorf("%s%w", at(name), err)
 	}
-	return nil
+	return ports, binds, nil
 }
 
-// seedOne 把子图声明里的一条 seed 在**装图期**对一次账：键有没有登记、类型记号对不对、
-// 值能不能对齐到那个类型、是不是 nil。
-//
-// 它**不碰任何图**（值属于一次运行，见 subBinds 那段）：真正把值送到子图那一步的是
-// 挂载点上的 `pulse.Fix` 绑定。这里只留「这条 seed 站不站得住」这一半，供**谁也引用不到**
-// 的那些 spec 用——那种 spec 没有挂载点，`subBinds` 没有机会跑，而「写错了没人报」
-// 比「报了」难查得多。
-func seedOne(reg *pulse.Registry, graphName string, s SeedSpec) error {
-	var in pulse.Inputs
-	if s.Skip {
-		if err := pulse.SkipSeedByName(&in, reg, s.Key.Name, s.Key.Type); err != nil {
-			return fmt.Errorf("pulse/yaml: graph %q seed %q: %w", graphName, s.Key.Name, err)
-		}
-		return nil
+// templateTopology 只在有固定 seed 时加一层校验宿主，让事实走现有 Fix/FixSkip
+// 管道。未知入口仍用 In；不建执行、不调用 Validate，也不把宿主结构带进模板。
+func templateTopology(g *pulse.Graph, seeded []pulse.SubBind, ports []pulse.Port, unknown []pulse.SubBind) (*pulse.Topology, error) {
+	if len(seeded) == 0 {
+		return g.Topology(), nil
 	}
-	if err := pulse.SeedByName(&in, reg, s.Key.Name, s.Key.Type, s.From.Value); err != nil {
-		return fmt.Errorf("pulse/yaml: graph %q seed %q: %w", graphName, s.Key.Name, err)
+	// 默认声明已在 g 上，空宿主不重放也不重复声明它们。
+	host, err := pulse.New(g.ID(), "")
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	if err := host.DeclareInput(ports...); err != nil {
+		return nil, err
+	}
+	if err := pulse.Sub(host, "template", "", append(seeded, unknown...), g); err != nil {
+		return nil, err
+	}
+	// inspect 与嵌套定位只看 spec；未知流别名的分流等诊断可能归到宿主，
+	// 必须保留整树 Problems，不能因剥掉校验宿主而漏掉已有流检查。
+	top := host.Topology()
+	child := top.Nodes[0].Sub
+	child.Problems = top.Problems
+	return child, nil
 }
 
 // checkSubSeeds 在 Load 期拦掉子图 seed 本身的毛病（C3 + 重复声明）：
 //
 //   - **非 skip** 的 seed 要靠宿主 IO（`env` / `file` / `context`）——子图的
 //     `SeedPlan` 不存在，只有 `literal` 能种。`skip: true` 那条不算：它只把
-//     槽标成跳过，`from` 没有语义（`seedOne` 与顶层 `SeedPlan.Inputs` 都是
-//     直接 `SkipSeed` 并忽略 `from`），所以照顶层的样子放行；
+//     槽标成跳过，`from` 没有语义（`seedBinds` 与顶层 `SeedPlan.Inputs` 都只
+//     保留 skip 并忽略 `from`），所以照顶层的样子放行；
 //   - 同一张图里同一条键声明**两次** seed——第二次种值会被幂等首写静默忽略，
 //     到底哪个值生效取决于声明顺序，两行看着都像是对的。
 //
-// 键名 / 类型 / 值能不能对上登记表，由装配期的校验树**种一遍**来判
-// （seedOne 与真图同一个函数）。
+// 键名 / 类型 / 值能不能对上登记表，由装配期的 seedBinds 构造固定绑定来判，
+// 未引用模板与实际挂载用同一个函数。
 func checkSubSeeds(graphs map[string]GraphSpec) error {
 	for _, name := range sortedNames(graphs) {
 		seen := make(map[string]bool, len(graphs[name].Seeds))
