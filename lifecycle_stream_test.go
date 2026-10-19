@@ -266,13 +266,17 @@ func TestCheckpointWriterInstallsTerminalWithinOperation(t *testing.T) {
 	defer e.Cancel()
 	rc := newRunCtx(e, node, ctx)
 	defer rc.Cancel()
-	messageTestOK(t, e.runCheckpointChain(node, rc, func(rc *RunCtx) error {
+	err, confirmed := e.runCheckpointChain(node, rc, func(rc *RunCtx) error {
 		writer, err := OpenStream(rc, key, WithStreamSource("empty", true))
 		if err == nil {
 			stream = Stream[int]{state: writer.state}
 		}
 		return err
-	}))
+	})
+	messageTestOK(t, err)
+	if confirmed != NodeCompleted {
+		t.Fatalf("completed writer has no confirmed result: %s", confirmed)
+	}
 	if snapshot := stream.Snapshot(); snapshot.Terminal != StreamCompleted || len(stream.state.operation.gate) != 0 {
 		t.Fatalf("confirmed terminal was not installed before unlocking: %+v", snapshot)
 	}
@@ -680,11 +684,96 @@ func TestLifecycleStreamFinishClassifiesLatchedFailure(t *testing.T) {
 
 type lifecycleFinishWitness struct {
 	cause   error
+	inspect func() error
 	publish func(error)
 }
 
-func (w lifecycleFinishWitness) failure() error   { return w.cause }
+func (w lifecycleFinishWitness) failure() error {
+	if w.inspect != nil {
+		return w.inspect()
+	}
+	return w.cause
+}
 func (w lifecycleFinishWitness) finish(err error) { w.publish(err) }
+
+func TestCheckpointRechecksStreamFailureAfterAcquiringOperation(t *testing.T) {
+	for _, origin := range []string{"business", "rpc-canceled", "rpc-deadline", "marked-cancellation", "reliable-failure"} {
+		t.Run(origin, func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			g := mustNew(t, ctx, "locked-stream-conclusion")
+			key := NewKey[Stream[int]]("stream")
+			node := NewNode("source", "取门后确定写端结论", nil, Provides(key), nil)
+			mustAdd(t, g, node)
+			probe := &checkpointProbe{}
+			hooks := checkpointStreamTestHooks(probe)
+			finishes := 0
+			hooks.StreamHooks.Finish = func(context.Context, CheckpointStreamFinish) error { finishes++; return nil }
+			e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+			managedTestOK(t, err)
+			defer e.Cancel()
+			rc := newRunCtx(e, node, ctx)
+			defer rc.Cancel()
+			opened := make(chan *managedStream[int], 1)
+			checked := make(chan struct{})
+			type result struct {
+				err       error
+				confirmed NodeFinishReason
+			}
+			finished := make(chan result, 1)
+			go func() {
+				err, confirmed := e.runCheckpointChain(node, rc, func(rc *RunCtx) error {
+					writer, err := OpenStream(rc, key, WithStreamSource("empty", true))
+					if err != nil {
+						return err
+					}
+					if err := writer.state.operation.lock(rc); err != nil {
+						return err
+					}
+					opened <- writer.state
+					var once sync.Once
+					// 真实写端首次检查已看到 nil；新原因只在等待操作门期间到达。
+					rc.streams.add(lifecycleFinishWitness{inspect: func() error {
+						once.Do(func() { close(checked) })
+						return nil
+					}, publish: func(error) {}})
+					return nil
+				})
+				finished <- result{err: err, confirmed: confirmed}
+			}()
+			stream := waitCheckpointSignal(t, ctx, opened)
+			waitCheckpointSignal(t, ctx, checked)
+			var cause error = errors.New("reading group failed while writer waited for its operation")
+			wantConfirmations := 1
+			switch origin {
+			case "rpc-canceled":
+				cause = fmt.Errorf("RPC: %w", context.Canceled)
+			case "rpc-deadline":
+				cause = fmt.Errorf("RPC: %w", context.DeadlineExceeded)
+			case "marked-cancellation":
+				cause, wantConfirmations = &executionCancellation{cause: context.Canceled}, 0
+			case "reliable-failure":
+				cause, wantConfirmations = &CheckpointError{Operation: "late stream operation", Err: cause}, 0
+			}
+			stream.recordFailure(cause)
+			stream.operation.unlock()
+			got := waitCheckpointSignal(t, ctx, finished)
+			if !errors.Is(got.err, cause) || got.confirmed != "" || len(probe.commits) != 0 || len(probe.failures) != wantConfirmations || finishes != wantConfirmations {
+				t.Fatalf("late origin changed confirmation: err=%T confirmed=%s commits=%d failures=%v finishes=%d want=%d", got.err, got.confirmed, len(probe.commits), probe.failures, finishes, wantConfirmations)
+			}
+			if origin == "marked-cancellation" && !isExecutionCancellation(got.err) {
+				t.Fatal("lost cancellation origin")
+			}
+			if wantConfirmations != 0 {
+				stream.mu.Lock()
+				terminal, terminalErr := stream.terminal, stream.err
+				stream.mu.Unlock()
+				if terminal != StreamFailed || !errors.Is(terminalErr, cause) {
+					t.Fatalf("known failure was not installed: terminal=%s err=%v", terminal, terminalErr)
+				}
+			}
+		})
+	}
+}
 
 func TestLifecycleStreamOriginIsLatchedBeforePublication(t *testing.T) {
 	for _, message := range []bool{false, true} {

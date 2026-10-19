@@ -586,11 +586,10 @@ func TestCheckpointFanOutRestoreReadyCancellationInterruptsWait(t *testing.T) {
 			if err := f.exec.ctx.Err(); err != nil {
 				t.Fatalf("execution was already canceled before the probe: %v", err)
 			}
-			wantFailures := 0
 			if nodeOnly {
-				// 只取消本层，Open 所用的根执行 ctx 此刻仍健康。
+				// 业务已返回 nil，读取收尾被本层取消打断；没有形成已知业务失败，
+				// 即使 Open 使用的根执行 ctx 仍健康，也保留 active 而不消耗预算。
 				waitCheckpointSignal(t, f.ctx, cancelNode)()
-				wantFailures = 1 // 本层终止是真实节点失败，不冒充整次执行的外部中断。
 			} else {
 				f.exec.Cancel()
 			}
@@ -598,7 +597,7 @@ func TestCheckpointFanOutRestoreReadyCancellationInterruptsWait(t *testing.T) {
 			if err := waitCheckpointSignal(t, f.ctx, f.finished); !errors.Is(err, context.Canceled) {
 				t.Errorf("canceled reader closeout: %v", err)
 			}
-			f.assertConfirmation(t, 0, wantFailures)
+			f.assertConfirmation(t, 0, 0)
 			f.unblockOpen()
 			if err := f.exec.Wait(); !errors.Is(err, context.Canceled) {
 				t.Fatalf("canceled execution: %v", err)

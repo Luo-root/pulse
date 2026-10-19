@@ -70,6 +70,115 @@ func checkpointTestContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// Commit 是确定性屏障：确认后任何错误方法都不能再由引擎调用。
+// 不依赖检查次数，避免把第 26 次异常简单挪到第 27 次。
+type checkpointConfirmedSkip struct {
+	confirmed atomic.Bool
+	lateCalls atomic.Int32
+	payload   string
+}
+
+func (e *checkpointConfirmedSkip) inspect() {
+	if !e.confirmed.Load() {
+		return
+	}
+	e.lateCalls.Add(1)
+	switch e.payload {
+	case "nil":
+		panic(nil)
+	case "self":
+		panic(e)
+	default:
+		panic("error inspected after checkpoint confirmation")
+	}
+}
+func (e *checkpointConfirmedSkip) Error() string { e.inspect(); return "confirmed skip" }
+func (e *checkpointConfirmedSkip) Is(target error) bool {
+	e.inspect()
+	return target == ErrSkipped
+}
+func (e *checkpointConfirmedSkip) As(any) bool   { e.inspect(); return false }
+func (e *checkpointConfirmedSkip) Unwrap() error { e.inspect(); return nil }
+
+func TestCheckpointConfirmationFreezesNodeResult(t *testing.T) {
+	for _, observed := range []bool{false, true} {
+		for _, shape := range []string{"ordinary", "timeout", "retry"} {
+			for _, payload := range []string{"string", "nil", "self"} {
+				t.Run(fmt.Sprintf("observed=%t/%s/%s", observed, shape, payload), func(t *testing.T) {
+					ctx := checkpointTestContext(t)
+					g := mustNew(t, ctx, "confirmed-node-result")
+					key := NewKey[int]("result")
+					cause := &checkpointConfirmedSkip{payload: payload}
+					var aspects []Aspect
+					if shape == "timeout" {
+						aspects = []Aspect{Timeout(time.Hour)}
+					} else if shape == "retry" {
+						aspects = []Aspect{Retry(2, 0)}
+					}
+					mustAdd(t, g, NewNode("source", "确认后复用完整节点结论", nil, Provides(key), func(rc *RunCtx) error {
+						if err := Set(rc, key, 7); err != nil {
+							return err
+						}
+						return cause
+					}, aspects...))
+					managedTestOK(t, g.DeclareOutput(NewPort(key)))
+					probe := &checkpointProbe{}
+					hooks := probe.hooks()
+					commit := hooks.Commit
+					hooks.Commit = func(ctx context.Context, request CheckpointCommit) error {
+						if request.Node.Reason != NodeSkipped {
+							t.Errorf("confirmed reason=%s, want skipped", request.Node.Reason)
+						}
+						cause.confirmed.Store(true)
+						return commit(ctx, request)
+					}
+					var counts [5]atomic.Int32
+					opts := []ExecOption{WithExecCheckpoint("root", hooks)}
+					if observed {
+						opts = append(opts, WithExecObserver(ObserverFunc{
+							GraphStarted: func(Site) { counts[0].Add(1) },
+							Waiting:      func(Site, string) { counts[1].Add(1) },
+							Running:      func(Site, string) { counts[2].Add(1) },
+							Finished: func(_ Site, _ string, reason NodeFinishReason, err error) {
+								counts[3].Add(1)
+								if reason != NodeSkipped || err != cause {
+									t.Errorf("node lost confirmed reason/identity: reason=%s err=%T", reason, err)
+								}
+							},
+							GraphFinished: func(_ Site, reason NodeFinishReason, err error) {
+								counts[4].Add(1)
+								if reason != NodeCompleted || err != nil {
+									t.Errorf("graph changed confirmed success: reason=%s err=%T", reason, err)
+								}
+							},
+						}))
+					}
+					e, err := g.NewExecution(ctx, Inputs{}, opts...)
+					managedTestOK(t, err)
+					managedTestOK(t, e.Start())
+					managedTestOK(t, e.Wait())
+					managedTestOK(t, e.Wait())
+					state := e.Snapshot()
+					if state.Graph.Status != GraphStatusCompleted || state.Nodes[0].Status != NodeStatusSkipped || state.Nodes[0].Err != cause {
+						t.Fatalf("confirmed result changed: graph=%s node=%s err=%T", state.Graph.Status, state.Nodes[0].Status, state.Nodes[0].Err)
+					}
+					value, slot, err := ReadOutput(e, key)
+					if err != nil || value != 7 || slot != SlotStateReady || len(probe.commits) != 1 || len(probe.failures) != 0 || !cause.confirmed.Load() || cause.lateCalls.Load() != 0 {
+						t.Fatalf("confirmation changed after publication: value=%d slot=%s err=%T commits=%d failures=%v confirmed=%t late-calls=%d", value, slot, err, len(probe.commits), probe.failures, cause.confirmed.Load(), cause.lateCalls.Load())
+					}
+					if observed {
+						for index := range counts {
+							if count := counts[index].Load(); count != 1 {
+								t.Errorf("callback %d count=%d, want 1", index, count)
+							}
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestCheckpointPublishesOnlyAfterConfirmation(t *testing.T) {
 	ctx := checkpointTestContext(t)
 	g := mustNew(t, ctx, "confirmation")
@@ -577,6 +686,123 @@ func TestCheckpointDeclarationsAndChannelBoundaries(t *testing.T) {
 			t.Fatal("dynamic channel committed")
 		}
 	})
+}
+
+// 本地取消后的成功/跳过没有可靠提交，仍是活跃尝试，不能凭空消耗失败预算。
+func TestCheckpointLocalCancellationRemainsResumable(t *testing.T) {
+	for _, retry := range []bool{false, true} {
+		for _, skipped := range []bool{false, true} {
+			t.Run(fmt.Sprintf("retry=%t/skip=%t", retry, skipped), func(t *testing.T) {
+				ctx := checkpointTestContext(t)
+				g := mustNew(t, ctx, "local-cancel-resume")
+				key := NewKey[int]("result")
+				calls := 0
+				var aspects []Aspect
+				if retry {
+					aspects = []Aspect{Retry(2, 0)}
+				}
+				mustAdd(t, g, NewNode("work", "取消不确认失败", nil, Provides(key), func(rc *RunCtx) error {
+					calls++
+					if calls == 1 {
+						defer rc.Cancel()
+					}
+					if skipped {
+						return NoValue()
+					}
+					return Set(rc, key, 7)
+				}, aspects...))
+				p := &checkpointProbe{}
+				first, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", p.hooks()))
+				managedTestOK(t, err)
+				managedTestOK(t, first.Start())
+				if err := first.Wait(); !errors.Is(err, context.Canceled) || !isExecutionCancellation(err) {
+					t.Fatalf("local interruption = %v", err)
+				}
+				state := first.Snapshot()
+				if state.Graph.Status != GraphStatusCanceled || state.Nodes[0].Status != NodeStatusCanceled || state.Nodes[0].Outputs[0].State != SlotStatePending {
+					t.Fatalf("interrupted attempt published or became failed: %+v", state)
+				}
+				if len(p.failures) != 0 || len(p.commits) != 0 || calls != 1 {
+					t.Fatalf("interruption consumed budget: failures=%v commits=%d calls=%d", p.failures, len(p.commits), calls)
+				}
+				managedTestOK(t, g.Run(ctx, Inputs{}, WithExecCheckpoint("root", p.hooks())))
+				if calls != 2 || len(p.failures) != 0 || len(p.commits) != 1 {
+					t.Fatalf("resume did not reuse active attempt: calls=%d failures=%v commits=%d", calls, p.failures, len(p.commits))
+				}
+				for _, attempt := range p.latest {
+					if attempt.Index != 1 {
+						t.Fatalf("resume allocated fresh budget: %+v", attempt)
+					}
+				}
+			})
+		}
+	}
+}
+
+// 子执行的已标记中断逐层保留；父 Retry 不能用健康的父 ctx 重判为业务失败。
+func TestCheckpointSubCancellationPreservesAncestorAttempts(t *testing.T) {
+	for _, checkpoint := range []bool{false, true} {
+		for _, skipped := range []bool{false, true} {
+			for _, shape := range []string{"retry", "timeout-retry", "retry-timeout"} {
+				t.Run(fmt.Sprintf("checkpoint=%t/skip=%t/%s", checkpoint, skipped, shape), func(t *testing.T) {
+					ctx := checkpointTestContext(t)
+					child := mustNew(t, ctx, "interrupted-child")
+					key := NewKey[int]("child-out")
+					calls := 0
+					mustAdd(t, child, NewNode("leaf", "取消后仍可认回", nil, Provides(key), func(rc *RunCtx) error {
+						calls++
+						if !checkpoint {
+							// 普通链原样传播来自子执行的取消来源。
+							return &executionCancellation{cause: context.Canceled}
+						}
+						if calls == 1 {
+							defer rc.Cancel()
+						}
+						if skipped {
+							return NoValue()
+						}
+						return Set(rc, key, 7)
+					}))
+					managedTestOK(t, child.DeclareOutput(NewPort(key)))
+					root := mustNew(t, ctx, "retrying-parent")
+					out := NewKey[int]("parent-out")
+					aspects := []Aspect{Retry(2, 0)}
+					if shape == "timeout-retry" {
+						aspects = []Aspect{Timeout(time.Hour), Retry(2, 0)}
+					} else if shape == "retry-timeout" {
+						aspects = []Aspect{Retry(2, 0), Timeout(time.Hour)}
+					}
+					managedTestOK(t, Sub(root, "mount", "保留子执行中断", []SubBind{Out(key, out)}, child, aspects...))
+					probe := &checkpointProbe{}
+					var opts []ExecOption
+					if checkpoint {
+						opts = append(opts, WithExecCheckpoint("root", probe.hooks()))
+					}
+					e, err := root.NewExecution(ctx, Inputs{}, opts...)
+					managedTestOK(t, err)
+					managedTestOK(t, e.Start())
+					got := e.Wait()
+					if !errors.Is(got, context.Canceled) || !isExecutionCancellation(got) || calls != 1 || len(probe.failures) != 0 || len(probe.commits) != 0 {
+						t.Fatalf("ancestor consumed interruption: err=%v calls=%d failures=%v commits=%d", got, calls, probe.failures, len(probe.commits))
+					}
+					if !checkpoint {
+						return
+					}
+					first := make(map[CheckpointAttemptRequest]CheckpointAttempt, len(probe.latest))
+					for request, attempt := range probe.latest {
+						first[request] = attempt
+					}
+					managedTestOK(t, root.Run(ctx, Inputs{}, opts...))
+					if calls != 2 || len(probe.failures) != 0 || len(probe.commits) != 2 {
+						t.Fatalf("resume changed budget: calls=%d failures=%v commits=%d", calls, probe.failures, len(probe.commits))
+					}
+					if !reflect.DeepEqual(first, probe.latest) {
+						t.Fatalf("resume did not reuse all ancestor scopes: before=%v after=%v", first, probe.latest)
+					}
+				})
+			}
+		}
+	}
 }
 
 // 本文件独立于 checkpointProbe，失败确认与根预算的回归可随桥接实现一起落地。

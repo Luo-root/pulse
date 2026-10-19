@@ -127,26 +127,33 @@ func beginAspect(rc *RunCtx, kind AspectKind, name string, limit int) (aspectObs
 
 // run 先经过节点原有的异常保护，再报告终态。切面自己的错误归类也可能 panic，
 // 不能在尚未赋值的命名返回值上 defer 一条 completed；观察开关不改变业务结果。
+// 内置控制层的 next 已就地隔离业务 panic；剩余异常来自控制层自身，
+// 必须在发生处断开故障 error。NamedAspect 仍用 run 保留业务 panic(error) 的身份。
+func (o aspectObservation) runControl(rc *RunCtx, run func(*RunCtx) error) error {
+	return o.run(rc, func(rc *RunCtx) error {
+		return inspectNodeError(func() error { return run(rc) })
+	})
+}
+
 func (o aspectObservation) run(rc *RunCtx, run func(*RunCtx) error) error {
 	err := invokeNode(rc, run)
 	if p := o.pending; p != nil && p.active {
-		o.attempt(AspectAttemptFinished, p.attempt, p.parent, err, p.start)
+		err = o.attempt(AspectAttemptFinished, p.attempt, p.parent, err, p.start)
 	}
-	o.finish(err)
-	return err
+	return o.finish(err)
 }
 
-func (o aspectObservation) emit(event AspectEvent) {
+func (o aspectObservation) emit(event AspectEvent) error {
 	if o.obs == nil {
-		return
+		return event.Err
 	}
-	// 分类可能遍历用户 error；它与观察回调一样只能影响观测，不能改变业务结果。
-	callSafely(func() {
-		e := o.base
-		e.Phase, e.Attempt = event.Phase, event.Attempt
-		e.Scope, e.ParentScope, e.Origin = event.Scope, event.ParentScope, event.Origin
-		e.Duration, e.Delay, e.Timeout = event.Duration, event.Delay, event.Timeout
-		e.Time = time.Now()
+	e := o.base
+	e.Phase, e.Attempt = event.Phase, event.Attempt
+	e.Scope, e.ParentScope, e.Origin = event.Scope, event.ParentScope, event.Origin
+	e.Duration, e.Delay, e.Timeout = event.Duration, event.Delay, event.Timeout
+	e.Time = time.Now()
+	// 错误归因属于引擎控制逻辑；异常必须变成隔离失败，不能和只读回调的 panic 一起丢掉。
+	err := inspectNodeError(func() error {
 		switch e.Phase {
 		case AspectFinished, AspectAttemptFinished, AspectBackoffFinished:
 			e.Reason = finishReason(event.Err)
@@ -158,19 +165,24 @@ func (o aspectObservation) emit(event AspectEvent) {
 				e.Reason = NodeFailed
 			}
 		}
-		e.Err = event.Err
-		if e.Reason == NodeSkipped {
-			e.Err = nil
-		}
-		o.obs.OnAspectEvent(e)
+		return event.Err
 	})
+	if failure, ok := err.(*nodePanicError); ok && failure != nil && failure.inspection {
+		e.Reason = NodeFailed
+	}
+	e.Err = err
+	if e.Reason == NodeSkipped {
+		e.Err = nil
+	}
+	callSafely(func() { o.obs.OnAspectEvent(e) })
+	return err
 }
 
-func (o aspectObservation) finish(err error) {
-	o.emit(AspectEvent{Phase: AspectFinished, Err: err, Duration: time.Since(o.start), Timeout: o.base.Timeout})
+func (o aspectObservation) finish(err error) error {
+	return o.emit(AspectEvent{Phase: AspectFinished, Err: err, Duration: time.Since(o.start), Timeout: o.base.Timeout})
 }
 
-func (o aspectObservation) attempt(phase AspectPhase, a CheckpointAttempt, parent string, err error, start time.Time) {
+func (o aspectObservation) attempt(phase AspectPhase, a CheckpointAttempt, parent string, err error, start time.Time) error {
 	if p := o.pending; p != nil {
 		switch phase {
 		case AspectAttemptStarted:
@@ -190,7 +202,7 @@ func (o aspectObservation) attempt(phase AspectPhase, a CheckpointAttempt, paren
 	if !start.IsZero() {
 		e.Duration = time.Since(start)
 	}
-	o.emit(e)
+	return o.emit(e)
 }
 
 func (o aspectObservation) backoff(rc *RunCtx, a CheckpointAttempt, parent string, delay time.Duration) error {
@@ -217,8 +229,7 @@ func (o aspectObservation) backoff(rc *RunCtx, a CheckpointAttempt, parent strin
 		err = rc.ctx.Err()
 	}
 	e.Phase, e.Err, e.Duration = AspectBackoffFinished, err, time.Since(start)
-	o.emit(e)
-	return err
+	return o.emit(e)
 }
 
 // NamedAspect 显式登记自定义切面的名字并记录进出。它不猜函数名，也不声称知道

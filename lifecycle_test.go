@@ -802,6 +802,223 @@ func TestFailureClassificationNonNilStillCallsCustomAs(t *testing.T) {
 	}
 }
 
+func TestLifecycleTimeoutRetainsCleanedResult(t *testing.T) {
+	business := errors.New("business failed")
+	for _, checkpoint := range []bool{false, true} {
+		for _, cause := range []error{nil, NoValue(), business, fmt.Errorf("RPC: %w", context.Canceled), fmt.Errorf("RPC: %w", context.DeadlineExceeded)} {
+			t.Run(fmt.Sprintf("checkpoint=%t/%v", checkpoint, cause), func(t *testing.T) {
+				ctx := checkpointTestContext(t)
+				g := mustNew(t, ctx, "timeout-cleaned-result")
+				key := NewKey[int]("result")
+				mustAdd(t, g, NewNode("work", "Timeout只判断自己的时限", nil, Provides(key), func(rc *RunCtx) error {
+					defer rc.Cancel()
+					if cause != nil {
+						return cause
+					}
+					return Set(rc, key, 7)
+				}, Timeout(time.Hour)))
+				p := &checkpointProbe{}
+				var opts []ExecOption
+				if checkpoint {
+					opts = []ExecOption{WithExecCheckpoint("root", p.hooks())}
+				}
+				e, err := g.NewExecution(ctx, Inputs{}, opts...)
+				managedTestOK(t, err)
+				managedTestOK(t, e.Start())
+				err = e.Wait()
+				wantReason := finishReason(cause)
+				if cause == nil || isSkipped(cause) {
+					if err != nil {
+						t.Fatalf("cleanup changed successful result: %v", err)
+					}
+				} else if !errors.Is(err, cause) {
+					t.Fatalf("cleanup replaced business error: got %v, want %v", err, cause)
+				}
+				if isCanceled(cause) {
+					wantReason = NodeFailed // 健康执行中独立RPC的context错误是业务失败。
+				}
+				if got := e.Snapshot().Nodes[0].Status; string(got) != string(wantReason) {
+					t.Fatalf("node status=%s, want %s", got, wantReason)
+				}
+				if checkpoint {
+					if (cause == nil || isSkipped(cause)) && (len(p.commits) != 1 || len(p.failures) != 0) {
+						t.Fatalf("successful cleanup not committed: commits=%d failures=%v", len(p.commits), p.failures)
+					}
+					if cause != nil && !isSkipped(cause) && (len(p.commits) != 0 || len(p.failures) != 1) {
+						t.Fatalf("business failure not confirmed: commits=%d failures=%v", len(p.commits), p.failures)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestLifecycleCheckpointNilPanicRejected(t *testing.T) {
+	if os.Getenv("PULSE_TEST_CHECKPOINT_NIL_PANIC") == "1" {
+		for _, operation := range []string{"commit", "open attempt", "chain"} {
+			t.Run(operation, func(t *testing.T) {
+				ctx := checkpointTestContext(t)
+				g := mustNew(t, ctx, "hook-nil-panic")
+				key := NewKey[int]("result")
+				mustAdd(t, g, NewNode("work", "异常退出不得发布", nil, Provides(key), func(rc *RunCtx) error { return Set(rc, key, 7) }))
+				hooks := (&checkpointProbe{}).hooks()
+				if operation == "commit" {
+					hooks.Commit = func(context.Context, CheckpointCommit) error { panic(nil) }
+				} else if operation == "open attempt" {
+					hooks.OpenAttempt = func(context.Context, CheckpointAttemptRequest) (CheckpointAttempt, error) { panic(nil) }
+				}
+				e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks))
+				managedTestOK(t, err)
+				if operation == "chain" {
+					rc := newRunCtx(e, g.nodes[0], e.ctx)
+					defer rc.Cancel()
+					if got := invokeCheckpointChain(func(*RunCtx) error { panic(nil) }, rc); !isPanicFailure(got) {
+						t.Fatalf("chain panic(nil) was lost: %v", got)
+					}
+					return
+				}
+				managedTestOK(t, e.Start())
+				err = e.Wait()
+				var failure *CheckpointError
+				if !errors.As(err, &failure) || failure.Operation != operation || e.checkpointErr() == nil {
+					t.Fatalf("hook panic(nil) was not latched: %v", err)
+				}
+				if got := e.Snapshot().Nodes[0].Outputs[0].State; got == SlotStateReady || (operation == "commit" && got != SlotStatePending) {
+					t.Fatalf("unconfirmed hook published %s", got)
+				}
+			})
+		}
+		return
+	}
+	for _, debug := range []string{"panicnil=0", "panicnil=1"} {
+		t.Run(debug, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLifecycleCheckpointNilPanicRejected$", "-test.timeout=5s")
+			cmd.Env = append(os.Environ(), "PULSE_TEST_CHECKPOINT_NIL_PANIC=1", "GODEBUG="+debug, "GORACE=atexit_sleep_ms=0")
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("checkpoint nil panic escaped: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
+type lifecycleErrorMethodPanic struct {
+	method      string
+	value       any
+	calls       int
+	inspections [3]int
+	onPanic     func()
+}
+
+func (*lifecycleErrorMethodPanic) Error() string { return "error method panic probe" }
+func (e *lifecycleErrorMethodPanic) inspect(method string) {
+	index, trigger := 0, 3
+	if method == "As" {
+		index, trigger = 1, 6
+	} else if method == "Unwrap" {
+		index, trigger = 2, 8
+	}
+	e.inspections[index]++
+	if e.method == method || (e.method == "late-"+method && e.inspections[index] == trigger) {
+		e.calls++
+		if e.onPanic != nil {
+			e.onPanic()
+		}
+		panic(e.value)
+	}
+}
+func (e *lifecycleErrorMethodPanic) Is(target error) bool {
+	if e.method == "skip-target" && target == ErrSkipped {
+		e.calls++
+		if e.onPanic != nil {
+			e.onPanic()
+		}
+		panic(e.value)
+	}
+	e.inspect("Is")
+	return false
+}
+func (e *lifecycleErrorMethodPanic) As(any) bool   { e.inspect("As"); return false }
+func (e *lifecycleErrorMethodPanic) Unwrap() error { e.inspect("Unwrap"); return nil }
+
+func TestLifecycleReturnedErrorPanicContained(t *testing.T) {
+	if os.Getenv("PULSE_TEST_ERROR_METHOD_PANIC") == "1" {
+		for _, method := range []string{"Is", "As", "Unwrap", "skip-target", "late-Is", "late-As", "late-Unwrap"} {
+			for _, shape := range []string{"ordinary", "timeout", "retry", "retry-timeout", "observed-timeout", "observed-retry", "checkpoint", "checkpoint-timeout", "checkpoint-retry", "checkpoint-retry-timeout", "checkpoint-observed-timeout", "checkpoint-observed-retry"} {
+				for _, payload := range []string{"string", "nil", "self"} {
+					t.Run(method+"/"+shape+"/"+payload, func(t *testing.T) {
+						ctx := checkpointTestContext(t)
+						g := mustNew(t, ctx, "error-method-panic")
+						cause := &lifecycleErrorMethodPanic{method: method, value: "inspection failed"}
+						if payload == "nil" {
+							cause.value = nil
+						}
+						if payload == "self" {
+							cause.value = cause
+						}
+						var aspects []Aspect
+						if strings.Contains(shape, "timeout") {
+							aspects = []Aspect{Timeout(time.Hour)}
+						}
+						if strings.Contains(shape, "retry") {
+							aspects = append([]Aspect{Retry(2, 0)}, aspects...)
+						}
+						calls := 0
+						mustAdd(t, g, NewNode("work", "错误方法异常也是失败", nil, nil, func(*RunCtx) error { calls++; return cause }, aspects...))
+						p := &checkpointProbe{}
+						callsAtPanic, failuresAtPanic := 0, 0
+						cause.onPanic = func() { callsAtPanic, failuresAtPanic = calls, len(p.failures) }
+						var opts []ExecOption
+						if strings.HasPrefix(shape, "checkpoint") {
+							opts = []ExecOption{WithExecCheckpoint("root", p.hooks())}
+						}
+						if strings.Contains(shape, "observed") {
+							opts = append(opts, WithExecObserver((&aspectTrace{}).observer()))
+						}
+						e, err := g.NewExecution(ctx, Inputs{}, opts...)
+						managedTestOK(t, err)
+						managedTestOK(t, e.Start())
+						err = e.Wait()
+						// 延迟触发前可能已完成普通失败重试；异常实际发生后不得再次进入业务体。
+						if !isPanicFailure(err) || finishReason(err) != NodeFailed || cause.calls != 1 || calls != callsAtPanic {
+							t.Fatalf("error inspection panic changed control flow: err=%v calls=%d at-panic=%d panics=%d", err, calls, callsAtPanic, cause.calls)
+						}
+						if !strings.HasPrefix(method, "late-") && calls != 1 {
+							t.Fatalf("initial control inspection retried business: calls=%d", calls)
+						}
+						wantFailures := failuresAtPanic + 1 // 检查异常只确认完整节点的根尝试。
+						before := cause.inspections
+						_ = errors.Is(err, ErrSkipped)
+						_ = errors.Is(err, context.Canceled)
+						_ = errors.Is(err, context.DeadlineExceeded)
+						_ = e.Snapshot()
+						_ = e.Wait()
+						if cause.inspections != before {
+							t.Fatal("recovered result traversed the broken error again")
+						}
+						if strings.HasPrefix(shape, "checkpoint") && (len(p.failures) != wantFailures || len(p.commits) != 0) {
+							t.Fatalf("inspection failure was not confirmed: failures=%v commits=%d", p.failures, len(p.commits))
+						}
+					})
+				}
+			}
+		}
+		return
+	}
+	for _, debug := range []string{"panicnil=0", "panicnil=1"} {
+		t.Run(debug, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLifecycleReturnedErrorPanicContained$", "-test.timeout=10s")
+			cmd.Env = append(os.Environ(), "PULSE_TEST_ERROR_METHOD_PANIC=1", "GODEBUG="+debug, "GORACE=atexit_sleep_ms=0")
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("returned error panic escaped: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
 func BenchmarkFailureClassificationNil(b *testing.B) {
 	for _, detector := range classificationDetectors() {
 		b.Run(detector.name, func(b *testing.B) {

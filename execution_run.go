@@ -10,28 +10,47 @@ import (
 )
 
 func (e *Execution) fail(err error) error {
-	if err == nil || isSkipped(err) {
-		return err
+	err, _ = e.failResult(err)
+	return err
+}
+
+func (e *Execution) failResult(err error) (error, NodeFinishReason) {
+	// 错误方法可以 panic 或重入 Err/Snapshot；实际归因与终态判断均在锁外保护。
+	err, reason := e.classifyResult(err)
+	if reason == NodeCompleted || reason == NodeSkipped {
+		return err, reason
 	}
-	// errors.Is/As 会调用用户的 Is/As/Unwrap，可能重入 Err/Snapshot；
-	// 先在锁外确定来源，状态锁内只锁存结果。
-	err = e.classifyFailure(err)
 	e.mu.Lock()
 	if e.err == nil {
-		e.err = err
+		e.err, e.errReason = err, reason
 		e.cancel()
 	}
 	e.mu.Unlock()
-	return err
+	return err, reason
+}
+
+func (e *Execution) classifyResult(err error) (error, NodeFinishReason) {
+	reason := NodeFailed
+	err = inspectNodeError(func() error {
+		err = e.classifyFailure(err)
+		reason = finishReason(err)
+		return err
+	})
+	return err, reason
 }
 
 // classifyFailure 在向流读取者或可靠钩子传播前锁存归因。不能等 fail 自行
 // cancel 后才判断，也不能先发布裸 context cause 让下游先取消整张图。
 func (e *Execution) classifyFailure(err error) error {
-	if !isCheckpointFailure(err) && isCanceled(err) && !isExecutionCancellation(err) && e.ctx.Err() == nil {
-		return &executionFailure{cause: err}
+	if err == nil {
+		return nil
 	}
-	return err
+	return inspectNodeError(func() error {
+		if !isCheckpointFailure(err) && isCanceled(err) && !isExecutionCancellation(err) && e.ctx.Err() == nil {
+			return &executionFailure{cause: err}
+		}
+		return err
+	})
 }
 
 // executionFailure 只补充终态归因，不改变原始错误文本或 Is/As 链。
@@ -66,8 +85,8 @@ func (e *Execution) runNode(n *Node) {
 	defer e.wg.Done()
 	if r, ok := e.restored[n]; ok {
 		if err := e.restoreCheckpointStreams(n); err != nil {
-			err = e.fail(err)
-			e.finishNode(n, finishReason(err), err)
+			err, reason := e.failResult(err)
+			e.finishNode(n, reason, err)
 			return
 		}
 		var err error
@@ -142,26 +161,23 @@ func (e *Execution) runNode(n *Node) {
 
 	var err error
 	if e.checkpoint != nil {
-		err = e.runCheckpointChain(n, rc, chain)
+		var confirmed NodeFinishReason
+		err, confirmed = e.runCheckpointChain(n, rc, chain)
+		if confirmed != "" {
+			// 可靠路径已检查读取义务、收敛输出并安装写端终态；确认后只复用
+			// 同一结论，不能重查用户 error 再推翻已保存的成功/跳过。
+			e.finishNode(n, confirmed, err)
+			return
+		}
 	} else {
 		err = e.classifyFailure(chain(rc))
 	}
 	// 流归实际写端的完整链所有，必须在 Aspect / checkpoint 返回后终结；
 	// 子写端不能拖到祖先 Sub.Wait 才结束，否则下游无法把完成信号送回子图。
 	err = rc.finishStreams(err)
-	if isSkipped(err) {
-		e.settleUnwritten(n, rc)
-		e.finishNode(n, NodeSkipped, err)
-		return
-	}
-	if err != nil {
-		err = e.fail(err)
-		e.settleUnwritten(n, rc)
-		e.finishNode(n, finishReason(err), err)
-		return
-	}
+	err, reason := e.failResult(err)
 	e.settleUnwritten(n, rc)
-	e.finishNode(n, NodeCompleted, nil)
+	e.finishNode(n, reason, err)
 }
 
 // settleUnwritten 把这次运行里**还没有落地**的 Provide 收成跳过（隐式跳过）。
@@ -678,6 +694,20 @@ func (s *nodeStreams) add(output streamLifecycle) {
 }
 
 func (rc *RunCtx) finishStreams(err error) error {
+	returned := false
+	err = inspectNodeError(func() error {
+		result := rc.finishStreamsResult(err)
+		returned = true
+		return result
+	})
+	if !returned {
+		// 第一次归类异常时，以已隔离的失败重新关闭实际流；不再检查原 error。
+		return inspectNodeError(func() error { return rc.finishStreamsResult(err) })
+	}
+	return err
+}
+
+func (rc *RunCtx) finishStreamsResult(err error) error {
 	if rc.streams == nil {
 		return err
 	}

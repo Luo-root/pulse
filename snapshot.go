@@ -129,7 +129,7 @@ func (e *Execution) Snapshot() *Snapshot {
 	if e.started {
 		out.Graph.Status = GraphStatusRunning
 	}
-	done := e.done
+	done, reason := e.done, e.errReason
 	for i, n := range nodes {
 		state := e.states[n]
 		if state.status == "" {
@@ -140,10 +140,9 @@ func (e *Execution) Snapshot() *Snapshot {
 		out.Nodes[i].Err = state.err
 	}
 	e.mu.Unlock()
-	// finishReason 会遍历用户错误链；使用同一次采样的终态和错误，
-	// 但不持状态锁调用可能重入 Err 的 Is/As/Unwrap。
+	// 使用与首错一起确定的归因；只读视图不重新调用用户错误方法。
 	if done {
-		out.Graph.Status = GraphStatus(finishReason(out.Graph.Err))
+		out.Graph.Status = GraphStatus(reason)
 	}
 
 	// 只复制已存在的槽位指针。不能走 slotOf：观察晚加的键不该凭空创建运行状态。
