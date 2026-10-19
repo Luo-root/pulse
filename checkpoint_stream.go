@@ -515,6 +515,12 @@ func (Stream[T]) pulseRestoreCheckpoint(e *Execution, descriptor CheckpointStrea
 	}
 	s := checkpointManagedStream[T](descriptor.Capacity)
 	s.checkpoint = &checkpointStream{exec: e, descriptor: descriptor, restore: true, cached: cached}
+	if descriptor.Terminal == StreamFailed {
+		// 集成层已验证并确认来源根失败。历史别名只恢复只读失败端点，
+		// 不 Open、不安装消息，也不复活生产/Ack；中间 Sub 的父链仍可处理失败。
+		s.checkpoint.restore = false
+		s.finish(&CheckpointScopeFailure{Scope: descriptor.ID.Scope})
+	}
 	endpoint := Stream[T]{state: s}
 	if e.checkpointStreams == nil {
 		e.checkpointStreams = make(map[CheckpointStreamID]any)

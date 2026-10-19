@@ -312,6 +312,11 @@ func (s Stream[T]) Stop(rc *RunCtx) error {
 	}
 	state := s.state
 	state.mu.Lock()
+	if checkpoint := state.checkpoint; checkpoint != nil && checkpoint.descriptor.Terminal == StreamFailed {
+		err := state.err
+		state.mu.Unlock()
+		return err // 恢复的只读失败端点不能因清理 Stop 发出可靠写。
+	}
 	stopped := state.stopped
 	state.mu.Unlock()
 	if stopped {

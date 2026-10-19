@@ -87,6 +87,32 @@ type CheckpointChild struct {
 	Bindings               []CheckpointBinding
 }
 
+// CheckpointScopeFailure 表示桥已完整校验并可靠确认某图作用域的最终业务失败。
+// 不携带原错误或成果，不表示存储故障，也不能用来重开失败来源或刷新预算。
+//
+// 只有 OpenChild 直接返回非 nil *CheckpointScopeFailure、Scope 精确匹配请求 Attempt
+// 且没有返回成果时，Core 才在安装恢复计划前把它交回父完整链，由父切面/Retry 决定后续。
+// 包装、空/错 Scope、同时返回成果，或其他钩子返回本类型，均仍是可靠检查点失败。
+// 根作用域由集成层在恢复解码/事件/Start 前识别并返回；此时尚未启动执行。
+// 原业务错误文本不持久化，因此恢复失败不承诺还原原错误身份。
+type CheckpointScopeFailure struct {
+	Scope string
+}
+
+func (e *CheckpointScopeFailure) Error() string {
+	return fmt.Sprintf("pulse: checkpoint scope %q has a confirmed business failure", e.Scope)
+}
+
+// CheckpointNotStarted 仅表示桥因调用上下文取消，在任何可靠操作开始前停止。
+// 不得用于已经调用 Store、可能写成或结果不确定的错误；不包装其他原因。
+// Core 仅在所属 Execution 已取消时接受直接非 nil 指针，将其保留为执行中断；
+// 包装信号、执行仍健康或任何普通存储错误仍锁存为可靠失败。
+type CheckpointNotStarted struct{}
+
+func (*CheckpointNotStarted) Error() string {
+	return "pulse: checkpoint operation not started after cancellation"
+}
+
 // CheckpointBinding 描述一次静态 In 绑定；Source.Execution 仅用于观察，不参与持久身份。
 // Scope 是父图作用域，Attempt 是此次挂载的有效持久尝试，Parent/Child 是真实键声明。
 type CheckpointBinding struct {
@@ -99,7 +125,8 @@ type CheckpointBinding struct {
 //
 // 钩子在引擎锁外调用，可以并发，不得修改业务值或异步保存引用后提前确认。
 // 错误或 panic 停止整棵执行树；即使错误含 ErrSkipped 也不是正常跳过，不能被父 Retry
-// 或外层切面吞掉。返回错误可能表示存储结果不确定，Core 不自动重试或撤销提交。
+// 或外层切面吞掉。唯一例外是 OpenChild 的精确 CheckpointScopeFailure 信号，见其契约。
+// 返回其他错误可能表示存储结果不确定，Core 不自动重试或撤销提交。
 //
 // FailAttempt 同步确认真实失败，之后才能打开下一轮；不保存业务错误文本。
 // 宿主取消或可靠性失败保持尝试活跃，由恢复时读取的权威记录决定下一步。
@@ -314,7 +341,7 @@ func (g *Graph) checkRestoreLocked(records []NodeCheckpoint) error {
 				return fmt.Errorf("pulse: restore node %q: %w", r.NodeID, err)
 			}
 			if o.Stream != nil {
-				if o.Stream.Terminal != StreamCompleted && o.Stream.Terminal != StreamStopped && !(n.sub && o.Stream.Terminal == "") {
+				if o.Stream.Terminal != StreamCompleted && o.Stream.Terminal != StreamStopped && !(n.sub && (o.Stream.Terminal == "" || o.Stream.Terminal == StreamFailed)) {
 					return fmt.Errorf("pulse: restore node %q: stream %q is not a completed source reference", r.NodeID, o.Key.Name)
 				}
 				id := o.Stream.ID

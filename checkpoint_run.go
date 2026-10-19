@@ -82,6 +82,12 @@ func (e *Execution) callCheckpoint(op string, fn func() error) (err error) {
 	err = fn()
 	returned = true
 	if err != nil {
+		if failure := e.checkpointErr(); failure != nil {
+			return failure
+		}
+		if stopped, ok := err.(*CheckpointNotStarted); ok && stopped != nil && e.ctx.Err() != nil {
+			return &executionCancellation{cause: e.ctx.Err()}
+		}
 		return e.stopCheckpoint(op, err)
 	}
 	return e.checkpointErr()
@@ -478,12 +484,23 @@ func (rc *RunCtx) prepareChildCheckpoint(sub *Execution) error {
 	}
 	sort.Slice(request.Inputs, func(i, j int) bool { return request.Inputs[i].Key.Name < request.Inputs[j].Key.Name })
 	var records []NodeCheckpoint
+	var scopeFailure *CheckpointScopeFailure
 	if err := rc.exec.callCheckpoint("open child", func() error {
 		var err error
 		records, err = c.hooks.OpenChild(rc.ctx, request)
+		// 只有本次请求的精确信号表示已确认业务失败；普通/包装错误与
+		// panic 仍由 callCheckpoint 锁存为可靠故障，不能让 Retry 吞掉。
+		if failure, ok := err.(*CheckpointScopeFailure); ok && failure != nil &&
+			failure.Scope != "" && failure.Scope == request.Attempt && len(records) == 0 {
+			scopeFailure = failure
+			return nil
+		}
 		return err
 	}); err != nil {
 		return err
+	}
+	if scopeFailure != nil {
+		return scopeFailure // 父完整链作业务决策；不安装或运行这张已失败子图。
 	}
 	if err := sub.RestoreNodes(records); err != nil {
 		return rc.exec.stopCheckpoint("restore child", err)
