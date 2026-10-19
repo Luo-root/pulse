@@ -3,6 +3,7 @@ package yaml_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -62,6 +63,42 @@ func TestRootSeedConflictPrecedesObservers(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// 重复根 seed 仍归这次 Inputs 判断，不因未引用模板的固定绑定预检提前拒绝。
+func TestRootDuplicateSeedRemainsInputsCheck(t *testing.T) {
+	for _, skip := range []bool{false, true} {
+		t.Run(fmt.Sprintf("skip=%t", skip), func(t *testing.T) {
+			reg := pulse.NewRegistry()
+			pulse.MustRegisterKey(reg, pulse.NewKey[int]("flag"))
+			reg.MustRegister("f", func(*pulse.RunCtx) error { t.Error("装配不应运行工厂"); return nil })
+			seed := "from: {value: 1}"
+			if skip {
+				seed = "skip: true"
+			}
+			doc := fmt.Sprintf(`
+seeds:
+  - {key: {name: flag, type: int}, %s}
+  - {key: {name: flag, type: int}, %s}
+graphs:
+  unused:
+    seeds: [{key: {name: flag, type: int}, skip: true}]
+    nodes: [{id: work, uses: f, requires: [{name: flag, type: int}]}]
+nodes: [{id: root, uses: f}]
+`, seed, seed)
+			opts := pulseyaml.LoadOptions{GraphID: "root-duplicate"}
+			_, plan, err := pulseyaml.Load([]byte(doc), reg, opts)
+			if err != nil || len(plan.Entries) != 2 {
+				t.Fatalf("Load 保留两条根计划，不提前判本轮重复输入：plan=%+v err=%v", plan, err)
+			}
+			if _, err := pulseyaml.Analyze([]byte(doc), opts); err != nil {
+				t.Fatalf("Analyze 不应提前判本轮输入：%v", err)
+			}
+			if _, err := plan.Inputs(nil); err == nil || !strings.Contains(err.Error(), "already set in this Inputs") {
+				t.Fatalf("Inputs 必须拒绝同键第二次写入：%v", err)
+			}
+		})
 	}
 }
 

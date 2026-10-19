@@ -354,20 +354,23 @@ func loadDocument(doc Document, reg *pulse.Registry, opts LoadOptions, newRoot f
 		if err := a.addNodes(g, spec.Nodes, mount{id: name, where: name}); err != nil {
 			return nil, nil, err
 		}
-		for _, s := range spec.Seeds {
-			if err := seedOne(reg, name, s); err != nil {
-				return nil, nil, err
-			}
+		seeded, err := seedBinds(reg, name, spec.Seeds)
+		if err != nil {
+			return nil, nil, fmt.Errorf("pulse/yaml: %w", err)
 		}
 		// seed 已明确是外部来源，即使没有挂载点，也不能与节点产出同一条键。
 		// 声明进校验图，让核心判来源冲突；未知来源仍由 declareSpecInputs 补成可能的入口。
 		if err := declareSeedInputs(g, spec.Seeds, reg); err != nil {
 			return nil, nil, fmt.Errorf("pulse/yaml: graph %q seeds: %w", name, err)
 		}
-		if err := a.declareSpecInputs(g, name); err != nil {
+		ports, unknown, err := a.declareSpecInputs(g, name)
+		if err != nil {
 			return nil, nil, err
 		}
-		top := g.Topology()
+		top, err := templateTopology(g, seeded, ports, unknown)
+		if err != nil {
+			return nil, nil, fmt.Errorf("pulse/yaml: graph %q: %w", name, err)
+		}
 		if err := a.checkSubgraphs(top, spec.Nodes); err != nil {
 			return nil, nil, err
 		}
