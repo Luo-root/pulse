@@ -193,6 +193,8 @@ WaitStream 回调**只能等待和记录结果**，不能处理业务、重入�
 
 Receive 仅在正常生产结束且交付义务已清，或明确 Stop 后返回 io.EOF；生产失败返回原因。空流是 ready 端点、零条消息，正常成功；skipped 是没有端点，沿普通缺值语义处理。读取者应继续 Receive 并 Ack，直到 io.EOF，或明确 Stop。仅 InFlight=0 不代表生产结束，生产者仍可能继续发送；最后一个读取者此时提前返回会成为读取义务错误。若实际生产已正常结束且消息全部 Ack，收尾已满足条件，不强制额外读取一次 EOF。
 
+流读者检查只豁免**输出确定 skipped、没有端点**的情况，不能只看业务体会不会跳过。全输入 skipped 时，节点、图级、继承或执行级切面仍可能在 `next` 前发布流，因此这类输出仍须接读者；例如容量 1 无人读取时，第一条 Send 可完成，第二条会等待容量。缓冲不是读者，静态检查也不推断切面实际会发送几条。无有效切面的正常 skip 仍可成功；`WithoutAspects()` 只截断继承，不移除本地、节点或本轮显式添加的切面。Topology/Validate 使用定义和 FixSkip 的事实，Start 还使用本轮 SkipSeed 与有效执行级切面；宿主出口的定义期容许仍按下节规则处理。
+
 `stream.Stop(rc)` 显式结束整个读取组，作废剩余消息并唤醒生产者，不把清理算作 Ack。ConsumeStream 回调直接返回**精确的** `pulse.ErrStreamStopped` 表示当前条成功：先 Ack 当前条，再 Stop。包装的停止错误仍是失败。ProduceStream 仅在写端真的已 Stop 且回调返回精确 ErrStreamStopped 时正常结束；手写生产节点需自己处理正常停止，真实包装错误不能洗掉。TeeStream 单支 Stop 后其余支继续，全支 Stop 后正常 Stop 上游。
 
 ## 宿主在运行中订阅
