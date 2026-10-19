@@ -8,6 +8,8 @@ import (
 
 // ErrSkipped 表示等待的槽位以「跳过」到达。它不是工作流失败：
 // Graph.Run / Execution.Err 不会把单纯的跳过当成 error 返回。
+// 包装不改变正常跳过；多错误树（errors.Join、多 %w）须每一非 nil 分支都正常跳过。
+// 任一真实失败分支仍是失败，不能只凭 errors.Is(err, ErrSkipped) 将整棵树降格。
 var ErrSkipped = errors.New("pulse: skipped")
 
 // SkipError 携带被跳过的 Key 名：读一条没值的输入（Get）或要求「全到齐」
