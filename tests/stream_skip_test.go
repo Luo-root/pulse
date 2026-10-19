@@ -2,6 +2,9 @@ package pulse_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -284,5 +287,241 @@ func TestStreamSkipAspectOutputStaysUnknown(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// body 跳过不等于没有端点：切面在 next 前仍能 OpenStream / Send。
+// 定义只知道 FixSkip；Start 还知道本轮 SkipSeed 和有效执行级切面。
+func TestStreamSkipReaderChecksOutputFacts(t *testing.T) {
+	for _, seed := range []string{"fixed", "root-seed"} {
+		for _, where := range []string{"none", "node", "graph", "inherited", "execution", "cut-inherited", "cut-node", "cut-local"} {
+			for _, reader := range []string{"none", "buffer-fits", "node", "outlet", "host"} {
+				t.Run(seed+"/"+where+"/"+reader, func(t *testing.T) {
+					trigger, key := p.NewKey[bool]("trigger"), p.NewKey[p.Stream[int]]("stream")
+					var opened, sent, bodies, sum atomic.Int32
+					messages := 2
+					if reader == "buffer-fits" {
+						messages = 1 // 能放进缓冲也不能替代声明读者。
+					}
+					publish := func(rc *p.RunCtx, next func(*p.RunCtx) error) error {
+						if rc.NodeID() == "writer" {
+							writer, err := p.OpenStream(rc, key, p.WithBuffer(1))
+							if err != nil {
+								return err
+							}
+							opened.Add(1)
+							for value := 1; value <= messages; value++ {
+								if err := writer.Send(value); err != nil {
+									return err
+								}
+								sent.Add(1)
+							}
+						}
+						return next(rc)
+					}
+					var childOptions, rootOptions []p.Option
+					if strings.HasPrefix(where, "cut-") {
+						childOptions = append(childOptions, p.WithoutAspects())
+					}
+					if where == "graph" || where == "cut-local" {
+						childOptions = append(childOptions, p.WithAspects(publish))
+					}
+					if where == "inherited" || where == "cut-inherited" {
+						rootOptions = append(rootOptions, p.WithAspects(publish))
+					}
+					child, root := skipStreamGraph(t, "child", childOptions...), skipStreamGraph(t, "root", rootOptions...)
+					skipStreamMust(t, child.DeclareInput(p.NewPort(trigger)))
+					var aspects []p.Aspect
+					if where == "node" || where == "cut-node" {
+						aspects = []p.Aspect{publish}
+					}
+					skipStreamMust(t, child.Add(p.NewNode("writer", "", p.Requires(trigger), p.Provides(key), func(*p.RunCtx) error { bodies.Add(1); return nil }, aspects...)))
+					if reader == "node" {
+						skipStreamMust(t, p.ConsumeStream(child, "reader", "", key, func(_ *p.RunCtx, value int) error { sum.Add(int32(value)); return nil }))
+					}
+					binds := []p.SubBind{p.FixSkip(trigger)}
+					var in p.Inputs
+					if seed == "root-seed" {
+						skipStreamMust(t, root.DeclareInput(p.NewPort(trigger)))
+						skipStreamMust(t, p.SkipSeed(&in, trigger))
+						binds = []p.SubBind{p.In(trigger, trigger)}
+					}
+					outlet := reader == "outlet" || reader == "host"
+					if outlet {
+						skipStreamMust(t, child.DeclareOutput(p.NewPort(key)))
+						skipStreamMust(t, root.DeclareOutput(p.NewPort(key)))
+						binds = append(binds, p.Out(key, key))
+					}
+					skipStreamMust(t, p.Sub(root, "mount", "", binds, child))
+					effective := where != "none" && where != "cut-inherited"
+					hasReader := reader == "node" || reader == "host"
+					// 未给本轮输入的定义不能假定 root SkipSeed；仅执行级切面不在定义里。
+					definitionRejects := !hasReader && !outlet && (seed == "root-seed" || (effective && where != "execution"))
+					problems := root.Topology().Problems
+					validation := root.Validate()
+					if definitionRejects {
+						if len(problems) != 1 || validation == nil || validation.Error() != problems[0].Error() || !strings.Contains(validation.Error(), "nothing consumes it") {
+							t.Fatalf("Topology=%v Validate=%v; want one missing-reader diagnostic", problems, validation)
+						}
+					} else if len(problems) != 0 || validation != nil {
+						t.Fatalf("definition rejected normal skip/reader/managed outlet: Topology=%v Validate=%v", problems, validation)
+					}
+					var options []p.ExecOption
+					if where == "execution" || where == "cut-inherited" {
+						options = append(options, p.WithExecAspects(publish))
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					e, err := root.NewExecution(ctx, in, options...)
+					skipStreamMust(t, err)
+					defer e.Cancel()
+					var subscription *p.StreamSubscription[int]
+					if reader == "host" {
+						subscription, err = p.SubscribeStream(e, key)
+						skipStreamMust(t, err)
+					}
+					start := e.Start()
+					if effective && !hasReader {
+						if start == nil || !strings.Contains(start.Error(), "nothing consumes it") {
+							t.Fatalf("Start=%v; possible live output must have a reader", start)
+						}
+						if opened.Load() != 0 || sent.Load() != 0 || bodies.Load() != 0 || !errors.Is(e.Wait(), p.ErrGraphNotStarted) {
+							t.Fatal("rejected Start executed user I/O or started the execution")
+						}
+						return
+					}
+					skipStreamMust(t, start)
+					if subscription != nil {
+						if effective {
+							for value := 1; value <= messages; value++ {
+								delivery, err := subscription.Receive(ctx)
+								skipStreamMust(t, err)
+								if delivery.Value != value {
+									t.Fatalf("host value=%d; want %d", delivery.Value, value)
+								}
+								sum.Add(int32(delivery.Value))
+								skipStreamMust(t, delivery.Ack())
+							}
+							if _, err := subscription.Receive(ctx); !errors.Is(err, io.EOF) {
+								t.Fatalf("host terminal=%v; want EOF", err)
+							}
+						} else if _, err := subscription.Receive(ctx); !errors.Is(err, p.ErrSkipped) {
+							t.Fatalf("absent host endpoint=%v; want skipped", err)
+						}
+					}
+					skipStreamMust(t, e.Wait())
+					if bodies.Load() != 0 || (!effective && (opened.Load() != 0 || sent.Load() != 0 || sum.Load() != 0)) {
+						t.Fatal("normal skip entered the body or a cut/inexistent aspect")
+					}
+					if effective && (opened.Load() != 1 || sent.Load() != 2 || sum.Load() != 3) {
+						t.Fatalf("reader failed to complete both sends: open=%d sent=%d sum=%d", opened.Load(), sent.Load(), sum.Load())
+					}
+					if outlet && !effective {
+						_, state, err := p.ReadOutput(e, key)
+						skipStreamMust(t, err)
+						if state != p.SlotStateSkipped {
+							t.Fatalf("normal skip output=%s", state)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestStreamSkipReaderWithoutAspectsKeepsExplicitExecAspects(t *testing.T) {
+	trigger, key := p.NewKey[bool]("trigger"), p.NewKey[p.Stream[int]]("stream")
+	g := skipStreamGraph(t, "root", p.WithoutAspects())
+	var called atomic.Int32
+	publish := func(rc *p.RunCtx, next func(*p.RunCtx) error) error {
+		called.Add(1)
+		if _, err := p.OpenStream(rc, key); err != nil {
+			return err
+		}
+		return next(rc)
+	}
+	skipStreamMust(t, g.DeclareInput(p.NewPort(trigger)))
+	skipStreamMust(t, g.Add(p.NewNode("writer", "", p.Requires(trigger), p.Provides(key), func(*p.RunCtx) error { called.Add(1); return nil })))
+	var in p.Inputs
+	skipStreamMust(t, p.SkipSeed(&in, trigger))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	e, err := g.NewExecution(ctx, in, p.WithExecAspects(publish))
+	skipStreamMust(t, err)
+	defer e.Cancel()
+	if err := e.Start(); err == nil || !strings.Contains(err.Error(), "nothing consumes it") {
+		t.Fatalf("WithoutAspects erased explicit ExecOption: %v", err)
+	}
+	if called.Load() != 0 {
+		t.Fatal("rejected Start ran user code")
+	}
+}
+
+// 原生流必须用已知 Tee 声明来检查，不能给手写 channel 凭空认一个发送端。
+func TestStreamSkipReaderNativeOutputFacts(t *testing.T) {
+	for _, aspect := range []bool{false, true} {
+		for _, reader := range []string{"none", "node", "outlet"} {
+			t.Run(fmt.Sprintf("aspect=%t/%s", aspect, reader), func(t *testing.T) {
+				input, output := p.NewKey[<-chan int]("input"), p.NewKey[<-chan int]("output")
+				child, root := skipStreamGraph(t, "child"), skipStreamGraph(t, "root")
+				skipStreamMust(t, child.DeclareInput(p.NewPort(input)))
+				var called, sum atomic.Int32
+				var options []p.StreamOption
+				if aspect {
+					options = []p.StreamOption{p.WithStreamAspects(func(rc *p.RunCtx, next func(*p.RunCtx) error) error {
+						called.Add(1)
+						ch := make(chan int, 1)
+						defer close(ch)
+						if err := p.Set(rc, output, (<-chan int)(ch)); err != nil {
+							return err
+						}
+						for _, value := range []int{1, 2} {
+							select {
+							case ch <- value:
+							case <-rc.Context().Done():
+								return rc.Context().Err()
+							}
+						}
+						return next(rc)
+					})}
+				}
+				skipStreamMust(t, p.Tee(child, "writer", "", input, p.Keys(output), options...))
+				if reader == "node" {
+					skipStreamMust(t, p.Consume(child, "reader", "", output, func(_ *p.RunCtx, value int) error { sum.Add(int32(value)); return nil }))
+				}
+				binds := []p.SubBind{p.FixSkip(input)}
+				if reader == "outlet" {
+					skipStreamMust(t, child.DeclareOutput(p.NewPort(output)))
+					skipStreamMust(t, root.DeclareOutput(p.NewPort(output)))
+					binds = append(binds, p.Out(output, output))
+				}
+				skipStreamMust(t, p.Sub(root, "mount", "", binds, child))
+				problems, validation := root.Topology().Problems, root.Validate()
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				e, err := root.NewExecution(ctx, p.Inputs{})
+				skipStreamMust(t, err)
+				defer e.Cancel()
+				start := e.Start()
+				if aspect && reader != "node" {
+					if len(problems) != 1 || validation == nil || start == nil || !strings.Contains(start.Error(), "nothing consumes it") {
+						t.Fatalf("native output lost its reader obligation: Topology=%v Validate=%v Start=%v", problems, validation, start)
+					}
+					if called.Load() != 0 {
+						t.Fatal("rejected native graph ran aspect")
+					}
+					return
+				}
+				if len(problems) != 0 {
+					t.Fatalf("legal native control rejected: %v", problems)
+				}
+				skipStreamMust(t, validation)
+				skipStreamMust(t, start)
+				skipStreamMust(t, e.Wait())
+				if (!aspect && (called.Load() != 0 || sum.Load() != 0)) || (aspect && (called.Load() != 1 || sum.Load() != 3)) {
+					t.Fatalf("native control calls=%d sum=%d", called.Load(), sum.Load())
+				}
+			})
+		}
 	}
 }

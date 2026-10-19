@@ -332,7 +332,9 @@ func (t *streamTree) problemsReaders(out map[string][]error) {
 				"must use separate Tee outputs", gr.key.ref.name, len(ids), strings.Join(ids, ", ")))
 			continue
 		}
-		if gr.source != nil && gr.source.writer.bodySkipped {
+		// 业务体被输入门跳过时，门外切面仍可发布流；只有输出确定
+		// skipped（没有端点）才不需要读者，复用 propagateSkips 的事实。
+		if gr.source != nil && gr.source.skipped {
 			continue
 		}
 		if len(gr.readers) == 0 && !gr.host && !gr.outlet && gr.source != nil {
