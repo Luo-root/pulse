@@ -262,7 +262,7 @@ func describe(doc []byte) error {
 }
 ```
 
-Analyze 与 Load 共用解码、装配、端口、绑定及不依赖真实键类型的核心静态判据，返回 `*pulse.Topology`。它不创建 Execution，不运行工厂或切面，不解析外部 seed，不调用 ObserverFor 或 Observer。Graph / MaxRunning 的静态选项与 Load 一致。
+Analyze 与 Load 共用解码、装配、端口、绑定及不依赖真实键类型的核心静态判据，返回 `*pulse.Topology`。它不创建 Execution，不运行工厂或切面，不解析外部 seed，不调用 ObserverFor 或 Observer。Graph 选项仍会应用；其中预置的节点、端口和 Sub 接线也转为 `any` 占位，能与 YAML 的同名键一起装配。标签沿宿主 Sub 的非固定绑定传播；宿主内部键按挂载位置区分，固定输入不会连接父图的同名键。宿主 Go 类型不参与文档标签校验，真实类型与运行配置仍须由 Load / Validate / Start 检查。
 
 | 检查项 | Analyze | Load / Inputs / Validate / Start |
 |---|---|---|

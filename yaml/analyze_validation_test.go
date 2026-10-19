@@ -234,6 +234,204 @@ nodes: [{id: step, graph: mid, in: {middle: parent}}]
 	}
 }
 
+// 预置的 In/Out 必须与 YAML 接线一样传播标签；宿主 Go 类型仍只是装配占位的来源。
+func TestAnalyzeHostBindingTypeLabels(t *testing.T) {
+	for _, nested := range []bool{false, true} {
+		for _, source := range []string{"same-label", "input-only", "output-only", "conflict"} {
+			conflict := source == "conflict"
+			name := "single"
+			if nested {
+				name = "nested"
+			}
+			name += "/" + source
+			t.Run(name, func(t *testing.T) {
+				child, in, out := analysisHostPassThrough(t, nested, "inside")
+				left, right := pulse.NewKey[int]("left"), pulse.NewKey[int]("right")
+				opts := pulseyaml.LoadOptions{GraphID: "host-labels", Graph: []pulse.Option{func(g *pulse.Graph) {
+					if err := g.DeclareInput(pulse.NewPort(left)); err != nil {
+						t.Fatal(err)
+					}
+					if err := pulse.Sub(g, "host", "", []pulse.SubBind{pulse.In(left, in), pulse.Out(out, right)}, child); err != nil {
+						t.Fatal(err)
+					}
+				}}, ObserverFor: func(string) pulse.Observer { t.Error("analysis must not call ObserverFor"); return nil }}
+				doc := "seeds: [{key: {name: left, type: example.A}}]\nnodes: [{id: yaml, uses: f, requires: [{name: right, type: example.A}]}]\n"
+				switch source {
+				case "input-only":
+					doc = "seeds: [{key: {name: left, type: example.A}}]\nnodes: [{id: yaml, uses: f}]\n"
+				case "output-only":
+					doc = "nodes: [{id: yaml, uses: f, requires: [{name: right, type: example.A}]}]\n"
+				case "conflict":
+					doc = strings.Replace(doc, "name: right, type: example.A", "name: right, type: example.B", 1)
+				}
+				top, err := pulseyaml.Analyze([]byte(doc), opts)
+				if conflict {
+					if err == nil || top != nil {
+						t.Fatalf("host pass-through must reject conflicting YAML labels: top=%+v err=%v", top, err)
+					}
+					for _, want := range []string{"host", "example.A", "example.B", "does not match"} {
+						if !strings.Contains(err.Error(), want) {
+							t.Fatalf("label conflict must identify %q: %v", want, err)
+						}
+					}
+					return
+				}
+				if err != nil || len(top.Problems) != 0 {
+					t.Fatalf("matching labels must assemble: top=%+v err=%v", top, err)
+				}
+				if top.Nodes[0].Requires[0].Type != "example.A" || top.Nodes[0].Provides[0].Type != "example.A" || top.Nodes[0].Sub == nil {
+					t.Fatalf("labels must propagate in both directions through the host mount: %+v", top.Nodes[0])
+				}
+				for sub := top.Nodes[0].Sub; sub != nil; {
+					for _, ports := range [][]pulse.KeyShape{sub.Graph.InPorts, sub.Graph.OutPorts} {
+						if len(ports) != 1 || ports[0].Type != "example.A" {
+							t.Fatalf("known label must reach every host pass-through port at %q: %+v", sub.Graph.Path, ports)
+						}
+					}
+					if len(sub.Nodes) == 0 {
+						break
+					}
+					sub = sub.Nodes[0].Sub
+				}
+			})
+		}
+	}
+}
+
+// 同一子图定义挂两处，内部同名键属于各自挂载点；Fixed 不连接父图同名键。
+func TestAnalyzeHostBindingLabelScopes(t *testing.T) {
+	for _, mode := range []string{"shared", "nested-shared", "fixed", "fixed-skip"} {
+		t.Run(mode, func(t *testing.T) {
+			keyName := "inside"
+			fixed := strings.HasPrefix(mode, "fixed")
+			if fixed {
+				keyName = "left"
+			}
+			child, in, out := analysisHostPassThrough(t, mode == "nested-shared", keyName)
+			doc := `
+seeds:
+  - {key: {name: left.a, type: example.A}}
+  - {key: {name: left.b, type: example.B}}
+nodes:
+  - {id: yaml, uses: f, requires: [{name: right.a, type: example.A}, {name: right.b, type: example.B}]}
+`
+			opts := pulseyaml.LoadOptions{GraphID: "host-scopes", Graph: []pulse.Option{func(g *pulse.Graph) {
+				if fixed {
+					bind := pulse.Fix(in, 7)
+					if mode == "fixed-skip" {
+						bind = pulse.FixSkip(in)
+					}
+					if err := pulse.Sub(g, "host", "", []pulse.SubBind{bind, pulse.Out(out, pulse.NewKey[int]("right"))}, child); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				for _, suffix := range []string{"a", "b"} {
+					binds := []pulse.SubBind{pulse.In(pulse.NewKey[int]("left."+suffix), in), pulse.Out(out, pulse.NewKey[int]("right."+suffix))}
+					if err := pulse.Sub(g, suffix, "", binds, child); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}}}
+			if fixed {
+				doc = "seeds: [{key: {name: left, type: example.A}}]\nnodes: [{id: yaml, uses: f, requires: [{name: right, type: example.B}]}]\n"
+			}
+			top, err := pulseyaml.Analyze([]byte(doc), opts)
+			if err != nil || len(top.Problems) != 0 {
+				t.Fatalf("unrelated graph scopes must not merge same-name keys: top=%+v err=%v", top, err)
+			}
+			for i, want := range []string{"example.A", "example.B"} {
+				if fixed {
+					want = "example.B"
+				}
+				sub := top.Nodes[i].Sub
+				if mode == "nested-shared" {
+					sub = sub.Nodes[0].Sub
+				}
+				if sub.Graph.InPorts[0].Type != want || sub.Graph.OutPorts[0].Type != want {
+					t.Fatalf("mount %q must have its own label %q: %+v", sub.Graph.Path, want, sub.Graph)
+				}
+				if fixed {
+					if top.Graph.InPorts[0].Type != "example.A" {
+						t.Fatal("fixed child input must not change the unrelated same-name root label")
+					}
+					break
+				}
+			}
+		})
+	}
+}
+
+func TestAnalyzeUnusedHostBindingLabels(t *testing.T) {
+	for _, conflict := range []bool{false, true} {
+		name := "same-label"
+		if conflict {
+			name = "conflict"
+		}
+		t.Run(name, func(t *testing.T) {
+			child, in, out := analysisHostPassThrough(t, false, "inside")
+			left, right := pulse.NewKey[int]("left"), pulse.NewKey[int]("right")
+			// 根身份与模板名相同也不能混用两棵校验树的标签。
+			opts := pulseyaml.LoadOptions{GraphID: "unused", Graph: []pulse.Option{func(g *pulse.Graph) {
+				if err := g.DeclareInput(pulse.NewPort(left)); err != nil {
+					t.Fatal(err)
+				}
+				if err := pulse.Sub(g, "host", "", []pulse.SubBind{pulse.In(left, in), pulse.Out(out, right)}, child); err != nil {
+					t.Fatal(err)
+				}
+			}}}
+			doc := `
+graphs:
+  unused:
+    seeds: [{key: {name: left, type: example.A}}]
+    nodes: [{id: read, uses: f, requires: [{name: right, type: example.A}]}]
+nodes: [{id: yaml, uses: f}]
+`
+			if conflict {
+				doc = strings.Replace(doc, "name: right, type: example.A", "name: right, type: example.B", 1)
+			}
+			top, err := pulseyaml.Analyze([]byte(doc), opts)
+			if conflict {
+				if err == nil || top != nil || !strings.Contains(err.Error(), "does not match") || !strings.Contains(err.Error(), "unused") {
+					t.Fatalf("unused template must also check its host binding labels: top=%+v err=%v", top, err)
+				}
+				return
+			}
+			if err != nil || len(top.Problems) != 0 {
+				t.Fatalf("matching labels in an unused template must pass: top=%+v err=%v", top, err)
+			}
+			if top.Nodes[0].Requires[0].Type != "" || top.Nodes[0].Provides[0].Type != "" || top.Nodes[0].Sub.Graph.InPorts[0].Type != "" {
+				t.Fatalf("unused template labels must not leak into the unrelated root host graph: %+v", top)
+			}
+		})
+	}
+}
+
+func analysisHostPassThrough(t *testing.T, nested bool, name string) (*pulse.Graph, pulse.Key[int], pulse.Key[int]) {
+	t.Helper()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	child, err := pulse.New("same-host-id", "")
+	must(err)
+	inside := pulse.NewKey[int](name)
+	must(child.DeclareInput(pulse.NewPort(inside)))
+	must(child.DeclareOutput(pulse.NewPort(inside)))
+	if !nested {
+		return child, inside, inside
+	}
+	mid, err := pulse.New("same-host-id", "")
+	must(err)
+	in, out := pulse.NewKey[int]("mid.in"), pulse.NewKey[int]("mid.out")
+	must(mid.DeclareInput(pulse.NewPort(in)))
+	must(mid.DeclareOutput(pulse.NewPort(out)))
+	must(pulse.Sub(mid, "inner", "", []pulse.SubBind{pulse.In(in, inside), pulse.Out(inside, out)}, child))
+	return mid, in, out
+}
+
 func TestAnalyzeRequiresExplicitTypeTags(t *testing.T) {
 	reg := pulse.NewRegistry()
 	pulse.MustRegisterKey(reg, pulse.NewKey[string]("a"))
