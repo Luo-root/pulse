@@ -41,8 +41,9 @@ const (
 //
 // Execution 与 Site.Execution 相同，ID 是定义身份。Status 在成功 Start 后为 running，
 // 在 Wait 收尾时写终态；只 Start 不 Wait 时，即使所有节点已经结束，图仍为 running，
-// 与图级 finished 回调的生命周期一致。Err 是已经捕获的首错；尚未被节点观察到的
-// ctx 取消不提前变成运行结果，正常收尾的 cancel 也不算错误。
+// 与图级 finished 回调的生命周期一致。Err 在收尾前是已捕获的首错；收尾时优先采用
+// 已锁存的树级可靠首错，与 Wait / Err / GraphFinished 的最终结果一致。尚未被节点
+// 观察到的 ctx 取消不提前变成运行结果，正常收尾的 cancel 也不算错误。
 type GraphState struct {
 	ID          string
 	Description string

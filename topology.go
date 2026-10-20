@@ -137,7 +137,7 @@ func bindShapes(binds []SubBind) []BindShape {
 }
 
 // joinPath 拼嵌套路径：根为空串，一层是挂载它的那个节点 id，再深是 `outer/inner`。
-// 节点 id 不许含 `/` 就是为它（观测里那条 `pulse.path` 用的是同一套写法）。
+// 子图挂载节点 id 不许含 `/` 就是为它（观测里那条 `pulse.path` 用的是同一套写法）。
 func joinPath(at, id string) string {
 	if at == "" {
 		return id

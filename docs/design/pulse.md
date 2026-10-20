@@ -142,7 +142,7 @@ return pulse.Skip(rc, OutA)
 - **四个终态的判据**（`NodeFinishReason`）：`completed` = Run 正常返回 nil（逐键 `Skip` 或返回后未写的 Provide 被自动跳过都不改变这一终态）；`skipped` = 一条输入值都没到而没进入 `Run`（全部 `Requires` 以跳过到达），或返回正常的 `NoValue()` / `*SkipError`（含 `WaitAll` 的跳过）；`failed` = 节点真实错误，**含 panic、`Timeout` 切面的节点超时，以及即使包装 `ErrSkipped` 也不能降级的可靠检查点故障**；`canceled` = 这一轮被从外面拆了——首错取消、**父 ctx 被取消或截止时间到期**、排队等名额期间被取消。宿主按 reason 分流，所以「父 ctx 到期」不能报成 `failed`：那会把它显示成一个并不存在的节点缺陷；
 - **节点链的 panic 转为失败**：业务体以及引擎错误分类时自定义 Is/As/Unwrap 的 panic 转为节点错误，走同一套失败路径；分类方法 panic 后不再遍历该故障 error。这一保护不覆盖用户自建 goroutine；
 - **`Err()` 不含单纯的跳过**：全图都跳过是合法结果；`Wait()` 返回后这一轮的 ctx 会被取消（它是 `NewExecution` 从宿主给的 ctx 派生的子 ctx，不释放就会一直挂在长生命周期的父 ctx 上），这次收尾的取消**不算运行结果**；
-- **协作退出与终态取消分别判断**：还在等数据 / 等名额的节点会响应 ctx；已经进入 `Run` 的业务体需要自行检查 ctx 并返回，引擎不强杀它，`Wait()` 仍等全部节点退出。随后 `Wait()` 在标记结束前锁存首错；没有首错时锁存本次执行的真实取消。因此父 ctx 在终态确定前被取消，即使业务体没有读取 ctx、最终返回 nil，节点可以是 `completed`，整轮仍是 `canceled`（`Run` / `Wait` 返回 context 错误）。终态确定后用于释放资源的内部 cancel 不算运行结果，重复或并发 Wait 复用已锁存结果（#327）。
+- **协作退出与终态取消分别判断**：还在等数据 / 等名额的节点会响应 ctx；已经进入 `Run` 的业务体需要自行检查 ctx 并返回，引擎不强杀它，`Wait()` 仍等全部节点退出。随后 `Wait()` 会合登记的可靠流工作，在标记结束前优先锁存此时已知的树级 CheckpointError 并归为 failed；否则保持普通首错，没有首错时锁存本次执行的真实取消。因此没有可靠故障时，父 ctx 在终态确定前被取消，即使业务体没有读取 ctx、最终返回 nil，节点可以是 `completed`，整轮仍是 `canceled`（`Run` / `Wait` 返回 context 错误）。终态确定后用于释放资源的内部 cancel 不算运行结果，重复或并发 Wait 复用已锁存结果（#327）。
 
 ## 4. 切面
 
@@ -528,7 +528,7 @@ pulse: subgraph "inner" (mounted at "step1/toInner"): pulse: node "leaf" require
 
 | 结构 | 字段与含义 |
 |---|---|
-| GraphState | ID / Description 是定义；Execution 是本次运行；Path 是挂载位置；Status / Err 是进度与已捕获首错 |
+| GraphState | ID / Description 是定义；Execution 是本次运行；Path 是挂载位置；Status / Err 是进度与错误，收尾前记录首错，收尾后与 Wait 的最终结果一致 |
 | NodeState | ID / Description / Status / Inputs / Outputs / Child / Err；节点与 Topology 同声明序同 ID |
 | KeyState | Name / Type / From / State；只给类型、来源与到达状态，输入上的 From 与 Requires 共用词表 |
 
@@ -550,7 +550,7 @@ value, state, err := pulse.ReadOutput(e, result)
 
 成功 Wait 收尾后，ready 返回业务值（包括零值、nil interface 与 typed nil），skipped 返回零值与 skipped，未喂且无人 Requires 的可选透传返回零值与真实 pending；三者均为 nil error。尚未收尾立即报错，不等待、不返回部分值；失败或取消返回执行原因。错误非 nil 时值与状态无效，状态为空串；不把正常缺值编码成失败。GraphFinished 回调前终态已确定，所以回调内可读；Wait 正常释放 ctx 不改变结果。
 
-Wait 在同一执行锁内先锁存首错或当前真实取消，再置 done，后续重复 / 并发 Wait 只读终态；这样既保留“所有节点已退出、收尾前才取消”的真实原因，也不会把自己收尾的 cancel 反抓成失败（#327）。
+Wait 会合登记的可靠流工作后，在同一执行锁内先锁存结果再置 done：此时已锁存的树级 CheckpointError 优先并归为 failed，否则保持普通首错或当前真实取消；不重新遍历用户错误。Err、GraphFinished、Snapshot 与后续重复 / 并发 Wait 复用该最终结论，既保留“所有节点已退出、收尾前才取消”的真实原因，也不把自己收尾的 cancel 反抓成失败（#327）。各子执行在自己的收尾边界应用同一规则，已确定的终态不会被其他执行稍后的失败改写；这不构成整树原子快照。
 
 读取只在定义、执行与槽位各自的锁内取已有数据，不造槽、不推进、不发事件。业务值不深拷贝；slice/map/指针等仍引用宿主对象，宿主负责同步和所有权。Snapshot 与 Observer 仍不带业务值；Durable 全节点提交/恢复另走 #307 的受校验契约，不借用结果读取绕开内部键权限。
 

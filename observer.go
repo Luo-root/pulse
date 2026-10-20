@@ -84,7 +84,8 @@ type Observer interface {
 	// 校验失败与重复 Start 都到不了这里（那时这次运行没有启动）。
 	OnGraphStarted(site Site)
 	// OnGraphFinished 在 Wait 返回前发出一次：reason 是运行终态（图只会是
-	// completed / failed / canceled），err 是首错（即 Execution.Err()）。
+	// completed / failed / canceled），err 是最终结果（即 Execution.Err()）；
+	// 可靠模式优先保留该执行收尾时已锁存的树级可靠首错。
 	// 只 Start 不 Wait 的宿主收不到它；重复 Wait 不重复发。
 	OnGraphFinished(site Site, reason NodeFinishReason, err error)
 	OnNodeWaiting(site Site, nodeID string)
@@ -100,7 +101,7 @@ type Observer interface {
 // 三处出口共用同一份位置记号，且必须逐字一致：`Topology().Graph.Path`（静态全树）、
 // `Observer` 回调里的 `Site.Path`（运行期）、以及后续的快照（一次运行的进度）。
 // 路径格式是契约：根图 `""`、一层子图是那一步的节点 id（`"step"`）、再深一层
-// `"step/inner"`，用 `/` 连接——节点 id 里不许出现 `/` 就是为了让它两两可分。
+// `"step/inner"`，用 `/` 连接——子图挂载节点 id 里不许出现 `/` 就是为了让它两两可分。
 //
 // `Execution` 为空串表示「不在运行中」：静态出口（`Topology`）只有定义身份。
 type Site struct {

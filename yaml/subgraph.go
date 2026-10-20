@@ -298,7 +298,7 @@ func (m mount) child(n NodeSpec) mount {
 }
 
 // joinPath 拼嵌套路径：根为空串，一层是挂载它的那个节点 id，再深是 `outer/inner`。
-// 与引擎的 `joinPath` 同一套写法（节点 id 不许含 `/` 就是为它）。
+// 与引擎的 `joinPath` 同一套写法（子图挂载节点 id 不许含 `/` 就是为它）。
 func joinPath(at, id string) string {
 	if at == "" {
 		return id

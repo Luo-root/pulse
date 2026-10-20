@@ -158,7 +158,7 @@ Mermaid 归根包：`(*Topology).Mermaid(opts ...MermaidOption) string`，用 `W
 
 - **发布节奏（2026-10-18 更新）**：这是 0.x 的破坏性改造，走 **minor**，配迁移说明；不在 patch 里做。阶段完成与发版分开：Pulse 完成约定能力、文档、候选审核与 Durable 桥接联调后，准备 `v0.5.0`。两仓不再共用发布闸门；`pulse-durable` 保持未发布，待维护的数据库 Store [#40](https://github.com/Luo-root/pulse-durable/issues/40) 完成并验收后，再考虑首发 `v0.1.0`，仅供评测的 SQLite 适配器不算这项交付。Core tag 可下载后，Durable 可以对齐依赖并复核，不因此触发发版。发版由维护者决定；首期代码已具备完整节点链检查点桥接、Store/Codec、Run/Resume、方案 A 子图恢复与本机文件后端，持久等待和分布式运行管理仍属后续方向。之后继续 0.x 迭代，直到项目目标达到、确认后续不再有系统性重大变更，再完善详细文档体系并发布两仓各自的 `v1.0.0`，基本固定 API 与实现。首期必要的 godoc、示例与迁移说明仍随实现同步，不留到 `v1.0.0` 才补。完整发布闸门见 [`workflow-foundation.md` §8](workflow-foundation.md#8-演进顺序与可交付产物)。
 - **`Sub` 换了含义（最要紧的一条，迁移说明放最前）**：`pulse.Sub(g, id, desc, binds, build)`（运行期现造子图）**被删除**，今天 `Sub` 是「挂一张**现成的**子图」（第 4 节）。跟着一起没的还有 `SubCtx`（`Context()` / `GraphID()` / `Path()` / `Observer()`）与运行期的绑定校验。替代写法逐条：① 子图在**装配期**建好，并 `DeclareInput` / `DeclareOutput` 声明端口——接线只能接端口，接子图内部的中间 Key 是静态错；② 子图的取消域**不用自己管**：每一次跑到那一步，引擎从**那一步的 ctx** 派生子执行的 ctx（阶段 2 之后没有转发 goroutine 这回事）；③ 图 id 自己起，建议沿用 `<父图 id>/<节点 id>` 这套写法；④ 挂载位置随每条回调由引擎发出来（`Site.Path`），出口直接读它就能带 `pulse.path`——不必再按层各建一个出口。`Fix` / `FixSkip` 补上「某一处挂载的固定值」这一格。YAML 侧**阶段 1 收紧过的那条已经撤回**（阶段 3）：`graph:` 节点上的 `retry:` 照装照跑——每一次尝试各建一份**新的子执行**，第一次那轮的桥回随它自己那条写暂存一起作废，父侧只拿得到成功那一次的输出版本（Go 侧 `Sub(..., pulse.Retry(...))` 同理）。
-- **冻结面怎么动**：七条哨兵**不新增、不改名**，但触发点要在 godoc、迁移说明与 release notes 里写准（第 8 节 (e)）：`ErrGraphStarted` 有两处——定义已封口后，`Add` / `DeclareInput` / `DeclareOutput` / `Sub` 改定义被拒；同一 `Execution` 二次 `Start` 被拒。`ErrGraphNotStarted` 仅由尚未成功启动的 `(*Execution).Wait` 返回；`Err` 不要求先启动，读取首错或当前 ctx 的错误，Wait 正常收尾的资源释放不会变成取消结果。
+- **冻结面怎么动**：七条哨兵**不新增、不改名**，但触发点要在 godoc、迁移说明与 release notes 里写准（第 8 节 (e)）：`ErrGraphStarted` 有两处——定义已封口后，`Add` / `DeclareInput` / `DeclareOutput` / `Sub` 改定义被拒；同一 `Execution` 二次 `Start` 被拒。`ErrGraphNotStarted` 仅由尚未成功启动的 `(*Execution).Wait` 返回；`Err` 不要求先启动；收尾前读取首错或当前 ctx 错误，收尾后与并发/重复 Wait 复用最终结论（会合可靠工作后，已锁存的树级 CheckpointError 优先并归为 failed，否则保持普通首错或真实取消），Wait 正常收尾的资源释放不会变成取消结果。
 - **端口是新的一层，子图要跟着声明**：`DeclareInput` / `DeclareOutput` 落地后，**被当作子图组合的图必须声明端口**——旧形态那种「绑定指向子图里任意声明过的 Key」不再成立（接到非端口是静态错）。迁移说明要逐条给出「原来绑内部 Key → 现在补一句 `DeclareOutput`」的改法。
 - **来源类型多一个值**：`pulse.SourceInput` 与 `node` 并列（`SourceSeed` 已随阶段 2 删除，见第 6 节）。`SourceKind` 不在冻结面里（冻结面只有槽位三态、`Aspect`、七条哨兵、Observer 次数、六条编码原语 + `LineRenderer`），所以这是**新增**而不是破坏。
 - **组合环是新拒的一类**：今天 YAML 只查 graph-reference 名环；引擎侧「同一张图挂进自己的子树」从阶段 1 起在 `Sub` 装配期拒（见第 3.4 节）。这是**新增的静态错**，迁移说明里点名。
@@ -197,7 +197,7 @@ Mermaid 归根包：`(*Topology).Mermaid(opts ...MermaidOption) string`，用 `W
 
 **原暂定项的实施结果**：
 
-- **(e) 哨兵语义**：复用 `ErrGraphStarted` / `ErrGraphNotStarted`（不改名、不新增），触发点已落地并在 godoc 与迁移口径中写清：`ErrGraphStarted` 用于定义已封口后改定义被拒，以及同一 `Execution` 二次 `Start` 被拒；`ErrGraphNotStarted` 仅由尚未成功启动的 `(*Execution).Wait` 返回；`Err` 不要求先启动，读取首错或当前 ctx 的错误。
+- **(e) 哨兵语义**：复用 `ErrGraphStarted` / `ErrGraphNotStarted`（不改名、不新增），触发点已落地并在 godoc 与迁移口径中写清：`ErrGraphStarted` 用于定义已封口后改定义被拒，以及同一 `Execution` 二次 `Start` 被拒；`ErrGraphNotStarted` 仅由尚未成功启动的 `(*Execution).Wait` 返回；`Err` 不要求先启动；收尾前读取首错或当前 ctx 错误，收尾后与并发/重复 Wait 复用最终结论（会合可靠工作后，已锁存的树级 CheckpointError 优先并归为 failed，否则保持普通首错或真实取消）。
 - **(g) 观测身份**：`pulse.execution`（本次执行 id）、`pulse.graph` 继续是定义 id——否则同一张图在**同一位置**跑两次的记录会合并。**阶段 2 已落地**：引擎的 `Observer` 回调带 `Site{Graph, Execution, Path}`，`observe` 把 `AttrExecution` 写进**每一条**记录（内部记账也按 `(本次运行, 节点 id)` 分桶）。
 
 ## 9. 不做（本阶段就写清，免得回头重开）

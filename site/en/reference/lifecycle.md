@@ -26,7 +26,7 @@ Static validation checks Requires sources, producers or pass-through inputs for 
 
 Start rechecks per-run inputs against the current definition before sealing. On success, it synchronously emits GraphStarted and then launches node goroutines. Start may succeed once only; a second call returns ErrGraphStarted. Rejected startup sets no started flag and emits no start event. Correct a repairable structure and retry startup, or create a new execution when more input data is required.
 
-Wait requires successful Start, otherwise returning ErrGraphNotStarted. It waits for all nodes plus required host stream reading groups registered before Start to complete and Ack or explicitly Stop. It then latches the result, emits GraphFinished, and releases the context. Wait does not drain for the host. For host-only streams, use NewExecution → SubscribeStream → Start, consume and acknowledge, then Wait. Concurrent or repeated Wait calls return the same result and all wait for GraphFinished to return. Cleanup cancellation does not turn success into cancellation.
+Wait requires successful Start, otherwise returning ErrGraphNotStarted. It waits for all nodes plus required host stream reading groups registered before Start to complete and Ack or explicitly Stop, and joins registered reliable stream work. It then latches the result, emits GraphFinished, and releases the context. Checkpoint mode gives priority to the tree's first CheckpointError already latched at this boundary and marks the graph failed; otherwise the ordinary first error or real cancellation remains. Err and graph observation reuse this final result. Each child applies the same rule at its own finalization boundary; another execution's later failure does not rewrite an established result. Wait does not drain for the host. For host-only streams, use NewExecution → SubscribeStream → Start, consume and acknowledge, then Wait. Concurrent or repeated Wait calls return the same result and all wait for GraphFinished to return. Cleanup cancellation does not turn success into cancellation.
 
 With Start but no Wait, the graph snapshot remains running even after nodes finish, and no GraphFinished is emitted. Cancel signals cancellation and does not replace Wait.
 
@@ -55,7 +55,7 @@ This input gate applies to ordinary business nodes. Sub has no aggregate input g
 
 A source node without Requires is exempt from the all-skipped test. Context cancellation interrupts input and quota waits. Managed blocking waits temporarily release quota and reacquire before business resumes, including cancellation returns and panic unwinding. Serialize I/O on one RunCtx, including Forks. Default joins permit partial values; a node requiring all values must explicitly return WaitAll's absence result. Normal skipping does not withdraw already published values.
 
-Unwritten Provides become skipped at finalization. A nil return remains completed; a normal SkipError means skipped. A real error is captured as the first error and cancels the execution. The first captured error among parallel nodes is not guaranteed by declaration order.
+Unwritten Provides become skipped at finalization. A nil return remains completed; a normal SkipError means skipped. A real error is captured as the first error and cancels the execution. The first captured error among parallel nodes is not guaranteed by declaration order; the final execution result follows the reliable-error priority rule above.
 
 ## Two managed-stream completion facts
 

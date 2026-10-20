@@ -26,7 +26,7 @@ Graph 的生命周期是创建、装配、封闭；它不保存本次运行的�
 
 Start 在封闭前按当前定义再次检查本次输入。通过后同步发 GraphStarted，再为节点启动 goroutine。Start 只允许成功一次；再次调用返回 ErrGraphStarted。失败启动不标记 started，也不产生启动事件。结构可以补充时可修正后再启动；需要补充输入时创建新执行。
 
-Wait 必须在成功 Start 后调用，否则返回 ErrGraphNotStarted。它等待所有节点终止，以及 Start 前登记的必需宿主流读取组完成并 Ack 或明确 Stop，随后锁存最终结果，发 GraphFinished，再释放执行上下文。Wait 不替宿主排空；只读宿主流应先 NewExecution → SubscribeStream → Start，持续读取确认后再 Wait。并发或重复 Wait 返回同一锁存结果，并都等待 GraphFinished 回调返回；正常资源释放的 cancel 不会把成功改成取消。
+Wait 必须在成功 Start 后调用，否则返回 ErrGraphNotStarted。它等待所有节点终止，以及 Start 前登记的必需宿主流读取组完成并 Ack 或明确 Stop，并会合登记的可靠流工作，随后锁存最终结果，发 GraphFinished，再释放执行上下文。可靠模式优先采用此时已锁存的树级 CheckpointError，图归为 failed；否则保持普通首错或真实取消。Err 与图级观测复用该最终结果。各子执行在自己的收尾边界应用同一规则，已经确定的终态不被其他执行稍后的失败改写。Wait 不替宿主排空；只读宿主流应先 NewExecution → SubscribeStream → Start，持续读取确认后再 Wait。并发或重复 Wait 返回同一锁存结果，并都等待 GraphFinished 回调返回；正常资源释放的 cancel 不会把成功改成取消。
 
 只 Start 而不 Wait，即使节点已结束，图快照仍显示 running，也不会产生 GraphFinished。Cancel 只发送信号，不能代替 Wait。
 
@@ -55,7 +55,7 @@ Wait 必须在成功 Start 后调用，否则返回 ErrGraphNotStarted。它等�
 
 无 Requires 的源节点不适用“全部跳过”的判断。等待输入和额度均可被上下文取消。受管流阻塞等待暂时让额，恢复业务（含取消返回与 panic 展开）前取回；同一 RunCtx（含 Fork）不得并发 I/O。默认汇聚允许部分有值；要求全部有值的节点必须显式返回 WaitAll 的缺值结果。已经发布的值不会因稍后正常跳过撤回。
 
-未写出的 Provides 在收尾时变为 skipped。节点返回 nil 仍是 completed；返回正常 SkipError 是 skipped；真实错误捕获为首错并取消执行。并行错误的首个捕获顺序不由声明顺序保证。
+未写出的 Provides 在收尾时变为 skipped。节点返回 nil 仍是 completed；返回正常 SkipError 是 skipped；真实错误捕获为首错并取消执行。并行错误的首个捕获顺序不由声明顺序保证；最终执行结果遵守上文的可靠首错优先规则。
 
 ## 受管流的两类完成
 
