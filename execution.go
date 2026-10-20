@@ -63,7 +63,7 @@ type Execution struct {
 	started bool
 	done    bool // Wait 返回过：此后 cancel 只是收尾，不再算运行结果
 	err     error
-	// errReason 与首错一起锁存；Wait/Snapshot 不再遍历用户 error 的方法。
+	// errReason 与 err 一起锁存；Wait/Snapshot 不再遍历用户 error 的方法。
 	errReason NodeFinishReason
 	// states 是本次运行的节点读数，受 mu 保护；输出顺序由 graph.nodes 决定。
 	states map[*Node]nodeRuntime
@@ -186,7 +186,7 @@ func (g *Graph) newExecution(ctx, control context.Context, parentID, path string
 
 // nextExecID 拼运行身份：根执行是 `<图 id>#<序号>`，子执行是 `<父执行>/<一步的节点 id>#<序号>`。
 // 序号来自进程内唯一的计数器，所以「同一张图并发跑两次」「同一挂载点重试两次」都拿得到
-// 不同的值；节点 id 里不许出现 `/`，所以这个写法不会有歧义。
+// 不同的值；子图挂载节点 id 里不许出现 `/`，所以这个写法不会有歧义。
 func nextExecID(graphID, parentID, path string) string {
 	n := execSeq.Add(1)
 	if parentID == "" {
@@ -524,7 +524,10 @@ func (e *Execution) streamInputSkips() map[string]bool {
 }
 
 // Wait 等待 Start 提交的节点全部终止、已登记的必需宿主读取组完成或显式停止，
-// 然后确定整轮终态并释放这次运行的 ctx。
+// 并会合已接纳的可靠流工作，然后确定整轮终态并释放这次运行的 ctx。
+// 可靠模式优先返回此时已锁存的树级可靠首错（CheckpointError），归为 failed；
+// 否则保留首个节点错误或真实取消。各子执行在自己的收尾边界采用同一规则，
+// 已确定的终态不会被随后另一执行的失败改写。
 //
 // 返回前发出一次 `Observer.OnGraphFinished`（reason 取运行终态，err 即本次
 // 返回值）——在**全部**节点终止之后，所以它晚于本轮的全部节点事件。
@@ -550,9 +553,13 @@ func (e *Execution) Wait() error {
 	e.streamWork.Wait()
 	e.mu.Lock()
 	if !e.done {
-		// 先锁存终态，再标记结束：没有节点捕获的真实取消也属于本轮结果。
-		// 先置 done 再问 Err 会把这次取消与后面的资源释放一起忽略。
-		if e.err == nil {
+		// 可靠工作已会合；树级可靠首错优先于先到的业务失败或取消，直接采用
+		// 已知的 failed 归因，不再遍历用户 error。锁顺序与 Start 一致：e.mu → f.mu；
+		// stopCheckpoint 释放 f.mu 后才调用 root.fail，不反向持锁。
+		if failure := e.checkpointErr(); failure != nil {
+			e.err, e.errReason = failure, NodeFailed
+		} else if e.err == nil {
+			// 没有节点捕获的真实取消也属于本轮结果；先锁存，再标记结束。
 			e.err = e.ctx.Err()
 			e.errReason = NodeCompleted
 			if e.err != nil {
@@ -584,9 +591,10 @@ func (e *Execution) beginStreamWork() bool {
 	return true
 }
 
-// Err 返回首个节点错误或取消原因。不含单纯的跳过。Wait 收尾时先锁存终态：
-// 节点没有捕获的真实取消也会保留；随后释放资源的 cancel 不再算结果，
-// 并发或重复 Wait 不改变已确定的结果。
+// Err 在 Wait 收尾前返回首个节点错误或当前取消原因，不含单纯的跳过。
+// Wait 收尾时优先锁存当时已知的树级可靠首错，否则保留首个节点错误或真实取消；
+// 此后 Err 与 Wait 返回同一最终结果。随后释放资源的 cancel 不再算结果，
+// 并发或重复 Wait 以及其他执行稍后的可靠失败都不改变已确定的结果。
 func (e *Execution) Err() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -624,8 +632,8 @@ func (e *Execution) slotOfLocked(k keyRef) *slot {
 
 // Run 是**同步便捷入口**：为这一次调用新建一份执行，跑完并等到全部终止。
 //
-// 等价于 `NewExecution` + `Start` + `Wait`，返回值与 `Wait` 相同（首错或 ctx 取消；
-// 不含跳过）。要拿出来看身份 / 分步控制就自己建执行：
+// 等价于 `NewExecution` + `Start` + `Wait`，返回值与 `Wait` 相同（可靠首错优先，
+// 否则首个节点错误或 ctx 取消；不含跳过）。要拿出来看身份 / 分步控制就自己建执行：
 //
 //	e, err := g.NewExecution(ctx, in)
 //	... e.Start(); e.Wait()

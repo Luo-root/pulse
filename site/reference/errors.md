@@ -85,7 +85,7 @@ ConsumeStream 回调返回精确 ErrStreamStopped 时先成功 Ack 当前条再 
 
 ## 运行失败、取消与输出
 
-节点真实错误会锁存首错并取消执行，Wait 等所有节点结束后返回该原因。其他并发节点可能完成或取消，不会覆盖已捕获首错。业务体 panic 会转换为节点错误。引擎错误分类期间，自定义错误的 Is/As/Unwrap 方法 panic 也会转为节点失败，并停止遍历该故障 error；这一保护不覆盖用户自建 goroutine 的 panic。
+节点真实错误会锁存首错并取消执行，Wait 默认在所有节点结束后返回该原因。其他并发节点可能完成或取消，普通错误不覆盖已捕获首错。可靠模式有一条例外：Wait 会合登记的可靠流工作后，优先采用此时已锁存的树级 CheckpointError，并将图归为 failed；Err、GraphFinished、Snapshot 和并发/重复 Wait 复用这一最终结论，不重新遍历用户错误。各子执行按自己的收尾边界确定结果，已确定的终态不被其他执行稍后的失败改写。业务体 panic 会转换为节点错误。引擎错误分类期间，自定义错误的 Is/As/Unwrap 方法 panic 也会转为节点失败，并停止遍历该故障 error；这一保护不覆盖用户自建 goroutine 的 panic。
 
 Timeout 等内层退出后判断本层时限与父域取消：本层时限真正到期时返回包含节点名与时限的错误，状态为 failed，且不包装 context.DeadlineExceeded；两条结束路径同时就绪也遵守这一判据。内层局部 Cancel 清理不覆盖既得的成功、正常 skip 或真实失败；父域取消仍保留上下文取消原因。canceled 仍应结合宿主上下文、节点时限与实际错误原因判断。
 

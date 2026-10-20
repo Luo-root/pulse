@@ -2034,6 +2034,214 @@ func TestCheckpointRestoreKeepsActualOrdinaryDependencies(t *testing.T) {
 	}
 }
 
+// 两条多层 Sub 都已接纳 Commit，再让业务失败/宿主取消先到。左边可靠失败后，
+// 右边仍在保存；每个尚未收尾的执行都采用同一个可靠首错，已完成的子图保持成功。
+func TestCheckpointFinalFailureAcrossSubBoundaries(t *testing.T) {
+	for _, early := range []string{"business", "cancel", "timeout"} {
+		t.Run(early, func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			root, middle, leaf, confirmed := mustNew(t, ctx, "final-root"), mustNew(t, ctx, "final-middle"), mustNew(t, ctx, "final-leaf"), mustNew(t, ctx, "final-confirmed")
+			output, leftKey, rightKey, confirmedKey := NewKey[int]("output"), NewKey[int]("left"), NewKey[int]("right"), NewKey[int]("confirmed")
+			declareOut(t, leaf, NewPort(output))
+			declareOut(t, middle, NewPort(output))
+			declareOut(t, confirmed, NewPort(output))
+			for _, key := range []Key[int]{leftKey, rightKey, confirmedKey} {
+				declareOut(t, root, NewPort(key))
+			}
+			var bodies atomic.Int32
+			mustAdd(t, leaf, NewNode("work", "可靠失败不能被 Retry 或 Timeout 改判", nil, Provides(output), func(rc *RunCtx) error {
+				bodies.Add(1)
+				return Set(rc, output, 7)
+			}, Retry(2, 0), Timeout(time.Hour)))
+			mustAdd(t, leaf, NewNode("waiting", "取消先占各子执行首错", nil, nil, func(rc *RunCtx) error {
+				<-rc.Context().Done()
+				return rc.Context().Err()
+			}))
+			mustAdd(t, confirmed, NewNode("work", "先完成的结论不漂移", nil, Provides(output), func(rc *RunCtx) error { return Set(rc, output, 7) }))
+			managedTestOK(t, Sub(middle, "leaf", "", []SubBind{Out(output, output)}, leaf, Retry(2, 0), Timeout(time.Hour)))
+			managedTestOK(t, Sub(root, "left", "", []SubBind{Out(output, leftKey)}, middle))
+			managedTestOK(t, Sub(root, "right", "", []SubBind{Out(output, rightKey)}, middle))
+			managedTestOK(t, Sub(root, "confirmed", "", []SubBind{Out(output, confirmedKey)}, confirmed))
+			business, reliable := errors.New("earlier business failure"), errors.New("first reliable failure")
+			trigger := make(chan struct{})
+			if early != "cancel" {
+				aspects := []Aspect{func(rc *RunCtx, next func(*RunCtx) error) error {
+					select {
+					case <-trigger:
+						return next(rc)
+					case <-rc.Context().Done():
+						return rc.Context().Err()
+					}
+				}}
+				if early == "timeout" {
+					// 等两条 Commit 都进入后才开启真正的节点超时。
+					aspects = append(aspects, Timeout(time.Millisecond))
+				}
+				mustAdd(t, root, NewNode("business", "保存进入后才失败", nil, nil, func(rc *RunCtx) error {
+					if early == "timeout" {
+						<-rc.Context().Done()
+						return rc.Context().Err()
+					}
+					return business
+				}, aspects...))
+			}
+			entered := make(chan string, 2)
+			releases := map[string]chan struct{}{"left/leaf": make(chan struct{}), "right/leaf": make(chan struct{})}
+			var releaseOnce [2]sync.Once
+			defer releaseOnce[0].Do(func() { close(releases["left/leaf"]) })
+			defer releaseOnce[1].Do(func() { close(releases["right/leaf"]) })
+			probe := &checkpointProbe{}
+			hooks := probe.hooks()
+			hooks.Commit = func(_ context.Context, commit CheckpointCommit) error {
+				if commit.Site.Graph == "final-leaf" {
+					entered <- commit.Site.Path
+					select {
+					case <-releases[commit.Site.Path]:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					if commit.Site.Path == "left/leaf" {
+						return reliable
+					}
+					return NoValue() // 第二个可靠错也不能替换第一条或降成跳过。
+				}
+				return nil
+			}
+			type finalEvent struct {
+				err    error
+				reason NodeFinishReason
+				count  int
+			}
+			var mu sync.Mutex
+			events := make(map[string]finalEvent)
+			confirmedDone, leftDone := make(chan struct{}), make(chan struct{})
+			canceled := make(chan string, 2)
+			observer := ObserverFunc{
+				Finished: func(site Site, node string, reason NodeFinishReason, _ error) {
+					if site.Graph == "final-leaf" && node == "waiting" && reason == NodeCanceled {
+						canceled <- site.Path
+					}
+				},
+				GraphFinished: func(site Site, reason NodeFinishReason, err error) {
+					mu.Lock()
+					prior := events[site.Path]
+					events[site.Path] = finalEvent{err, reason, prior.count + 1}
+					mu.Unlock()
+					if site.Path == "confirmed" {
+						close(confirmedDone)
+					}
+					if site.Path == "left" {
+						close(leftDone)
+					}
+				},
+			}
+			e, err := root.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks), WithExecObserver(observer))
+			managedTestOK(t, err)
+			defer e.Cancel()
+			managedTestOK(t, e.Start())
+			for range 2 {
+				waitCheckpointSignal(t, ctx, entered)
+			}
+			waitCheckpointSignal(t, ctx, confirmedDone)
+			if early == "cancel" {
+				e.Cancel()
+			} else {
+				close(trigger)
+			}
+			for range 2 {
+				waitCheckpointSignal(t, ctx, canceled)
+			}
+			if early == "business" && e.Err() != business {
+				t.Fatalf("business failure was not first: %v", e.Err())
+			}
+			releaseOnce[0].Do(func() { close(releases["left/leaf"]) })
+			waitCheckpointSignal(t, ctx, leftDone)
+			first := e.checkpointErr()
+			var failure *CheckpointError
+			if !errors.As(first, &failure) || failure.Err != reliable {
+				t.Fatalf("first reliable identity lost: %v", first)
+			}
+			releaseOnce[1].Do(func() { close(releases["right/leaf"]) })
+			if err := e.Wait(); err != first || e.Err() != first || bodies.Load() != 2 {
+				t.Errorf("root lost reliable priority or retried: err=%v bodies=%d", err, bodies.Load())
+			}
+			var visit func(*Execution)
+			visit = func(ex *Execution) {
+				state := ex.Snapshot()
+				wantErr, wantReason := first, NodeFailed
+				if ex.Site().Path == "confirmed" {
+					wantErr, wantReason = nil, NodeCompleted
+				}
+				if ex.Wait() != wantErr || ex.Err() != wantErr || state.Graph.Err != wantErr || state.Graph.Status != GraphStatus(wantReason) {
+					t.Errorf("final boundary %q changed: %+v", ex.Site().Path, state.Graph)
+				}
+				mu.Lock()
+				event := events[ex.Site().Path]
+				mu.Unlock()
+				if event.err != wantErr || event.reason != wantReason || event.count != 1 {
+					t.Errorf("GraphFinished %q = %+v", ex.Site().Path, event)
+				}
+				if ex.Site().Path == "confirmed" {
+					value, state, err := ReadOutput(ex, output)
+					if value != 7 || state != SlotStateReady || err != nil {
+						t.Error("confirmed child output changed")
+					}
+				}
+				for _, node := range state.Nodes {
+					if node.Child != nil {
+						visit(node.Child)
+					}
+				}
+			}
+			visit(e)
+		})
+	}
+}
+
+type checkpointFinalInspection struct {
+	sealed atomic.Bool
+	calls  atomic.Int32
+}
+
+func (*checkpointFinalInspection) Error() string { return "error method probe" }
+func (e *checkpointFinalInspection) inspect() {
+	e.calls.Add(1)
+	if e.sealed.Load() {
+		panic("finalization revisited a user error")
+	}
+}
+func (e *checkpointFinalInspection) Is(error) bool { e.inspect(); return false }
+func (e *checkpointFinalInspection) As(any) bool   { e.inspect(); return false }
+func (e *checkpointFinalInspection) Unwrap() error { e.inspect(); return nil }
+
+func TestCheckpointFinalResultDoesNotInspectErrors(t *testing.T) {
+	ctx := checkpointTestContext(t)
+	g := mustNew(t, ctx, "final-error-methods")
+	business, reliable := &checkpointFinalInspection{}, &checkpointFinalInspection{}
+	mustAdd(t, g, NewNode("work", "已归因的错误不再遍历", nil, nil, func(*RunCtx) error { return business }))
+	e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", (&checkpointProbe{}).hooks()))
+	managedTestOK(t, err)
+	defer e.Cancel()
+	managedTestOK(t, e.Start())
+	e.wg.Wait()
+	business.sealed.Store(true)
+	reliable.sealed.Store(true)
+	before := business.calls.Load()
+	// 模拟已接纳保存的迟到故障；共享 Open 的真实异步路径由相邻用例覆盖。
+	first := e.stopCheckpoint("accepted save", reliable)
+	if second := e.stopCheckpoint("later save", NoValue()); second != first {
+		t.Fatal("reliable first error replaced")
+	}
+	for range 8 {
+		if e.Wait() != first || e.Err() != first || e.Snapshot().Graph.Err != first || e.Snapshot().Graph.Status != GraphStatusFailed {
+			t.Fatal("final reliable result changed")
+		}
+	}
+	if business.calls.Load() != before || reliable.calls.Load() != 0 {
+		t.Fatalf("finalization called error methods: business=%d→%d reliable=%d", before, business.calls.Load(), reliable.calls.Load())
+	}
+}
+
 func TestCheckpointRestoreShortCircuitedSub(t *testing.T) {
 	for _, passThrough := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pass-through-%t", passThrough), func(t *testing.T) {
