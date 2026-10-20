@@ -208,7 +208,7 @@ type checkpointStreamFactory interface {
 
 type checkpointEndpoint interface {
 	pulseCheckpointDescriptor() *CheckpointStreamDescriptor
-	pulseEnsureCheckpoint() error
+	pulseEnsureCheckpoint(context.Context) error
 }
 
 // 树缓存共用逻辑来源的一份端点。reference 在 Open 前累积约束（不等于授权）；
@@ -543,7 +543,9 @@ func (s Stream[T]) pulseCheckpointDescriptor() *CheckpointStreamDescriptor {
 	return &descriptor
 }
 
-func (s Stream[T]) pulseEnsureCheckpoint() error { return s.state.ensureCheckpoint() }
+func (s Stream[T]) pulseEnsureCheckpoint(ctx context.Context) error {
+	return s.state.ensureCheckpoint(ctx)
+}
 
 // restoreCheckpointStreams 由 restored 节点的运行分支在锁外调用，早于完成事件。
 // 已完成来源不重跑；历史 active 别名与续跑写端共享尾部和进度，不代替写端终结 Done。
@@ -557,7 +559,7 @@ func (e *Execution) restoreCheckpointStreams(n *Node) error {
 		if !ok {
 			return e.stopCheckpoint("restore stream", fmt.Errorf("restored stream %q has no local endpoint factory", output.Key.Name))
 		}
-		if err := endpoint.pulseEnsureCheckpoint(); err != nil {
+		if err := endpoint.pulseEnsureCheckpoint(e.ctx); err != nil {
 			return err
 		}
 	}
@@ -566,14 +568,11 @@ func (e *Execution) restoreCheckpointStreams(n *Node) error {
 
 // ensureCheckpoint 必须在读取/收尾使用恢复端点之前调用，且不持流锁或 operation 门。
 // 恢复别名和实际写端共用一次 Open；active 来源保留 Done，真正写端结束后才开放 EOF。
-func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
+// ctx 只管当前调用者等待；不能改用根或端点创建者的域，否则跨执行取消会被误归因。
+func (s *managedStream[T]) ensureCheckpoint(ctx context.Context) error {
 	checkpoint := s.checkpoint
 	if checkpoint == nil || (!checkpoint.restore && checkpoint.request == nil) {
 		return nil
-	}
-	ctx := checkpoint.exec.checkpoint.failure.root.ctx
-	if len(contexts) != 0 && contexts[0] != nil {
-		ctx = contexts[0]
 	}
 	checkpoint.once.Do(func() {
 		checkpoint.ready = make(chan struct{})
