@@ -1,6 +1,7 @@
 package pulse
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -64,13 +65,21 @@ func (e *Execution) stopCheckpoint(op string, err error) error {
 	failure := f.err
 	f.mu.Unlock()
 	f.root.fail(failure)
+	f.root.Cancel() // 可靠失败终止整树（含已接纳 I/O），不能留下只等业务链之外的钩子。
 	return failure
 }
 
-// 可靠调用必须同步结束；panic 与不确定错误都锁存，不自动重试、不调用回滚钩子。
-func (e *Execution) callCheckpoint(op string, fn func() error) (err error) {
+// 接纳前检查业务域；接纳后整段只受同层外部控制影响。内部 fail-fast 仍会立即
+// 唤醒业务等待，但不能把已开始的可靠保存变成不确定结果。钩子同步结束，错误照常锁存。
+func (e *Execution) callCheckpoint(ctx, control context.Context, op string, fn func(context.Context) error) (err error) {
 	if err := e.checkpointErr(); err != nil {
 		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return &executionCancellation{cause: err}
+	}
+	if err := control.Err(); err != nil {
+		return &executionCancellation{cause: err}
 	}
 	returned := false
 	defer func() {
@@ -79,14 +88,21 @@ func (e *Execution) callCheckpoint(op string, fn func() error) (err error) {
 			err = e.stopCheckpoint(op, fmt.Errorf("hook panicked (%T)", rec))
 		}
 	}()
-	err = fn()
+	err = fn(control)
 	returned = true
 	if err != nil {
 		if failure := e.checkpointErr(); failure != nil {
 			return failure
 		}
-		if stopped, ok := err.(*CheckpointNotStarted); ok && stopped != nil && e.ctx.Err() != nil {
-			return &executionCancellation{cause: e.ctx.Err()}
+		if stopped, ok := err.(*CheckpointNotStarted); ok && stopped != nil {
+			// 同一父取消传播到两条链没有顺序保证；只认本次适用域的取消事实。
+			cause := ctx.Err()
+			if cause == nil {
+				cause = control.Err()
+			}
+			if cause != nil {
+				return &executionCancellation{cause: cause}
+			}
 		}
 		return e.stopCheckpoint(op, err)
 	}
@@ -230,9 +246,9 @@ func (rc *RunCtx) openCheckpointAttempt(parent, boundary string, limit int) (Che
 	if err := rc.ctx.Err(); err != nil {
 		return result, err
 	}
-	err := rc.exec.callCheckpoint("open attempt", func() error {
+	err := rc.exec.callCheckpoint(rc.ctx, rc.controlCtx, "open attempt", func(ctx context.Context) error {
 		var err error
-		result, err = rc.exec.checkpoint.hooks.OpenAttempt(rc.ctx, CheckpointAttemptRequest{
+		result, err = rc.exec.checkpoint.hooks.OpenAttempt(ctx, CheckpointAttemptRequest{
 			Site: rc.exec.site, Parent: parent, NodeID: rc.node.id, Boundary: boundary, Limit: limit,
 		})
 		if err != nil {
@@ -265,9 +281,9 @@ func (rc *RunCtx) openCheckpointAttempt(parent, boundary string, limit int) (Che
 }
 
 func (rc *RunCtx) failCheckpointAttempt(scope string) error {
-	return rc.exec.callCheckpoint("fail attempt", func() error {
-		// 与最终失败的执行域判据一致；业务清理取消节点 ctx 不应阻断失败确认。
-		return rc.exec.checkpoint.hooks.FailAttempt(rc.exec.ctx, scope)
+	return rc.exec.callCheckpoint(rc.exec.ctx, rc.exec.controlCtx, "fail attempt", func(ctx context.Context) error {
+		// 业务清理取消节点 ctx 不应阻断失败确认；仍保留所属执行的父层控制。
+		return rc.exec.checkpoint.hooks.FailAttempt(ctx, scope)
 	})
 }
 
@@ -391,8 +407,8 @@ func (e *Execution) finishCheckpointChain(n *Node, rc *RunCtx, ws *writeSet, roo
 		// 在 fail 取消执行域之前区分外部中断与最终真实失败。
 		if !isCheckpointFailure(err) && e.ctx.Err() == nil {
 			for _, terminal := range checkpointFinishes(rc, err) {
-				if ferr := e.callCheckpoint("finish stream", func() error {
-					return e.checkpoint.hooks.StreamHooks.Finish(e.ctx, terminal)
+				if ferr := e.callCheckpoint(e.ctx, e.controlCtx, "finish stream", func(ctx context.Context) error {
+					return e.checkpoint.hooks.StreamHooks.Finish(ctx, terminal)
 				}); ferr != nil {
 					return ferr
 				}
@@ -439,8 +455,8 @@ func (e *Execution) finishCheckpointChain(n *Node, rc *RunCtx, ws *writeSet, roo
 	if cerr := rc.ctx.Err(); cerr != nil {
 		return cerr
 	}
-	if cerr := e.callCheckpoint("commit", func() error {
-		return e.checkpoint.hooks.Commit(rc.ctx, CheckpointCommit{Site: e.site, Scope: e.checkpoint.scope, Attempt: root.Scope, Node: r, Streams: terminals})
+	if cerr := e.callCheckpoint(rc.ctx, rc.controlCtx, "commit", func(ctx context.Context) error {
+		return e.checkpoint.hooks.Commit(ctx, CheckpointCommit{Site: e.site, Scope: e.checkpoint.scope, Attempt: root.Scope, Node: r, Streams: terminals})
 	}); cerr != nil {
 		return cerr
 	}
@@ -485,9 +501,9 @@ func (rc *RunCtx) prepareChildCheckpoint(sub *Execution) error {
 	sort.Slice(request.Inputs, func(i, j int) bool { return request.Inputs[i].Key.Name < request.Inputs[j].Key.Name })
 	var records []NodeCheckpoint
 	var scopeFailure *CheckpointScopeFailure
-	if err := rc.exec.callCheckpoint("open child", func() error {
+	if err := rc.exec.callCheckpoint(rc.ctx, rc.controlCtx, "open child", func(ctx context.Context) error {
 		var err error
-		records, err = c.hooks.OpenChild(rc.ctx, request)
+		records, err = c.hooks.OpenChild(ctx, request)
 		// 只有本次请求的精确信号表示已确认业务失败；普通/包装错误与
 		// panic 仍由 callCheckpoint 锁存为可靠故障，不能让 Retry 吞掉。
 		if failure, ok := err.(*CheckpointScopeFailure); ok && failure != nil &&

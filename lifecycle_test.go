@@ -607,7 +607,11 @@ func TestLifecycleRejectedExecutionStartCanBeRepaired(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if e.Context().Err() != nil || e.started || g.sealed || tracked.registrations() != 1 {
+			registrations := 1
+			if restore {
+				registrations = 2 // 检查点的业务/控制链独立注册；拒绝 Start 不清掉任一活跃链。
+			}
+			if e.Context().Err() != nil || e.started || g.sealed || tracked.registrations() != registrations {
 				t.Fatalf("rejected standalone Start lost repairability: ctx=%v started=%v sealed=%v registrations=%d", e.Context().Err(), e.started, g.sealed, tracked.registrations())
 			}
 			if err := e.Start(); err != nil {

@@ -332,7 +332,7 @@ func runStaticSub(rc *RunCtx, id string, binds []SubBind, child *Graph) error {
 	//
 	//    这一步还会判子图那侧的启动条件（每条被 `Requires` 的进口都要有交代）：
 	//    父图没绑、子图里也没人产出的进口在这里报，而不是让子图跑起来之后挂死。
-	sub, err := child.newChildExecution(rc.exec, rc.Context(), rc.node.id, in, bound)
+	sub, err := child.newChildExecution(rc, in, bound)
 	if err != nil {
 		return fmt.Errorf("pulse: Sub %q: %w", id, err)
 	}

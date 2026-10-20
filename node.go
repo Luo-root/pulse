@@ -113,11 +113,13 @@ func (n *Node) Description() string { return n.desc }
 // RunCtx 是节点（及切面）在一次运行里能看到的世界：这次运行的槽位 +
 // 本层可取消的 context。拿不到整个黑板。
 type RunCtx struct {
-	exec    *Execution
-	node    *Node
-	ctx     context.Context
-	cancel  context.CancelFunc
-	allowed map[string]keyRef // name → 声明过的 key
+	exec          *Execution
+	node          *Node
+	ctx           context.Context
+	cancel        context.CancelFunc
+	controlCtx    context.Context
+	controlCancel context.CancelFunc
+	allowed       map[string]keyRef // name → 声明过的 key
 	// writes 是**当前写暂存**：nil 时 `Set` / `Skip` 直写执行槽位。
 	//
 	// `Retry` 为每次尝试开一层暂存，边界是它包住的 `next`（含更内层切面）；外层切面的
@@ -168,6 +170,10 @@ type advanceLedger struct {
 
 func newRunCtx(e *Execution, n *Node, parent context.Context) *RunCtx {
 	ctx, cancel := context.WithCancel(parent)
+	control, controlCancel := ctx, cancel
+	if e.checkpoint != nil {
+		control, controlCancel = context.WithCancel(e.controlCtx)
+	}
 	allowed := make(map[string]keyRef, len(n.requires)+len(n.provides))
 	for _, k := range n.requires {
 		allowed[k.name] = k
@@ -176,14 +182,16 @@ func newRunCtx(e *Execution, n *Node, parent context.Context) *RunCtx {
 		allowed[k.name] = k
 	}
 	return &RunCtx{
-		exec:    e,
-		node:    n,
-		ctx:     ctx,
-		cancel:  cancel,
-		allowed: allowed,
-		advance: &advanceLedger{},
-		streams: &nodeStreams{exec: e, ctx: ctx},
-		lease:   &runLease{pool: e.lim},
+		exec:          e,
+		node:          n,
+		ctx:           ctx,
+		cancel:        cancel,
+		controlCtx:    control,
+		controlCancel: controlCancel,
+		allowed:       allowed,
+		advance:       &advanceLedger{},
+		streams:       &nodeStreams{exec: e, ctx: ctx},
+		lease:         &runLease{pool: e.lim},
 	}
 }
 
@@ -313,11 +321,18 @@ func (rc *RunCtx) NodeID() string {
 func (rc *RunCtx) Fork() *RunCtx {
 	cp := *rc
 	cp.ctx, cp.cancel = context.WithCancel(rc.ctx)
+	cp.controlCtx, cp.controlCancel = cp.ctx, cp.cancel
+	if rc.exec.checkpoint != nil {
+		cp.controlCtx, cp.controlCancel = context.WithCancel(rc.controlCtx)
+	}
 	return &cp
 }
 
 // Cancel 取消本层 context。
 func (rc *RunCtx) Cancel() {
+	if rc.controlCancel != nil {
+		rc.controlCancel()
+	}
 	if rc.cancel != nil {
 		rc.cancel()
 	}

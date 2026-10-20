@@ -395,8 +395,8 @@ func checkCheckpointCursor(cursor any) error {
 	return nil
 }
 
-func (e *Execution) openCheckpointStream(ctx context.Context, request CheckpointStreamOpen) (record CheckpointStreamRecord, err error) {
-	err = e.callCheckpoint("open stream", func() error {
+func (e *Execution) openCheckpointStream(ctx, control context.Context, request CheckpointStreamOpen) (record CheckpointStreamRecord, err error) {
+	err = e.callCheckpoint(ctx, control, "open stream", func(ctx context.Context) error {
 		var err error
 		record, err = e.checkpoint.hooks.StreamHooks.Open(ctx, request)
 		if err != nil {
@@ -587,7 +587,7 @@ func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 		go func() {
 			defer root.streamWork.Done()
 			defer close(checkpoint.ready)
-			checkpoint.err = s.initializeCheckpoint(root.ctx)
+			checkpoint.err = s.initializeCheckpoint(root.ctx, root.controlCtx)
 		}()
 	})
 	select {
@@ -603,7 +603,7 @@ func (s *managedStream[T]) ensureCheckpoint(contexts ...context.Context) error {
 	}
 }
 
-func (s *managedStream[T]) initializeCheckpoint(ctx context.Context) error {
+func (s *managedStream[T]) initializeCheckpoint(ctx, control context.Context) error {
 	checkpoint := s.checkpoint
 	descriptor := checkpoint.descriptor
 	site := checkpoint.exec.site
@@ -614,7 +614,7 @@ func (s *managedStream[T]) initializeCheckpoint(ctx context.Context) error {
 	if checkpoint.request != nil {
 		request = *checkpoint.request
 	}
-	record, err := checkpoint.exec.openCheckpointStream(ctx, request)
+	record, err := checkpoint.exec.openCheckpointStream(ctx, control, request)
 	if err == nil {
 		failure := checkpoint.exec.checkpoint.failure
 		err = func() error {
@@ -697,8 +697,8 @@ func (w *StreamWriter[T]) sendCheckpointValue(value T, cursor any) error {
 		append := CheckpointStreamAppend{Site: w.rc.exec.site, Attempt: checkpoint.descriptor.Attempt,
 			Stream: checkpoint.descriptor.ID, Message: CheckpointStreamMessage{Sequence: sequence, Value: value}, Cursor: cursor}
 		s.mu.Unlock()
-		if err := w.rc.exec.callCheckpoint("append stream", func() error {
-			return w.rc.exec.checkpoint.hooks.StreamHooks.Append(w.rc.Context(), append)
+		if err := w.rc.exec.callCheckpoint(w.rc.ctx, w.rc.controlCtx, "append stream", func(ctx context.Context) error {
+			return w.rc.exec.checkpoint.hooks.StreamHooks.Append(ctx, append)
 		}); err != nil {
 			s.operation.unlock()
 			return err
@@ -747,12 +747,12 @@ func (a *managedAck[T]) checkpointAck(rc *RunCtx) error {
 	if checkpoint == nil {
 		return nil
 	}
-	ctx := checkpointActorContext(rc, checkpoint)
+	ctx, control := checkpointActorContexts(rc, checkpoint)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	e := checkpoint.exec
-	return e.commitCheckpointMessage(ctx, CheckpointMessageCommit{Site: e.site, Scope: checkpoint.descriptor.ID.Scope,
+	return e.commitCheckpointMessage(ctx, control, CheckpointMessageCommit{Site: e.site, Scope: checkpoint.descriptor.ID.Scope,
 		Inputs: []CheckpointStreamAcknowledgement{a.checkpointAcknowledgement()}})
 }
 
@@ -761,28 +761,29 @@ func (s *managedStream[T]) checkpointStop(rc *RunCtx) error {
 		return nil
 	}
 	checkpoint := s.checkpoint
-	ctx := checkpointActorContext(rc, checkpoint)
+	ctx, control := checkpointActorContexts(rc, checkpoint)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return checkpoint.exec.commitCheckpointMessage(ctx, CheckpointMessageCommit{Site: checkpoint.exec.site,
+	return checkpoint.exec.commitCheckpointMessage(ctx, control, CheckpointMessageCommit{Site: checkpoint.exec.site,
 		Scope: checkpoint.descriptor.ID.Scope, Stops: []CheckpointStreamID{checkpoint.descriptor.ID}})
 }
 
 // 来源子执行的成功 Wait 会正常取消其 ctx，不能用它阻断父侧尾部确认。
 // 宿主 Receive 的 RunCtx 只管理一次等待，返回时即取消；其交付确认使用执行 ctx。
-func checkpointActorContext(rc *RunCtx, checkpoint *checkpointStream) context.Context {
+func checkpointActorContexts(rc *RunCtx, checkpoint *checkpointStream) (context.Context, context.Context) {
 	if rc != nil && rc.exec != nil {
 		if rc.host {
-			return rc.exec.ctx
+			return rc.exec.ctx, rc.exec.controlCtx
 		}
-		return rc.ctx
+		return rc.ctx, rc.controlCtx
 	}
-	return checkpoint.exec.checkpoint.failure.root.ctx
+	root := checkpoint.exec.checkpoint.failure.root
+	return root.ctx, root.controlCtx
 }
 
-func (e *Execution) commitCheckpointMessage(ctx context.Context, commit CheckpointMessageCommit) error {
-	return e.callCheckpoint("commit message", func() error { return e.checkpoint.hooks.StreamHooks.Commit(ctx, commit) })
+func (e *Execution) commitCheckpointMessage(ctx, control context.Context, commit CheckpointMessageCommit) error {
+	return e.callCheckpoint(ctx, control, "commit message", func(ctx context.Context) error { return e.checkpoint.hooks.StreamHooks.Commit(ctx, commit) })
 }
 
 func (s *managedStream[T]) checkpointFinish(err error) (CheckpointStreamFinish, bool) {
@@ -921,9 +922,9 @@ func (rc *RunCtx) openCheckpointMessage(input CheckpointStreamAcknowledgement, l
 		return nil, nil
 	}
 	var result CheckpointMessageAttempt
-	if err := rc.exec.callCheckpoint("open message attempt", func() error {
+	if err := rc.exec.callCheckpoint(rc.ctx, rc.controlCtx, "open message attempt", func(ctx context.Context) error {
 		var err error
-		result, err = rc.exec.checkpoint.hooks.StreamHooks.OpenMessage(rc.ctx, CheckpointMessageAttemptRequest{
+		result, err = rc.exec.checkpoint.hooks.StreamHooks.OpenMessage(ctx, CheckpointMessageAttemptRequest{
 			Site: rc.exec.site, Scope: rc.exec.checkpoint.scope, Attempt: rc.checkpointAttempt.Scope, NodeID: rc.NodeID(), Input: input, Limit: limit})
 		if err != nil {
 			return err
@@ -949,8 +950,8 @@ func (rc *RunCtx) failCheckpointMessage(message *checkpointMessage) error {
 	if message == nil {
 		return nil
 	}
-	return rc.exec.callCheckpoint("fail message attempt", func() error {
-		return rc.exec.checkpoint.hooks.StreamHooks.FailMessage(rc.exec.ctx, message.attempt.Scope)
+	return rc.exec.callCheckpoint(rc.exec.ctx, rc.exec.controlCtx, "fail message attempt", func(ctx context.Context) error {
+		return rc.exec.checkpoint.hooks.StreamHooks.FailMessage(ctx, message.attempt.Scope)
 	})
 }
 
@@ -1048,7 +1049,7 @@ func (m *messageAttempt) checkpointCommit(rc *RunCtx, input CheckpointStreamAckn
 			return rc.exec.stopCheckpoint("finalize message output", err)
 		}
 	}
-	if err := rc.exec.commitCheckpointMessage(rc.ctx, commit); err != nil {
+	if err := rc.exec.commitCheckpointMessage(rc.ctx, rc.controlCtx, commit); err != nil {
 		return err
 	}
 	rc.confirmCheckpointValues(commit.Values)
