@@ -219,6 +219,10 @@ func TestTeeReceiveCompletionSurvivesCancelWhileResumingQuota(t *testing.T) {
 	case <-writerRC.Context().Done():
 		t.Fatal(writerRC.Context().Err())
 	}
+	failure := errors.New("input failed after Tee obtained delivery")
+	if err := writerRC.finishStreams(failure); err != failure {
+		t.Fatal(err)
+	}
 	readerRC.Cancel()
 	close(changed)
 	select {
@@ -232,8 +236,8 @@ func TestTeeReceiveCompletionSurvivesCancelWhileResumingQuota(t *testing.T) {
 		if got.err != nil || got.delivery.Value != 9 || !got.delivery.active() {
 			t.Fatalf("completed Receive changed: %+v", got)
 		}
-		if s := stream.Snapshot(); s.AckedThrough != 0 || s.InFlight != 1 || len(stream.state.queue) != 0 {
-			t.Fatalf("cancel settled completed delivery: %+v", s)
+		if s := stream.Snapshot(); s.Terminal != StreamFailed || s.Err != failure || s.AckedThrough != 0 || s.InFlight != 1 || len(stream.state.queue) != 0 {
+			t.Fatalf("failure/cancel settled completed delivery: %+v", s)
 		}
 		managedTestOK(t, got.delivery.Ack())
 	case <-writerRC.Context().Done():

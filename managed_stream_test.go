@@ -83,6 +83,257 @@ func managedTestResult(t *testing.T, ctx context.Context, result <-chan error) e
 	}
 }
 
+// before 只用 Done 见证进入等待；after 直接检查返回契约，不要求实现先等待。
+func TestManagedFailedWriterWakesReceive(t *testing.T) {
+	for _, timing := range []string{"before-failure", "after-failure"} {
+		t.Run(timing, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			root, err := New("failed-receive-root", "", WithMaxRunning(1))
+			managedTestOK(t, err)
+			child, err := New("failed-receive-child", "")
+			managedTestOK(t, err)
+			inside, outside := NewKey[Stream[int]]("inside"), NewKey[Stream[int]]("outside")
+			managedTestOK(t, child.DeclareOutput(NewPort(inside)))
+			failure := errors.New("child producer failed")
+			firstTaken, failNow := make(chan struct{}), make(chan struct{})
+			mountedDone, waiting := make(chan struct{}), make(chan struct{})
+			type result struct {
+				err      error
+				waitErr  error
+				snapshot StreamSnapshot
+			}
+			returned := make(chan result, 1)
+			managedTestOK(t, ProduceStream(child, "source", "", inside, func(rc *RunCtx, writer *StreamWriter[int]) error {
+				if err := writer.Send(1); err != nil {
+					return err
+				}
+				if err := readerLifecycleWait(rc, failNow); err != nil {
+					return err
+				}
+				return failure
+			}, WithBuffer(2)))
+			managedTestOK(t, Sub(root, "module", "", []SubBind{Out(inside, outside)}, child,
+				func(rc *RunCtx, next func(*RunCtx) error) error { _ = next(rc); return nil }))
+			managedTestOK(t, root.Add(NewNode("reader", "", Requires(outside), nil, func(rc *RunCtx) error {
+				stream, err := Get(rc, outside)
+				if err != nil {
+					return err
+				}
+				first, err := stream.Receive(rc)
+				if err != nil {
+					return err
+				}
+				if first.Value != 1 {
+					return fmt.Errorf("prefix = %d", first.Value)
+				}
+				close(firstTaken) // 留着未 Ack；在途 1，小于容量 2。
+				if timing == "after-failure" {
+					if err := readerLifecycleWait(rc, mountedDone); err != nil {
+						return err
+					}
+					if got := stream.Snapshot(); got.Terminal != StreamFailed || got.Err != failure || got.InFlight != 1 {
+						return fmt.Errorf("failure barrier = %+v", got)
+					}
+				}
+				fork := rc.Fork()
+				defer fork.Cancel()
+				waitCtx, stopWait := context.WithTimeout(fork.Context(), time.Second)
+				defer stopWait()
+				fork.ctx = waitCtx
+				if timing == "before-failure" {
+					fork.ctx = &managedWaitWitness{Context: waitCtx, entered: waiting}
+				}
+				_, err = stream.Receive(fork)
+				returned <- result{err, waitCtx.Err(), stream.Snapshot()}
+				return rc.Context().Err()
+			})))
+			e, err := root.NewExecution(ctx, Inputs{}, WithExecObserver(ObserverFunc{
+				Finished: func(_ Site, id string, _ NodeFinishReason, _ error) {
+					if id == "module" {
+						close(mountedDone)
+					}
+				},
+			}))
+			managedTestOK(t, err)
+			defer e.Cancel()
+			managedTestOK(t, e.Start())
+			await := func(signal <-chan struct{}) {
+				t.Helper()
+				select {
+				case <-signal:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+			}
+			await(firstTaken)
+			if timing == "before-failure" {
+				await(waiting)
+			}
+			close(failNow)
+			var got result
+			select {
+			case got = <-returned:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			managedTestOK(t, e.Wait()) // 父切面已处理子图业务错误，父保持健康。
+			if got.err != failure || got.waitErr != nil {
+				t.Errorf("Receive must return producer failure without waiting for cancellation: err=%v wait=%v", got.err, got.waitErr)
+			}
+			if got.snapshot.Terminal != StreamFailed || got.snapshot.Err != failure || got.snapshot.InFlight != 1 || got.snapshot.AckedThrough != 0 || got.snapshot.Stopped {
+				t.Fatalf("Receive changed pending obligations or failure: %+v", got.snapshot)
+			}
+		})
+	}
+}
+
+func TestManagedFailedReceiveKeepsQueuedAndNackedDeliveries(t *testing.T) {
+	writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 2)
+	messages, err := stream.Messages(readerRC)
+	managedTestOK(t, err)
+	managedTestOK(t, writer.Send(1))
+	managedTestOK(t, writer.Send(2))
+	first, err := stream.Receive(readerRC)
+	managedTestOK(t, err)
+	failure := errors.New("producer failed with a buffered tail")
+	if err := writerRC.finishStreams(failure); err != failure {
+		t.Fatal(err)
+	}
+	second, err := stream.Receive(readerRC) // 已排队的成功优先于失败。
+	managedTestOK(t, err)
+	if second.Value != 2 || second.Sequence != 2 {
+		t.Fatalf("buffered tail = %+v", second)
+	}
+	fork := readerRC.Fork()
+	defer fork.Cancel()
+	waitCtx, cancel := context.WithTimeout(fork.Context(), time.Second)
+	defer cancel()
+	fork.ctx = waitCtx
+	if _, err := stream.Receive(fork); err != failure || waitCtx.Err() != nil {
+		t.Fatalf("empty failed queue = %v, wait=%v", err, waitCtx.Err())
+	}
+	if got := stream.Snapshot(); got.InFlight != 2 || got.AckedThrough != 0 || got.Stopped {
+		t.Fatalf("failure implicitly settled messages: %+v", got)
+	}
+	select {
+	case _, open := <-messages:
+		t.Fatalf("native queue changed without Ack/Nack: open=%t", open)
+	default:
+	}
+	managedTestOK(t, first.Nack())
+	retry, err := stream.Receive(readerRC)
+	managedTestOK(t, err)
+	if retry.Value != 1 || retry.Sequence != first.Sequence || first.active() {
+		t.Fatalf("failed stream Nack lost delivery identity: %+v", retry)
+	}
+	managedTestOK(t, second.Ack())
+	managedTestOK(t, retry.Ack())
+	if got := stream.Snapshot(); got.Terminal != StreamFailed || got.Err != failure || got.AckedThrough != 2 || got.InFlight != 0 {
+		t.Fatalf("explicit acknowledgement changed failure: %+v", got)
+	}
+	managedTestOK(t, stream.Stop(readerRC))
+	if _, err := stream.Receive(readerRC); err != failure {
+		t.Fatalf("Stop hid real production failure: %v", err)
+	}
+}
+
+func TestManagedCompletedReceiveWaitsForAck(t *testing.T) {
+	writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 2)
+	managedTestOK(t, writer.Send(1))
+	first, err := stream.Receive(readerRC)
+	managedTestOK(t, err)
+	managedTestOK(t, writerRC.finishStreams(nil))
+	// 未 Ack 时由有界取消结束等待，不能把生产 Done 当作读取 EOF。
+	fork := readerRC.Fork()
+	defer fork.Cancel()
+	waitCtx, cancel := context.WithTimeout(fork.Context(), 50*time.Millisecond)
+	defer cancel()
+	fork.ctx = waitCtx
+	if _, err := stream.Receive(fork); !errors.Is(err, context.DeadlineExceeded) || waitCtx.Err() == nil {
+		t.Fatalf("completed production bypassed pending acknowledgement: err=%v wait=%v", err, waitCtx.Err())
+	}
+	witness := &managedWaitWitness{Context: readerRC.Context(), entered: make(chan struct{})}
+	readerRC.ctx = witness
+	result := make(chan error, 1)
+	go func() { _, err := stream.Receive(readerRC); result <- err }()
+	select {
+	case <-witness.entered:
+	case err := <-result:
+		t.Fatalf("completed production bypassed outstanding Ack: %v", err)
+	case <-writerRC.Context().Done():
+		t.Fatal(writerRC.Context().Err())
+	}
+	if got := stream.Snapshot(); got.Terminal != StreamCompleted || got.InFlight != 1 || got.AckedThrough != 0 {
+		t.Fatalf("completed wait settled pending message: %+v", got)
+	}
+	managedTestOK(t, first.Ack())
+	if err := managedTestResult(t, writerRC.Context(), result); err != io.EOF {
+		t.Fatalf("last Ack did not wake completed Receive with EOF: %v", err)
+	}
+}
+
+func TestManagedFailedReceiveRestoresQuota(t *testing.T) {
+	for _, tee := range []bool{false, true} {
+		for _, cancel := range []bool{false, true} {
+			t.Run(fmt.Sprintf("tee=%t/cancel=%t", tee, cancel), func(t *testing.T) {
+				writer, stream, writerRC, readerRC := managedTestEndpoint[int](t, 2)
+				managedTestOK(t, writer.Send(1))
+				first, err := stream.Receive(readerRC)
+				managedTestOK(t, err)
+				pool := newLimiter(1)
+				readerRC.lease = &runLease{pool: pool}
+				managedTestOK(t, readerRC.lease.acquire(readerRC.Context()))
+				defer readerRC.lease.release()
+				witness := &managedResumeWitness{Context: readerRC.ctx, waiting: make(chan struct{}), resuming: make(chan struct{})}
+				readerRC.ctx = witness
+				var changes []<-chan struct{}
+				if tee {
+					changes = []<-chan struct{}{make(chan struct{})} // 分支仍健康，只有输入失败。
+				}
+				result := make(chan error, 1)
+				go func() { _, err := stream.receive(readerRC, changes); result <- err }()
+				select {
+				case <-witness.waiting:
+				case <-writerRC.Context().Done():
+					t.Fatal(writerRC.Context().Err())
+				}
+				managedTestOK(t, pool.acquire(writerRC.Context())) // 固定恢复额度前的窗口。
+				var once sync.Once
+				release := func() { once.Do(pool.release) }
+				defer release()
+				failure := errors.New("source failed while Receive waited")
+				if err := writerRC.finishStreams(failure); err != failure {
+					t.Fatal(err)
+				}
+				select {
+				case <-witness.resuming:
+				case <-writerRC.Context().Done():
+					t.Fatal(writerRC.Context().Err())
+				}
+				if cancel {
+					readerRC.Cancel()
+				}
+				select {
+				case err := <-result:
+					t.Fatalf("failure returned without restoring quota: %v", err)
+				default:
+				}
+				release()
+				if err := managedTestResult(t, writerRC.Context(), result); err != failure {
+					t.Fatalf("failure notification/cancel lost producer cause: %v", err)
+				}
+				readerRC.lease.mu.Lock()
+				held := readerRC.lease.state == leaseHeld
+				readerRC.lease.mu.Unlock()
+				if got := stream.Snapshot(); !held || got.InFlight != 1 || got.AckedThrough != 0 || !first.active() {
+					t.Fatalf("failure changed quota or delivery obligations: held=%t stream=%+v", held, got)
+				}
+			})
+		}
+	}
+}
+
 func TestManagedBackpressureWaitsForAck(t *testing.T) {
 	for _, buffer := range []int{0, -1, 1} {
 		t.Run(fmt.Sprint(buffer), func(t *testing.T) {
@@ -340,6 +591,10 @@ func TestManagedReceivedDeliverySurvivesCancellationWhileResumingQuota(t *testin
 	case <-writerRC.Context().Done():
 		t.Fatal(writerRC.Context().Err())
 	}
+	failure := errors.New("producer failed after delivery was received")
+	if err := writerRC.finishStreams(failure); err != failure {
+		t.Fatal(err)
+	}
 	readerRC.Cancel()
 	releaseExternal()
 	var got outcome
@@ -351,8 +606,8 @@ func TestManagedReceivedDeliverySurvivesCancellationWhileResumingQuota(t *testin
 	if got.err != nil || got.delivery.Value != 9 || !got.delivery.active() {
 		t.Fatalf("completed receive became cancellation or stale delivery: %+v, %v", got.delivery, got.err)
 	}
-	if snapshot := stream.Snapshot(); snapshot.InFlight != 1 || snapshot.AckedThrough != 0 || len(stream.state.queue) != 0 {
-		t.Fatalf("cancellation automatically Acked/Nacked received delivery: %+v", snapshot)
+	if snapshot := stream.Snapshot(); snapshot.Terminal != StreamFailed || snapshot.Err != failure || snapshot.InFlight != 1 || snapshot.AckedThrough != 0 || len(stream.state.queue) != 0 {
+		t.Fatalf("failure/cancellation automatically Acked/Nacked received delivery: %+v", snapshot)
 	}
 	managedTestOK(t, got.delivery.Ack())
 }
