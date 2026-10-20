@@ -582,7 +582,7 @@ pulse（引擎）          不认识观测
 pulse/observe          Record / Sink / 折叠适配
 ```
 
-引擎只暴露一个 **seam**（每条回调带一个 `Site`：定义身份 + **本次运行身份** + 挂载位置）：
+引擎通过以下 `Observer` **seam** 提供生命周期回调（每条回调带一个 `Site`：定义身份 + **本次运行身份** + 挂载位置）：
 
 ```go
 type Site struct {
@@ -602,7 +602,9 @@ type Observer interface {
 
 `Execution` 进回调是阶段 2 的事：同一张定义跑两次时，只按 `pulse.graph`（再加 `pulse.path`）记账会把两次运行折叠成一份，而 `Execution` 每次都不同——观测因此天然分得开。
 
-图级不超过两条（`GraphStarted ≤ 1`、`GraphFinished ≤ 1`），节点不超过三次回调（`Waiting ≤ 1`、`Running ≤ 1`、`Finished = 1`）；`Retry` 的多次 attempt **不重复打点**。时序是**夹住**：`GraphStarted` 在提交任何节点 goroutine 之前发出（启动校验失败的执行没有启动，不发），`GraphFinished` 在全部节点终止之后、`Wait` 返回之前发出——只 `Start` 不 `Wait` 的宿主拿不到它；并发 / 重复 `Wait` 都在这一发返回之后才返回。图级终态只会是 `completed` / `failed` / `canceled`（跳过是节点级的事实，升不到这一层）。图默认 no-op，`WithObserver` 挂载（定义声明），`WithExecObserver` 只改**这一次运行**的有效出口，需要多个时用 `MultiObserver` 组合。
+图级不超过两条（`GraphStarted ≤ 1`、`GraphFinished ≤ 1`），节点不超过三次回调（`Waiting ≤ 1`、`Running ≤ 1`、`Finished = 1`）；`Retry` 的多次 attempt **不重复这三条节点生命周期回调**。时序是**夹住**：`GraphStarted` 在提交任何节点 goroutine 之前发出（启动校验失败的执行没有启动，不发），`GraphFinished` 在全部节点终止之后、`Wait` 返回之前发出——只 `Start` 不 `Wait` 的宿主拿不到它；并发 / 重复 `Wait` 都在这一发返回之后才返回。图级终态只会是 `completed` / `failed` / `canceled`（跳过是节点级的事实，升不到这一层）。图默认 no-op，`WithObserver` 挂载（定义声明），`WithExecObserver` 只改**这一次运行**的有效出口，需要多个时用 `MultiObserver` 组合。
+
+安装的观察者还可实现 `AspectObserver`，通过 `OnAspectEvent` 接收逐次尝试、重试、退避与超时到期事实；`ObserverFunc.Aspect` 提供同一可选入口。这些额外事实不改变上述生命周期次数。具体阶段和用法见[观测指南](../../site/guide/observability.md)（[English](../../site/en/guide/observability.md)）。
 
 节点回调在**节点自己的 goroutine** 上执行，图级两条在 **`Start` / `Wait` 的调用方 goroutine** 上执行——两边都同步。由此两条并发约束：`WaitGroup` 计数必须在 `started` 对别的 goroutine 可见**之前**登记（含 `started` 那一发自身），否则并发 `Wait` 会在节点还没提交时就返回；收尾那一发走 `sync.Once`，好让后来的 `Wait` 等第一次调用结束，而不是各自返回、把出口先收掉。
 

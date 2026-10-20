@@ -188,7 +188,7 @@ GraphSpec has no further graphs table. Nesting references names in the top-level
 
 | Field | Factory node (uses) | Graph node (graph) |
 |---|---|---|
-| `id` | Required, unique in its graph, with no `/` | Same; also determines the mount path |
+| `id` | Required and unique in its graph; `/` is allowed | Required and unique in its graph, with no `/`; forms a mount-path segment |
 | `description` | Optional node description | Description of the parent-side mount node; GraphSpec describes the child itself |
 | `uses` | Required registered factory name | Cannot coexist with graph |
 | `graph` | Cannot coexist with uses | Required child graph name |
