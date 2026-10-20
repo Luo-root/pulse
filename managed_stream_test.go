@@ -497,6 +497,234 @@ func TestManagedCancellationDoesNotAck(t *testing.T) {
 	}
 }
 
+// 在 readContext 读取单次 ctx 时持住执行锁，阻止旧实现的 AfterFunc 回调转发取消。
+// 此前已等节点和宿主义务等待者退出，所以不会挡住真实取消本身，也不靠调度命中。
+// 同步拒绝既有取消的实现会在读取单次 ctx 之前返回，无需进入此屏障。
+type managedHostCancelBarrier struct {
+	context.Context
+	mu   *sync.Mutex
+	once sync.Once
+	held bool
+}
+
+func (c *managedHostCancelBarrier) Done() <-chan struct{} {
+	c.once.Do(func() {
+		c.mu.Lock()
+		c.held = true
+	})
+	return c.Context.Done()
+}
+
+func (c *managedHostCancelBarrier) release() {
+	if c.held {
+		c.held = false
+		c.mu.Unlock()
+	}
+}
+
+func managedTestHostSubscription(t *testing.T, source func(*RunCtx, *StreamWriter[int]) error) (context.Context, *Execution, *StreamSubscription[int]) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
+	g, err := New("host-cancellation", "")
+	managedTestOK(t, err)
+	key := NewKey[Stream[int]]("output")
+	managedTestOK(t, g.DeclareOutput(NewPort(key)))
+	managedTestOK(t, ProduceStream(g, "source", "", key, source))
+	e, err := g.NewExecution(ctx, Inputs{})
+	managedTestOK(t, err)
+	t.Cleanup(e.Cancel)
+	sub, err := SubscribeStream(e, key)
+	managedTestOK(t, err)
+	managedTestOK(t, e.Start())
+	return ctx, e, sub
+}
+
+func TestManagedHostReceiveAfterExecutionCancellation(t *testing.T) {
+	for _, reason := range []string{"producer-failed", "execution-canceled"} {
+		for _, timing := range []string{"before-Wait", "after-Wait"} {
+			for _, operation := range []string{"Receive", "Stop"} {
+				t.Run(reason+"/"+timing+"/"+operation, func(t *testing.T) {
+					sent := make(chan struct{})
+					cause := errors.New("host producer failed")
+					ctx, e, sub := managedTestHostSubscription(t, func(rc *RunCtx, writer *StreamWriter[int]) error {
+						if err := writer.Send(7); err != nil {
+							return err
+						}
+						close(sent)
+						if reason == "producer-failed" {
+							return cause
+						}
+						<-rc.Context().Done()
+						return rc.Context().Err()
+					})
+					waitCheckpointSignal(t, ctx, sent)
+					want := cause
+					if reason == "execution-canceled" {
+						want = context.Canceled
+						e.Cancel()
+					}
+					e.wg.Wait() // 真实失败/取消已成立；before-Wait 尚未锁存 done。
+					if !errors.Is(e.Err(), want) || !errors.Is(e.Context().Err(), context.Canceled) {
+						t.Fatalf("interruption barrier: Err=%v ctx=%v", e.Err(), e.Context().Err())
+					}
+					if timing == "after-Wait" {
+						if err := e.Wait(); !errors.Is(err, want) {
+							t.Fatalf("Wait=%v want=%v", err, want)
+						}
+					}
+					e.mu.Lock()
+					done := e.done
+					e.mu.Unlock()
+					if done != (timing == "after-Wait") {
+						t.Fatalf("wrong Wait barrier: done=%t", done)
+					}
+					_, value := e.slotOf(sub.key.asRef()).snapshot()
+					stream := value.(Stream[int])
+					before := stream.Snapshot()
+					callCtx := &managedHostCancelBarrier{Context: ctx, mu: &e.mu}
+					defer callCtx.release()
+					var delivery Delivery[int]
+					var err error
+					if operation == "Receive" {
+						delivery, err = sub.Receive(callCtx)
+					} else {
+						err = sub.Stop(callCtx)
+					}
+					callCtx.release()
+					if !errors.Is(err, context.Canceled) || delivery.ack != nil {
+						t.Errorf("new %s after established cancellation: delivery=%+v err=%v", operation, delivery, err)
+					}
+					if got := stream.Snapshot(); got != before || got.InFlight != 1 || got.AckedThrough != 0 || got.Stopped || len(stream.state.queue) != 1 {
+						t.Errorf("canceled %s consumed, settled or stopped queued delivery: before=%+v after=%+v queued=%d", operation, before, got, len(stream.state.queue))
+					}
+					if err := e.Wait(); !errors.Is(err, want) {
+						t.Fatalf("final Wait=%v want=%v", err, want)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestManagedHostPreCanceledCallKeepsHealthyTail(t *testing.T) {
+	sent := make(chan struct{})
+	ctx, e, sub := managedTestHostSubscription(t, func(_ *RunCtx, writer *StreamWriter[int]) error {
+		if err := writer.Send(7); err != nil {
+			return err
+		}
+		close(sent)
+		return nil
+	})
+	waitCheckpointSignal(t, ctx, sent)
+	_, value := e.slotOf(sub.key.asRef()).snapshot()
+	stream := value.(Stream[int])
+	waitCheckpointSignal(t, ctx, stream.Done()) // 完成生产不等于完成 Wait 或确认尾部。
+	callCtx, cancelCall := context.WithCancel(ctx)
+	cancelCall()
+	if _, err := sub.Receive(callCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-canceled call=%v", err)
+	}
+	if got := stream.Snapshot(); got.Terminal != StreamCompleted || got.InFlight != 1 || got.AckedThrough != 0 || got.Stopped || len(stream.state.queue) != 1 || e.Context().Err() != nil {
+		t.Fatalf("single call canceled healthy production or settled tail: %+v ctx=%v", got, e.Context().Err())
+	}
+	first, err := sub.Receive(ctx)
+	managedTestOK(t, err)
+	if first.Value != 7 || first.Sequence != 1 {
+		t.Fatalf("healthy completed tail=%+v", first)
+	}
+	managedTestOK(t, first.Nack())
+	again, err := sub.Receive(ctx)
+	managedTestOK(t, err)
+	if again.Value != 7 || again.Sequence != first.Sequence || first.active() {
+		t.Fatalf("Nack lost tail identity: %+v", again)
+	}
+	managedTestOK(t, again.Ack())
+	if _, err := sub.Receive(ctx); err != io.EOF {
+		t.Fatalf("completed and acknowledged tail=%v", err)
+	}
+	managedTestOK(t, e.Wait())
+	if e.Context().Err() == nil || e.Err() != nil {
+		t.Fatalf("healthy cleanup barrier: ctx=%v Err=%v", e.Context().Err(), e.Err())
+	}
+	if _, err := sub.Receive(ctx); err != io.EOF {
+		t.Fatalf("healthy Wait cleanup became cancellation: %v", err)
+	}
+}
+
+func TestManagedHostDeliverySurvivesExecutionCancellation(t *testing.T) {
+	for _, reason := range []string{"producer-failed", "execution-canceled"} {
+		for _, settle := range []string{"Ack", "Nack"} {
+			t.Run(reason+"/"+settle, func(t *testing.T) {
+				sent, failNow := make(chan struct{}), make(chan struct{})
+				cause := errors.New("producer failed after host received")
+				ctx, e, sub := managedTestHostSubscription(t, func(rc *RunCtx, writer *StreamWriter[int]) error {
+					if err := writer.Send(7); err != nil {
+						return err
+					}
+					close(sent)
+					if err := readerLifecycleWait(rc, failNow); err != nil {
+						return err
+					}
+					return cause
+				})
+				waitCheckpointSignal(t, ctx, sent)
+				delivery, err := sub.Receive(ctx)
+				managedTestOK(t, err)
+				want := cause
+				if reason == "producer-failed" {
+					close(failNow)
+				} else {
+					want = context.Canceled
+					e.Cancel()
+				}
+				if err := e.Wait(); !errors.Is(err, want) {
+					t.Fatalf("Wait=%v want=%v", err, want)
+				}
+				stream := Stream[int]{state: delivery.ack.stream}
+				if got := stream.Snapshot(); !delivery.active() || delivery.Value != 7 || delivery.Sequence != 1 || got.InFlight != 1 || got.AckedThrough != 0 || got.Stopped || len(stream.state.queue) != 0 {
+					t.Fatalf("cancellation revoked or settled delivered message: delivery=%+v stream=%+v", delivery, got)
+				}
+				if settle == "Ack" {
+					managedTestOK(t, delivery.Ack())
+					if got := stream.Snapshot(); got.AckedThrough != 1 || got.InFlight != 0 {
+						t.Fatalf("explicit Ack did not settle delivered message: %+v", got)
+					}
+				} else {
+					managedTestOK(t, delivery.Nack())
+					if got := stream.Snapshot(); delivery.active() || got.AckedThrough != 0 || got.InFlight != 1 || len(stream.state.queue) != 1 {
+						t.Fatalf("explicit Nack did not preserve queued obligation: %+v", got)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestManagedHostReadContextForwardsLaterCancellation(t *testing.T) {
+	ready := make(chan struct{})
+	ctx, e, sub := managedTestHostSubscription(t, func(rc *RunCtx, _ *StreamWriter[int]) error {
+		close(ready)
+		<-rc.Context().Done()
+		return rc.Context().Err()
+	})
+	waitCheckpointSignal(t, ctx, ready)
+	rc, release, err := sub.readContext(ctx)
+	managedTestOK(t, err)
+	defer release()
+	if rc.Context().Err() != nil {
+		t.Fatal("healthy read context was canceled")
+	}
+	e.Cancel() // 已完成同步采样；本次取消必须由后续 AfterFunc 转发。
+	waitCheckpointSignal(t, ctx, rc.Context().Done())
+	if !errors.Is(rc.Context().Err(), context.Canceled) || ctx.Err() != nil {
+		t.Fatalf("later cancellation did not stay in execution/read scope: read=%v call=%v", rc.Context().Err(), ctx.Err())
+	}
+	if err := e.Wait(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait=%v", err)
+	}
+}
+
 // 第二次 Err 检查与真实接收/取消会合，使“接纳后改报取消”的变异必定失败。
 type managedPostSendWitness struct {
 	context.Context
