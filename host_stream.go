@@ -126,6 +126,8 @@ func (e *Execution) hostStreamReads() map[string]bool {
 
 // Receive 取一条可确认交付；只有 Ack 才算本读取组处理完成。
 // ctx 仅控制本次等待，取消不会自动确认消息或停止整个执行。
+// 已成立的执行取消会阻止新读取；正常 Wait 收尾后仍可读取 EOF。
+// 取消不撤销已经取得的交付，调用方仍须显式处置。
 func (s *StreamSubscription[T]) Receive(ctx context.Context) (Delivery[T], error) {
 	var zero Delivery[T]
 	rc, release, err := s.readContext(ctx)
@@ -162,16 +164,24 @@ func (s *StreamSubscription[T]) readContext(ctx context.Context) (*RunCtx, func(
 	e := s.exec
 	e.mu.Lock()
 	started := e.started
+	// 与 Wait 的终态同眼采样，不能只等异步 AfterFunc 转发既有取消。
+	// 仅成功 Wait 的清理取消豁免；生产 completed 本身仍可能欠宿主确认。
+	var interrupted error
+	if started && !(e.done && e.err == nil) {
+		interrupted = e.ctx.Err()
+	}
 	e.mu.Unlock()
 	if !started {
 		return nil, nil, ErrGraphNotStarted
+	}
+	if interrupted != nil {
+		return nil, nil, interrupted
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	// Wait 的正常清理会取消执行ctx，但生产completed不代表队列已确认。
-	// 只有真实取消/失败传播给宿主等待；已确认的尾部在成功Wait后仍能领取。
+	// 继续转发同步采样之后的执行取消；成功 Wait 的清理取消仍保留正常 EOF。
 	stop := context.AfterFunc(e.ctx, func() {
 		e.mu.Lock()
 		clean := e.done && e.err == nil
