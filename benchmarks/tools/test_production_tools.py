@@ -2,11 +2,14 @@
 import contextlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -245,28 +248,89 @@ class SamplerTests(unittest.TestCase):
                 process.wait(timeout=3)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows Job containment')
-    def test_job_accounts_exited_child_cpu_and_watchdog_kills_tree(self):
-        child_code = 'import time\nend=time.process_time()+.15\nwhile time.process_time()<end: pass'
-        parent_code = ('import subprocess,sys\n'
-                       f'p=subprocess.Popen([sys.executable,"-B","-c",{child_code!r}])\n'
-                       'p.wait()\nprint(p.pid)')
-        result = production.sample_process([sys.executable, '-B', '-c', parent_code], self.directory, timeout=3)
+    def test_job_accounts_exited_child_cpu(self):
+        child_code = ('import json,os,time\nstart=time.process_time()\n'
+                      'while time.process_time()-start<.15: pass\n'
+                      'print(json.dumps(dict(child_pid=os.getpid(),child_cpu_s=time.process_time()-start)))')
+        parent_code = ('import json,os,subprocess,sys,time\n'
+                       f'p=subprocess.Popen([sys.executable,"-B","-c",{child_code!r}],stdout=subprocess.PIPE,text=True)\n'
+                       'out,_=p.communicate()\n'
+                       'if p.returncode: sys.exit(p.returncode)\n'
+                       'report=json.loads(out)\n'
+                       'report.update(parent_pid=os.getpid(),parent_cpu_s=time.process_time())\n'
+                       'print(json.dumps(report))')
+        # Use the normal safety watchdog; Python startup wall time is not an accounting SLO.
+        result = production.sample_process([sys.executable, '-B', '-c', parent_code], self.directory)
+        self.assertFalse(result['hard_timeout'])
         self.assertEqual((result['returncode'], result['job_total_processes']), (0, 2))
-        self.assertGreaterEqual(result['job_cpu_s'], .10)
+        report = json.loads(result['stdout'])
+        self.assertGreaterEqual(report['child_cpu_s'], .15)
+        # Allow one Windows accounting tick, while excluding root-only CPU accounting.
+        self.assertGreaterEqual(result['job_cpu_s'], report['child_cpu_s'] + report['parent_cpu_s'] - .02)
         self.assertGreater(result['rss_polls'], 0)
-        pid_path = self.directory / 'watchdog-child.pid'
-        tree_code = ('import subprocess,sys,time\nfrom pathlib import Path\n'
-                     'p=subprocess.Popen([sys.executable,"-B","-c","import time; time.sleep(30)"])\n'
-                     'Path(sys.argv[1]).write_text(str(p.pid))\ntime.sleep(30)')
-        timed = production.sample_process([sys.executable, '-B', '-c', tree_code, str(pid_path)], self.directory, timeout=1)
-        self.assertTrue(timed['hard_timeout'])
-        self.assertEqual((timed['returncode'], timed['job_total_processes']), (124, 2))
-        pid = int(pid_path.read_text())
-        try:
-            production.psutil.Process(pid).wait(timeout=2)
-        except production.psutil.NoSuchProcess:
-            pass
-        self.assertFalse(production.psutil.pid_exists(pid))
+        self.assertGreater(result['sampled_tree_peak_rss_bytes'], 0)
+        for pid in (report['parent_pid'], report['child_pid']):
+            self.assertFalse(production.psutil.pid_exists(pid))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows Job containment')
+    def test_watchdog_kills_ready_tree_at_deadline(self):
+        child_ready, parent_ready = self.directory / 'child-ready.json', self.directory / 'parent-ready.json'
+        child_code = ('import json,os,sys,time\nfrom pathlib import Path\n'
+                      'ready=Path(sys.argv[1])\npending=ready.with_suffix(".pending")\n'
+                      'pending.write_text(json.dumps(dict(pid=os.getpid(),ppid=os.getppid())))\n'
+                      'pending.replace(ready)\ntime.sleep(30)')
+        parent_code = ('import json,os,subprocess,sys,time\nfrom pathlib import Path\n'
+                       f'p=subprocess.Popen([sys.executable,"-B","-c",{child_code!r},sys.argv[1]])\n'
+                       'while not Path(sys.argv[1]).exists():\n'
+                       '    if p.poll() is not None: raise RuntimeError("child exited before readiness")\n'
+                       '    time.sleep(.01)\n'
+                       'ready=Path(sys.argv[2])\npending=ready.with_suffix(".pending")\n'
+                       'pending.write_text(json.dumps(dict(pid=os.getpid(),child_pid=p.pid)))\n'
+                       'pending.replace(ready)\np.wait(timeout=30)')
+        processes, checkpoints, exited = {}, [], []
+        before_deadline = math.nextafter(1.0, 0.0)
+        setup_deadline = time.monotonic() + 30
+        started = False
+        def clock():
+            nonlocal started
+            if not started:
+                started = True
+                return 0.0
+            if not processes:
+                self.assertLess(time.monotonic(), setup_deadline, 'parent/child readiness barrier timed out')
+                if not parent_ready.exists():
+                    return 0.0
+                parent, child = json.loads(parent_ready.read_text()), json.loads(child_ready.read_text())
+                self.assertEqual((parent['child_pid'], parent['pid']), (child['pid'], child['ppid']))
+                processes.update(parent=production.psutil.Process(parent['pid']),
+                                 child=production.psutil.Process(child['pid']))
+                self.assertEqual(processes['child'].ppid(), processes['parent'].pid)
+            if len(checkpoints) < 2:
+                for process in processes.values():
+                    self.assertTrue(process.is_running(), 'tree exited before watchdog boundary')
+                value = (before_deadline, 1.0)[len(checkpoints)]
+                checkpoints.append(value)
+                return value
+            # This final clock read is before Job.close: cleanup cannot stand in for the watchdog.
+            for name, process in processes.items():
+                try:
+                    process.wait(timeout=2)
+                except production.psutil.TimeoutExpired:
+                    self.fail(f'watchdog left {name} alive at the exact deadline')
+                self.assertFalse(process.is_running())
+                exited.append(name)
+            return 1.0
+        # Only the sampler clock is controlled; real Job assignment, RSS, CPU and kills still run.
+        with patch.object(production, 'time', SimpleNamespace(perf_counter=clock)):
+            result = production.sample_process([sys.executable, '-B', '-c', parent_code,
+                                                str(child_ready), str(parent_ready)], self.directory, timeout=1)
+        self.assertEqual(checkpoints, [before_deadline, 1.0])
+        self.assertEqual(exited, ['parent', 'child'])
+        self.assertTrue(result['hard_timeout'])
+        self.assertEqual((result['returncode'], result['job_total_processes']), (124, 2))
+        self.assertGreater(result['job_cpu_s'], 0)
+        self.assertGreater(result['rss_polls'], 0)
+        self.assertGreater(result['sampled_tree_peak_rss_bytes'], 0)
 
 
 if __name__ == '__main__':
