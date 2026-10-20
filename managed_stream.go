@@ -224,19 +224,30 @@ func (s Stream[T]) receive(rc *RunCtx, changes []<-chan struct{}) (Delivery[T], 
 			return delivery, s.state.receiveError(err)
 		}
 		var ok, received bool
+		// 队列、失败和下一次通知同眼采样，避免失败发生在检查后、入睡前。
+		// 已排队的交付仍优先；生产结束后也允许显式 Nack 沿原队列重投。
+		s.state.mu.Lock()
 		select {
 		case delivery, ok = <-s.state.queue:
 			received = true
 		default:
 		}
+		if !received && s.state.err != nil {
+			err := s.state.err
+			s.state.mu.Unlock()
+			return Delivery[T]{}, err
+		}
+		changed := s.state.changed
+		s.state.mu.Unlock()
 		var err error
 		if !received {
 			err = rc.waitStream(func(ctx context.Context) error {
 				if len(changes) != 0 {
-					// Tee 同时等输入和各分支的状态通知，不另起观察 goroutine。
-					cases := make([]reflect.SelectCase, 2, len(changes)+2)
+					// Tee 同时等输入自身和各分支的状态通知，不另起观察 goroutine。
+					cases := make([]reflect.SelectCase, 3, len(changes)+3)
 					cases[0] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(s.state.queue)}
 					cases[1] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())}
+					cases[2] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(changed)}
 					for _, changed := range changes {
 						cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(changed)})
 					}
@@ -250,6 +261,8 @@ func (s Stream[T]) receive(rc *RunCtx, changes []<-chan struct{}) (Delivery[T], 
 						return nil // 已取得的交付保留成功，恢复额度时的取消不改写它。
 					case 1:
 						return ctx.Err()
+					case 2:
+						return nil // 自身状态变化，恢复额度后重新判断交付与失败。
 					default:
 						return errStreamReceiveInterrupted
 					}
@@ -258,6 +271,8 @@ func (s Stream[T]) receive(rc *RunCtx, changes []<-chan struct{}) (Delivery[T], 
 				case delivery, ok = <-s.state.queue:
 					received = true
 					return nil
+				case <-changed:
+					return nil
 				case <-ctx.Done():
 					return ctx.Err()
 				}
@@ -265,6 +280,9 @@ func (s Stream[T]) receive(rc *RunCtx, changes []<-chan struct{}) (Delivery[T], 
 		}
 		if err != nil {
 			return Delivery[T]{}, s.state.receiveError(err)
+		}
+		if !received {
+			continue // 正常完成且仍有未确认消息时继续等 Ack / Nack。
 		}
 		if !ok {
 			return Delivery[T]{}, s.state.receiveError(io.EOF)
