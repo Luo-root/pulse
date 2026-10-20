@@ -340,7 +340,7 @@ func TestCheckpointHostRestoreOwnsSharedOpen(t *testing.T) {
 				if err := waitCheckpointSignal(t, ctx, first); !errors.Is(err, context.Canceled) {
 					t.Errorf("single Receive = %v", err)
 				}
-				if openCtx != e.Context() || openCtx.Err() != nil || e.Context().Err() != nil {
+				if openCtx.Err() != nil || e.Context().Err() != nil {
 					t.Errorf("shared Open did not retain healthy execution context: open=%v execution=%v", openCtx.Err(), e.Context().Err())
 				}
 				if mode == "execution-cancel" {

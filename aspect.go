@@ -125,9 +125,17 @@ func Timeout(d time.Duration) Aspect {
 			child := rc.Fork()
 			defer child.Cancel() // deadline 子层结束不等于释放 Fork 在父 ctx 上的注册
 			timeoutErr := fmt.Errorf("pulse: node %s timeout after %s", rc.NodeID(), d)
-			ctx, cancel := context.WithTimeoutCause(child.ctx, d, timeoutErr)
+			// 两条链共用同一截止时刻：业务 fail-fast 不影响可靠链，真实 Timeout 影响两者。
+			deadline := time.Now().Add(d)
+			ctx, cancel := context.WithDeadlineCause(child.ctx, deadline, timeoutErr)
 			defer cancel()
-			child.ctx = ctx
+			control := ctx
+			if rc.exec.checkpoint != nil {
+				var cancelControl context.CancelFunc
+				control, cancelControl = context.WithDeadlineCause(child.controlCtx, deadline, timeoutErr)
+				defer cancelControl()
+			}
+			child.ctx, child.controlCtx = ctx, control
 			errCh := make(chan error, 1)
 			go func() { errCh <- next(child) }()
 			var err error
@@ -142,7 +150,7 @@ func Timeout(d time.Duration) Aspect {
 			case err = <-errCh:
 			case <-ctx.Done():
 				reportDeadline() // 自己的计时器确实触发，且内层可能还没有退出。
-				child.Cancel()
+				// ctx 已取消；不能在这里把内部 fail-fast 再转成可靠控制链的显式取消。
 				err = <-errCh // 等内层收干净，并保留期间捕获的真实失败
 			}
 			reportDeadline() // 两个 channel 同时就绪时，仍以独立 cause 判定本层事实。

@@ -105,8 +105,8 @@ func (e *CheckpointScopeFailure) Error() string {
 
 // CheckpointNotStarted 仅表示桥因调用上下文取消，在任何可靠操作开始前停止。
 // 不得用于已经调用 Store、可能写成或结果不确定的错误；不包装其他原因。
-// Core 仅在所属 Execution 已取消时接受直接非 nil 指针，将其保留为执行中断；
-// 包装信号、执行仍健康或任何普通存储错误仍锁存为可靠失败。
+// Core 仅在本次调用适用的业务域或控制域已取消时接受直接非 nil 指针，保留为中断；
+// 两域传播没有先后保证。包装信号、两域仍健康或任何普通存储错误仍锁存为可靠失败。
 type CheckpointNotStarted struct{}
 
 func (*CheckpointNotStarted) Error() string {
@@ -127,6 +127,10 @@ type CheckpointBinding struct {
 // 错误或 panic 停止整棵执行树；即使错误含 ErrSkipped 也不是正常跳过，不能被父 Retry
 // 或外层切面吞掉。唯一例外是 OpenChild 的精确 CheckpointScopeFailure 信号，见其契约。
 // 返回其他错误可能表示存储结果不确定，Core 不自动重试或撤销提交。
+//
+// 调用接纳前检查适用的业务取消域，已取消时不再新开可靠操作。接纳后的整个同步调用
+// 不受内部业务 fail-fast 取消影响；宿主、Execution.Cancel、父层显式取消与适用的
+// Deadline/Timeout 仍传入钩子。上下文保留 values，调用方不应依赖其与业务 ctx 指针相同。
 //
 // FailAttempt 同步确认真实失败，之后才能打开下一轮；不保存业务错误文本。
 // 宿主取消或可靠性失败保持尝试活跃，由恢复时读取的权威记录决定下一步。

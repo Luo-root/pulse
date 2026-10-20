@@ -31,7 +31,10 @@ type Execution struct {
 	site  Site
 
 	ctx    context.Context
-	cancel context.CancelFunc
+	cancel context.CancelFunc // 业务 fail-fast，只取消业务等待。
+	// controlCancel 与宿主、父节点显式控制共用可靠取消链；内部业务失败不触发它。
+	controlCtx    context.Context
+	controlCancel context.CancelFunc
 
 	// observer / lim / aspects 是**这一次运行的有效值**（本次运行的 ExecOption >
 	// 定义声明 > 父执行环境）。它们只在创建时算一次，此后不写——定义因此保持只读。
@@ -104,7 +107,7 @@ func (g *Graph) NewExecution(ctx context.Context, in Inputs, opts ...ExecOption)
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return g.newExecution(ctx, "", "", nil, cfg, in, nil)
+	return g.newExecution(ctx, ctx, "", "", nil, cfg, in, nil)
 }
 
 // newChildExecution 为挂载点建一份**子执行**：ctx 从父节点那一层的 ctx 派生
@@ -112,29 +115,36 @@ func (g *Graph) NewExecution(ctx context.Context, in Inputs, opts ...ExecOption)
 //
 // `parentObserver` / `parentLim` / `parentAspects` 是**父执行环境**的有效值：子图没声明
 // 什么就继承什么（切面切不切由子图自己的 `WithoutAspects` 决定）。
-func (g *Graph) newChildExecution(parent *Execution, ctx context.Context, nodeID string, in Inputs, bound map[keyRef]*slot) (*Execution, error) {
+func (g *Graph) newChildExecution(rc *RunCtx, in Inputs, bound map[keyRef]*slot) (*Execution, error) {
+	parent, nodeID := rc.exec, rc.node.id
 	path := nodeID
 	if parent.site.Path != "" {
 		path = parent.site.Path + "/" + nodeID
 	}
-	return g.newExecution(ctx, parent.site.Execution, path, parent, execConfig{}, in, bound)
+	return g.newExecution(rc.ctx, rc.controlCtx, parent.site.Execution, path, parent, execConfig{}, in, bound)
 }
 
 // newExecution 是两条入口的共用本体。`parent` 为 nil 表示这是根执行（没有可继承的
 // 执行环境，也没有「被谁喂」这回事）。
-func (g *Graph) newExecution(ctx context.Context, parentID, path string, parent *Execution, cfg execConfig, in Inputs, bound map[keyRef]*slot) (*Execution, error) {
+func (g *Graph) newExecution(ctx, control context.Context, parentID, path string, parent *Execution, cfg execConfig, in Inputs, bound map[keyRef]*slot) (*Execution, error) {
 	if g == nil {
 		return nil, fmt.Errorf("pulse: nil graph")
 	}
 	c, cancel := context.WithCancel(ctx)
+	controlCtx, controlCancel := c, cancel
+	if cfg.checkpoint != nil || (parent != nil && parent.checkpoint != nil) {
+		controlCtx, controlCancel = context.WithCancel(control)
+	}
 
 	e := &Execution{
-		graph:   g,
-		site:    Site{Graph: g.id, Execution: nextExecID(g.id, parentID, path), Path: path},
-		ctx:     c,
-		cancel:  cancel,
-		slots:   make(map[string]*slot),
-		mounted: parent != nil,
+		graph:         g,
+		site:          Site{Graph: g.id, Execution: nextExecID(g.id, parentID, path), Path: path},
+		ctx:           c,
+		cancel:        cancel,
+		controlCtx:    controlCtx,
+		controlCancel: controlCancel,
+		slots:         make(map[string]*slot),
+		mounted:       parent != nil,
 	}
 	if parent != nil {
 		e.observer = parent.observer
@@ -151,13 +161,13 @@ func (g *Graph) newExecution(ctx context.Context, parentID, path string, parent 
 	// 「要么全是新的、要么全是旧的」——不会撕成两半）。
 	entries, err := g.prepareExecution(e, cfg, in, bound)
 	if err != nil {
-		cancel()
+		e.Cancel()
 		return nil, err
 	}
 	e.seeded = make(map[string]struct{}, len(entries)+len(bound))
 	for ref, source := range bound {
 		if err := e.slotOf(ref).bindTo(source); err != nil {
-			cancel()
+			e.Cancel()
 			return nil, fmt.Errorf("pulse: input %s: %w", ref, err)
 		}
 		e.seeded[ref.name] = struct{}{}
@@ -559,7 +569,7 @@ func (e *Execution) Wait() error {
 		// （fail 不收跳过，Err 也不含它），升不到这一层。
 		e.notify(func(o Observer) { o.OnGraphFinished(e.site, reason, err) })
 	})
-	e.cancel()
+	e.Cancel()
 	return err
 }
 
@@ -591,7 +601,10 @@ func (e *Execution) Err() error {
 
 // Cancel 取消这次运行（等价于取消宿主给 `NewExecution` 的那个 ctx）。包内入口，
 // 也给宿主一个明确的「拆掉它」动作——定义与别的运行不受影响。
-func (e *Execution) Cancel() { e.cancel() }
+func (e *Execution) Cancel() {
+	e.controlCancel()
+	e.cancel()
+}
 
 // slotOf 取（必要时建）这次运行里某条键的槽位。
 func (e *Execution) slotOf(k keyRef) *slot {
