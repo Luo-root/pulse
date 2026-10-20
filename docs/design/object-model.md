@@ -206,5 +206,5 @@ Mermaid 归根包：`(*Topology).Mermaid(opts ...MermaidOption) string`，用 `W
 - 不清空旧槽位来复用 `Execution`——每次执行新建独立运行状态；
 - 不承诺自动撤销用户外部副作用（第 5.1 节）；
 - 不为迁就 `Graph.Snapshot()` / `Child *Graph` 的旧形状而保留旧对象模型——公开面服从职责边界；
-- 不为节点的每次尝试另加观测事件：`Retry` 重入**不重复打点**（节点那三条回调的次数契约不变）。子图步骤每次尝试是一份新的**子执行**，它自己那对图级事件照发——那是子执行自己的契约，不是「同一个节点被打了很多次点」；
+- 不因节点重试而重复生命周期回调：`Retry` 重入不重复 `Waiting` / `Running` / `Finished`，节点三回调的次数契约不变。逐次尝试、重试、退避与超时到期事实由现有可选 `AspectObserver` 另行提供，见[观测指南](../../site/guide/observability.md)（[English](../../site/en/guide/observability.md)）。子图步骤每次尝试是一份新的**子执行**，它自己那对图级事件照发，归属各自的子执行；
 - 不做隐式补偿，也不做任何不透明的事务魔法（要加就得有单独契约 + 测试）。
