@@ -451,7 +451,7 @@ func openManagedStreamCheckpoint[T any](rc *RunCtx, ref keyRef, cfg streamConfig
 	}
 	// 与历史别名共用一次 Open 和一次尾部安装；等待时不持树锁或状态锁。
 	if err := s.ensureCheckpoint(rc.ctx); err != nil {
-		return nil, err
+		return nil, rc.streams.classifyFailure(err)
 	}
 	return s, nil
 }
@@ -560,6 +560,11 @@ func (e *Execution) restoreCheckpointStreams(n *Node) error {
 			return e.stopCheckpoint("restore stream", fmt.Errorf("restored stream %q has no local endpoint factory", output.Key.Name))
 		}
 		if err := endpoint.pulseEnsureCheckpoint(e.ctx); err != nil {
+			// 只有等待分支返回本域的裸 ctx.Err；ready 的可靠结果保留原归因。
+			// 恢复节点没有 RunCtx，须在传播给健康父执行前保存自己的取消来源。
+			if err == e.ctx.Err() {
+				return &executionCancellation{cause: err}
+			}
 			return err
 		}
 	}
@@ -598,8 +603,9 @@ func (s *managedStream[T]) ensureCheckpoint(ctx context.Context) error {
 	case <-checkpoint.ready:
 		return checkpoint.err
 	case <-ctx.Done():
-		// 只标记当前等待者的真实取消；ready 保留共享 Open 已锁存的可靠归因。
-		return &executionCancellation{cause: ctx.Err()}
+		// 这里只知道一次等待结束；完整节点或执行入口才知道是否是本域取消。
+		// Fork / 宿主单次等待的局部取消不能在这里冒充完整执行中断。
+		return ctx.Err()
 	}
 }
 

@@ -450,7 +450,7 @@ func (s Stream[T]) checkReader(rc *RunCtx, operation string) error {
 			if err := rc.must(ref, false); err != nil {
 				return err
 			}
-			return s.state.ensureCheckpoint(rc.Context())
+			return rc.streams.classifyFailure(s.state.ensureCheckpoint(rc.Context()))
 		}
 	}
 	return fmt.Errorf("pulse: %s on node %q: stream is not a declared endpoint of this execution: %w", operation, rc.NodeID(), ErrUndeclared)
@@ -514,7 +514,7 @@ func (s Stream[T]) pulseReaderFinished(rc *RunCtx, err error) error {
 	// 认回生产终态和未确认尾部；失败不等恢复，也不持状态锁或 operation 门等待。
 	if normal {
 		if restoreErr := state.ensureCheckpoint(rc.Context()); restoreErr != nil {
-			return restoreErr
+			return rc.streams.classifyFailure(restoreErr)
 		}
 	}
 	id, _, registerErr := state.registerReader(rc)

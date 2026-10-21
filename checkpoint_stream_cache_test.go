@@ -7,9 +7,11 @@ import (
 	"io"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // A root source restores before a child's saved pass-through alias is decoded.
@@ -304,7 +306,8 @@ func TestCheckpointHostRestoreOwnsSharedOpen(t *testing.T) {
 			entered, release := make(chan context.Context, 1), make(chan struct{})
 			var opens, acks atomic.Int32
 			cause := errors.New("generation save failed")
-			hooks := checkpointStreamTestHooks(&checkpointProbe{})
+			probe := &checkpointProbe{}
+			hooks := checkpointStreamTestHooks(probe)
 			hooks.StreamHooks.Open = func(openCtx context.Context, req CheckpointStreamOpen) (CheckpointStreamRecord, error) {
 				opens.Add(1)
 				entered <- openCtx
@@ -385,6 +388,9 @@ func TestCheckpointHostRestoreOwnsSharedOpen(t *testing.T) {
 				if delivery.Sequence != 1 || delivery.Value != 7 {
 					t.Fatalf("restored tail=%+v", delivery)
 				}
+				if acks.Load() != 0 {
+					t.Fatal("canceled Receive automatically acknowledged the restored tail")
+				}
 				messageTestOK(t, delivery.Ack())
 				messageTestOK(t, e.Wait())
 				if _, err := sub.Receive(ctx); err != io.EOF {
@@ -394,8 +400,15 @@ func TestCheckpointHostRestoreOwnsSharedOpen(t *testing.T) {
 					t.Fatalf("reliable Acks=%d", acks.Load())
 				}
 			}
-			if opens.Load() != 1 {
-				t.Fatalf("Open calls=%d", opens.Load())
+			wantStatus := GraphStatusCompleted
+			// Open 也响应根取消时，已接纳保存回错仍是优先的可靠失败。
+			if mode == "store-error" || isCheckpointFailure(err) {
+				wantStatus = GraphStatusFailed
+			} else if mode == "execution-cancel" {
+				wantStatus = GraphStatusCanceled
+			}
+			if e.Snapshot().Graph.Status != wantStatus || len(probe.failures) != 0 || len(probe.commits) != 0 || opens.Load() != 1 {
+				t.Fatalf("host cancellation changed execution: graph=%s Open=%d FailAttempt=%d Commit=%d", e.Snapshot().Graph.Status, opens.Load(), len(probe.failures), len(probe.commits))
 			}
 		})
 	}
@@ -523,6 +536,219 @@ func TestCheckpointWaitJoinsCanceledSharedOpen(t *testing.T) {
 				t.Fatalf("GraphFinished calls=%d", finished.Load())
 			}
 		})
+	}
+}
+
+// 同一公开调用仅改变取消的归属和时点；Fork 错误交回健康完整节点时必须确认失败。
+// 宿主单次 Receive 与真正恢复子执行的控制分别见 HostRestoreOwnsSharedOpen / RestoredChildCancelPreservesBudget。
+func TestCheckpointStreamWaitCancellationOrigin(t *testing.T) {
+	for _, entry := range []string{"OpenStream", "Receive"} {
+		for _, mode := range []string{"fork-before", "fork-during", "fork-ready", "nested-fork", "node-cancel", "execution-cancel", "timeout"} {
+			if entry == "Receive" && mode == "fork-before" {
+				continue
+			}
+			t.Run(entry+"/"+mode, func(t *testing.T) {
+				ctx := checkpointTestContext(t)
+				g := mustNew(t, ctx, "stream-wait-origin")
+				key := NewKey[Stream[int]]("stream")
+				probe := &checkpointProbe{}
+				hooks := checkpointStreamTestHooks(probe)
+				open := hooks.StreamHooks.Open
+				entered, release := make(chan context.Context, 1), make(chan struct{})
+				permit := make(chan struct{})
+				var releaseOnce, permitOnce sync.Once
+				unblock := func() { releaseOnce.Do(func() { close(release) }) }
+				allowReceive := func() { permitOnce.Do(func() { close(permit) }) }
+				defer unblock()
+				defer allowReceive()
+				var opens, acks atomic.Int32
+				var openReturned atomic.Bool
+				hooks.StreamHooks.Open = func(openCtx context.Context, req CheckpointStreamOpen) (CheckpointStreamRecord, error) {
+					opens.Add(1)
+					entered <- openCtx
+					// 已接纳的保存不受局部等待取消影响，根取消后也可成功返回。
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return CheckpointStreamRecord{}, ctx.Err()
+					}
+					defer openReturned.Store(true)
+					if req.Restore == nil {
+						return open(openCtx, req)
+					}
+					d := *req.Restore
+					d.ID.Generation++
+					return CheckpointStreamRecord{Stream: d, Resumed: true, LastSequence: 1,
+						Pending: []CheckpointStreamMessage{{Sequence: 1, Value: 17}}}, nil
+				}
+				hooks.StreamHooks.Commit = func(context.Context, CheckpointMessageCommit) error { acks.Add(1); return nil }
+				callReady, ownerHealthy := make(chan *RunCtx, 1), make(chan bool, 1)
+				streamSeen := make(chan Stream[int], 1)
+				run := func(rc *RunCtx) error {
+					waiter := rc
+					var parent *RunCtx
+					if strings.HasPrefix(mode, "fork-") || mode == "nested-fork" {
+						waiter = rc.Fork()
+						defer waiter.Cancel()
+						if mode == "nested-fork" {
+							parent = waiter
+							waiter = parent.Fork()
+							defer waiter.Cancel()
+						}
+					}
+					var err error
+					if entry == "OpenStream" {
+						callReady <- waiter
+						if mode == "fork-before" {
+							waiter.Cancel()
+						}
+						var writer *StreamWriter[int]
+						writer, err = OpenStream(waiter, key, WithStreamSource("resumable", true))
+						if mode == "fork-ready" && err == nil {
+							waiter.Cancel()
+							err = writer.Send(1)
+						}
+					} else {
+						stream, getErr := Get(rc, key)
+						if getErr != nil {
+							return getErr
+						}
+						streamSeen <- stream
+						callReady <- waiter // Get 已成功，驱动取消只能命中随后被测的 Receive。
+						if mode == "fork-ready" {
+							select {
+							case <-permit:
+							case <-ctx.Done():
+								return ctx.Err()
+							}
+						}
+						_, err = stream.Receive(waiter)
+					}
+					ownerHealthy <- rc.Context().Err() == nil && (parent == nil || parent.Context().Err() == nil)
+					return err
+				}
+				var aspects []Aspect
+				if mode == "timeout" {
+					aspects = append(aspects, Timeout(250*time.Millisecond))
+				}
+				target := "source"
+				if entry == "OpenStream" {
+					declareOut(t, g, NewPort(key))
+					mustAdd(t, g, NewNode(target, "交回局部等待的结果", nil, Provides(key), run, aspects...))
+				} else {
+					target = "sink"
+					mustAdd(t, g, NewNode("source", "已确认来源不重跑", nil, Provides(key), func(*RunCtx) error {
+						return errors.New("restored source reran")
+					}))
+					mustAdd(t, g, NewNode(target, "交回局部读取的结果", Requires(key), nil, run, aspects...))
+				}
+				type event struct {
+					reason NodeFinishReason
+					err    error
+				}
+				nodeDone, graphDone := make(chan event, 1), make(chan event, 1)
+				sourceDone := make(chan struct{}, 1)
+				observer := ObserverFunc{
+					Finished: func(_ Site, node string, reason NodeFinishReason, err error) {
+						if node == target {
+							nodeDone <- event{reason, err}
+						} else if node == "source" {
+							sourceDone <- struct{}{}
+						}
+					},
+					GraphFinished: func(_ Site, reason NodeFinishReason, err error) {
+						if opens.Load() != 0 && !openReturned.Load() {
+							t.Error("Wait finalized before accepted Open returned")
+						}
+						graphDone <- event{reason, err}
+					},
+				}
+				e, err := g.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks), WithExecObserver(observer))
+				messageTestOK(t, err)
+				defer e.Cancel()
+				if entry == "OpenStream" {
+					_, err = SubscribeStream(e, key)
+					messageTestOK(t, err)
+				} else {
+					d := CheckpointStreamDescriptor{
+						ID:    CheckpointStreamID{Scope: "root", NodeID: "source", Key: "stream", Group: "default", Generation: 1},
+						Graph: "stream-wait-origin", Attempt: "source-attempt", Element: reflect.TypeFor[int](),
+						Source: CheckpointStreamSource{ID: "finite"}, Capacity: 1, Terminal: StreamCompleted,
+					}
+					messageTestOK(t, e.RestoreNodes([]NodeCheckpoint{{NodeID: "source", Reason: NodeCompleted, Outputs: []CheckpointOutput{
+						{Key: checkpointKey(key.asRef()), State: SlotStateReady, Stream: &d},
+					}}}))
+				}
+				messageTestOK(t, e.Start())
+				result := make(chan error, 1)
+				go func() { result <- e.Wait() }()
+				waiter := waitCheckpointSignal(t, ctx, callReady)
+				if mode != "fork-before" {
+					openCtx := waitCheckpointSignal(t, ctx, entered)
+					if openCtx.Err() != nil || e.Context().Err() != nil {
+						t.Fatal("probe did not enter a healthy shared Open")
+					}
+					switch mode {
+					case "fork-ready":
+						unblock()
+						if entry == "Receive" {
+							waitCheckpointSignal(t, ctx, sourceDone) // Finished 证明权威尾部已安装。
+							waiter.Cancel()
+							allowReceive()
+						}
+					case "execution-cancel":
+						e.Cancel()
+					case "timeout": // 由真实 Timeout 计时器打断公开调用。
+					default:
+						waiter.Cancel()
+					}
+				}
+				ev := waitCheckpointSignal(t, ctx, nodeDone)
+				local := strings.HasPrefix(mode, "fork-") || mode == "nested-fork"
+				if healthy := waitCheckpointSignal(t, ctx, ownerHealthy); local && !healthy {
+					t.Error("local cancellation reached the owning node or parent Fork")
+				}
+				if mode != "fork-before" && mode != "fork-ready" {
+					select {
+					case err := <-result:
+						t.Fatalf("Wait escaped accepted Open: %v", err)
+					default:
+					}
+				}
+				unblock()
+				err = waitCheckpointSignal(t, ctx, result)
+				graph := waitCheckpointSignal(t, ctx, graphDone)
+				want, failures := NodeFailed, 1
+				if mode == "node-cancel" || mode == "execution-cancel" {
+					want, failures = NodeCanceled, 0
+				}
+				snapshot := e.Snapshot()
+				if ev.reason != want || graph.reason != want || snapshot.Graph.Status != GraphStatus(want) ||
+					snapshotNode(t, snapshot, target).Status != NodeStatus(want) || len(probe.failures) != failures || len(probe.commits) != 0 {
+					t.Errorf("cancellation origin changed: node=%s graph=%s FailAttempt=%d Commit=%d; want=%s FailAttempt=%d", ev.reason, snapshot.Graph.Status, len(probe.failures), len(probe.commits), want, failures)
+				}
+				for _, got := range []error{err, ev.err, graph.err} {
+					if got == nil || isCheckpointFailure(got) || (mode == "timeout" && !strings.Contains(got.Error(), "timeout after")) ||
+						(mode != "timeout" && !errors.Is(got, context.Canceled)) {
+						t.Errorf("unexpected public call error: %T %v", got, got)
+					}
+				}
+				wantOpens := int32(1)
+				if mode == "fork-before" {
+					wantOpens = 0
+				}
+				if opens.Load() != wantOpens || acks.Load() != 0 || e.Err() != err || e.Wait() != err {
+					t.Errorf("shared work/result changed: Open=%d Ack=%d Wait=%v Err=%v", opens.Load(), acks.Load(), err, e.Err())
+				}
+				if entry == "Receive" {
+					tail := waitCheckpointSignal(t, ctx, streamSeen).Snapshot()
+					if tail.LastSequence != 1 || tail.InFlight != 1 || tail.AckedThrough != 0 || tail.Stopped {
+						t.Errorf("cancellation consumed the unclaimed tail: %+v", tail)
+					}
+				}
+				t.Logf("node=%s graph=%s Open=%d FailAttempt=%d Commit=%d Ack=%d", ev.reason, snapshot.Graph.Status, opens.Load(), len(probe.failures), len(probe.commits), acks.Load())
+			})
+		}
 	}
 }
 
