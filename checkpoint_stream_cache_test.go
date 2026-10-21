@@ -539,6 +539,182 @@ func (c *checkpointWaitContext) Done() <-chan struct{} {
 	return c.Context.Done()
 }
 
+// 三节点公开图：恢复来源先报告 Finished，未完成的兄弟节点随后才返回取消。
+// 子执行单独 Cancel 时，父和共享 Open 此刻仍健康，不能确认父挂载的业务失败。
+func TestCheckpointRestoredChildCancelPreservesBudget(t *testing.T) {
+	for _, mode := range []string{"cancel-child", "cancel-root", "healthy"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := checkpointTestContext(t)
+			root, child := mustNew(t, ctx, "budget-root"), mustNew(t, ctx, "budget-child")
+			inside, outside := NewKey[Stream[int]]("inside"), NewKey[Stream[int]]("outside")
+			declareOut(t, child, NewPort(inside))
+			declareOut(t, root, NewPort(outside))
+			mustAdd(t, child, NewNode("source", "恢复来源不重跑", nil, Provides(inside), func(*RunCtx) error {
+				return errors.New("restored source reran")
+			}))
+			sourceObserved, holdStarted, releaseHold := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var holdOnce sync.Once
+			defer holdOnce.Do(func() { close(releaseHold) })
+			mustAdd(t, child, NewNode("hold", "来源结束后才交还取消", nil, nil, func(rc *RunCtx) error {
+				close(holdStarted)
+				if mode == "healthy" {
+					return nil
+				}
+				<-rc.Context().Done()
+				select {
+				case <-sourceObserved:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				select {
+				case <-releaseHold:
+					return rc.Context().Err()
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}))
+			messageTestOK(t, Sub(root, "mount", "保留子取消来源", []SubBind{Out(inside, outside)}, child))
+			probe := &checkpointProbe{}
+			hooks := checkpointStreamTestHooks(probe)
+			hooks.OpenChild = func(_ context.Context, req CheckpointChild) ([]NodeCheckpoint, error) {
+				d := CheckpointStreamDescriptor{
+					ID:    CheckpointStreamID{Scope: req.Attempt, NodeID: "source", Key: "inside", Group: "default", Generation: 1},
+					Graph: req.Graph, Path: req.Site.Path, Attempt: "source-attempt", Element: reflect.TypeFor[int](),
+					Source: CheckpointStreamSource{ID: "finite"}, Capacity: 1, Terminal: StreamCompleted,
+				}
+				return []NodeCheckpoint{{NodeID: "source", Reason: NodeCompleted, Outputs: []CheckpointOutput{
+					{Key: checkpointKey(inside.asRef()), State: SlotStateReady, Stream: &d},
+				}}}, nil
+			}
+			entered, releaseOpen := make(chan context.Context, 1), make(chan struct{})
+			var openOnce sync.Once
+			defer openOnce.Do(func() { close(releaseOpen) })
+			var opens atomic.Int32
+			var openReturned atomic.Bool
+			hooks.StreamHooks.Open = func(openCtx context.Context, req CheckpointStreamOpen) (CheckpointStreamRecord, error) {
+				opens.Add(1)
+				entered <- openCtx
+				// 已接纳的同步保存先保持在途；即使根取消，也允许它正常成功返回。
+				select {
+				case <-releaseOpen:
+				case <-ctx.Done():
+					return CheckpointStreamRecord{}, ctx.Err()
+				}
+				defer openReturned.Store(true)
+				d := *req.Restore
+				d.ID.Generation++
+				return CheckpointStreamRecord{Stream: d, Resumed: true, LastSequence: 1,
+					Pending: []CheckpointStreamMessage{{Sequence: 1, Value: 31}}}, nil
+			}
+			type event struct {
+				reason NodeFinishReason
+				err    error
+			}
+			childStarted := make(chan *Execution, 1)
+			sourceDone, mountDone := make(chan event, 1), make(chan event, 1)
+			var e *Execution
+			observer := ObserverFunc{
+				GraphStarted: func(site Site) {
+					if site.Path == "mount" {
+						childStarted <- e.Snapshot().Nodes[0].Child
+					}
+				},
+				Finished: func(site Site, node string, reason NodeFinishReason, err error) {
+					if site.Path == "mount" && node == "source" {
+						sourceDone <- event{reason, err}
+						close(sourceObserved)
+					} else if site.Path == "" && node == "mount" {
+						mountDone <- event{reason, err}
+					}
+				},
+				GraphFinished: func(site Site, _ NodeFinishReason, _ error) {
+					if site.Path == "" && !openReturned.Load() {
+						t.Error("root Wait finalized before accepted Open returned")
+					}
+				},
+			}
+			var err error
+			e, err = root.NewExecution(ctx, Inputs{}, WithExecCheckpoint("root", hooks), WithExecObserver(observer))
+			messageTestOK(t, err)
+			defer e.Cancel()
+			subscription, err := SubscribeStream(e, outside)
+			messageTestOK(t, err)
+			messageTestOK(t, e.Start())
+			nested := waitCheckpointSignal(t, ctx, childStarted)
+			openCtx := waitCheckpointSignal(t, ctx, entered)
+			waitCheckpointSignal(t, ctx, holdStarted)
+			if nested == nil || e.Context().Err() != nil || openCtx.Err() != nil {
+				t.Fatal("probe did not reach healthy accepted Open")
+			}
+			result := make(chan error, 1)
+			go func() { result <- e.Wait() }()
+			var source event
+			if mode != "healthy" {
+				if mode == "cancel-child" {
+					nested.Cancel()
+				} else {
+					e.Cancel()
+				}
+				source = waitCheckpointSignal(t, ctx, sourceDone)
+				if source.reason != NodeCanceled || !errors.Is(source.err, context.Canceled) {
+					t.Errorf("source cancellation=%s: %v", source.reason, source.err)
+				}
+				if mode == "cancel-child" && (e.Context().Err() != nil || openCtx.Err() != nil) {
+					t.Error("child Cancel escaped into healthy parent/shared Open")
+				}
+				holdOnce.Do(func() { close(releaseHold) })
+			}
+			var mount event
+			if mode != "healthy" {
+				mount = waitCheckpointSignal(t, ctx, mountDone)
+				select {
+				case err := <-result:
+					t.Errorf("Wait escaped held shared Open: %v", err)
+				default:
+				}
+			}
+			openOnce.Do(func() { close(releaseOpen) })
+			if mode == "healthy" {
+				delivery, err := subscription.Receive(ctx)
+				messageTestOK(t, err)
+				if delivery.Sequence != 1 || delivery.Value != 31 {
+					t.Fatalf("restored tail=%+v", delivery)
+				}
+				messageTestOK(t, delivery.Ack())
+				source = waitCheckpointSignal(t, ctx, sourceDone)
+				mount = waitCheckpointSignal(t, ctx, mountDone)
+			}
+			err = waitCheckpointSignal(t, ctx, result)
+			if mode == "healthy" {
+				if err != nil || source.reason != NodeCompleted || mount.reason != NodeCompleted || len(probe.commits) != 2 {
+					t.Errorf("healthy restore: source=%s mount=%s err=%v commits=%d", source.reason, mount.reason, err, len(probe.commits))
+				}
+				if _, err := subscription.Receive(ctx); err != io.EOF {
+					t.Errorf("restored EOF=%v", err)
+				}
+			} else {
+				for name, ev := range map[string]event{"source": source, "mount": mount, "graph": {NodeFinishReason(e.Snapshot().Graph.Status), err}} {
+					var cancellation *executionCancellation
+					if ev.reason != NodeCanceled || !errors.Is(ev.err, context.Canceled) || isCheckpointFailure(ev.err) ||
+						(mode == "cancel-child" && !errors.As(ev.err, &cancellation)) {
+						t.Errorf("cancel-only was promoted at %s: reason=%s type=%T err=%v", name, ev.reason, ev.err, ev.err)
+					}
+				}
+				if nested.Snapshot().Graph.Status != GraphStatusCanceled || len(probe.commits) != 0 {
+					t.Errorf("cancel-only result: child=%s Commit=%d", nested.Snapshot().Graph.Status, len(probe.commits))
+				}
+			}
+			if len(probe.failures) != 0 || opens.Load() != 1 {
+				t.Errorf("cancel-only consumed persistent budget: FailAttempt=%d shared Open=%d", len(probe.failures), opens.Load())
+			}
+			if e.Err() != err || e.Wait() != err {
+				t.Error("final result changed")
+			}
+			t.Logf("mode=%s source=%s/%T mount=%s/%T graph=%s Open=%d FailAttempt=%d Commit=%d", mode, source.reason, source.err, mount.reason, mount.err, e.Snapshot().Graph.Status, opens.Load(), len(probe.failures), len(probe.commits))
+		})
+	}
+}
+
 func TestCheckpointRestoredChildCancellationDomain(t *testing.T) {
 	for _, cancelRoot := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cancel-root-%t", cancelRoot), func(t *testing.T) {

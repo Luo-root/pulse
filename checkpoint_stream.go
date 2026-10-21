@@ -598,7 +598,8 @@ func (s *managedStream[T]) ensureCheckpoint(ctx context.Context) error {
 	case <-checkpoint.ready:
 		return checkpoint.err
 	case <-ctx.Done():
-		return ctx.Err()
+		// 只标记当前等待者的真实取消；ready 保留共享 Open 已锁存的可靠归因。
+		return &executionCancellation{cause: ctx.Err()}
 	}
 }
 
