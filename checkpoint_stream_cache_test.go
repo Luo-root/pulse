@@ -596,9 +596,9 @@ func TestCheckpointStreamWaitCancellationOrigin(t *testing.T) {
 							defer waiter.Cancel()
 						}
 					}
-					callReady <- waiter
 					var err error
 					if entry == "OpenStream" {
+						callReady <- waiter
 						if mode == "fork-before" {
 							waiter.Cancel()
 						}
@@ -614,6 +614,7 @@ func TestCheckpointStreamWaitCancellationOrigin(t *testing.T) {
 							return getErr
 						}
 						streamSeen <- stream
+						callReady <- waiter // Get 已成功，驱动取消只能命中随后被测的 Receive。
 						if mode == "fork-ready" {
 							select {
 							case <-permit:
