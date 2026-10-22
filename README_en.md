@@ -12,6 +12,11 @@
   <a href="https://luo-root.github.io/pulse/en/"><img src="https://img.shields.io/badge/docs-中文%20%7C%20English-2563eb" alt="Bilingual documentation"></a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/Luo-root/pulse/stargazers"><img src="https://img.shields.io/github/stars/Luo-root/pulse?style=social" alt="Stars"></a>
+  <a href="https://github.com/Luo-root/pulse/graphs/contributors"><img src="https://img.shields.io/github/contributors/Luo-root/pulse?style=social" alt="Contributors"></a>
+</p>
+
 Pulse composes Go functions into reusable workflows. Each node declares the data it reads and produces. Those declarations determine the dependencies: when inputs arrive, eligible nodes begin work. Embed it in a service, command-line program, or Agent application without running a separate server.
 
 A `Graph` defines the workflow; an `Execution` holds one run. Reuse the same definition for different requests, run it concurrently, or mount it as a subgraph in several places. Each execution has independent inputs, state, and cancellation. The core package uses only the Go standard library.
@@ -156,3 +161,12 @@ go test -race -count=1 ./...
 Run the repository's [Go examples](examples_test.go) with `go test -run Example -v .`. Bilingual chapters live under `site/`; package reference pages are generated from each package's README. Read the [contributing guide](CONTRIBUTING.md) before proposing changes, and report security issues according to the [security policy](SECURITY.md).
 
 Pulse is licensed under [MIT](LICENSE).
+
+## ⭐ Support Pulse
+
+Pulse is still early, but it already ships 12 releases, a full bilingual documentation site, and runnable benchmarks. If you are building data-driven pipelines in Go, or adding a reliable workflow execution layer to an Agent application, a star helps more people find it - which matters a lot for an independently maintained project.
+
+- Found a problem or want a feature: [open an issue](https://github.com/Luo-root/pulse/issues) or [start a discussion](https://github.com/Luo-root/pulse/discussions)
+- Useful but no immediate need: hitting the ⭐ in the top right is enough
+- Want to contribute: [contributing guide](CONTRIBUTING.md)
+
