@@ -4,14 +4,14 @@ This page is for maintainers upgrading from published v0.4.1 or transitional dev
 
 ## Published releases and development documentation
 
-The latest published tag is **v0.4.1**. The new object model, checkpoint bridge, and sugar signatures below have not shipped in a new tag. This site describes the development model; it does not announce v0.5.0. Released-version users should follow v0.4.1 documentation. Install merged development interfaces from main; for unmerged branches use the matching local source as described in [installation](../guide/installation.md):
+The migration target is **v0.5.0**, including the new object model, checkpoint bridge, and sugar signatures below. Compare v0.4.1 source with this page and migrate each affected call; do not apply new examples to an older dependency. Pin v0.5.0 by default. For subsequent development changes or unmerged branches, select main or matching local source as described in [installation](../guide/installation.md):
 
 ```sh
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.0
 go list -m github.com/Luo-root/pulse
 ```
 
-The project requires Go 1.25+. Retain the concrete pseudo-version resolved from main and check that it contains the changes you need; do not invent a commit or pseudo-version. For a local replacement, verify the source directory instead. Select a published tag from release notes when the next release becomes available.
+The project requires Go 1.25+. Commit your application's go.mod/go.sum. Install main only for subsequent development changes and retain the concrete version resolved by Go; do not invent a commit or pseudo-version. For a local replacement, verify the source directory. See the [release notes](release-v0.5.0.md) for the release record.
 
 ## Node sugar constructors gain a description
 

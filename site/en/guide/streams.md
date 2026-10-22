@@ -2,7 +2,7 @@
 
 Use `Key[pulse.Stream[T]]` for continuous production, individual acknowledgements, or live results across subgraphs. The slot publishes an endpoint; the endpoint manages sequences, a reading group, backpressure, and production status.
 
-These APIs **are merged into `main` but have not shipped in a release tag**. The latest released tag, `v0.4.1`, does not include managed Stream. Follow [installation and versions](./installation.md#choose-a-version) to select the main branch or a local checkout matching these docs.
+These APIs use **v0.5.0** as their version baseline. The historical `v0.4.1` tag does not include managed Stream. Follow [installation and versions](./installation.md#choose-a-version) to pin v0.5.0, or select main or matching local source for subsequent development changes.
 
 ## Complete example: one quota slot, two broadcast consumers
 

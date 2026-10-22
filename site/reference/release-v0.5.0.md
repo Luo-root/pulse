@@ -1,6 +1,6 @@
 # Pulse v0.5.0 发布说明
 
-本文整理从 v0.4.1 升级到 v0.5.0 的变化。**当前是发布准备稿；只有 [GitHub Release](https://github.com/Luo-root/pulse/releases) 与对应 tag 实际创建后，v0.5.0 才可安装。** 发布前按[安装页](../guide/installation.md)使用已合入主线的开发提交或匹配的本地源码。
+本文整理从 v0.4.1 升级到 v0.5.0 的变化。安装使用 `go get github.com/Luo-root/pulse@v0.5.0`；发布状态与完整记录见对应 [GitHub Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0)。环境要求、开发版和本地源码用法见[安装页](../guide/installation.md)。
 
 ## 先看不兼容变化
 

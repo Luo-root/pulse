@@ -2,7 +2,7 @@
 
 This page is for Go developers who have completed the [quick start](./quickstart.md) and need to organize multiple processing steps. It explains how to choose an orchestration approach and links to inputs, branches, subgraphs, and streams.
 
-The examples on this site use the current development object model. The latest published release is v0.4.1 and does not include every API used here. See the [migration reference](../reference/migration.md) for version selection and upgrade steps.
+The examples on this site use the v0.5.0 object model as their baseline. When upgrading from v0.4.1, follow the [migration reference](../reference/migration.md), update affected calls, and pin the dependency version.
 
 ## Define a flow through data relationships
 

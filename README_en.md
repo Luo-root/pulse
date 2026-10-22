@@ -30,12 +30,12 @@ To continue after a process exits, use the separate [pulse-durable](https://gith
 
 Requires **Go 1.25.0 or later**.
 
-> This README and the documentation site describe the development API on `main`, including managed Stream, live Sub, and incremental checkpoints. The latest released tag, **v0.4.1**, has a different API. The command below installs main and records the resolved pseudo-version in go.mod. To try an unmerged change, use the matching local source as described in [installation and versions](site/en/guide/installation.md).
+> This README and the documentation site use **v0.5.0** as their API baseline, including managed Stream, live Sub, and incremental checkpoints. Read [migration](site/en/reference/migration.md) before upgrading from v0.4.1. The command below pins v0.5.0. See [installation and versions](site/en/guide/installation.md) for development or unmerged changes; the corresponding [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) and tag establish publication status.
 
 Run this in a Go module:
 
 ```sh
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.0
 ```
 
 ## Your first workflow

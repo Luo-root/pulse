@@ -1,6 +1,6 @@
 # Pulse v0.5.0 release notes
 
-This page describes changes from v0.4.1 to v0.5.0. **It is currently a release preparation draft. v0.5.0 becomes installable only after its [GitHub Release](https://github.com/Luo-root/pulse/releases) and tag actually exist.** Until then, follow [installation](../guide/installation.md) for a merged main-branch revision or matching local source.
+This page describes changes from v0.4.1 to v0.5.0. Install with `go get github.com/Luo-root/pulse@v0.5.0`; see the corresponding [GitHub Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) for publication status and the release record. Requirements, development versions, and local source usage are covered in [installation](../guide/installation.md).
 
 ## Breaking changes first
 

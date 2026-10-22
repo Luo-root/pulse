@@ -4,7 +4,7 @@ This section is for developers already using Pulse who need exact behavior or in
 
 ## Version scope
 
-These documents describe the development object model. The latest published version is **v0.4.1**; the next release has not been published. Follow [installation](../guide/installation.md) to select a main-branch version or local source containing the documented interfaces. See [migration](./migration.md) for upgrade differences.
+These documents use the **v0.5.0** object model as their baseline. Follow [installation](../guide/installation.md) to pin that version for the examples. Select main or matching local source for subsequent development changes. See [migration](./migration.md) for upgrade differences.
 
 ## Find a contract
 
@@ -15,7 +15,7 @@ These documents describe the development object model. The latest published vers
 | What errors mean and whether to change declarations or handle a runtime failure | [Errors](./errors.md) |
 | When outputs are confirmed and published, what recovery restores, how retry budgets persist | [Checkpoints](./checkpoint.md) |
 | How to migrate from v0.4.1 or transitional development APIs | [Migration](./migration.md) |
-| Which capabilities and breaking changes are prepared for v0.5.0 | [Release notes](./release-v0.5.0.md) |
+| Which capabilities and breaking changes v0.5.0 includes | [Release notes](./release-v0.5.0.md) |
 
 ## Objects and interfaces
 

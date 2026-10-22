@@ -26,10 +26,10 @@ Package references provide complete minimal programs and lookup tables. Guides e
 
 ## Documentation version
 
-This website describes the development API, including interfaces not yet shipped in a release tag. The latest release tag is `v0.4.1`, which is not the API baseline for every example here. Install merged development interfaces from main; for unmerged branches use the matching local source as described in [installation](../guide/installation.md):
+This website uses `v0.5.0` as its API baseline. The command below pins that version. For subsequent development changes or unmerged branches, select main or matching local source as described in [installation](../guide/installation.md):
 
 ```bash
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.0
 ```
 
 Requires Go 1.25.0 or later. Released Go API documentation may differ from current source; read against the commit your application uses.

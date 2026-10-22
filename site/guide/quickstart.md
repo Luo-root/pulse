@@ -4,7 +4,7 @@
 
 ## 开始之前
 
-需要 Go 1.25+。示例使用本站对应的开发 API；如果已经安装 v0.4.1，请先阅读[安装与版本](installation.md)。
+需要 Go 1.25+。示例使用 v0.5.0 API；如果已经安装 v0.4.1，请先阅读[安装与版本](installation.md)。
 
 在一个新目录中初始化模块：
 
@@ -12,7 +12,7 @@
 mkdir pulse-quickstart
 cd pulse-quickstart
 go mod init example.com/pulse-quickstart
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.0
 ```
 
 以下所有命令在该目录执行。
