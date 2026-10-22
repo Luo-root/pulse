@@ -2,6 +2,8 @@
 
 关联 [#427](https://github.com/Luo-root/pulse/issues/427)。[English](README_en.md)。这个独立模块固定使用 **Pulse（可靠维度加 Durable）、Eino、Temporal** 三列，根生产模块不新增运行依赖。旧 DAG 对照保留历史结果，不参与本轮排名。
 
+本轮 v0.5.0 发布前重测固定 Core `v0.4.2-0.20261021081643-be778722b781` 和 Durable `v0.0.0-20261021085955-5db6eae0e9fb`，无本地 replace。测量时尚未创建 v0.5.0 tag；最终引擎源码需与被测 SHA 一致。新统计见 [`v0.5.0-candidate-20261021`](../reports/v0.5.0-candidate-20261021/identity.json)，历史结果不改写。
+
 ## 共同任务与适配
 
 - chain / wide / diamonds；实际任务数为 1、10、100、1000、10000；每个任务执行相同 uint64 运算，rounds=1 或 256。输入是 `1 + 直接前驱输出之和`，整图结果是终端输出之和。Go 固定值和 Python 大整数 oracle 独立复核。
@@ -38,7 +40,7 @@ $env:GOWORK = 'off'
 $env:GOPROXY = 'https://proxy.golang.org,direct'
 go mod download
 go test -mod=readonly -race -count=1 -timeout=120s ./...
-go build -mod=readonly -o ../results/production-bench.exe .
+go build -mod=readonly -trimpath -o ../results/production-bench.exe .
 # 单独起真实 Server 后，启用不能以替身替代的测试：
 $env:PULSE_TEMPORAL_ADDRESS = '127.0.0.1:7233'
 go test -mod=readonly -race -count=1 -timeout=120s -run '^TestTemporal' -v .
@@ -50,3 +52,5 @@ python ../tools/run_recovery.py --binary ../results/production-bench.exe --tempo
 ```
 
 新运行拒绝覆盖旧结果；普通矩阵 `--resume` 必须匹配原身份、二进制与采样器哈希。原始 JSONL、stdout/stderr、DB、诊断和本机清单不提交 Git。入仓仅复跑代码/锁、精简汇总、版本摘要和页面实际引用图。
+
+四组采完后用 `summarize_production.py --native <普通目录> --resources <资源目录> --checkpoint <可靠目录> --recovery <恢复目录> --out <新目录>` 汇总；不启动引擎，绘图需 matplotlib。外置 linked worktree 若 Go 自动 VCS 检测失败，可加 `-buildvcs=false`，但必须另存真实提交、源码差异和哈希，不能省略版本身份。

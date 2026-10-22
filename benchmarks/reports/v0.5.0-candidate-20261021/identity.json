@@ -1,0 +1,171 @@
+{
+  "schema": 1,
+  "label": "Pulse v0.5.0 pre-release candidate remeasurement",
+  "tag_created": false,
+  "candidates": {
+    "pulse": "be778722b781ad97f2846848dcd9dacdc0e501e7",
+    "durable": "5db6eae0e9fb1cb743b56027b1cdadeb03736d1c"
+  },
+  "versions": {
+    "github.com/Luo-root/pulse": "v0.4.2-0.20261021081643-be778722b781",
+    "github.com/Luo-root/pulse-durable": "v0.0.0-20261021085955-5db6eae0e9fb",
+    "eino": "v0.9.21",
+    "temporal_sdk": "v1.50.0",
+    "sqlite": "v1.60.1",
+    "toolchain": "go1.26.0"
+  },
+  "benchmark_base_commit": "be778722b781ad97f2846848dcd9dacdc0e501e7",
+  "benchmark_go_source_changed": false,
+  "build_flags": [
+    "-mod=readonly",
+    "-buildvcs=false",
+    "-trimpath"
+  ],
+  "benchmark_binary_sha256": "81a673e471e44a4b4e636badd94a94785d2dd12975aa6961b869ebd80f4bd772",
+  "temporal_binary_sha256": "c49d7f0d9f6a7ae5aed3b97a259070c1cee7bf7e7543be9b4c602109caf3c806",
+  "temporal": {
+    "cli": "1.9.1",
+    "server": "1.32.0",
+    "build_go": "go1.26.8"
+  },
+  "collection": {
+    "started_at": "2026-10-21T15:16:45.350129+00:00",
+    "ended_at": "2026-10-21T17:13:35.818285+00:00",
+    "os": "Windows 11 10.0.26200",
+    "cpu": "Intel Core i9-14900HX",
+    "gomaxprocs_per_go_process": 4,
+    "business_parallelism": 4
+  },
+  "records": 1062,
+  "groups": 234,
+  "scripts": {
+    "capture_origins.py": "04520808832dcaa7ca67df45f2ed135b297075f3f84642a21d8c26e011595518",
+    "run_matrix.py": "24ad24f348c6c2c6d123d06520d71e12d0dbe50f47b1b54126f9932b15502acf",
+    "run_production.py": "6a1ef84805d3085f66ee8ed7f9971d881d36795cdf9d03e0497347b3e8708743",
+    "run_recovery.py": "c78bb333d6bdf43c1edb1bccf0589ce26861bd74bc6e9af679bd1bfd071ae4a1",
+    "storage_plot.py": "3075a17b43d4765096e394e74160306fcbd97261b9c05962319a74366e4922eb",
+    "summarize.py": "8d21dbcb141b5dd91f8bd62111de2ed4c0796c1c3eb9d92a6dfc727638aa5845",
+    "summarize_production.py": "5f1183b55d96596cf6bd79b22a5d3a8de25821e245dea4e94236fade6791e561",
+    "test_production_summary.py": "53d3bab15128ff110fe0122b126d7ddc3070b7ece5293d4ab8abecd948e28c98",
+    "test_production_tools.py": "44cc78998dee33817b3e1a49d8bb339c5a77d2ea04623941c6cf823f6a0d53b7",
+    "test_tools.py": "88447c43c6de2bc52dcc425caed488434f223cc4967ea34edb94865b92dcc5f2"
+  },
+  "summary_sha256": "8e392b34abce6bcc28a9015130b5f6a32c84570837b4404190a84e31ea6b037a",
+  "summary_tool_sha256": "5f1183b55d96596cf6bd79b22a5d3a8de25821e245dea4e94236fade6791e561",
+  "datasets": {
+    "native": {
+      "raw_sha256": "8b9f3c6b4881d4ec3040297353a9ee5805ce8d27a79e6830bd9f58d841194c14",
+      "manifest_sha256": "49504e9cb6254451df196f976d7254aac928f8920d6939808eccdb98ce806e7b",
+      "records": 900,
+      "groups": 180,
+      "statuses": {
+        "deadline": 6,
+        "error": 1,
+        "hard_timeout": 19,
+        "not_repeated": 90,
+        "ok": 784
+      },
+      "matrix": {
+        "engines": "pulse,eino,temporal",
+        "modes": "plain,observe",
+        "shapes": "chain,wide,diamonds",
+        "nodes": "1,10,100,1000,10000",
+        "rounds": "1,256",
+        "repeats": 5,
+        "parallelism": 4,
+        "gomaxprocs": 4,
+        "fixed_iterations": null
+      }
+    },
+    "resources": {
+      "raw_sha256": "9e6ce8d75a023195b8465b8fca31dc4339115c316df38f6cea6fe2a5a1c6753d",
+      "manifest_sha256": "de12ec7b9712b9d415bfc95fb57775168b39be94ec72d47a243bff6231b12d12",
+      "records": 81,
+      "groups": 27,
+      "statuses": {
+        "hard_timeout": 2,
+        "not_repeated": 4,
+        "ok": 75
+      },
+      "matrix": {
+        "engines": "pulse,eino,temporal",
+        "modes": "plain",
+        "shapes": "chain,wide,diamonds",
+        "nodes": "1,100,1000",
+        "rounds": "1",
+        "repeats": 3,
+        "parallelism": 4,
+        "gomaxprocs": 4,
+        "fixed_iterations": 1
+      }
+    },
+    "checkpoint": {
+      "raw_sha256": "9aee171c654aefe7933964d3db50e270ca021d1e0cf5e1a2877ddc0a5e2c3d66",
+      "manifest_sha256": "7e6d1868b74c2f0ec64db3cb64ad29dac16adcad3dd306ffceaae6cd3909a3a8",
+      "records": 45,
+      "groups": 15,
+      "statuses": {
+        "deadline": 3,
+        "not_repeated": 6,
+        "ok": 36
+      },
+      "matrix": {
+        "engines": "pulse",
+        "modes": "checkpoint",
+        "shapes": "chain,wide,diamonds",
+        "nodes": "1,10,100,1000,10000",
+        "rounds": "1",
+        "repeats": 3,
+        "parallelism": 4,
+        "gomaxprocs": 4,
+        "fixed_iterations": null
+      }
+    },
+    "recovery": {
+      "raw_sha256": "e36e3705bb8789d2a8b8a15fa70eb0ed77c602dda3909bb4d639cf1e02581804",
+      "manifest_sha256": "c76de98c07c87cc13f9517e6f603faa22fb69dd1d0cb5caffb1750bb5bed5a2b",
+      "records": 36,
+      "groups": 12,
+      "statuses": {
+        "ok": 36
+      },
+      "matrix": {
+        "nodes": "10,100,1000",
+        "rounds": 256,
+        "repeats": 3,
+        "parallelism": 4,
+        "gomaxprocs": 4
+      }
+    }
+  },
+  "scopes": {
+    "run_ns": "Mean of one completed reuse batch; median/min/max across ok repeats, without iteration weighting.",
+    "resources": "Fixed batch=1: whole case includes setup, common harness, first execution and one reuse; Temporal includes its Server.",
+    "job_cpu_s": "Windows Job user+kernel CPU, including exited descendants; native unequal batches are not CPU comparisons.",
+    "sampled_tree_peak_rss_bytes": "Maximum observed process-tree RSS sum at 25 ms polling; not an exact RSS peak.",
+    "alloc_bytes_per_run": "Go process-local reuse allocations; Temporal Server excluded. Not whole-engine memory.",
+    "store_bytes": "File-length snapshots include SQLite main/WAL/SHM, not bytes written or bytes per node.",
+    "observations": "Counts cover first plus completed reuse executions; Pulse lifecycle callbacks, Eino Graph/Lambda start/end/error, Temporal replay-filtered Workflow and Activity interceptors. Surfaces differ.",
+    "recovery": "Pulse confirmed-prefix hard kill; Eino active interrupt; Temporal worker kill with Server alive or restarted. Separate scenarios, no overall ranking.",
+    "checkpoint": "Only Pulse+Durable is sampled here. Eino ordinary success has no per-node checkpoint; Temporal native/plain already persists. Refer to native rows without copying them into checkpoint rows."
+  },
+  "exact_matrix_membership": true,
+  "source_match_required_at_tag": true,
+  "measurement_status": "COMPLETED_WITH_ERRORS",
+  "measurement_errors": [
+    {
+      "dataset": "native",
+      "engine": "temporal",
+      "mode": "plain",
+      "shape": "chain",
+      "nodes": 1,
+      "rounds": 1,
+      "repeat": 3,
+      "phase": "adapter setup before first execution",
+      "error": "temporal dial: failed reaching server: connection error: desc = \"transport: Error while dialing: dial tcp 127.0.0.1:59472: connectex: No connection could be made because the target machine actively refused it.\"",
+      "outcome": "retained, not replaced or counted as a valid execution"
+    }
+  ],
+  "all_experiments_successful": false,
+  "release_scope": "Only applicable when final tag engine source equals the measured candidate; remeasure if runtime changes"
+}

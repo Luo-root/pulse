@@ -1,7 +1,11 @@
 github.com/Luo-root/pulse v0.4.2-0.20261017111210-aa02dd107a43 h1:cE+C2qI2hEHTxHQDGfmUBpV2yE1DjsYTHDvjzP3GmDw=
 github.com/Luo-root/pulse v0.4.2-0.20261017111210-aa02dd107a43/go.mod h1:wtEVi9DLDOeeiHkSg36zpSujObOSdmZgA6jPsOGt3hY=
+github.com/Luo-root/pulse v0.4.2-0.20261021081643-be778722b781 h1:K49JjTiJx6uzyJffKelrkj5iRl7qgk381UsexpOV+gY=
+github.com/Luo-root/pulse v0.4.2-0.20261021081643-be778722b781/go.mod h1:wtEVi9DLDOeeiHkSg36zpSujObOSdmZgA6jPsOGt3hY=
 github.com/Luo-root/pulse-durable v0.0.0-20261017105818-71c693fc82ef h1:C/7baCeIze45tGVeNUBVx4I/Lwp0/EDcJEteREjW624=
 github.com/Luo-root/pulse-durable v0.0.0-20261017105818-71c693fc82ef/go.mod h1:Pcv+naPTQWokJUdJqnmilNyx2nIFdXXKg+Dh4vDCRUA=
+github.com/Luo-root/pulse-durable v0.0.0-20261021085955-5db6eae0e9fb h1:S6VU+isaLMuFqM5zysP2BuljRGnKDAhzG3ZcFP0ZXmA=
+github.com/Luo-root/pulse-durable v0.0.0-20261021085955-5db6eae0e9fb/go.mod h1:zRjrFEBuhS63DYum+GdLZ3p/irypmeFUaTHHthzsbAU=
 github.com/airbrake/gobrake v3.6.1+incompatible/go.mod h1:wM4gu3Cn0W0K7GUuVWnlXZU11AGBXMILnrdOU8Kn00o=
 github.com/bahlo/generic-list-go v0.2.0 h1:5sz/EEAK+ls5wF+NeqDpk5+iNdMDXrh3z3nPnH1Wvgk=
 github.com/bahlo/generic-list-go v0.2.0/go.mod h1:2KvAjgMlE5NNynlg/5iLrrCCZ2+5xWbdbCW3pNTGyYg=
