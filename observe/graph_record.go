@@ -60,9 +60,18 @@ const (
 // 节点跨图、同一张图跨运行都互不串扰。同运行同节点的残留条目（Finished 未达，如
 // 进程退出）会影响该键的下一次记账——运行 id 每个执行实例都不同，所以那一次运行
 // 之后键不会再被复用。长期复用建议按运行周期换实例。
-// 挂载：pulse.WithObserver(NewRecordObserver(cfg))；与宿主自有 Observer
-// 经 pulse.MultiObserver 组合。观察者 panic / error 不升格为节点失败
-// （pulse 侧 notify 已吞掉，只读 seam 契约）。cfg.Sink 为 nil 返回哨兵错误。
+// 挂载前先检查构造错误；以下函数使用本包的 ObserveConfig 与 NewRecordObserver：
+//
+//	func newObservedGraph(cfg ObserveConfig) (*pulse.Graph, error) {
+//		observer, err := NewRecordObserver(cfg)
+//		if err != nil {
+//			return nil, err
+//		}
+//		return pulse.New("workflow", "记录执行事件", pulse.WithObserver(observer))
+//	}
+//
+// 与宿主自有 Observer 经 pulse.MultiObserver 组合。观察者 panic / error 不升格为节点失败
+// （pulse 侧 notify 已吞掉，只读 seam 契约）。cfg.Sink 为 nil 返回 ErrNilSink。
 func NewRecordObserver(cfg ObserveConfig) (pulse.Observer, error) {
 	if cfg.Sink == nil {
 		return nil, ErrNilSink
