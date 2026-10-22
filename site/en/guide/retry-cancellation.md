@@ -57,7 +57,9 @@ An attempt can read its own staged writes. A later attempt cannot read discarded
 
 Write sets manage Pulse outputs only. Completed database commits, requests, and file writes are not rolled back. For example, a request may succeed while its response is lost; returning an error can cause Retry to issue the request again.
 
-Use business idempotency keys, database transactions, deduplication, an outbox, or compensation where duplicates matter. Moving the external operation to the end of the function does not remove the window in which it succeeds but its confirmation is lost. Checkpoints share this boundary; see the [checkpoint reference](../reference/checkpoint.md).
+Moving the external operation to the end of the function does not remove the window in which it succeeds but its confirmation is lost. Prevent duplicates with stable business idempotency keys or reliable deduplication. When using a deduplication record, commit it atomically with the business change; a standalone business transaction is insufficient.
+
+An outbox must reliably commit business changes and messages together, retain stable event identities, and use consumer idempotency or deduplication. Compensation repairs effects afterward; it does not prevent duplicates. Checkpoints share this boundary; see the [checkpoint reference](../reference/checkpoint.md).
 
 ## Timeout waits for the body to exit
 
