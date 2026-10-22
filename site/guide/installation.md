@@ -16,14 +16,14 @@ go version
 
 | 版本 | 适用情况 | 对应资料 |
 | --- | --- | --- |
-| 正式 tag `v0.4.1` | 需要已发布版本，并愿意使用该版本的 API | [v0.4.1 源码与说明](https://github.com/Luo-root/pulse/tree/v0.4.1) |
-| `v0.5.0` 发布准备 | 先评估对象模型、受管流与恢复桥的升级影响；tag 创建前不作为安装版本 | [发布说明](../reference/release-v0.5.0.md) · [迁移步骤](../reference/migration.md) |
+| `v0.5.0` | 使用本文档的 API 基线，推荐固定安装 | [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) · [发布说明](../reference/release-v0.5.0.md) · [迁移步骤](../reference/migration.md) |
+| 历史 tag `v0.4.1` | 维护旧 API，尚未迁移 | [v0.4.1 源码与说明](https://github.com/Luo-root/pulse/tree/v0.4.1) |
 | `main` | 使用已合入主线的开发 API | [main 源码](https://github.com/Luo-root/pulse) |
 | 与文档一起检出的本地源码 | 试用尚未合并的修复或参与开发 | 本站指南与参考；使用下方本地替换步骤 |
 
-**本站对应开发 API，并不等同于 v0.4.1。** `go get …@main` 会把当时的主线解析为具体伪版本并写入 `go.mod`；提交该文件后，团队使用的是解析出的版本，不会每次运行自动更新。
+**本站以 v0.5.0 为 API 基线，不适用于 v0.4.1。** 默认使用固定 tag；只有需要后续开发改动时才选择 `go get …@main`。后者会把当时的主线解析为具体版本并写入 `go.mod`；提交该文件后，团队使用的是解析出的版本，不会每次运行自动更新。
 
-`main` 已包含受管 Stream、实时 Sub、消息尝试与增量检查点，可直接安装并运行本站对应示例。试用尚未合并的修改时，再按下方步骤使用对应本地源码。旧公开快照 `1f67045d6c42` 不包含语法糖的 `description` 参数，不能用于编译新的语法糖示例。
+v0.5.0 包含受管 Stream、实时 Sub、消息尝试与增量检查点，可用于运行本站示例。试用尚未合并的修改时，再按下方步骤使用对应本地源码。旧公开快照 `1f67045d6c42` 不包含语法糖的 `description` 参数，不能用于编译新的语法糖示例。
 
 尚未发布的目标版本以维护者实际创建的 tag / release 为准。0.x 期间，破坏性变更只随 minor 发布；升级前请查看[迁移说明](../reference/migration.md)。
 
@@ -35,7 +35,7 @@ go version
 mkdir pulse-example
 cd pulse-example
 go mod init example.com/pulse-example
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.0
 ```
 
 将[快速开始](quickstart.md)中的程序保存为 `main.go`，然后执行：

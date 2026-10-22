@@ -10,10 +10,10 @@
 
 ## 版本与安装
 
-需要 Go 1.25.0 或更高版本。本页描述开发 API，最新正式 tag 仍为 `v0.4.1`。已合入的接口可从主线安装并记录解析出的伪版本；尚未合并的修改应按[安装说明](../site/guide/installation.md)使用对应本地源码：
+需要 Go 1.25.0 或更高版本。本页以 `v0.5.0` 为 API 基线，安装时固定该版本；开发版或尚未合并的修改按[安装说明](../site/guide/installation.md)选择主线或对应本地源码：
 
 ```bash
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.0
 ```
 
 ## 完整示例
