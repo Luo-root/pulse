@@ -12,6 +12,11 @@
   <a href="https://luo-root.github.io/pulse/"><img src="https://img.shields.io/badge/docs-中文%20%7C%20English-2563eb" alt="双语文档"></a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/Luo-root/pulse/stargazers"><img src="https://img.shields.io/github/stars/Luo-root/pulse?style=social" alt="Stars"></a>
+  <a href="https://github.com/Luo-root/pulse/graphs/contributors"><img src="https://img.shields.io/github/contributors/Luo-root/pulse?style=social" alt="Contributors"></a>
+</p>
+
 Pulse 将一组 Go 函数组合为可复用的工作流。每个节点声明需要读取和产生的数据，执行依赖由这些声明推导：输入到达后，符合条件的节点开始工作。你可以在已有服务、命令行程序或 Agent 应用中使用它，无需运行独立服务。
 
 图定义 `Graph` 与单次运行 `Execution` 分离。同一份定义可以处理不同请求、并发执行，或作为子图在多个位置复用；每次执行都有独立的输入、状态和取消域。核心包只使用 Go 标准库。
@@ -156,3 +161,12 @@ go test -race -count=1 ./...
 仓库中的 [Go Examples](examples_test.go) 可通过 `go test -run Example -v .` 运行。中英文章节位于 `site/`，包文档由各包 README 同步生成。参与开发前请阅读 [贡献指南](CONTRIBUTING.md)；安全问题请按 [安全政策](SECURITY.md) 报告。
 
 Pulse 使用 [MIT 许可证](LICENSE)。
+
+## ⭐ 支持 Pulse
+
+Pulse 还在早期，但它已经有 12 个 release、完整的双语文档站和可运行的 benchmark。如果你正在用 Go 做数据驱动的流程编排，或者想给 Agent 应用加一层可靠的工作流执行层，Star 一下可以帮它被更多人看到 —— 这对个人维护的开源项目帮助很大。
+
+- 遇到问题或想要功能：[提交 issue](https://github.com/Luo-root/pulse/issues) 或 [发起讨论](https://github.com/Luo-root/pulse/discussions)
+- 觉得好用但暂时没需求：点右上角的 ⭐ 就够了
+- 想参与开发：[贡献指南](CONTRIBUTING.md)
+
