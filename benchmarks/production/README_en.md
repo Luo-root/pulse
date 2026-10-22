@@ -2,6 +2,8 @@
 
 See [#427](https://github.com/Luo-root/pulse/issues/427). [中文](README.md). This isolated module keeps the same three columns throughout: **Pulse (with Durable for reliable execution), Eino, Temporal**. It adds no dependency to the production root. Earlier DAG comparisons remain historical and do not enter this round's ranking.
 
+The v0.5.0 pre-release remeasurement pins Core `v0.4.2-0.20261021081643-be778722b781` and Durable `v0.0.0-20261021085955-5db6eae0e9fb`, without local replace. The v0.5.0 tag did not exist during measurement; final engine source must match the measured SHA. New statistics: [`v0.5.0-candidate-20261021`](../reports/v0.5.0-candidate-20261021/identity.json); historical data stays unchanged.
+
 ## Workload and adapters
 
 - chain/wide/diamonds; 1, 10, 100, 1000, 10000 actual tasks; identical uint64 computation with 1 or 256 rounds. Input is `1 + sum(direct predecessor outputs)`; the result sums terminal outputs. Fixed Go golden values and an independent Python big-integer oracle check results.
@@ -38,7 +40,7 @@ $env:GOWORK = 'off'
 $env:GOPROXY = 'https://proxy.golang.org,direct'
 go mod download
 go test -mod=readonly -race -count=1 -timeout=120s ./...
-go build -mod=readonly -o ../results/production-bench.exe .
+go build -mod=readonly -trimpath -o ../results/production-bench.exe .
 # Start a real Server independently before enabling live tests:
 $env:PULSE_TEMPORAL_ADDRESS = '127.0.0.1:7233'
 go test -mod=readonly -race -count=1 -timeout=120s -run '^TestTemporal' -v .
@@ -50,3 +52,5 @@ python ../tools/run_recovery.py --binary ../results/production-bench.exe --tempo
 ```
 
 New runs refuse to overwrite results. Native-matrix resume requires identical identity, binary and sampler hashes. Do not commit raw JSONL, stdout/stderr, databases, diagnostics or full machine inventories. Track only reproduction code/locks, compact summaries, version identity and figures actually referenced by pages.
+
+After all four datasets finish, use `summarize_production.py --native <native-dir> --resources <resources-dir> --checkpoint <checkpoint-dir> --recovery <recovery-dir> --out <new-dir>`. It starts no engine; plotting needs matplotlib. If Go VCS auto-detection fails for an external linked worktree, add `-buildvcs=false` and retain explicit commit, source diff and hashes rather than omitting provenance.
