@@ -7,7 +7,7 @@
 <p align="center">Data-driven workflow execution for Go</p>
 
 <p align="center">
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25%2B-2563eb" alt="Go 1.25+"></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26%2B-2563eb" alt="Go 1.26+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb" alt="MIT license"></a>
   <a href="https://luo-root.github.io/pulse/en/"><img src="https://img.shields.io/badge/docs-中文%20%7C%20English-2563eb" alt="Bilingual documentation"></a>
 </p>
@@ -33,7 +33,7 @@ To continue after a process exits, use the separate [pulse-durable](https://gith
 
 ## Installation
 
-Requires **Go 1.25.0 or later**.
+Current source requires **Go 1.26.0 or later**, aligned with Durable. **v0.5.1 is not released**; raising the minimum toolchain has a compatibility impact, while public APIs and runtime semantics are unchanged. See [v0.5.1 preparation notes](site/en/reference/release-v0.5.1.md). Published v0.5.0 originally requires Go 1.25.0+; the command below still pins it until v0.5.1 is actually available.
 
 > This README and the documentation site use **v0.5.0** as their API baseline, including managed Stream, live Sub, and incremental checkpoints. Read [migration](site/en/reference/migration.md) before upgrading from v0.4.1. The command below pins v0.5.0. See [installation and versions](site/en/guide/installation.md) for development or unmerged changes; the corresponding [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) and tag establish publication status.
 

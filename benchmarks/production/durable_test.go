@@ -259,7 +259,7 @@ func TestDurableRecoveryChildProcess(t *testing.T) {
 		t.Skip("only the isolated process-exit test starts this helper")
 	}
 	path := os.Getenv("PULSE_DURABLE_TEST_STORE")
-	if path == "" || !strings.Contains(filepath.ToSlash(path), "/validation-durable/") {
+	if path == "" || !strings.Contains(filepath.ToSlash(path), "/validation-bench/") {
 		t.Fatal("child storage is outside the isolated validation directory")
 	}
 	c := Config{Shape: "chain", Nodes: 6, Rounds: 4, Parallelism: 2, Mode: mode, CheckpointAt: 3, RunID: "process-stable", StorePath: path}

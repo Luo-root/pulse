@@ -60,7 +60,7 @@ Two kinds of issue carry extra requirements:
 
 ### Local development
 
-Requires **Go 1.25+** — the toolchain downloads itself if it is missing.
+Requires **Go 1.26.0+** — the toolchain downloads itself if it is missing.
 
 ```bash
 go build ./...                                  # compilation
@@ -177,7 +177,7 @@ Pulse 是开源的 Go 库，目前仍在 1.0 之前（`v0.x`）。欢迎贡献�
 
 ### 本地开发
 
-需要 **Go 1.25+**，工具链缺失时会自动下载。
+需要 **Go 1.26.0+**，工具链缺失时会自动下载。
 
 ```bash
 go build ./...                                  # 编译

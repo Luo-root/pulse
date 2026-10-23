@@ -2,7 +2,9 @@
 
 关联 [#427](https://github.com/Luo-root/pulse/issues/427)。[English](README_en.md)。这个独立模块固定使用 **Pulse（可靠维度加 Durable）、Eino、Temporal** 三列，根生产模块不新增运行依赖。旧 DAG 对照保留历史结果，不参与本轮排名。
 
-本轮 v0.5.0 发布前重测固定 Core `v0.4.2-0.20261021081643-be778722b781` 和 Durable `v0.0.0-20261021085955-5db6eae0e9fb`，无本地 replace。测量时尚未创建 v0.5.0 tag；最终引擎源码需与被测 SHA 一致。新统计见 [`v0.5.0-candidate-20261021`](../reports/v0.5.0-candidate-20261021/identity.json)，历史结果不改写。
+当前复跑（[#502](https://github.com/Luo-root/pulse/issues/502)，关联 Durable #81）固定正式公开版本：Core `v0.5.0`、Durable `v0.1.0`、`pulse-durable/sqlitestore v0.1.0`；Go 1.26，Eino `v0.9.21`、Temporal SDK `v1.50.0` / API `v1.63.5` 保持不变，无 replace。Durable 实际使用维护的官方 SQLite backend；本轮结果须写新目录，不改冻结结果。
+
+历史 v0.5.0 发布前重测固定 Core `v0.4.2-0.20261021081643-be778722b781` 和 Durable `v0.0.0-20261021085955-5db6eae0e9fb`，无本地 replace。测量时尚未创建 v0.5.0 tag；最终引擎源码需与被测 SHA 一致。新统计见 [`v0.5.0-candidate-20261021`](../reports/v0.5.0-candidate-20261021/identity.json)，历史结果不改写。
 
 ## 共同任务与适配
 
@@ -19,9 +21,9 @@
 | 普通执行 | Pulse 内存执行 | compose Graph 内存执行 | 始终包含原生持久化和服务调用 |
 | 可靠记录 | Durable 经 Store 扩展，每完整节点链确认后发布 | 普通成功不逐节点保存；主动 interrupt 时保存 checkpoint | 原生事件历史、Activity 完成确认 |
 | 重启场景 | 确认前缀后强杀宿主，再打开 SQLite 恢复 | 主动 checkpoint 后进程退出，新进程读取 blob 恢复 | 无在途 Activity 的确认前缀后强杀 worker；另测 Server 重开 |
-| SQLite | 评测专用 Store，不是正式生产后端 | 评测专用 CheckPointStore，原样保存框架 blob | CLI 嵌入的真实 Server SQLite |
+| SQLite | 官方维护的 sqlitestore v0.1.0 | 评测专用 CheckPointStore，原样保存框架 blob | CLI 嵌入的真实 Server SQLite |
 
-SQLite 均配置 WAL / FULL；各自事务布局、写入次数与保存粒度保留。Durable Store 用完整 JSON CAS 保存 RunRecord，运行独占仅借官方 filestore 的系统锁；不提供分布式租约或 fencing。Eino 主动中断不是任意 crash 自动恢复。恢复验收选择已确认且没有在途外部副作用的边界，不能推导任意副作用恰好一次。
+SQLite 均配置 WAL / FULL；各自事务布局、写入次数与保存粒度保留。Durable 通过官方 sqlitestore 用完整 JSON CAS 保存 RunRecord，运行独占使用该模块的系统锁；不提供分布式租约或 fencing。薄包装只增加独立 inspection 连接，运行时读写全部转发官方实现；Eino blobStore 仍独立使用评测 DB helper。官方 v1 仍可按 `durable_runs.record` 独立读取，但严格检查 schema / `user_version=1`，不接管旧评测 DB；必须使用新文件。锁由历史 `.locks` 改为 `.runlocks/<sha256>.lock`，另有 `.init.lock`，不应删除锁文件来解锁。Eino 主动中断不是任意 crash 自动恢复。恢复验收选择已确认且没有在途外部副作用的边界，不能推导任意副作用恰好一次。
 
 本地 CLI `start-dev` 是真实 Temporal Service，适合本轮单机复跑；这不是对生产集群、网络延迟、HA 或生产数据库的测试。普通规模矩阵显式把 `limit.historyCount.error` 提高到 200000、warn 提高到 100000，不能称默认配置成绩。
 

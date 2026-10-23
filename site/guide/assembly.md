@@ -1,6 +1,6 @@
 # YAML 装配
 
-本页面向希望把流程拓扑放入配置文件、同时保留 Go 业务实现的开发者。需要 Go 1.25+，并了解[节点读写声明](./orchestration.md)与[静态子图](./subgraphs.md)。示例使用开发版 API。
+本页面向希望把流程拓扑放入配置文件、同时保留 Go 业务实现的开发者。需要 Go 1.26+，并了解[节点读写声明](./orchestration.md)与[静态子图](./subgraphs.md)。示例使用开发版 API。
 
 `pulse/yaml` 将 YAML 装配为 `Graph` 和 `SeedPlan`。YAML 声明节点、依赖与子图接线；注册表提供键的真实类型和具名业务函数。注册的函数只负责 Run，不返回 Node，也不决定拓扑位置。
 

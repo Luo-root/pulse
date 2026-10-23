@@ -3,8 +3,9 @@ module github.com/Luo-root/pulse/benchmarks/production
 go 1.26.0
 
 require (
-	github.com/Luo-root/pulse v0.4.2-0.20261021081643-be778722b781
-	github.com/Luo-root/pulse-durable v0.0.0-20261021085955-5db6eae0e9fb
+	github.com/Luo-root/pulse v0.5.0
+	github.com/Luo-root/pulse-durable v0.1.0
+	github.com/Luo-root/pulse-durable/sqlitestore v0.1.0
 	github.com/cloudwego/eino v0.9.21
 	go.temporal.io/api v1.63.5
 	go.temporal.io/sdk v1.50.0

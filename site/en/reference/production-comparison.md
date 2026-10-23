@@ -1,5 +1,7 @@
 # v0.5.0 pre-release remeasurement: Pulse/Durable, Eino and Temporal
 
+> New collection: [2026-10-23 formal-release SQLite and recovery report](./sqlite-formal-20261023.md), pinning Core v0.5.0 and Durable/sqlitestore v0.1.0. Only reliable confirmation, the Temporal native-persistence baseline and recovery were rerun; status: COMPLETED_WITH_ERRORS, not a full multidimensional rerun. This page retains its historical identities and data.
+
 This round keeps **Pulse (with Durable for reliable execution), Eino and Temporal** throughout execution, observation, resources, storage and recovery. Go Taskflow does not enter the new comparison; the [older baseline and optimization data](./performance.md) remain historical.
 
 This page is generated from a new v0.5.0 pre-release collection: execution, resources, reliable confirmation and recovery of the same integer DAG. Native guarantees remain intact, rather than collapsing in-memory libraries and durable services into an overall production ranking. Eino's Agent/component ecosystem and Temporal's distributed deployment features are outside this short-task test.

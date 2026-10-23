@@ -1,5 +1,7 @@
 # v0.5.0 发布前重测：Pulse／Durable、Eino、Temporal
 
+> 新测量：[2026-10-23 正式版 SQLite 与恢复报告](./sqlite-formal-20261023.md)固定 Core v0.5.0、Durable/sqlitestore v0.1.0，仅更新可靠确认、Temporal 原生持久化基线与恢复，状态为 COMPLETED_WITH_ERRORS；不是全维度重跑。本页保留历史身份与数据。
+
 这轮为选择 Go 工作流基础设施的开发者保留同一组对照：**Pulse（可靠维度加 Durable）、Eino、Temporal**，贯穿执行、观测、资源、存储和恢复。Go Taskflow 不参与本轮新对照；[旧基线与优化结果](./performance.md)按历史版本保留。
 
 本页由 v0.5.0 发布前新采样生成，报告相同轻计算 DAG 下的执行、资源、可靠确认和恢复成本。各框架的原生保证保留，不把内存库和持久服务压成一张生产选型总排名；Eino 的 Agent/组件生态和 Temporal 的分布式部署能力不由此短任务测试评分。

@@ -22,7 +22,7 @@ func init() { adapters["durable"] = buildDurable }
 type durableRunner struct {
 	graph    *pulseRunner
 	runtime  *durable.Runtime
-	store    *sqliteStore
+	store    *benchmarkDurableStore
 	config   Config
 	prefix   string
 	sequence atomic.Uint64
