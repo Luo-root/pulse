@@ -192,8 +192,8 @@ flowchart TB
 | 0 设计定性 | 本文与两仓职责、现状矩阵、验收场景 | [Pulse #320](https://github.com/Luo-root/pulse/issues/320) |
 | 1 本地易用与观测 | Snapshot、端口视图、Mermaid、YAML Analyze；另外定稿声明出口读取 | [Pulse #319](https://github.com/Luo-root/pulse/issues/319)；[结果读取 #321](https://github.com/Luo-root/pulse/issues/321) |
 | 2 核心可靠交付 | 完整节点暂存/最终化、检查点成功后发布、启动前恢复；先定子图 attempt 归属 | [Pulse #307](https://github.com/Luo-root/pulse/issues/307) + [durable #2](https://github.com/Luo-root/pulse-durable/issues/2) |
-| 3 Durable 首期（目标 `v0.1.0`） | Store/Codec/MemoryStore、Run/Resume、故障注入与端到端契约 | [durable #3](https://github.com/Luo-root/pulse-durable/issues/3)、[#4](https://github.com/Luo-root/pulse-durable/issues/4)、[#5](https://github.com/Luo-root/pulse-durable/issues/5) |
-| 4 真实长期运行 | 本机文件后端与进程重启已纳入首期验收；后续另定生产持久后端、持久等待/事件/定时唤醒 | 文件后端不代表分布式所有权或断电保证；后续能力独立开票 |
+| 3 Durable 首期（`v0.1.0` 已发布） | Store/Codec/MemoryStore、Run/Resume、故障注入与端到端契约 | [durable #3](https://github.com/Luo-root/pulse-durable/issues/3)、[#4](https://github.com/Luo-root/pulse-durable/issues/4)、[#5](https://github.com/Luo-root/pulse-durable/issues/5) |
+| 4 真实长期运行 | 本机文件后端与进程重启已纳入首期验收；受维护的 sqlite/postgres Store 子模块 `v0.1.0` 已发布；持久等待/事件/定时唤醒仍待后续另定 | 文件后端不代表分布式所有权或断电保证；后续能力独立开票 |
 | 5 分布式运行 | 多 worker 工作流领取、租约、接管、旧写拒绝与统一观测 | [durable #6](https://github.com/Luo-root/pulse-durable/issues/6) 先定运行所有权协议，不与节点跨机器混在同一票 |
 | 6 受场景驱动的扩展 | 跨机器节点、动态子任务、迭代、显式补偿等 | 按实际需求各自定契约，不预先铺通用插件框架 |
 
@@ -201,10 +201,10 @@ flowchart TB
 
 ### 已确认的发布路线与闸门
 
-以下按维护者 2026-10-18 的决定更新，两仓分别判断发布条件。
+以下按截至 2026-10-23 的发布现状更新，两仓分别判断发布条件。
 
-1. **Pulse 先准备 `v0.5.0`。** 当前能力、文档和迁移说明写全，经候选代码审查、回归及跨仓桥接验收后，整理可合并内容并由维护者决定发布。候选代码必须实际进入 `main`；阶段完成、PR 合并或单独通过 MemoryStore 契约测试，都不自动触发发版。
-2. **Durable 暂不发布。** 首次正式版本仍以 `v0.1.0` 为目标，但须先完成并验收 [Durable #40](https://github.com/Luo-root/pulse-durable/issues/40) 的受维护数据库 Store，再考虑发布。Pulse 评测模块里的 SQLite 适配器不算该交付；本票的数据库选型和部署边界仍按其评审决定。Core 正式 tag 可下载后，可以对齐并复验 Durable 的公开依赖组合，不能据此自动发布 Durable。
+1. **Pulse `v0.5.0` 已正式发布（e60254c），当前准备 Go 1.26 / `v0.5.1`，尚未发布。** 本版能力、文档和迁移说明写全，经候选代码审查、回归及跨仓桥接验收后，整理可合并内容并由维护者决定发布。候选代码必须实际进入 `main`；阶段完成、PR 合并或单独通过 MemoryStore 契约测试，都不自动触发发版。
+2. **Durable `v0.1.0` 及 sqlite/postgres 子模块 `v0.1.0` 已发布（532bced）。** [Durable #40](https://github.com/Luo-root/pulse-durable/issues/40) 的受维护数据库 Store 已交付，不再是首发阻塞项；Pulse 评测模块里的 SQLite 适配器仍不算该交付。后续版本继续对齐并复验公开依赖组合，不因 Core 发版自动触发 Durable 发版。
 3. **首期之后继续 0.x。** 两仓继续按实际功能与问题迭代 0.x 版本。每次发布前先把本版的功能和需求写清，完成实现、回归和跨仓组合验证，再由维护者决定发布；不要为了阶段编号或单个 PR 提前打版本。
 4. **最终 `v1.0.0` 冻结。** 等项目目标达到，并确认后续不再有系统性重大变更，再补齐详细文档体系，发布两仓各自的 `v1.0.0`；届时基本固定公开 API 与实现。在此之前，任何 0.x 版本都不代表最终冻结。
 5. **恢复能力的证据口径。** MemoryStore 只证明 Store/Codec/Run/Resume 契约。只有真实持久后端完成真实进程退出并重启后的恢复验证，才可以声称能够抵御进程退出；发布说明和验收记录都必须守住这条边界。

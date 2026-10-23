@@ -4,7 +4,7 @@ Use this page to choose a version matching the documentation, create a Go module
 
 ## Requirements
 
-Requires **Go 1.25.0 or later**. Check your toolchain:
+Current source requires **Go 1.26.0 or later**, aligned with Durable. Planned **v0.5.1 is not released**; raising the minimum toolchain has a compatibility impact, but public APIs and runtime semantics are unchanged. See [v0.5.1 preparation notes](../reference/release-v0.5.1.md). The default installation below still pins published **v0.5.0**, whose original minimum is **Go 1.25.0+**; switch the command only after v0.5.1 is actually available. Check your toolchain:
 
 ```sh
 go version
@@ -95,7 +95,7 @@ Keep only the packages your program uses, because Go rejects unused imports. See
 
 **The compiler reports mismatched constructor or `Run` arguments.** Check the selected source first. Older tags, earlier development snapshots, and this API differ. All five node sugar constructors now take `description` after `id`, with an empty string allowed. Unmerged changes require the corresponding local checkout.
 
-**The toolchain cannot be downloaded.** Install or select Go 1.25+, or configure toolchain and module download access for your environment. Running Pulse itself requires no online service or credentials.
+**The toolchain cannot be downloaded.** Current source needs Go 1.26.0+ (published v0.5.0 originally requires Go 1.25.0+). Select the matching toolchain, or configure toolchain and module download access for your environment. Running Pulse itself requires no online service or credentials.
 
 **You need recovery across process restarts.** Read the [checkpoint bridge](../reference/checkpoint.md) and follow the separate [Durable repository](https://github.com/Luo-root/pulse-durable)'s installation instructions. Pulse core does not store execution history.
 

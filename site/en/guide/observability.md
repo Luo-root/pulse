@@ -1,6 +1,6 @@
 # Observation and diagnostics
 
-This page is for developers inspecting progress, recording outcomes, or diagnosing flow problems. It requires Go 1.25+ and familiarity with [inputs and outputs](./inputs-outputs.md). Examples target the development version.
+This page is for developers inspecting progress, recording outcomes, or diagnosing flow problems. It requires Go 1.26+ and familiarity with [inputs and outputs](./inputs-outputs.md). Examples target the development version.
 
 Pulse offers three complementary views: `Topology` inspects the definition, `Snapshot` reads one execution's current state, and `Observer` receives lifecycle callbacks. `ReadOutput` separately provides business results. Structure and progress views contain no business values.
 

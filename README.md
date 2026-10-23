@@ -7,7 +7,7 @@
 <p align="center">Go 的数据驱动工作流执行库</p>
 
 <p align="center">
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25%2B-2563eb" alt="Go 1.25+"></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26%2B-2563eb" alt="Go 1.26+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb" alt="MIT license"></a>
   <a href="https://luo-root.github.io/pulse/"><img src="https://img.shields.io/badge/docs-中文%20%7C%20English-2563eb" alt="双语文档"></a>
 </p>
@@ -33,7 +33,7 @@ Pulse 将一组 Go 函数组合为可复用的工作流。每个节点声明需�
 
 ## 安装
 
-需要 **Go 1.25.0 或更新版本**。
+当前源码需要 **Go 1.26.0 或更新版本**，与 Durable 统一。**v0.5.1 尚未发布**；最低工具链升级有兼容性影响，公开 API 与运行语义未变，见 [v0.5.1 准备说明](site/reference/release-v0.5.1.md)。已发布的 v0.5.0 原要求为 Go 1.25.0+，以下安装命令仍固定该版本，待 v0.5.1 实际可用后再切换。
 
 > 本 README 和文档站以 **v0.5.0** 的 API 为基线，包含受管 Stream、实时 Sub 和增量检查点。从 v0.4.1 升级请先阅读[迁移说明](site/reference/migration.md)。以下命令固定安装 v0.5.0；开发版或尚未合并的修改见[安装与版本](site/guide/installation.md)，发布状态以对应 [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) 与 tag 为准。
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +19,7 @@ import (
 // 所有可见验收产物仅写到分配的验证目录，不与正式矩阵或系统临时目录混用。
 func durableTestDir(t *testing.T) string {
 	t.Helper()
-	root, err := filepath.Abs(filepath.Join("..", "..", "..", "validation-durable"))
+	root, err := filepath.Abs(filepath.Join("..", "..", "..", "validation-bench"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +108,55 @@ func TestBenchmarkBlobStore(t *testing.T) {
 	}
 	if err := s.Set(ctx, "run", nil); err == nil {
 		t.Fatal("Set after close succeeded")
+	}
+}
+
+func TestOfficialSQLiteSchemaAndLocks(t *testing.T) {
+	path := filepath.Join(durableTestDir(t), "official.db")
+	s, err := newSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var version int
+	var journal string
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 1 {
+		t.Fatalf("official schema version=%d err=%v", version, err)
+	}
+	if err := s.db.QueryRow("PRAGMA journal_mode").Scan(&journal); err != nil || journal != "wal" {
+		t.Fatalf("journal=%s err=%v", journal, err)
+	}
+	var synchronous int
+	if err := s.db.QueryRow("PRAGMA synchronous").Scan(&synchronous); err != nil || synchronous != 2 {
+		t.Fatalf("inspection synchronous=%d err=%v", synchronous, err)
+	}
+	// FULL is connection-local: this is the independent reader's readback, not
+	// evidence about the private backend connection. Its public source configures FULL.
+	session, err := s.Acquire(context.Background(), "layout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	sum := sha256.Sum256([]byte("layout"))
+	for _, lock := range []string{path + ".init.lock", filepath.Join(path+".runlocks", fmt.Sprintf("%x.lock", sum))} {
+		if _, err := os.Stat(lock); err != nil {
+			t.Fatalf("official lock %s: %v", lock, err)
+		}
+	}
+	// Historical benchmark files have similar columns but are NOT official v1.
+	// They must remain historical: do not adopt them by setting user_version.
+	legacyPath := filepath.Join(durableTestDir(t), "legacy.db")
+	db, _, err := openBenchmarkSQLite(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE durable_runs (run_id TEXT PRIMARY KEY, revision TEXT NOT NULL, record BLOB NOT NULL) WITHOUT ROWID`); err != nil {
+		t.Fatal(err)
+	}
+	if legacy, err := newSQLiteStore(legacyPath); err == nil {
+		legacy.Close()
+		t.Fatal("legacy benchmark schema silently adopted")
 	}
 }
 
@@ -278,7 +328,7 @@ func TestBenchmarkSQLiteIdentityAndUint64Revision(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.db.Exec(`INSERT INTO durable_runs VALUES ('run', '1', ?)
+		if _, err := s.db.Exec(`INSERT INTO durable_runs(run_id, revision, record) VALUES ('run', '1', ?)
 			ON CONFLICT(run_id) DO UPDATE SET record = excluded.record`, data); err != nil {
 			t.Fatal(err)
 		}
@@ -290,8 +340,10 @@ func TestBenchmarkSQLiteIdentityAndUint64Revision(t *testing.T) {
 		if err := session.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if !errors.Is(loadErr, durable.ErrConflict) {
-			t.Fatalf("corrupt identity accepted: %+v %v", record, loadErr)
+		// The official backend reports corrupt stored identity as a storage error,
+		// not the CAS-conflict sentinel used for valid competing writes.
+		if loadErr == nil {
+			t.Fatalf("corrupt identity accepted: %+v", record)
 		}
 	}
 	maximum := ^uint64(0)
@@ -300,7 +352,7 @@ func TestBenchmarkSQLiteIdentityAndUint64Revision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec("INSERT INTO durable_runs VALUES (?, ?, ?)", "large", strconv.FormatUint(record.Revision, 10), data); err != nil {
+	if _, err := s.db.Exec("INSERT INTO durable_runs(run_id, revision, record) VALUES (?, ?, ?)", "large", strconv.FormatUint(record.Revision, 10), data); err != nil {
 		t.Fatal(err)
 	}
 	session, err := s.Acquire(ctx, "large")

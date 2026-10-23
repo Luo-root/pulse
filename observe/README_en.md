@@ -8,7 +8,7 @@ The dependency direction is `pulse` ← `observe`. This package depends only on 
 
 ## Version and installation
 
-Requires Go 1.25.0 or later. This page uses `v0.5.0` as its API baseline; pin that version when installing. For development or unmerged changes, select main or matching local source as described in [installation](../site/en/guide/installation.md):
+Current source requires Go 1.26.0 or later, aligned with Durable; v0.5.1 is not released. Published v0.5.0 originally requires Go 1.25.0+; the installation command below still pins that version. This page uses `v0.5.0` as its API baseline; pin that version when installing. For development or unmerged changes, select main or matching local source as described in [installation](../site/en/guide/installation.md):
 
 ```bash
 go get github.com/Luo-root/pulse@v0.5.0

@@ -1,6 +1,6 @@
 # 检查点桥接与子图恢复（方案 A）
 
-服务 [Pulse #307](https://github.com/Luo-root/pulse/issues/307)、[Pulse #370](https://github.com/Luo-root/pulse/issues/370) 与 [Durable #2](https://github.com/Luo-root/pulse-durable/issues/2)。本文描述当前代码的实现契约：Core 提供完整节点链及可选增量流检查点桥；Durable 提供 Store/Codec、Run/Resume、方案 A 子图恢复、本机文件后端，以及受管流存储与进程恢复，集成跟踪见 [Durable #21](https://github.com/Luo-root/pulse-durable/issues/21)。使用与文档匹配的本地检出，发布状态以维护者实际 tag/release 为准。Pulse 准备 v0.5.0；两仓不再共用发布闸门。Durable 保持未发布，待维护的数据库 Store [#40](https://github.com/Luo-root/pulse-durable/issues/40) 完成并验收后，再考虑首发 v0.1.0；仅供评测的 SQLite 适配器不算这项交付。发版由维护者决定。持久等待和分布式运行管理不在本次实现内。
+服务 [Pulse #307](https://github.com/Luo-root/pulse/issues/307)、[Pulse #370](https://github.com/Luo-root/pulse/issues/370) 与 [Durable #2](https://github.com/Luo-root/pulse-durable/issues/2)。本文描述当前代码的实现契约：Core 提供完整节点链及可选增量流检查点桥；Durable 提供 Store/Codec、Run/Resume、方案 A 子图恢复、本机文件后端，以及受管流存储与进程恢复，集成跟踪见 [Durable #21](https://github.com/Luo-root/pulse-durable/issues/21)。使用与文档匹配的本地检出，发布状态以维护者实际 tag/release 为准。Pulse v0.5.0 已正式发布（e60254c）；Durable v0.1.0 及 sqlite/postgres 子模块 v0.1.0 已发布（532bced），受维护数据库 Store [#40](https://github.com/Luo-root/pulse-durable/issues/40) 已交付。两仓不共用发布闸门；当前 Pulse 准备 Go 1.26 / v0.5.1，尚未发布。发版由维护者决定。持久等待和分布式运行管理不在本次实现内。
 
 ## 谁使用这个入口
 

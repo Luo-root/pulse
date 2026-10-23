@@ -1,6 +1,6 @@
 # Static subgraphs
 
-This page is for developers who want to encapsulate a flow as a reusable step. It requires Go 1.25+ and familiarity with [input and output ports](./inputs-outputs.md) and [join policies](./branching.md). The example uses development APIs.
+This page is for developers who want to encapsulate a flow as a reusable step. It requires Go 1.26+ and familiarity with [input and output ports](./inputs-outputs.md) and [join policies](./branching.md). The example uses development APIs.
 
 `Sub` mounts an assembled child definition into a parent at assembly time. The child exchanges data through declared ports only. Before running, the parent can inspect and validate the complete subtree.
 

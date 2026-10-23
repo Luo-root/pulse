@@ -2,7 +2,9 @@
 
 See [#427](https://github.com/Luo-root/pulse/issues/427). [中文](README.md). This isolated module keeps the same three columns throughout: **Pulse (with Durable for reliable execution), Eino, Temporal**. It adds no dependency to the production root. Earlier DAG comparisons remain historical and do not enter this round's ranking.
 
-The v0.5.0 pre-release remeasurement pins Core `v0.4.2-0.20261021081643-be778722b781` and Durable `v0.0.0-20261021085955-5db6eae0e9fb`, without local replace. The v0.5.0 tag did not exist during measurement; final engine source must match the measured SHA. New statistics: [`v0.5.0-candidate-20261021`](../reports/v0.5.0-candidate-20261021/identity.json); historical data stays unchanged.
+Current reruns ([#502](https://github.com/Luo-root/pulse/issues/502), related Durable #81) pin public releases: Core `v0.5.0`, Durable `v0.1.0`, and `pulse-durable/sqlitestore v0.1.0`, with Go 1.26 and no replace. Eino `v0.9.21` and Temporal SDK `v1.50.0` / API `v1.63.5` remain unchanged. Durable actually uses the maintained official SQLite backend. Write new results to fresh directories; frozen results stay unchanged.
+
+The historical v0.5.0 pre-release remeasurement pins Core `v0.4.2-0.20261021081643-be778722b781` and Durable `v0.0.0-20261021085955-5db6eae0e9fb`, without local replace. The v0.5.0 tag did not exist during measurement; final engine source must match the measured SHA. New statistics: [`v0.5.0-candidate-20261021`](../reports/v0.5.0-candidate-20261021/identity.json); historical data stays unchanged.
 
 ## Workload and adapters
 
@@ -19,9 +21,9 @@ The v0.5.0 pre-release remeasurement pins Core `v0.4.2-0.20261021081643-be778722
 | Native execution | Pulse in memory | compose Graph in memory | Always includes native persistence and service calls |
 | Reliable record | Durable Store extension, confirmation before complete-node publication | No per-node save on ordinary success; checkpoint on active interrupt | Native event history and Activity completion confirmation |
 | Restart | Kill host after confirmed prefix, reopen SQLite and resume | Exit after active checkpoint; rebuild in a new process and read the blob | Kill worker after confirmed prefix with no in-flight Activity; separately reopen Server |
-| SQLite | Benchmark-only Store, not an official production backend | Benchmark CheckPointStore preserving the framework blob | Real Server embedded in CLI |
+| SQLite | Maintained official sqlitestore v0.1.0 | Benchmark CheckPointStore preserving the framework blob | Real Server embedded in CLI |
 
-All SQLite hosts use WAL/FULL, retaining native transaction layouts, write counts and checkpoint granularity. Durable saves complete RunRecord JSON with CAS; ownership reuses official filestore OS locks and provides no distributed lease or fencing. Eino's active interrupt does not establish arbitrary-crash recovery. Restart probes intentionally choose an already confirmed boundary with no in-flight external effect; they do not establish arbitrary exactly-once effects.
+All SQLite hosts use WAL/FULL, retaining native transaction layouts, write counts and checkpoint granularity. Durable's official sqlitestore saves complete RunRecord JSON with CAS and owns OS run locks, without distributed leases or fencing. The thin wrapper adds only an independent inspection connection; all runtime persistence delegates to the official backend. Eino's blobStore retains its separate benchmark DB helper. Official v1 still supports independent reads of `durable_runs.record`, but strictly validates schema / `user_version=1` and rejects old benchmark databases: use fresh files. Locks moved from historical `.locks` to `.runlocks/<sha256>.lock`, plus `.init.lock`; do not delete lock files to unlock runs. Eino's active interrupt does not establish arbitrary-crash recovery. Restart probes intentionally choose an already confirmed boundary with no in-flight external effect; they do not establish arbitrary exactly-once effects.
 
 CLI `start-dev` runs a real Temporal Service for this local experiment; it does not test production clusters, HA, network latency or production databases. Native scaling explicitly raises `limit.historyCount.error` to 200000 and warn to 100000. These are not default-configuration scores.
 

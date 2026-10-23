@@ -32,7 +32,9 @@ function sidebar(prefix: string, en: boolean) {
       ['错误与排查', 'Errors and troubleshooting', 'reference/errors'],
       ['检查点桥', 'Checkpoint bridge', 'reference/checkpoint'],
       ['版本与迁移', 'Versions and migration', 'reference/migration'],
+      ['v0.5.1 发布准备（未发布）', 'v0.5.1 preparation (unreleased)', 'reference/release-v0.5.1'],
       ['v0.5.0 发布说明', 'v0.5.0 release notes', 'reference/release-v0.5.0'],
+      ['正式版 SQLite 重测', 'Formal-release SQLite refresh', 'reference/sqlite-formal-20261023'],
       ['统一生产框架对照', 'Unified workflow comparison', 'reference/production-comparison'],
       ['历史规模与优化', 'Historical scale and optimization', 'reference/performance'],
       ['设计理念', 'Design philosophy', 'guide/philosophy'],
@@ -78,7 +80,7 @@ function locale(en: boolean) {
         text: en ? 'Edit this page on GitHub' : '在 GitHub 编辑此页',
       },
       footer: {
-        message: en ? 'Development API documentation · Go 1.25+ · MIT' : '开发版 API 文档 · Go 1.25+ · MIT',
+        message: en ? 'Development API documentation · Go 1.26+ · MIT' : '开发版 API 文档 · Go 1.26+ · MIT',
         copyright: 'Copyright © 2026 Luo-root',
       },
       ...(en ? {} : {
