@@ -4,13 +4,13 @@ This section is for developers already using Pulse who need exact behavior or in
 
 ## Version scope
 
-These documents use the **v0.5.0** object model as their baseline. Follow [installation](../guide/installation.md) to pin that version for the examples. Select main or matching local source for subsequent development changes. See [migration](./migration.md) for upgrade differences.
+These documents use the **v0.5.1** object model and current main as their baseline. v0.5.1 has not been tagged yet; before publication, distinguish main from published versions using the [release preparation notes](./release-v0.5.1.md). See [migration](./migration.md) for upgrade differences.
 
 ## Find a contract
 
 | Question | Page |
 |---|---|
-| Latest execution, observation, resource and recovery costs with Eino and Temporal | [Unified workflow comparison](./production-comparison.md) |
+| v0.5.1 formal SQLite and recovery measurements, completion states, and evidence boundaries | [Formal-release SQLite refresh](./sqlite-formal-20261023.md) |
 | When definitions seal, which states exist, how often callbacks occur | [Lifecycle](./lifecycle.md) |
 | What errors mean and whether to change declarations or handle a runtime failure | [Errors](./errors.md) |
 | When outputs are confirmed and published, what recovery restores, how retry budgets persist | [Checkpoints](./checkpoint.md) |

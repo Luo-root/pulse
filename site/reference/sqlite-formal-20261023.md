@@ -1,13 +1,13 @@
 # 正式版 SQLite 与恢复测量（2026-10-23）
 
-**COMPLETED_WITH_ERRORS**。这是正式公开版本的限定范围新测量，不替换[发布前全维度报告](./production-comparison.md)。仅重测 SQLite 可靠确认、Temporal 原生持久化基线和进程恢复；没有重跑完整 native、observe 或 resource 矩阵。不作 Go 升级带来加速的因果结论，也不是未发布 Core v0.5.1 的成绩。
+**COMPLETED_WITH_ERRORS**。这是面向 Core v0.5.1 发布准备的当前正式 SQLite 与恢复测量。仅测量 SQLite 可靠确认、Temporal 原生持久化基线和进程恢复；没有重跑完整 native、observe 或 resource 矩阵。不作 Go 升级带来加速的因果结论；所有 deadline、hard_timeout、not_equivalent 和 not_repeated 均按原始状态披露。
 
 ## 身份与方法
 
 | 组件 | 实际固定身份 |
 |---|---|
 | 业务宿主 | Go 1.26.0 / windows/amd64 |
-| Core | v0.5.0 |
+| Core source baseline | v0.5.0 formal release, measured for v0.5.1 preparation |
 | Durable / 官方 sqlitestore | v0.1.0 / v0.1.0 |
 | Eino | v0.9.21（原 pin） |
 | Temporal SDK / CLI / Server | v1.50.0 / 1.9.1 / 1.32.0（原 pin） |
