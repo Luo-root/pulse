@@ -4,7 +4,7 @@ This page is for maintainers upgrading from published v0.4.1 or transitional dev
 
 ## Published releases and development documentation
 
-The migration target is **v0.5.1**, including the current object model, checkpoint bridge, and sugar signatures below. Compare v0.4.1 source with this page and migrate each affected call; do not apply new examples to an older dependency. v0.5.1 has not been tagged; before publication, select published v0.5.0 or matching current main as described in [installation](../guide/installation.md):
+The migration target is the published **v0.5.0**, including the current object model, checkpoint bridge, and sugar signatures below. Compare v0.4.1 source with this page and migrate each affected call; do not apply new examples to an older dependency. The v0.5.1 Go 1.26+ release preparation is documented separately in the [preparation notes](release-v0.5.1.md); before publication, select published v0.5.0 or matching current main as described in [installation](../guide/installation.md):
 
 ```sh
 go get github.com/Luo-root/pulse@v0.5.0
