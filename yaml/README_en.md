@@ -10,10 +10,10 @@ The dependency direction is `pulse` ← `yaml`. This package depends on the root
 
 ## Version and installation
 
-Current source requires Go 1.26.0 or later, aligned with Durable; v0.5.1 is not released. Published v0.5.0 originally requires Go 1.25.0+; the installation command below still pins that version. This page uses `v0.5.0` as its API baseline; pin that version when installing. For development or unmerged changes, select main or matching local source as described in [installation](../site/en/guide/installation.md):
+v0.5.1 requires Go 1.26.0 or later, aligned with Durable. v0.5.0's original Go 1.25.0+ requirement applies only to the historical release. This page uses `v0.5.1` as its API baseline; pin that version when installing. For development or unmerged changes, select main or matching local source as described in [installation](../site/en/guide/installation.md):
 
 ```bash
-go get github.com/Luo-root/pulse@v0.5.0
+go get github.com/Luo-root/pulse@v0.5.1
 ```
 
 ## Complete example
