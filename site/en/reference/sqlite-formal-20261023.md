@@ -1,13 +1,13 @@
 # Formal-release SQLite and recovery measurements (2026-10-23)
 
-**COMPLETED_WITH_ERRORS**. This bounded collection uses public formal releases; it does not replace the [historical pre-release multidimensional report](./production-comparison.md). Only SQLite reliable confirmation, the Temporal native-persistence baseline and process recovery were rerun, not the full native, observe or resource matrices. It establishes neither a Go-upgrade speedup nor results for unpublished Core v0.5.1.
+**COMPLETED_WITH_ERRORS**. This is the current formal SQLite and recovery measurement for the Pulse Core v0.5.1 release preparation. It covers SQLite reliable confirmation, the Temporal native-persistence baseline and process recovery, not the full native, observe or resource matrices. It establishes no causal Go-upgrade speedup; every deadline, hard_timeout, not_equivalent and not_repeated record remains disclosed in its original state.
 
 ## Identity and method
 
 | Component | Measured pin |
 |---|---|
 | Benchmark host | Go 1.26.0 / windows/amd64 |
-| Core | v0.5.0 |
+| Core source baseline | v0.5.0 formal release, measured for v0.5.1 preparation |
 | Durable / official sqlitestore | v0.1.0 / v0.1.0 |
 | Eino | v0.9.21 (unchanged pin) |
 | Temporal SDK / CLI / Server | v1.50.0 / 1.9.1 / 1.32.0 (unchanged pins) |

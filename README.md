@@ -130,7 +130,7 @@ func main() {
 | 组合审批、输入决定的批量处理或 Graph 工具循环 | [业务组合](site/guide/composition.md) |
 | 用 YAML 定义流程，接入事件和日志 | [YAML 装配](site/guide/assembly.md) · [图观测](site/guide/observability.md) |
 | 查阅生命周期、错误、恢复桥与版本差异 | [参考索引](site/reference/index.md) |
-| 判断 1–10000 节点的成本，复跑同任务跨引擎对照 | [规模与性能](site/reference/performance.md) · [评测源码与方法](benchmarks/README.md) |
+| 查看 v0.5.1 发布准备中的正式 SQLite 与恢复测量 | [正式版 SQLite 重测](site/reference/sqlite-formal-20261023.md) · [评测源码与方法](benchmarks/README.md) |
 
 在线阅读：[中文文档](https://luo-root.github.io/pulse/) · [English documentation](https://luo-root.github.io/pulse/en/)。
 

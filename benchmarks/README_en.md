@@ -10,7 +10,7 @@ Chinese: [README.md](README.md).
 
 [Configuration comparisons](reports/2026-10-17-optimization.csv), [stage statistics](reports/2026-10-17-optimization-stages.csv) and [version summary](reports/2026-10-17-optimization.json) retain concise statistics from 1380 successful samples. The 30 instrumented large-graph checks, complete raw samples, 12 plot pairs and diagnostics remain in an external evidence archive rather than the source repository. Original baseline, first candidate and final candidate are separate runs and never mixed.
 
-The layers are [#423](https://github.com/Luo-root/pulse/pull/423), [#424](https://github.com/Luo-root/pulse/pull/424) and [#425](https://github.com/Luo-root/pulse/pull/425). The measured commit is `f6049c4aac4d2d5316e0ced5959dc7bc2a257b46`, not a release tag. See the [English report](../site/en/reference/performance.md) for gains, index space costs and slower points. At measurement time only generated external `-modfile` files used candidate source replacements; shipped dependency files were unchanged. This is historical optimization evidence. Commands below reproduce the original baseline; the new fixed-framework comparison uses a separate run.
+The layers are [#423](https://github.com/Luo-root/pulse/pull/423), [#424](https://github.com/Luo-root/pulse/pull/424) and [#425](https://github.com/Luo-root/pulse/pull/425). The measured commit is `f6049c4aac4d2d5316e0ced5959dc7bc2a257b46`, not a release tag. That run is historical optimization evidence; its original report and complete evidence are not current documentation conclusions. The current release preparation uses the [formal-release SQLite and recovery measurements](../site/en/reference/sqlite-formal-20261023.md), with status and incomplete points disclosed from the original records.
 
 ## Identical business tasks
 
@@ -97,4 +97,4 @@ Use absolute paths if the repositories are not siblings. File-backend scratch da
 
 Timeout, resource-limit and unsupported cases retain their status without fabricated values. After a limit, remaining planned repetitions are marked `not_repeated`; they are not replaced with zero. Limits describe measurement boundaries, not engine pass/fail criteria. Invalid output, checksum or topology stops the matrix after retaining the raw failing sample.
 
-Read the bilingual site performance guide for native API timing boundaries, executor reuse conditions and actual results, and inspect adapter `notes`. Do not use in-memory timings to claim persistence performance or substitute historical cost-page measurements for this baseline.
+Read the [formal-release SQLite and recovery measurements](../site/en/reference/sqlite-formal-20261023.md) for timing boundaries, executor reuse conditions and actual results, and inspect adapter `notes`. Do not use in-memory timings to claim persistence performance or substitute historical cost-page measurements for this baseline.

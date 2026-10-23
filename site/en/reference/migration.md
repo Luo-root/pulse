@@ -4,14 +4,14 @@ This page is for maintainers upgrading from published v0.4.1 or transitional dev
 
 ## Published releases and development documentation
 
-The migration target is **v0.5.0**, including the new object model, checkpoint bridge, and sugar signatures below. Compare v0.4.1 source with this page and migrate each affected call; do not apply new examples to an older dependency. Pin v0.5.0 by default. For subsequent development changes or unmerged branches, select main or matching local source as described in [installation](../guide/installation.md):
+The migration target is the published **v0.5.0**, including the current object model, checkpoint bridge, and sugar signatures below. Compare v0.4.1 source with this page and migrate each affected call; do not apply new examples to an older dependency. The v0.5.1 Go 1.26+ release preparation is documented separately in the [preparation notes](release-v0.5.1.md); before publication, select published v0.5.0 or matching current main as described in [installation](../guide/installation.md):
 
 ```sh
 go get github.com/Luo-root/pulse@v0.5.0
 go list -m github.com/Luo-root/pulse
 ```
 
-This page's migration target, v0.5.0, originally requires Go 1.25+. Current source and planned v0.5.1 require Go 1.26.0+; v0.5.1 is not released. See the [preparation notes](release-v0.5.1.md) for the toolchain compatibility impact. Commit your application's go.mod/go.sum. Install main only for subsequent development changes and retain the concrete version resolved by Go; do not invent a commit or pseudo-version. For a local replacement, verify the source directory. See the [release notes](release-v0.5.0.md) for the release record.
+The published v0.5.0 migration target originally requires Go 1.25+. Current source and planned v0.5.1 require Go 1.26.0+; v0.5.1 is not released. See the [preparation notes](release-v0.5.1.md) for the toolchain compatibility impact. Commit your application's go.mod/go.sum. Install main only for subsequent development changes and retain the concrete version resolved by Go; do not invent a commit or pseudo-version. For a local replacement, verify the source directory. See the [release notes](release-v0.5.0.md) for the release record.
 
 ## Node sugar constructors gain a description
 
