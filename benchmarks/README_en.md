@@ -97,4 +97,4 @@ Use absolute paths if the repositories are not siblings. File-backend scratch da
 
 Timeout, resource-limit and unsupported cases retain their status without fabricated values. After a limit, remaining planned repetitions are marked `not_repeated`; they are not replaced with zero. Limits describe measurement boundaries, not engine pass/fail criteria. Invalid output, checksum or topology stops the matrix after retaining the raw failing sample.
 
-Read the bilingual site performance guide for native API timing boundaries, executor reuse conditions and actual results, and inspect adapter `notes`. Do not use in-memory timings to claim persistence performance or substitute historical cost-page measurements for this baseline.
+Read the [formal-release SQLite and recovery measurements](../site/en/reference/sqlite-formal-20261023.md) for timing boundaries, executor reuse conditions and actual results, and inspect adapter `notes`. Do not use in-memory timings to claim persistence performance or substitute historical cost-page measurements for this baseline.
