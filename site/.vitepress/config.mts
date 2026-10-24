@@ -32,9 +32,7 @@ function sidebar(prefix: string, en: boolean) {
       ['错误与排查', 'Errors and troubleshooting', 'reference/errors'],
       ['检查点桥', 'Checkpoint bridge', 'reference/checkpoint'],
       ['版本与迁移', 'Versions and migration', 'reference/migration'],
-      ['v0.5.1 发布说明', 'v0.5.1 release notes', 'reference/release-v0.5.1'],
-      ['v0.5.0 发布说明', 'v0.5.0 release notes', 'reference/release-v0.5.0'],
-      ['v0.5.1 正式版 SQLite 重测', 'v0.5.1 formal-release SQLite refresh', 'reference/sqlite-formal-20261023'],
+      ['统一生产性能对比', 'Unified production comparison', 'reference/production-comparison'],
       ['设计理念', 'Design philosophy', 'guide/philosophy'],
     ]) },
     { text: labels[3], collapsed: true, items: pages([

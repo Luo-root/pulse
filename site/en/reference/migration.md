@@ -11,7 +11,7 @@ go get github.com/Luo-root/pulse@v0.5.1
 go list -m github.com/Luo-root/pulse
 ```
 
-v0.5.1 requires Go 1.26.0+; v0.5.0's original Go 1.25+ requirement applies only to the historical release. Commit your application's go.mod/go.sum. Install main only for subsequent development changes and retain the concrete version resolved by Go; do not invent a commit or pseudo-version. For a local replacement, verify the source directory. See the [release notes](release-v0.5.0.md) for the release record.
+v0.5.1 requires Go 1.26.0+; v0.5.0's original Go 1.25+ requirement applies only to the historical release. Commit your application's go.mod/go.sum. Install main only for subsequent development changes and retain the concrete version resolved by Go; do not invent a commit or pseudo-version. For a local replacement, verify the source directory. See the [unified production comparison](production-comparison.md) for current performance, storage and recovery measurements.
 
 ## Node sugar constructors gain a description
 
