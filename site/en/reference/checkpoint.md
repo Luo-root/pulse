@@ -1,6 +1,6 @@
 # Checkpoints
 
-This page is for developers implementing durable execution integration, storage, or codecs. First understand [lifecycle](./lifecycle.md), [Retry write sets](../guide/retry-cancellation.md), and [static subgraphs](../guide/subgraphs.md), and use the [development version](./migration.md). Business hosts needing recovery should normally use the independent [pulse-durable](https://github.com/Luo-root/pulse-durable) Run/Resume APIs instead of assembling reliable hooks themselves.
+This page is for developers implementing durable execution integration, storage, or codecs. First understand [lifecycle](./lifecycle.md), [Retry write sets](../guide/retry-cancellation.md), and [static subgraphs](../guide/subgraphs.md), and use the [v0.5.1](./migration.md). Business hosts needing recovery should normally use the independent [pulse-durable](https://github.com/Luo-root/pulse-durable) Run/Resume APIs instead of assembling reliable hooks themselves.
 
 Durable provides checkpointed Run/Resume, a local filestore, and storage and process recovery for managed streams; integration is tracked in [Durable #21](https://github.com/Luo-root/pulse-durable/issues/21). This page specifies Core's bridge. Use matching local checkouts; the maintainer's tags/releases determine release status. Durable waits and distributed run management remain future capabilities. Dependencies are one-way: Durable imports Pulse; Pulse does not import Durable.
 

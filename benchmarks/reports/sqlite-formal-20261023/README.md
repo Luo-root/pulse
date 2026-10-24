@@ -1,6 +1,6 @@
 # 正式版本 SQLite 可靠确认与恢复重测
 
-测量日期：2026-10-23。Core v0.5.0、Durable v0.1.0、维护的 sqlitestore v0.1.0，Go1.26.0。不是未发布的 v0.5.1 性能数据。
+测量日期：2026-10-23。实际依赖：Core v0.5.0、Durable v0.1.0、sqlitestore v0.1.0，Go 1.26.0。
 
 `summary.csv` 和 `identity.json` 由仓库外保留的原始采样生成。本目录仅保留精简统计与公开模块身份，不含数据库、二进制、机器路径或原始运行日志。
 
@@ -11,4 +11,4 @@
 - temporal-native（45行）：610bb237276d167a968176d8fb33750538269a1cb8571786f511423a0d37e7b3
 - recovery（36行）：d0485cee9514d4d3f888b5a60eb9e0c5af5907202f0e88d774a264c53ba54d80
 
-统计口径与完整结论见站点 `reference/sqlite-formal-20261023` 中英文报告。原始数据及独立核对另包交付；历史候选与生产对照冻结内容不修改。
+统计口径与结果见[统一生产性能对比](../../../site/reference/production-comparison.md)。

@@ -32,4 +32,4 @@ This website uses `v0.5.1` as its API baseline. The command below pins that vers
 go get github.com/Luo-root/pulse@v0.5.1
 ```
 
-v0.5.1 requires Go 1.26.0 or later; v0.5.0's original Go 1.25.0+ minimum applies only to the historical release. Released Go API documentation may differ from current source; read against the commit your application uses.
+v0.5.1 requires Go 1.26.0 or later.

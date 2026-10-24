@@ -10,7 +10,7 @@
 
 ## 版本与安装
 
-v0.5.1 需要 Go 1.26.0 或更高版本，与 Durable 统一。v0.5.0 的 Go 1.25.0+ 要求仅适用于历史版本。本页以 `v0.5.1` 为 API 基线，安装时固定该版本；开发版或尚未合并的修改按[安装说明](../site/guide/installation.md)选择主线或对应本地源码：
+本页使用 Pulse v0.5.1 API，需要 Go 1.26.0+。安装方法见[安装说明](../site/guide/installation.md)：
 
 ```bash
 go get github.com/Luo-root/pulse@v0.5.1

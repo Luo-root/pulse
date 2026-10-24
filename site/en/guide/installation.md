@@ -4,7 +4,7 @@ Use this page to choose a version matching the documentation, create a Go module
 
 ## Requirements
 
-The published **v0.5.1** requires **Go 1.26.0 or later**, aligned with Durable. Raising the minimum toolchain has a compatibility impact, but public APIs and runtime semantics are unchanged. The original Go 1.25.0+ requirement of v0.5.0 is retained only as historical compatibility information. Check your toolchain:
+Pulse v0.5.1 requires **Go 1.26.0 or later**, aligned with Durable. Check your toolchain:
 
 ```sh
 go version
@@ -16,17 +16,13 @@ The core package's dependency closure contains only the standard library. `pulse
 
 | Version | When to choose it | Documentation |
 | --- | --- | --- |
-| `v0.5.1` | Current source and release-preparation baseline | [Migration](../reference/migration.md) · [Unified production comparison](../reference/production-comparison.md) |
-| `v0.5.0` | Maintain an existing application pinned to the older release | [Unified production comparison](../reference/production-comparison.md) |
-| Historical tag `v0.4.1` | Maintain the older API before migration | [v0.4.1 source and README](https://github.com/Luo-root/pulse/tree/v0.4.1) |
-| `main` | You want the development API already merged into the main branch | [main source](https://github.com/Luo-root/pulse) |
-| Local source checked out with these docs | You are trying unmerged fixes or contributing | These guides and reference; use the local replacement below |
+| `v0.5.1` | Current API baseline; pin this version | [Migration](../reference/migration.md) · [Unified production comparison](../reference/production-comparison.md) |
+| `main` | Use the latest development code | [main source](https://github.com/Luo-root/pulse) |
+| Local source checked out with these docs | Try an unmerged fix or contribute | Use the local replacement below |
 
-**This site uses v0.5.1 as its API baseline, not v0.4.1.** Prefer the fixed tag; choose `go get …@main` only for subsequent development changes. It resolves the current main branch to a concrete version in `go.mod`. Once that file is committed, teammates use that resolved version; running the application does not automatically update it.
+**This site uses v0.5.1 as its API baseline.** Prefer the fixed version; choose `go get …@main` only for development changes. It resolves the current main branch to a concrete version in `go.mod`. Once that file is committed, teammates use that resolved version; running the application does not automatically update it.
 
-v0.5.1 includes managed Stream, live Sub, message attempts, and incremental checkpoints and supports the examples on this site. Use the local replacement below when trying an unmerged change. The older public snapshot `1f67045d6c42` lacks the sugar constructors' `description` argument and cannot compile the updated sugar examples.
-
-Unreleased target versions become available only when the maintainer creates their tags / releases. During 0.x, breaking changes require a minor release. Read the [migration notes](../reference/migration.md) before upgrading.
+v0.5.1 includes managed Stream, live Sub, message attempts, and incremental checkpoints and supports the examples on this site. Use the local replacement below when trying an unmerged change. Read the [migration notes](../reference/migration.md) before changing APIs.
 
 ## Create an example module
 
@@ -96,7 +92,7 @@ Keep only the packages your program uses, because Go rejects unused imports. See
 
 **The compiler reports mismatched constructor or `Run` arguments.** Check the selected source first. Older tags, earlier development snapshots, and this API differ. All five node sugar constructors now take `description` after `id`, with an empty string allowed. Unmerged changes require the corresponding local checkout.
 
-**The toolchain cannot be downloaded.** Current source needs Go 1.26.0+ (published v0.5.0 originally requires Go 1.25.0+). Select the matching toolchain, or configure toolchain and module download access for your environment. Running Pulse itself requires no online service or credentials.
+**The toolchain cannot be downloaded.** Use Go 1.26.0+ and check toolchain and module download access. Running Pulse requires no online service or credentials.
 
 **You need recovery across process restarts.** Read the [checkpoint bridge](../reference/checkpoint.md) and follow the separate [Durable repository](https://github.com/Luo-root/pulse-durable)'s installation instructions. Pulse core does not store execution history.
 

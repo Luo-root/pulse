@@ -33,7 +33,7 @@ Pulse 将一组 Go 函数组合为可复用的工作流。每个节点声明需�
 
 ## 安装
 
-v0.5.1 需要 **Go 1.26.0 或更新版本**，与 Durable 统一。最低工具链升级有兼容性影响，公开 API 与运行语义未变；原 v0.5.0 的 Go 1.25.0+ 要求保留为历史兼容信息，详见 [v0.5.1 发布说明](site/reference/release-v0.5.1.md)。
+Pulse v0.5.1 需要 **Go 1.26.0 或更新版本**。安装方法见[安装与版本](site/guide/installation.md)。
 
 > 本 README 和文档站以 **v0.5.1** 的 API 为基线，包含受管 Stream、实时 Sub 和增量检查点。从 v0.4.1 升级请先阅读[迁移说明](site/reference/migration.md)。以下命令固定安装 v0.5.1；开发版或尚未合并的修改见[安装与版本](site/guide/installation.md)，发布状态以对应 tag 与 Release 为准。
 
@@ -130,7 +130,7 @@ func main() {
 | 组合审批、输入决定的批量处理或 Graph 工具循环 | [业务组合](site/guide/composition.md) |
 | 用 YAML 定义流程，接入事件和日志 | [YAML 装配](site/guide/assembly.md) · [图观测](site/guide/observability.md) |
 | 查阅生命周期、错误、恢复桥与版本差异 | [参考索引](site/reference/index.md) |
-| 查看 v0.5.1 发布准备中的正式 SQLite 与恢复测量 | [正式版 SQLite 重测](site/reference/sqlite-formal-20261023.md) · [评测源码与方法](benchmarks/README.md) |
+| 评估执行、资源、SQLite 和恢复成本 | [统一生产性能对比](site/reference/production-comparison.md) · [评测源码与方法](benchmarks/README.md) |
 
 在线阅读：[中文文档](https://luo-root.github.io/pulse/) · [English documentation](https://luo-root.github.io/pulse/en/)。
 

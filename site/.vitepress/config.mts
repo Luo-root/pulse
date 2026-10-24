@@ -76,7 +76,7 @@ function locale(en: boolean) {
         text: en ? 'Edit this page on GitHub' : '在 GitHub 编辑此页',
       },
       footer: {
-        message: en ? 'Development API documentation · Go 1.26+ · MIT' : '开发版 API 文档 · Go 1.26+ · MIT',
+        message: 'Pulse v0.5.1 · Go 1.26+ · MIT',
         copyright: 'Copyright © 2026 Luo-root',
       },
       ...(en ? {} : {

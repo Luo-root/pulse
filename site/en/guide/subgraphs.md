@@ -1,6 +1,6 @@
 # Static subgraphs
 
-This page is for developers who want to encapsulate a flow as a reusable step. It requires Go 1.26+ and familiarity with [input and output ports](./inputs-outputs.md) and [join policies](./branching.md). The example uses development APIs.
+This page is for developers who want to encapsulate a flow as a reusable step. It requires Go 1.26+ and familiarity with [input and output ports](./inputs-outputs.md) and [join policies](./branching.md). The example uses the v0.5.1 API.
 
 `Sub` mounts an assembled child definition into a parent at assembly time. The child exchanges data through declared ports only. Before running, the parent can inspect and validate the complete subtree.
 
@@ -129,11 +129,11 @@ func main() {
 }
 ```
 
-Run in that directory. For examples from an unmerged branch, use the matching source checkout with the [installation page's local replacement steps](./installation.md); `@main` below only installs APIs already merged into main.
+Run in that directory:
 
 ```sh
 go mod init example.com/pulse-subgraphs
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.1
 go run .
 ```
 

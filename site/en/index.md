@@ -8,7 +8,7 @@ home:
   lead: Define a workflow once and create an independent execution for each request. Compose Go functions through typed data, with explicit parallel work, branches, and normal skips.
   primary: { text: Get started, link: /en/guide/quickstart }
   secondary: { text: Core concepts, link: /en/guide/concepts }
-  version: Development docs · Go 1.26+ · Select matching source in installation guide
+  version: Pulse v0.5.1 · Go 1.26.0+
   flowTitle: One definition, one execution
   flowLabel: An input arrives, computation runs, and a declared output becomes ready
   flow:

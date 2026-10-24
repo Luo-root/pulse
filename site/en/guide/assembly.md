@@ -1,6 +1,6 @@
 # YAML assembly
 
-This page is for developers who want topology in configuration files while keeping business implementation in Go. It requires Go 1.26+ and familiarity with [node declarations](./orchestration.md) and [static subgraphs](./subgraphs.md). Examples use development APIs.
+This page is for developers who want topology in configuration files while keeping business implementation in Go. It requires Go 1.26+ and familiarity with [node declarations](./orchestration.md) and [static subgraphs](./subgraphs.md). Examples use the v0.5.1 API.
 
 `pulse/yaml` assembles YAML into a `Graph` and `SeedPlan`. YAML declares nodes, dependencies, and child wiring. A registry supplies real key types and named business functions. Registered functions supply Run only: they neither return a Node nor decide topology placement.
 
@@ -123,7 +123,7 @@ Run in that directory:
 
 ```sh
 go mod init example.com/pulse-yaml
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.1
 go run .
 ```
 

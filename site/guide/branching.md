@@ -1,6 +1,6 @@
 # 分支与汇聚
 
-本页面向需要按条件选择处理路径、并合并多路结果的开发者。需要 Go 1.26+，并已了解[输入与输出](./inputs-outputs.md)。本例使用尚未发布的开发版 API。
+本页面向需要按条件选择处理路径、并合并多路结果的开发者。需要 Go 1.26+，并已了解[输入与输出](./inputs-outputs.md)。本例使用 v0.5.1 API。
 
 分支通过输出的值或跳过状态表达。汇聚节点先等所有输入到达，再根据自己的策略处理有值与无值的输入。正常跳过不导致整轮失败。
 
@@ -88,11 +88,11 @@ func main() {
 }
 ```
 
-在保存文件的目录中执行。运行未合并分支的示例时，按[安装页的本地替换步骤](./installation.md#试用尚未合并的源码)使用对应源码；以下 `@main` 命令只获取已合入主线的 API。
+在保存文件的目录中执行：
 
 ```sh
 go mod init example.com/pulse-branches
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.1
 go run .
 ```
 

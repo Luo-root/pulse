@@ -1,10 +1,10 @@
 # Unified production workflow comparison
 
-See [#427](https://github.com/Luo-root/pulse/issues/427). [中文](README.md). This isolated module keeps the same three columns throughout: **Pulse (with Durable for reliable execution), Eino, Temporal**. It adds no dependency to the production root. Earlier DAG comparisons remain historical and do not enter this round's ranking.
+[中文](README.md). This isolated module provides the comparison method and reproduction commands for **Pulse (with Durable for reliable execution), Eino and Temporal** in the Pulse v0.5.1 documentation.
 
 Current reruns ([#502](https://github.com/Luo-root/pulse/issues/502), related Durable #81) pin public releases: Core `v0.5.0`, Durable `v0.1.0`, and `pulse-durable/sqlitestore v0.1.0`, with Go 1.26 and no replace. Eino `v0.9.21` and Temporal SDK `v1.50.0` / API `v1.63.5` remain unchanged. Durable actually uses the maintained official SQLite backend. Write new results to fresh directories; frozen results stay unchanged.
 
-The historical v0.5.0 pre-release remeasurement pins Core `v0.4.2-0.20261021081643-be778722b781` and Durable `v0.0.0-20261021085955-5db6eae0e9fb`, without local replace. The v0.5.0 tag did not exist during measurement; final engine source must match the measured SHA. New statistics: [`v0.5.0-candidate-20261021`](../reports/v0.5.0-candidate-20261021/identity.json); historical data stays unchanged.
+Results and measured identities are available in the [unified production comparison](../../site/en/reference/production-comparison.md) and each dataset's `identity.json`.
 
 ## Workload and adapters
 

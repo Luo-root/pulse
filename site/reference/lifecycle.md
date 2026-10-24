@@ -1,6 +1,6 @@
 # 生命周期
 
-本页面向控制 Execution、实现 Observer 或解释快照状态的开发者，描述[开发版](./migration.md)的精确契约。可运行示例见[输入与输出](../guide/inputs-outputs.md)、[子图](../guide/subgraphs.md)和[观测](../guide/observability.md)。
+本页面向控制 Execution、实现 Observer 或解释快照状态的开发者，描述[v0.5.1](./migration.md)的精确契约。可运行示例见[输入与输出](../guide/inputs-outputs.md)、[子图](../guide/subgraphs.md)和[观测](../guide/observability.md)。
 
 ## 定义的装配与封闭
 

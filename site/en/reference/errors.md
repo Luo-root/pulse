@@ -1,6 +1,6 @@
 # Errors
 
-This page is for developers handling assembly, startup, or runtime errors in the [development version](./migration.md). Identify the stage before choosing to fix a definition, supply inputs, handle a business failure, or recover persistent records. Do not classify behavior solely by error text. Use `errors.Is` for public sentinels and `errors.As` for concrete types.
+This page is for developers handling assembly, startup, or runtime errors in the [v0.5.1](./migration.md). Identify the stage before choosing to fix a definition, supply inputs, handle a business failure, or recover persistent records. Do not classify behavior solely by error text. Use `errors.Is` for public sentinels and `errors.As` for concrete types.
 
 ## Sentinels and corrective actions
 

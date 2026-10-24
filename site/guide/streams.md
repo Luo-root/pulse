@@ -2,7 +2,7 @@
 
 需要连续产生数据、逐条确认或跨子图传递实时结果时，使用 `Key[pulse.Stream[T]]`。槽位发布端点，端点管理消息序号、读取组、背压和生产终态。
 
-本页 API 的版本基线为 **v0.5.0**；历史 tag `v0.4.1` 不包含受管 Stream。按[安装页](./installation.md#选择版本)固定安装 v0.5.0，或在需要后续开发改动时选择主线或匹配的本地检出。
+本页使用 **v0.5.1** API。安装方法见[安装与版本](./installation.md)。
 
 ## 完整示例：一个额度，广播到两个消费端
 
@@ -76,11 +76,11 @@ func main() {
 }
 ```
 
-在保存 `main.go` 的新示例目录中，获取已合入主线的开发版并运行：
+在保存 `main.go` 的示例目录中安装依赖并运行：
 
 ```sh
 go mod init example.com/pulse-streams
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.1
 go run -race .
 ```
 

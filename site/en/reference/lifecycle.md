@@ -1,6 +1,6 @@
 # Lifecycle
 
-This page defines the [development version](./migration.md) contract for developers controlling Execution, implementing Observer, or interpreting snapshots. Usage examples are in [inputs and outputs](../guide/inputs-outputs.md), [subgraphs](../guide/subgraphs.md), and [observation](../guide/observability.md).
+This page defines the [v0.5.1](./migration.md) contract for developers controlling Execution, implementing Observer, or interpreting snapshots. Usage examples are in [inputs and outputs](../guide/inputs-outputs.md), [subgraphs](../guide/subgraphs.md), and [observation](../guide/observability.md).
 
 ## Definition assembly and sealing
 
