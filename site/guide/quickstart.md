@@ -12,7 +12,7 @@
 mkdir pulse-quickstart
 cd pulse-quickstart
 go mod init example.com/pulse-quickstart
-go get github.com/Luo-root/pulse@v0.5.0
+go get github.com/Luo-root/pulse@v0.5.1
 ```
 
 以下所有命令在该目录执行。

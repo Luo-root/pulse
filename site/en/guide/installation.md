@@ -4,7 +4,7 @@ Use this page to choose a version matching the documentation, create a Go module
 
 ## Requirements
 
-Current source requires **Go 1.26.0 or later**, aligned with Durable. Planned **v0.5.1 is not released**; raising the minimum toolchain has a compatibility impact, but public APIs and runtime semantics are unchanged. See [v0.5.1 preparation notes](../reference/release-v0.5.1.md). The default installation below still pins published **v0.5.0**, whose original minimum is **Go 1.25.0+**; switch the command only after v0.5.1 is actually available. Check your toolchain:
+The published **v0.5.1** requires **Go 1.26.0 or later**, aligned with Durable. Raising the minimum toolchain has a compatibility impact, but public APIs and runtime semantics are unchanged. The original Go 1.25.0+ requirement of v0.5.0 is retained only as historical compatibility information. Check your toolchain:
 
 ```sh
 go version
@@ -16,14 +16,15 @@ The core package's dependency closure contains only the standard library. `pulse
 
 | Version | When to choose it | Documentation |
 | --- | --- | --- |
-| `v0.5.0` | Use this documentation's API baseline; pinning this version is recommended | [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) · [Release notes](../reference/release-v0.5.0.md) · [Migration](../reference/migration.md) |
+| `v0.5.1` | Current release; pin this version | [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.1) · [Release notes](../reference/release-v0.5.1.md) · [Migration](../reference/migration.md) |
+| `v0.5.0` | Maintain an existing application pinned to the older release | [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) · [v0.5.0 release notes](../reference/release-v0.5.0.md) |
 | Historical tag `v0.4.1` | Maintain the older API before migration | [v0.4.1 source and README](https://github.com/Luo-root/pulse/tree/v0.4.1) |
 | `main` | You want the development API already merged into the main branch | [main source](https://github.com/Luo-root/pulse) |
 | Local source checked out with these docs | You are trying unmerged fixes or contributing | These guides and reference; use the local replacement below |
 
-**This site uses v0.5.0 as its API baseline, not v0.4.1.** Prefer the fixed tag; choose `go get …@main` only for subsequent development changes. It resolves the current main branch to a concrete version in `go.mod`. Once that file is committed, teammates use that resolved version; running the application does not automatically update it.
+**This site uses v0.5.1 as its API baseline, not v0.4.1.** Prefer the fixed tag; choose `go get …@main` only for subsequent development changes. It resolves the current main branch to a concrete version in `go.mod`. Once that file is committed, teammates use that resolved version; running the application does not automatically update it.
 
-v0.5.0 includes managed Stream, live Sub, message attempts, and incremental checkpoints and supports the examples on this site. Use the local replacement below when trying an unmerged change. The older public snapshot `1f67045d6c42` lacks the sugar constructors' `description` argument and cannot compile the updated sugar examples.
+v0.5.1 includes managed Stream, live Sub, message attempts, and incremental checkpoints and supports the examples on this site. Use the local replacement below when trying an unmerged change. The older public snapshot `1f67045d6c42` lacks the sugar constructors' `description` argument and cannot compile the updated sugar examples.
 
 Unreleased target versions become available only when the maintainer creates their tags / releases. During 0.x, breaking changes require a minor release. Read the [migration notes](../reference/migration.md) before upgrading.
 
@@ -35,7 +36,7 @@ In the directory where you want the example:
 mkdir pulse-example
 cd pulse-example
 go mod init example.com/pulse-example
-go get github.com/Luo-root/pulse@v0.5.0
+go get github.com/Luo-root/pulse@v0.5.1
 ```
 
 Save the [quick-start program](quickstart.md) as `main.go`, then run:

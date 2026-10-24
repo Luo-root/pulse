@@ -33,14 +33,14 @@ Pulse 将一组 Go 函数组合为可复用的工作流。每个节点声明需�
 
 ## 安装
 
-当前源码需要 **Go 1.26.0 或更新版本**，与 Durable 统一。**v0.5.1 尚未发布**；最低工具链升级有兼容性影响，公开 API 与运行语义未变，见 [v0.5.1 准备说明](site/reference/release-v0.5.1.md)。已发布的 v0.5.0 原要求为 Go 1.25.0+，以下安装命令仍固定该版本，待 v0.5.1 实际可用后再切换。
+v0.5.1 需要 **Go 1.26.0 或更新版本**，与 Durable 统一。最低工具链升级有兼容性影响，公开 API 与运行语义未变；原 v0.5.0 的 Go 1.25.0+ 要求保留为历史兼容信息，详见 [v0.5.1 发布说明](site/reference/release-v0.5.1.md)。
 
-> 本 README 和文档站以 **v0.5.0** 的 API 为基线，包含受管 Stream、实时 Sub 和增量检查点。从 v0.4.1 升级请先阅读[迁移说明](site/reference/migration.md)。以下命令固定安装 v0.5.0；开发版或尚未合并的修改见[安装与版本](site/guide/installation.md)，发布状态以对应 [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) 与 tag 为准。
+> 本 README 和文档站以 **v0.5.1** 的 API 为基线，包含受管 Stream、实时 Sub 和增量检查点。从 v0.4.1 升级请先阅读[迁移说明](site/reference/migration.md)。以下命令固定安装 v0.5.1；开发版或尚未合并的修改见[安装与版本](site/guide/installation.md)，发布状态以对应 tag 与 Release 为准。
 
 在 Go 模块中执行：
 
 ```sh
-go get github.com/Luo-root/pulse@v0.5.0
+go get github.com/Luo-root/pulse@v0.5.1
 ```
 
 ## 第一个工作流

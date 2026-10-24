@@ -33,14 +33,14 @@ To continue after a process exits, use the separate [pulse-durable](https://gith
 
 ## Installation
 
-Current source requires **Go 1.26.0 or later**, aligned with Durable. **v0.5.1 is not released**; raising the minimum toolchain has a compatibility impact, while public APIs and runtime semantics are unchanged. See [v0.5.1 preparation notes](site/en/reference/release-v0.5.1.md). Published v0.5.0 originally requires Go 1.25.0+; the command below still pins it until v0.5.1 is actually available.
+v0.5.1 requires **Go 1.26.0 or later**, aligned with Durable. Raising the minimum toolchain has a compatibility impact, while public APIs and runtime semantics are unchanged. The original Go 1.25.0+ requirement of v0.5.0 is retained as historical compatibility information; see the [v0.5.1 release notes](site/en/reference/release-v0.5.1.md).
 
-> This README and the documentation site use **v0.5.0** as their API baseline, including managed Stream, live Sub, and incremental checkpoints. Read [migration](site/en/reference/migration.md) before upgrading from v0.4.1. The command below pins v0.5.0. See [installation and versions](site/en/guide/installation.md) for development or unmerged changes; the corresponding [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) and tag establish publication status.
+> This README and the documentation site use **v0.5.1** as their API baseline, including managed Stream, live Sub, and incremental checkpoints. Read [migration](site/en/reference/migration.md) before upgrading from v0.4.1. The command below pins v0.5.1. See [installation and versions](site/en/guide/installation.md) for development or unmerged changes; the tag and Release establish publication status.
 
 Run this in a Go module:
 
 ```sh
-go get github.com/Luo-root/pulse@v0.5.0
+go get github.com/Luo-root/pulse@v0.5.1
 ```
 
 ## Your first workflow

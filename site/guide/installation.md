@@ -4,7 +4,7 @@
 
 ## 环境要求
 
-当前源码需要 **Go 1.26.0 或更新版本**，与 Durable 统一。计划版本 **v0.5.1 尚未发布**；最低工具链升级有兼容性影响，但公开 API 和运行语义未变，见 [v0.5.1 准备说明](../reference/release-v0.5.1.md)。下方默认安装仍固定已发布的 **v0.5.0**，其原要求为 **Go 1.25.0+**；待 v0.5.1 实际可用后再切换安装命令。执行以下命令确认工具链：
+当前发布版本 **v0.5.1** 需要 **Go 1.26.0 或更新版本**，与 Durable 统一。最低工具链升级有兼容性影响，但公开 API 和运行语义未变；v0.5.0 的 Go 1.25.0+ 要求仅作为历史兼容信息保留。执行以下命令确认工具链：
 
 ```sh
 go version
@@ -16,14 +16,15 @@ go version
 
 | 版本 | 适用情况 | 对应资料 |
 | --- | --- | --- |
-| `v0.5.0` | 使用本文档的 API 基线，推荐固定安装 | [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) · [发布说明](../reference/release-v0.5.0.md) · [迁移步骤](../reference/migration.md) |
+| `v0.5.1` | 当前发布版本，推荐固定安装 | [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.1) · [发布说明](../reference/release-v0.5.1.md) · [迁移步骤](../reference/migration.md) |
+| `v0.5.0` | 维护已固定的旧版本 | [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) · [v0.5.0 发布说明](../reference/release-v0.5.0.md) |
 | 历史 tag `v0.4.1` | 维护旧 API，尚未迁移 | [v0.4.1 源码与说明](https://github.com/Luo-root/pulse/tree/v0.4.1) |
 | `main` | 使用已合入主线的开发 API | [main 源码](https://github.com/Luo-root/pulse) |
 | 与文档一起检出的本地源码 | 试用尚未合并的修复或参与开发 | 本站指南与参考；使用下方本地替换步骤 |
 
-**本站以 v0.5.0 为 API 基线，不适用于 v0.4.1。** 默认使用固定 tag；只有需要后续开发改动时才选择 `go get …@main`。后者会把当时的主线解析为具体版本并写入 `go.mod`；提交该文件后，团队使用的是解析出的版本，不会每次运行自动更新。
+**本站以 v0.5.1 为 API 基线，不适用于 v0.4.1。** 默认使用固定 tag；只有需要后续开发改动时才选择 `go get …@main`。后者会把当时的主线解析为具体版本并写入 `go.mod`；提交该文件后，团队使用的是解析出的版本，不会每次运行自动更新。
 
-v0.5.0 包含受管 Stream、实时 Sub、消息尝试与增量检查点，可用于运行本站示例。试用尚未合并的修改时，再按下方步骤使用对应本地源码。旧公开快照 `1f67045d6c42` 不包含语法糖的 `description` 参数，不能用于编译新的语法糖示例。
+v0.5.1 包含受管 Stream、实时 Sub、消息尝试与增量检查点，可用于运行本站示例。试用尚未合并的修改时，再按下方步骤使用对应本地源码。旧公开快照 `1f67045d6c42` 不包含语法糖的 `description` 参数，不能用于编译新的语法糖示例。
 
 尚未发布的目标版本以维护者实际创建的 tag / release 为准。0.x 期间，破坏性变更只随 minor 发布；升级前请查看[迁移说明](../reference/migration.md)。
 
@@ -35,7 +36,7 @@ v0.5.0 包含受管 Stream、实时 Sub、消息尝试与增量检查点，可�
 mkdir pulse-example
 cd pulse-example
 go mod init example.com/pulse-example
-go get github.com/Luo-root/pulse@v0.5.0
+go get github.com/Luo-root/pulse@v0.5.1
 ```
 
 将[快速开始](quickstart.md)中的程序保存为 `main.go`，然后执行：

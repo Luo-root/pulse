@@ -4,7 +4,7 @@ This section is for developers already using Pulse who need exact behavior or in
 
 ## Version scope
 
-These documents use the published **v0.5.0** object model as their API baseline and include v0.5.1 release-preparation information. v0.5.1 has not been tagged yet; before publication, distinguish current main from published versions using the [release preparation notes](./release-v0.5.1.md). See [migration](./migration.md) for upgrade differences.
+These documents use the published **v0.5.1** object model as their API baseline and include the formal SQLite measurements and evidence boundaries. v0.5.0 remains available as a historical release. See [migration](./migration.md) for upgrade differences.
 
 ## Find a contract
 
