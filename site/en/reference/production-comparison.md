@@ -1,12 +1,10 @@
 # Pulse/Durable, Eino and Temporal: one comparison set
 
-This page is the single current performance comparison for **Pulse (with Durable for reliable execution), Eino and Temporal** across execution, observation, resources, storage and recovery. The 2026-10-17 in-memory comparison remains unchanged; formal SQLite, Temporal native-persistence and process-recovery data are updated to the 2026-10-23 official-module rerun.
+This page compares Pulse (with Durable for reliable execution), Eino and Temporal across execution, observation, resources, storage and recovery. Native execution, observation and resource data were collected on 2026-10-17; SQLite reliable execution and recovery data were collected on 2026-10-23.
 
-The two collections have different scopes. The new data is not presented as a full multidimensional rerun, and no unmeasured Go 1.26-versus-1.25 speedup is claimed.
+## Test configuration
 
-## Versions, samples and guarantees
-
-The formal SQLite rerun targets the Pulse v0.5.1 release candidate. Core runtime source is unchanged from the v0.5.0 formal release; Go 1.26 is the unified toolchain. Durable and official sqlitestore use the formal v0.1.0 tag. No local replace.
+The SQLite rerun uses Go 1.26, the Pulse Core v0.5.0 source baseline, Pulse Durable/sqlitestore v0.1.0, Eino v0.9.21 and Temporal v1.50.0. All tests use released dependencies without local replacements.
 
 | Component | Pinned identity |
 |---|---|
@@ -18,9 +16,7 @@ The formal SQLite rerun targets the Pulse v0.5.1 release candidate. Core runtime
 | Formal SQLite benchmark host | Go 1.26.0 / windows/amd64 |
 
 
-Windows 11 / i9-14900HX; GOMAXPROCS=4 per Go process, including Server, and business concurrency=4. This is not a four-core affinity limit shared across processes. chain/wide/diamonds, N=1/10/100/1000/10000, rounds=1/256. One node is one real task/regular Activity with actual direct-predecessor values. Per-node values, counts, concurrency and reuse are checked before freezing a non-race binary and rotating cases serially.
-
-The table above is the historical 2026-10-17 full-dimensional matrix and remains only to explain the retained in-memory execution, observation and resource data. The current formal SQLite rerun has these valid records:
+The host is Windows 11 / i9-14900HX; each Go process uses GOMAXPROCS=4 and business concurrency is 4. Test graphs are chain, wide and diamonds with N=1/10/100/1000/10000; recovery uses rounds=256. The current formal SQLite rerun reports:
 
 | Formal SQLite rerun matrix | Planned identities | Status |
 |---|---:|---|
@@ -29,7 +25,7 @@ The table above is the historical 2026-10-17 full-dimensional matrix and remains
 | Temporal native | 45 | 30 ok, 1 deadline, 4 hard_timeout, 10 not_repeated |
 | recovery | 36 | 36 ok |
 
-The formal rerun has 171 valid records and retains another 45 Temporal checkpoint configuration diagnostics; its overall status is **COMPLETED_WITH_ERRORS**. `—` means no completed cost, never zero; timeouts and not_repeated points are neither zero-filled nor extrapolated. The historical 1062 planned identities are not combined with the formal SQLite numbers.
+The rerun contains 171 valid records and 45 Temporal checkpoint configuration diagnostics. Incomplete cases retain their status; `—` indicates no completed sample.
 
 | Dimension | Pulse / Durable | Eino | Temporal |
 |---|---|---|---|
@@ -38,11 +34,9 @@ The formal rerun has 171 valid records and retains another 45 Temporal checkpoin
 | Reliable confirmation | Durable Store confirmation before publication | No automatic per-node save on normal success; active CheckPointStore interrupt separately | Native history and Activity completion confirmation |
 | Recovery | Kill host after confirmed prefix; new-process Resume | Exit after active checkpoint; new-process resume | Confirmed prefix without in-flight Activity, worker kill; Server restart separately |
 
-Eino's host semaphore limits business bodies. Its host cancels and joins those bodies after errors, without promising all engine goroutines have exited. Temporal sets MaximumAttempts=1 and acquires the workflow semaphore after dependencies, before scheduling Activities.
-
 ## Native execution and preparation
 
-The following rounds=1 numbers are ms, medians of five repeated reuse-batch means. Windows uses QPC to resolve short intervals. CSV retains min–max, both workloads, first runs and setup. These are not online p50s or confidence intervals.
+Values are milliseconds and shown as medians of repeated samples.
 
 | shape / N | Pulse (ms) | Eino (ms) | Temporal (ms) |
 |---|---|---|---|
@@ -62,7 +56,7 @@ The following rounds=1 numbers are ms, medians of five repeated reuse-batch mean
 
 ![Native reuse cost](/performance/2026-10-17-production/native_reuse.png)
 
-Temporal chain/diamonds N=1000 and every N=10000 configuration did not finish the whole case; no runtime is extrapolated and no wrong-result claim follows. Wide N=1000 completed. All Pulse/Eino native plain/observe plans completed. This tiny-task difference is not a proportional speedup for complete Agent applications. No profiles were collected this round, so curve changes are not attributed to proven internal hotspots.
+Temporal chain/diamonds N=1000 and all N=10000 configurations did not complete; wide N=1000 completed.
 
 | N=100 chain / stage | Pulse (ms) | Eino (ms) | Temporal (ms) |
 |---|---|---|---|
@@ -72,7 +66,7 @@ Temporal chain/diamonds N=1000 and every N=10000 configuration did not finish th
 | run_ns | 0.262107 | 0.613691 | 5049.45 |
 
 
-Stage responsibilities differ: Pulse builds a graph and validates on first start; Eino assembles/compiles; Temporal adapter setup connects/registers/starts a worker, with Server preparation separate. First execution covers submission through correct-result confirmation; reuse is subsequent. Do not subtract stage medians for attribution. Temporal persistence is retained rather than presented as an equivalent in-memory guarantee.
+Stage definitions: Pulse covers graph construction and first-start validation; Eino covers assembly/compilation; Temporal adapter setup covers connection, registration and worker.Start, with Server preparation separate. `first_ns` is the first execution and `run_ns` is reuse.
 
 ## Observation
 
@@ -85,7 +79,7 @@ Stage responsibilities differ: Pulse builds a graph and validates on first start
 
 ![Plain and observe costs](/performance/2026-10-17-production/observability.png)
 
-All use public extension hooks with atomic counters and no external logging. Coverage and event counts differ; differences are not prices for identical features. Some observe medians are lower: these are independently sampled variations, not evidence that observation accelerates execution. CSV retains event types/counts and ranges.
+Observation uses public extension hooks and atomic counters. Event coverage differs by framework, so the values do not represent identical observation features.
 
 ## Equal-work CPU and memory
 
@@ -100,13 +94,11 @@ A separate resource experiment performs one first run plus one reuse for every f
 
 ![Equal-work CPU and sampled RSS](/performance/2026-10-17-production/resources.png)
 
-Job CPU includes exited descendants. Local process CPU accounting is quantized at roughly 15.625ms; equal small values do not prove identical CPU work. RSS is the largest simultaneous tree sum observed every 25ms and may miss a short peak. The common binary links all adapters: this includes a common harness baseline, not minimal standalone deployment footprints. Incomplete-case resources remain in raw data rather than completed-cost statistics.
-
-CSV also retains cumulative process-local Go reuse allocations. Temporal Server is excluded from those counters, so they cannot rank whole-engine memory. Cumulative allocations, live heap and RSS differ. Native throughput batches and equal-work resource cases have different iteration counts; their total CPU is not mixed.
+CPU includes child processes and RSS is the sampled process-tree peak. Temporal CPU/RSS includes its independent Server; Go allocation counters exclude that Server.
 
 ## Reliable execution and storage growth
 
-The formal SQLite rerun reports Pulse + Durable reliable confirmation below, in ms as first/reuse medians; n counts complete ok samples only. Eino ordinary success has no equivalent per-node checkpoint measurement here, while Temporal is shown as a native-persistence baseline rather than collapsed into one ranking.
+Pulse + Durable reliable-confirmation results are shown below in milliseconds as first/reuse medians.
 
 | shape / N | Pulse + Durable first / reuse (ms) | status |
 |---|---|---|
@@ -119,7 +111,7 @@ The formal SQLite rerun reports Pulse + Durable reliable confirmation below, in 
 | wide / 1000 | 12879.575300 / 14727.901900 | ok=3 |
 | wide / 10000 | — / — | deadline=1, not_repeated=2 |
 
-Official sqlitestore v0.1.0 configures and reads back WAL/FULL; runtime Load/Save, CAS and local run ownership use that formal Store. Inspection connections, PRAGMA validation and setup costs are not engine graph construction. Process hard-kill is not power-loss testing; backup/restore, migration and distributed lease/fencing are not accepted here, and DB/WAL/SHM lengths are not cumulative physical writes.
+Official sqlitestore v0.1.0 uses WAL/FULL; Pulse Load/Save, CAS and local run ownership use that Store. The measurement does not cover backup/restore, migration or distributed lease/fencing.
 
 ## Cross-process recovery
 
@@ -140,12 +132,12 @@ The formal recovery run uses chain/rounds=256, N=10/100/1000, confirmed prefixes
 | temporal / runtime_kill / 1000 | 3 | 53.706356 [53.680285–53.717853] | 53615.510200 [53612.884800–53635.186500] |
 | temporal / server_restart / 1000 | 3 | 49.185665 [49.084596–49.220536] | 48907.995200 [48819.051800–48933.869500] |
 
-wall is controller recovery wall time; operation is the child-command scope, including Graph/Store or client reconstruction. Do not interchange them or rank wall time across semantics. Server-restart and worker-only recovery show counterintuitive ordering and broad ranges; without controlled diagnosis, no causal conclusion follows.
+wall is controller recovery time; operation is the child-command time, including Graph/Store or client reconstruction. The two metrics are not interchangeable.
 
 ## Data, reproduction and checks
 
 The historical full-dimensional data remains in `benchmarks/reports/2026-10-17-production/` with its compact CSV and identity. Current formal SQLite data is in [sqlite-formal-20261023 summary.csv](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/sqlite-formal-20261023/summary.csv) and [identity.json](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/sqlite-formal-20261023/identity.json). The external evidence root is `go126-release-20261023/`; raw records retain all failed and not-repeated states, while databases, logs and binaries stay outside the source repository.
 
-The formal SQLite rerun independently reproduced checksums for 102 successful records and statistics for 57 groups; recovery completed 36/36. Its status is **COMPLETED_WITH_ERRORS**. It does not rewrite older Go 1.25 numbers as a Go 1.26 speedup or present this bounded collection as a full performance rerun.
+The formal rerun status is **COMPLETED_WITH_ERRORS**; recovery completed 36/36.
 
 Pinned sources: [Eino v0.9.21](https://github.com/cloudwego/eino/tree/v0.9.21), [Temporal SDK v1.50.0](https://github.com/temporalio/sdk-go/tree/v1.50.0), [CLI v1.9.1](https://github.com/temporalio/cli/releases/tag/v1.9.1).
