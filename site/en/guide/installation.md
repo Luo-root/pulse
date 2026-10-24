@@ -16,8 +16,8 @@ The core package's dependency closure contains only the standard library. `pulse
 
 | Version | When to choose it | Documentation |
 | --- | --- | --- |
-| `v0.5.1` | Current release; pin this version | [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.1) · [Release notes](../reference/release-v0.5.1.md) · [Migration](../reference/migration.md) |
-| `v0.5.0` | Maintain an existing application pinned to the older release | [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) · [v0.5.0 release notes](../reference/release-v0.5.0.md) |
+| `v0.5.1` | Current source and release-preparation baseline | [Migration](../reference/migration.md) · [Unified production comparison](../reference/production-comparison.md) |
+| `v0.5.0` | Maintain an existing application pinned to the older release | [Unified production comparison](../reference/production-comparison.md) |
 | Historical tag `v0.4.1` | Maintain the older API before migration | [v0.4.1 source and README](https://github.com/Luo-root/pulse/tree/v0.4.1) |
 | `main` | You want the development API already merged into the main branch | [main source](https://github.com/Luo-root/pulse) |
 | Local source checked out with these docs | You are trying unmerged fixes or contributing | These guides and reference; use the local replacement below |

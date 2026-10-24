@@ -4,18 +4,18 @@ This section is for developers already using Pulse who need exact behavior or in
 
 ## Version scope
 
-These documents use the published **v0.5.1** object model as their API baseline and include the formal SQLite measurements and evidence boundaries. v0.5.0 remains available as a historical release. See [migration](./migration.md) for upgrade differences.
+These documents use the current main API object model as their baseline; performance, SQLite, recovery and historical comparisons are consolidated in the [unified production comparison](./production-comparison.md). See [migration](./migration.md) for upgrade differences.
 
 ## Find a contract
 
 | Question | Page |
 |---|---|
-| v0.5.1 formal SQLite and recovery measurements, completion states, and evidence boundaries | [Formal-release SQLite refresh](./sqlite-formal-20261023.md) |
+| Current formal-release and historical execution, storage and recovery costs | [Unified production comparison](./production-comparison.md) |
 | When definitions seal, which states exist, how often callbacks occur | [Lifecycle](./lifecycle.md) |
 | What errors mean and whether to change declarations or handle a runtime failure | [Errors](./errors.md) |
 | When outputs are confirmed and published, what recovery restores, how retry budgets persist | [Checkpoints](./checkpoint.md) |
 | How to migrate from v0.4.1 or transitional development APIs | [Migration](./migration.md) |
-| Which capabilities and breaking changes v0.5.0 includes | [Release notes](./release-v0.5.0.md) |
+| Which API differences exist between v0.5.0 and current main | [Migration](./migration.md) |
 
 ## Objects and interfaces
 

@@ -16,8 +16,8 @@ go version
 
 | 版本 | 适用情况 | 对应资料 |
 | --- | --- | --- |
-| `v0.5.1` | 当前发布版本，推荐固定安装 | [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.1) · [发布说明](../reference/release-v0.5.1.md) · [迁移步骤](../reference/migration.md) |
-| `v0.5.0` | 维护已固定的旧版本 | [Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.0) · [v0.5.0 发布说明](../reference/release-v0.5.0.md) |
+| `v0.5.1` | 当前源码与发布准备基线 | [迁移步骤](../reference/migration.md) · [统一生产性能对比](../reference/production-comparison.md) |
+| `v0.5.0` | 维护已固定的旧版本 | [统一生产性能对比](../reference/production-comparison.md) |
 | 历史 tag `v0.4.1` | 维护旧 API，尚未迁移 | [v0.4.1 源码与说明](https://github.com/Luo-root/pulse/tree/v0.4.1) |
 | `main` | 使用已合入主线的开发 API | [main 源码](https://github.com/Luo-root/pulse) |
 | 与文档一起检出的本地源码 | 试用尚未合并的修复或参与开发 | 本站指南与参考；使用下方本地替换步骤 |
