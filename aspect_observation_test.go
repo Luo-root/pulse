@@ -307,6 +307,10 @@ func TestAspectObservationTimeoutReportsOwnDeadline(t *testing.T) {
 			trace := &aspectTrace{}
 			g := mustNew(t, ctx, "timeout-facts")
 			aspects := []Aspect{Timeout(time.Millisecond)}
+			if mode == "success" {
+				// This case checks a business error without timer expiry.
+				aspects = []Aspect{Timeout(time.Hour)}
+			}
 			if mode == "parent" {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, time.Millisecond)
