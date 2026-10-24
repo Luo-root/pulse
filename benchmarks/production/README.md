@@ -1,10 +1,10 @@
 # 统一生产工作流对照
 
-关联 [#427](https://github.com/Luo-root/pulse/issues/427)。[English](README_en.md)。这个独立模块固定使用 **Pulse（可靠维度加 Durable）、Eino、Temporal** 三列，根生产模块不新增运行依赖。旧 DAG 对照保留历史结果，不参与本轮排名。
+[English](README_en.md)。本模块为 Pulse v0.5.1 文档提供 **Pulse（可靠维度加 Durable）、Eino、Temporal** 的对照方法与复跑入口，独立于生产模块。
 
 当前复跑（[#502](https://github.com/Luo-root/pulse/issues/502)，关联 Durable #81）固定正式公开版本：Core `v0.5.0`、Durable `v0.1.0`、`pulse-durable/sqlitestore v0.1.0`；Go 1.26，Eino `v0.9.21`、Temporal SDK `v1.50.0` / API `v1.63.5` 保持不变，无 replace。Durable 实际使用维护的官方 SQLite backend；本轮结果须写新目录，不改冻结结果。
 
-历史 v0.5.0 发布前重测固定 Core `v0.4.2-0.20261021081643-be778722b781` 和 Durable `v0.0.0-20261021085955-5db6eae0e9fb`，无本地 replace。测量时尚未创建 v0.5.0 tag；最终引擎源码需与被测 SHA 一致。新统计见 [`v0.5.0-candidate-20261021`](../reports/v0.5.0-candidate-20261021/identity.json)，历史结果不改写。
+结果与测量身份见[统一生产性能对比](../../site/reference/production-comparison.md)及各数据目录的 `identity.json`。
 
 ## 共同任务与适配
 

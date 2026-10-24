@@ -1,17 +1,17 @@
 # Migration
 
-This page is for maintainers upgrading from published v0.4.1 or transitional development commits to the reusable Graph definition and independent Execution APIs. Retain existing tests and verify the module version before upgrading.
+This page documents the v0.5.1 reusable Graph definition, independent Execution, checkpoint bridge and stream APIs. Retain existing tests and verify the module version before upgrading.
 
 ## Published releases and development documentation
 
-The migration target is the published **v0.5.1**, including the current object model, checkpoint bridge, and sugar signatures below. Compare v0.4.1 source with this page and migrate each affected call; do not apply new examples to an older dependency. The historical v0.5.0 migration record remains available for older applications:
+v0.5.1 includes the current object model, checkpoint bridge and sugar signatures below. Applications should use the matching v0.5.1 dependency:
 
 ```sh
 go get github.com/Luo-root/pulse@v0.5.1
 go list -m github.com/Luo-root/pulse
 ```
 
-v0.5.1 requires Go 1.26.0+; v0.5.0's original Go 1.25+ requirement applies only to the historical release. Commit your application's go.mod/go.sum. Install main only for subsequent development changes and retain the concrete version resolved by Go; do not invent a commit or pseudo-version. For a local replacement, verify the source directory. See the [unified production comparison](production-comparison.md) for current performance, storage and recovery measurements.
+v0.5.1 requires Go 1.26.0+. Commit your application's go.mod/go.sum; for development changes or local replacements, verify the source directory and resolved version. See the [unified production comparison](production-comparison.md) for current performance, storage and recovery measurements.
 
 ## Node sugar constructors gain a description
 
@@ -27,7 +27,7 @@ Tee(g, id, description, in, outs, opts...)
 
 These show argument shapes. Every FanOut worker shares the description and retains its existing `id-1` through `id-N` identity. The description is static metadata in Topology / Snapshot, with no runtime setter.
 
-This public signature change requires a minor release during 0.x, never a patch. The older public snapshot `1f67045d6c42` uses the old signatures. Use [matching local source](../guide/installation.md) when trying unmerged changes; updating examples while retaining that older dependency does not work.
+These signatures are part of the v0.5.1 API. Use [matching local source](../guide/installation.md) when testing development changes.
 
 ## Local aspect options for stream nodes
 
@@ -51,11 +51,11 @@ Consume creates no send buffer: a positive `WithBuffer` fails during assembly wi
 
 Native helpers support WithStreamAspects but reject WithStreamSource/WithMessageHandling; they do not silently acquire reliability. ConsumeStream rejects positive WithBuffer; ProduceStream rejects nonempty message handling. WithMessageHandling configures finite managed consumer/Tee attempts. Failed results stay unpublished; closures and external effects do not roll back.
 
-Sub has no aggregate input gate. All skipped inlets still create a child whose independent sources may run. Ordinary Retry rejects actual external streams; absence proven through nested bindings remains normal. Complete finite internal pipelines bridging only ordinary values may retry together. Multiple Out aliases of a completed stream share one recovery ledger; the body stays skipped while Done and the tail are rebuilt. Active sources without continuation promises reject recovery. A host subscription makes a pass-through inlet required for this run, needing Seed/SkipSeed. Wait does not drain for the host. See the [stream guide](../guide/streams.md) and [checkpoint reference](./checkpoint.md). Use matching local source. Durable provides storage and process recovery, with integration tracked in Durable #21; actual tags/releases determine release status.
+Sub has no aggregate input gate. All skipped inlets still create a child whose independent sources may run. Ordinary Retry rejects actual external streams; absence proven through nested bindings remains normal. Complete finite internal pipelines bridging only ordinary values may retry together. Multiple Out aliases of a completed stream share one recovery ledger; the body stays skipped while Done and the tail are rebuilt. Active sources without continuation promises reject recovery. A host subscription makes a pass-through inlet required for this run, needing Seed/SkipSeed. Wait does not drain for the host. See the [stream guide](../guide/streams.md) and [checkpoint reference](./checkpoint.md). Durable provides storage and process recovery.
 
 ## Migrate object responsibilities first
 
-| Concern | v0.4.1 model | Current development model |
+| Concern | Before migration | v0.5.1 |
 |---|---|---|
 | Graph | One run's definition, slots, context, and error | Reusable static definition |
 | Context | Bound when constructing the graph | Supplied to NewExecution or Run |
@@ -110,7 +110,7 @@ Successful Validate seals the entire subtree, as does successful Start. Move dec
 
 Sub mounts an assembled child definition using an ID, description, binds, and child. Its interface must consist of DeclareInput/DeclareOutput ports. In carries parent values into the child; Out bridges child outputs back. Fix/FixSkip supply mount-specific inputs. Every run and mount has an independent child execution with cancellation derived from the parent node context.
 
-If you followed transitional development commits, dynamic child construction entries have been removed. Build static subtrees at assembly time instead. This is a transitional API migration, not a capability originally present in v0.4.1. Do not store per-run fixed values in the child definition.
+Build static subtrees at assembly time. Supply per-run values through input ports rather than storing them in the child definition.
 
 ## Migrate observation, results, and retry
 
@@ -130,7 +130,7 @@ Timeout cancels its inner context at expiry and waits for the body to exit. Code
 
 The rule applies to attribute keys and string values, source, host, error, trace, and host renderers using these primitives. Corresponding fragments from the built-in LineSink and AppendTextValue / AppendAttrs / AppendAttrsExcept remain byte-identical. Text-log parsers and fixed-output assertions should update expectations for these inputs and decode quoted fields as Go string literals.
 
-The encoding primitives are frozen, so this output-byte change must ship in the next minor release, never a patch. This describes the development implementation; no new tag has been released.
+v0.5.1 uses these text-encoding rules; update log parsers and fixed-output tests when migrating.
 
 ## Migrate YAML and recovery integrations
 

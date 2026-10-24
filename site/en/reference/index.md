@@ -4,18 +4,18 @@ This section is for developers already using Pulse who need exact behavior or in
 
 ## Version scope
 
-These documents use the current main API object model as their baseline; performance, SQLite, recovery and historical comparisons are consolidated in the [unified production comparison](./production-comparison.md). See [migration](./migration.md) for upgrade differences.
+These documents use the v0.5.1 API object model as their baseline; performance, SQLite and recovery data are consolidated in the [unified production comparison](./production-comparison.md).
 
 ## Find a contract
 
 | Question | Page |
 |---|---|
-| Current formal-release and historical execution, storage and recovery costs | [Unified production comparison](./production-comparison.md) |
+| Execution, storage and recovery costs | [Unified production comparison](./production-comparison.md) |
 | When definitions seal, which states exist, how often callbacks occur | [Lifecycle](./lifecycle.md) |
 | What errors mean and whether to change declarations or handle a runtime failure | [Errors](./errors.md) |
 | When outputs are confirmed and published, what recovery restores, how retry budgets persist | [Checkpoints](./checkpoint.md) |
 | How to migrate from v0.4.1 or transitional development APIs | [Migration](./migration.md) |
-| Which API differences exist between v0.5.0 and current main | [Migration](./migration.md) |
+| v0.5.1 API, lifecycle and checkpoint boundaries | [Migration](./migration.md) |
 
 ## Objects and interfaces
 

@@ -4,7 +4,7 @@ Build a workflow that turns a document list into a summary and then a report. By
 
 ## Before you begin
 
-Current source requires Go 1.26.0+; published v0.5.0, installed by default, originally requires Go 1.25+. The program uses the v0.5.0 API. If you installed v0.4.1, read [installation and versions](installation.md) first.
+The example uses Pulse v0.5.1 and requires Go 1.26.0+. See [installation and versions](installation.md).
 
 Initialize a module in a new directory:
 

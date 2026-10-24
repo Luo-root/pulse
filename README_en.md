@@ -33,7 +33,7 @@ To continue after a process exits, use the separate [pulse-durable](https://gith
 
 ## Installation
 
-v0.5.1 requires **Go 1.26.0 or later**, aligned with Durable. Raising the minimum toolchain has a compatibility impact, while public APIs and runtime semantics are unchanged. The original Go 1.25.0+ requirement of v0.5.0 is retained as historical compatibility information; see the [v0.5.1 release notes](site/en/reference/release-v0.5.1.md).
+Pulse v0.5.1 requires **Go 1.26.0 or later**. See [installation and versions](site/en/guide/installation.md).
 
 > This README and the documentation site use **v0.5.1** as their API baseline, including managed Stream, live Sub, and incremental checkpoints. Read [migration](site/en/reference/migration.md) before upgrading from v0.4.1. The command below pins v0.5.1. See [installation and versions](site/en/guide/installation.md) for development or unmerged changes; the tag and Release establish publication status.
 
@@ -130,7 +130,7 @@ For continuous data, use `Key[pulse.Stream[T]]` and `ProduceStream` / `ConsumeSt
 | Compose approvals, input-dependent batches, or Graph tool loops | [Business composition](site/en/guide/composition.md) |
 | Define workflows in YAML and integrate events or logs | [YAML assembly](site/en/guide/assembly.md) · [Observation](site/en/guide/observability.md) |
 | Look up lifecycle rules, errors, the recovery bridge, or version differences | [Reference index](site/en/reference/index.md) |
-| Read the formal SQLite and recovery measurements for the v0.5.1 release preparation | [Formal-release SQLite refresh](site/en/reference/sqlite-formal-20261023.md) · [Benchmark source and method](benchmarks/README_en.md) |
+| Evaluate execution, resource, SQLite and recovery costs | [Unified production comparison](site/en/reference/production-comparison.md) · [Benchmark source and method](benchmarks/README_en.md) |
 
 Read online: [English documentation](https://luo-root.github.io/pulse/en/) · [中文文档](https://luo-root.github.io/pulse/).
 
