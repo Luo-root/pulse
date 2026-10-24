@@ -88,11 +88,11 @@ func main() {
 }
 ```
 
-在保存文件的目录中执行。运行未合并分支的示例时，按[安装页的本地替换步骤](./installation.md#试用尚未合并的源码)使用对应源码；以下 `@main` 命令只获取已合入主线的 API。
+在保存文件的目录中执行：
 
 ```sh
 go mod init example.com/pulse-branches
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.1
 go run .
 ```
 

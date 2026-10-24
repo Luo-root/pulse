@@ -1,6 +1,6 @@
 # Inputs and outputs
 
-This page is for developers who need to pass request data into a flow and retrieve business results afterward. First understand [graphs, executions, and keys](./concepts.md) and use the development revision identified in the [migration reference](../reference/migration.md).
+This page is for developers who need to pass request data into a flow and retrieve business results afterward. First understand [graphs, executions, and keys](./concepts.md) and use the v0.5.1 API.
 
 Port declarations describe what a graph accepts and produces. `Inputs` and `Execution` hold data for a particular run. Declared outputs provide business results; snapshots provide progress. These use separate APIs.
 

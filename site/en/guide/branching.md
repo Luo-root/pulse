@@ -88,11 +88,11 @@ func main() {
 }
 ```
 
-Run these commands in the directory containing the file. For examples from an unmerged branch, use the matching source checkout with the [installation page's local replacement steps](./installation.md); `@main` below only installs APIs already merged into main.
+Run these commands in the directory containing the file:
 
 ```sh
 go mod init example.com/pulse-branches
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.1
 go run .
 ```
 

@@ -8,7 +8,7 @@ The SQLite rerun uses Go 1.26, the Pulse Core v0.5.0 source baseline, Pulse Dura
 
 | Component | Pinned identity |
 |---|---|
-| Pulse Core source baseline | v0.5.0 formal release / v0.5.1 release candidate |
+| Pulse Core source baseline | v0.5.0 (measured version) |
 | Durable / official sqlitestore | v0.1.0 / v0.1.0 |
 | Eino | v0.9.21 |
 | Temporal SDK / CLI / Server | v1.50.0 / 1.9.1 / 1.32.0 |

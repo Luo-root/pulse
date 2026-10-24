@@ -8,7 +8,7 @@ home:
   lead: 定义一次流程，为每个请求创建独立执行。通过类型化数据组合 Go 函数，清楚地表达并行、分支与正常跳过。
   primary: { text: 开始使用, link: /guide/quickstart }
   secondary: { text: 了解核心概念, link: /guide/concepts }
-  version: 开发版文档 · Go 1.26+ · 按安装页选择对应源码
+  version: Pulse v0.5.1 · Go 1.26.0+
   flowTitle: 一份定义，一次执行
   flowLabel: 输入到达后计算，并产生声明出口
   flow:

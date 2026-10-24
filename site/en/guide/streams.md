@@ -76,11 +76,11 @@ func main() {
 }
 ```
 
-In a new example directory containing `main.go`, fetch the development version already merged into the main branch and run it:
+In the example directory containing `main.go`, install the dependency and run:
 
 ```sh
 go mod init example.com/pulse-streams
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.1
 go run -race .
 ```
 

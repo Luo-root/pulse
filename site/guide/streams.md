@@ -76,11 +76,11 @@ func main() {
 }
 ```
 
-在保存 `main.go` 的新示例目录中，获取已合入主线的开发版并运行：
+在保存 `main.go` 的示例目录中安装依赖并运行：
 
 ```sh
 go mod init example.com/pulse-streams
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.1
 go run -race .
 ```
 

@@ -10,7 +10,7 @@ Chinese: [README.md](README.md).
 
 [Configuration comparisons](reports/2026-10-17-optimization.csv), [stage statistics](reports/2026-10-17-optimization-stages.csv) and [version summary](reports/2026-10-17-optimization.json) retain concise statistics from 1380 successful samples. The 30 instrumented large-graph checks, complete raw samples, 12 plot pairs and diagnostics remain in an external evidence archive rather than the source repository. Original baseline, first candidate and final candidate are separate runs and never mixed.
 
-The layers are [#423](https://github.com/Luo-root/pulse/pull/423), [#424](https://github.com/Luo-root/pulse/pull/424) and [#425](https://github.com/Luo-root/pulse/pull/425). The measured commit is `f6049c4aac4d2d5316e0ced5959dc7bc2a257b46`. Current formal SQLite, reliable-execution and recovery results for the v0.5.1 release candidate are in the [unified production comparison](../site/en/reference/production-comparison.md).
+The layers are [#423](https://github.com/Luo-root/pulse/pull/423), [#424](https://github.com/Luo-root/pulse/pull/424) and [#425](https://github.com/Luo-root/pulse/pull/425). The measured commit is `f6049c4aac4d2d5316e0ced5959dc7bc2a257b46`. SQLite, reliable-execution and recovery measurements are in the [unified production comparison](../site/en/reference/production-comparison.md).
 
 ## Identical business tasks
 

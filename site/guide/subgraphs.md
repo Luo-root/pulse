@@ -1,6 +1,6 @@
 # 静态子图
 
-本页面向需要将一段流程封装为可复用步骤的开发者。需要 Go 1.26+，并了解[输入输出端口](./inputs-outputs.md)与[汇聚策略](./branching.md)。本例使用开发版 API。
+本页面向需要将一段流程封装为可复用步骤的开发者。需要 Go 1.26+，并了解[输入输出端口](./inputs-outputs.md)与[汇聚策略](./branching.md)。本例使用 v0.5.1 API。
 
 `Sub` 在装配期把现成的子图定义挂到父图中。子图只能通过声明端口交换数据；运行前，父图就可以查看和校验完整子树。
 
@@ -129,11 +129,11 @@ func main() {
 }
 ```
 
-在该目录运行。运行未合并分支的示例时，按[安装页的本地替换步骤](./installation.md)使用对应源码；以下 `@main` 命令只获取已合入主线的 API。
+在该目录运行：
 
 ```sh
 go mod init example.com/pulse-subgraphs
-go get github.com/Luo-root/pulse@main
+go get github.com/Luo-root/pulse@v0.5.1
 go run .
 ```
 
