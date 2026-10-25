@@ -2,7 +2,7 @@
 
 本页面向实现持久执行集成、存储或 Codec 的开发者。需要理解[生命周期](./lifecycle.md)、[重试写集](../guide/retry-cancellation.md)和[静态子图](../guide/subgraphs.md)，并使用[v0.5.1](./migration.md)。普通业务宿主需要恢复时，优先使用独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable) Run/Resume，而不是自行拼装可靠钩子。
 
-Durable 提供检查点 Run/Resume、本机 filestore，以及受管流的存储与进程恢复，集成跟踪见 [Durable #21](https://github.com/Luo-root/pulse-durable/issues/21)。本页描述 Core 桥契约；运行时请使用匹配的本地检出，发布状态以维护者的 tag/release 为准。持久等待、分布式运行管理属于后续能力。依赖单向：Durable 导入 Pulse，Pulse 不依赖 Durable。
+Durable 提供检查点 Run/Resume、本机 filestore，以及受管流的存储与进程恢复，集成跟踪见 [Durable #21](https://github.com/Luo-root/pulse-durable/issues/21)。本页描述 Core 桥契约；运行时请使用匹配的本地检出，发布状态以维护者的 tag/release 为准。本机执行使用 `Run/Resume`；main 分支的实验性 [distributed 模块](https://github.com/Luo-root/pulse-durable/blob/main/distributed/README.md)使用 `Submit/Worker`，以 PostgreSQL 协调整工作流的领取、租约、fencing 与故障接管，并复用本页的检查点桥。该模块尚未发布，不提供工作流内节点的跨机器派发；持久等待与内置唤醒服务仍是后续能力。依赖单向：Durable 导入 Pulse，Pulse 不依赖 Durable。
 
 ## 确认后发布
 

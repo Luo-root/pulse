@@ -25,7 +25,7 @@
 
 业务任务可以仍处于 waiting，本次 Execution 则是 canceled。不要返回普通的“等待中”错误代替这个协议：普通错误会消耗失败预算。正常 skip 也不表示等待，它表示本轮没有这项结果。
 
-等待登记、取消和唤醒之间的中断窗口、重复事件及恢复扫描由宿主协议处理。完整说明和真实进程恢复用例见 [Durable 组合指南](https://github.com/Luo-root/pulse-durable/blob/main/site/guide/composition.md)。内置唤醒服务和跨机器租约仍是独立的扩展方向。
+等待登记、取消和唤醒之间的中断窗口、重复事件及恢复扫描由宿主协议处理。完整说明和真实进程恢复用例见 [Durable 组合指南](https://github.com/Luo-root/pulse-durable/blob/main/site/guide/composition.md)。持久等待与内置唤醒服务仍是后续能力。多机整工作流协调使用 main 分支实验性 [distributed 模块](https://github.com/Luo-root/pulse-durable/blob/main/distributed/README.md)的 `Submit/Worker`，而不是上述本机 `Run/Resume` 协议；它以 PostgreSQL 提供领取、租约、fencing 与故障接管，复用同一检查点桥，但不提供审批等待协议或工作流内节点的跨机器派发。该模块尚未发布。
 
 ## 在节点里循环调用 Graph 工具
 

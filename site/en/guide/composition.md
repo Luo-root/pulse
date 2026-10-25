@@ -25,7 +25,7 @@ For a long wait that releases the process, the host can compose Durable:
 
 The application task can remain waiting while this Execution is canceled. Do not replace this protocol with an ordinary "still waiting" error: ordinary errors consume failure budget. Normal skip also means no result this run, rather than a pending approval.
 
-The host protocol owns interruption windows between registration, cancellation, and wake-up, repeated events, and recovery scans. See the [Durable composition guide](https://github.com/Luo-root/pulse-durable/blob/main/site/en/guide/composition.md) for details and real process-recovery tests. A built-in wake-up service and cross-machine leases remain separate extension directions.
+The host protocol owns interruption windows between registration, cancellation, and wake-up, repeated events, and recovery scans. See the [Durable composition guide](https://github.com/Luo-root/pulse-durable/blob/main/site/en/guide/composition.md) for details and real process-recovery tests. Durable waits and a built-in wake-up service remain future capabilities. For multi-machine whole-workflow coordination, use `Submit/Worker` in the experimental [distributed module](https://github.com/Luo-root/pulse-durable/blob/main/distributed/README.md) on main rather than the local `Run/Resume` protocol above. It provides PostgreSQL-backed claiming, leases, fencing, and failover through the same checkpoint bridge, but does not provide an approval-wait protocol or dispatch individual workflow nodes across machines. The module has not been released.
 
 ## Call Graph tools from a loop node
 
