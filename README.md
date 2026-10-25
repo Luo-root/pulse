@@ -29,7 +29,7 @@ Pulse 将一组 Go 函数组合为可复用的工作流。每个节点声明需�
 - **连续数据处理**：用受管流逐条发送、确认、广播，跨子图实时传递，并在运行中向宿主交付。
 - **需要可观测的执行过程**：查看结构、运行快照与节点事件，定位等待、执行、失败和取消。
 
-需要在进程退出后继续工作时，使用独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable)。它在 Pulse 的检查点桥上提供存储、编码和 Run / Resume；受管流的存储与进程恢复也由 Durable 提供。按 [Durable 安装说明](https://github.com/Luo-root/pulse-durable/blob/main/site/guide/installation.md)使用已验证的依赖组合，发布以实际 tag/release 为准。未确认步骤可能重新执行，外部副作用仍需业务提供幂等或事务。
+需要在进程退出后继续工作时，使用独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable)。它在 Pulse 的检查点桥上提供存储、编码、本机 `Run/Resume`，以及受管流的存储与进程恢复。需要多机协作时，main 分支的实验性 [distributed 模块](https://github.com/Luo-root/pulse-durable/blob/main/distributed/README.md)提供 `Submit/Worker`，基于 PostgreSQL 协调整工作流的领取、租约、fencing 与故障接管，并复用同一检查点桥；它不把工作流内的节点派发到不同机器。该模块尚未发布。按 [Durable 安装说明](https://github.com/Luo-root/pulse-durable/blob/main/site/guide/installation.md)使用已验证的依赖组合，发布以实际 tag/release 为准。未确认步骤可能重新执行，外部副作用仍需业务提供幂等或事务。
 
 ## 安装
 
@@ -146,7 +146,7 @@ func main() {
 
 切面可用 `rc.Site()` 取得本次执行的只读位置。接入 `observe.NewRecordObserver` 后，现有 `Retry` / `Timeout` 自动产生尝试、真实重试、退避和本层到期记录，五种 Observer 生命周期回调次数不变。自定义切面用 `pulse.NamedAspect("approval", aspect)` 显式登记进出；未配置观察者时不输出日志。身份、阶段与恢复边界见[观测指南](site/guide/observability.md)。
 
-Pulse 负责单进程执行，Durable 提供检查点存储与恢复。宿主可通过切面、业务等待记录与 Cancel/Resume 组合审批等待，也可在节点中循环调用 Graph 工具；具体接线与保证边界见[业务组合](site/guide/composition.md)。内置唤醒服务、任务派发、跨机器领取/租约与故障接管仍是后续方向。设计依据与演进计划保留在 [设计文档](docs/design/pulse.md)、[设计理念](docs/design/philosophy.md) 和 [两仓职责说明](docs/design/workflow-foundation.md) 中。
+Pulse 负责单进程执行，不依赖数据库或调度服务；Durable 单向依赖 Pulse，提供检查点存储、恢复与实验性整工作流协调。宿主可通过切面、业务等待记录与 Cancel/Resume 组合审批等待，也可在节点中循环调用 Graph 工具；具体接线与保证边界见[业务组合](site/guide/composition.md)。持久等待、内置唤醒服务与工作流内节点的跨机器派发仍是后续方向。设计依据与演进计划保留在 [设计文档](docs/design/pulse.md)、[设计理念](docs/design/philosophy.md) 和 [两仓职责说明](docs/design/workflow-foundation.md) 中。
 
 ## 开发与贡献
 

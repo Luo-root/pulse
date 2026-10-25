@@ -33,7 +33,7 @@ Keep the workflow definition and create a new `Execution` for each request. Supp
 | YAML assembly | Separate topology configuration from Go functions | [YAML assembly](assembly.md) |
 | Events, logs, and snapshots | Inspect progress, diagnose failures, and integrate logging | [Observation](observability.md) |
 
-The core uses only the standard library. Import the optional `observe` and `yaml` packages as needed. For recovery after a process exits, use the separate [pulse-durable](https://github.com/Luo-root/pulse-durable) library. It provides local checkpoint storage and recovery; durable waits and distributed run management are not implemented.
+The core uses only the standard library, with no database or scheduling-service dependency. Import the optional `observe` and `yaml` packages as needed. For recovery after a process exits, use local `Run/Resume` in the separate [pulse-durable](https://github.com/Luo-root/pulse-durable) library. For multi-machine coordination, the experimental [distributed module](https://github.com/Luo-root/pulse-durable/blob/main/distributed/README.md) on main provides `Submit/Worker`, using PostgreSQL for whole-workflow claiming, leases, fencing, and failover through the same checkpoint bridge. The module has not been released and does not dispatch individual workflow nodes across machines. Durable waits and a built-in wake-up service remain future capabilities.
 
 ## Reading paths
 

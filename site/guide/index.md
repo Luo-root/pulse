@@ -33,7 +33,7 @@ flowchart LR
 | YAML 装配 | 将拓扑配置与 Go 处理函数分开 | [YAML 装配](assembly.md) |
 | 事件、日志和快照 | 查询进度、定位故障、接入现有日志 | [图观测](observability.md) |
 
-核心包只依赖标准库。`observe` 与 `yaml` 是可选包，按需引入。需要跨进程恢复时，可使用独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable)；它提供本机检查点存储和恢复，持久等待与分布式运行管理尚未实现。
+核心包只依赖标准库，不引入数据库或调度服务依赖。`observe` 与 `yaml` 是可选包，按需引入。需要跨进程恢复时，使用独立的 [pulse-durable](https://github.com/Luo-root/pulse-durable) 的本机 `Run/Resume`；需要多机协作时，main 分支的实验性 [distributed 模块](https://github.com/Luo-root/pulse-durable/blob/main/distributed/README.md)提供 `Submit/Worker`，基于 PostgreSQL 协调整工作流的领取、租约、fencing 与故障接管，复用同一检查点桥。该模块尚未发布，不提供工作流内节点的跨机器派发；持久等待与内置唤醒服务仍是后续能力。
 
 ## 怎样阅读本文档
 

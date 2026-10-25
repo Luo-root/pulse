@@ -57,10 +57,10 @@ Snapshots sample individual entries rather than capture an atomic whole-graph in
 | Pulse core | Single-process execution, data flow, composition, validation, state, and the checkpoint bridge |
 | `observe` | Structured records, logging sinks, rendering, and buffering |
 | `yaml` | Declarative topology and type/factory assembly |
-| Durable | Checkpoint encoding, storage, ownership, and recovery |
+| Durable | Checkpoint encoding, storage, ownership, recovery, and experimental whole-workflow coordination |
 | Application | Business IO, shared objects, idempotency, external transactions, and version policy |
 
-Core uses only the standard library. Optional layers depend on core in one direction. Durable's local checkpoint recovery is implemented; durable waits, task claiming, and distributed failover remain future work.
+Core uses only the standard library, with no database or scheduling-service dependency. Dependencies are one-way: Durable imports Pulse; Pulse does not import Durable. Durable's local `Run/Resume` and `Submit/Worker` in the experimental [distributed module](https://github.com/Luo-root/pulse-durable/blob/main/distributed/README.md) on main use the same checkpoint bridge. The latter provides PostgreSQL-backed whole-workflow claiming, leases, fencing, and failover and has not been released. It does not dispatch individual workflow nodes across machines. Durable waits and a built-in wake-up service remain future capabilities.
 
 For full rationale and historical decisions, see the [original philosophy](https://github.com/Luo-root/pulse/blob/main/docs/design/philosophy.md), [object model](https://github.com/Luo-root/pulse/blob/main/docs/design/object-model.md), and [cross-repository responsibilities](https://github.com/Luo-root/pulse/blob/main/docs/design/workflow-foundation.md).
 

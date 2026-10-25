@@ -57,10 +57,10 @@
 | Pulse 核心 | 单进程执行、数据流、组合、校验、状态与检查点桥 |
 | `observe` | 结构化记录、日志出口、渲染和缓冲 |
 | `yaml` | 声明式拓扑与类型/工厂装配 |
-| Durable | 检查点编码、存储、所有权和恢复 |
+| Durable | 检查点编码、存储、所有权、恢复与实验性整工作流协调 |
 | 应用 | 业务 IO、共享对象、幂等、外部事务和版本策略 |
 
-核心只使用标准库，可选层单向依赖核心。Durable 的本机检查点恢复已实现；持久等待、任务领取与分布式故障接管属于后续方向。
+核心只使用标准库，不依赖数据库或调度服务。依赖单向：Durable 导入 Pulse，Pulse 不依赖 Durable。Durable 的本机 `Run/Resume` 与 main 分支实验性 [distributed 模块](https://github.com/Luo-root/pulse-durable/blob/main/distributed/README.md)的 `Submit/Worker` 复用同一检查点桥；后者以 PostgreSQL 提供整工作流领取、租约、fencing 与故障接管，尚未发布。不提供工作流内节点的跨机器派发；持久等待与内置唤醒服务仍是后续能力。
 
 完整设计依据与历史决策见[设计理念原稿](https://github.com/Luo-root/pulse/blob/main/docs/design/philosophy.md)、[对象模型](https://github.com/Luo-root/pulse/blob/main/docs/design/object-model.md)和[两仓职责](https://github.com/Luo-root/pulse/blob/main/docs/design/workflow-foundation.md)。
 
