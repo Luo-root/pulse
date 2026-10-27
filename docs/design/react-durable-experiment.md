@@ -30,22 +30,22 @@
 
 ## 试验源码索引
 
-以下是 Durable 试验工作区中的相对路径；目前未跟踪、未发布，不是 main 的可用链接。后续保留试验源码时应创建独立测试 PR/归档并在此补充固定 commit 链接。
+源码现归档于本 Draft PR 的独立 Go 实验模块；正式 Agent 套件仍应在独立仓库开发，不把此试验当作 Pulse 核心 API 或合并承诺。来源基线、固定依赖、必要 helper 与完整命令见 [实验 README](../../experiments/react-durable/README.md)。
 
-- `react_assessment_test.go`：普通循环与消息恢复对照。
-- `distributed/systemtest/react_recovery_assessment_test.go`：假模型三个强杀窗口。
-- `live_react_assessment_test.go`：真实 API 动态循环与离线协议断言。
-- `distributed/systemtest/live_react_recovery_test.go`：真实模型步骤持久化与独立 worker 接管。
-- `record_growth_assessment_test.go`：真实消息路径的记录增长。
+- [react_assessment_test.go](../../experiments/react-durable/react_assessment_test.go)：普通循环与消息恢复对照。
+- [systemtest/react_recovery_assessment_test.go](../../experiments/react-durable/systemtest/react_recovery_assessment_test.go)：假模型三个强杀窗口。
+- [live_react_assessment_test.go](../../experiments/react-durable/live_react_assessment_test.go)：真实 API 动态循环与离线协议断言。
+- [systemtest/live_react_recovery_test.go](../../experiments/react-durable/systemtest/live_react_recovery_test.go)：真实模型步骤持久化、离线恢复与独立 worker 接管。
 
-复现恢复测试：在 distributed 模块中，使用包含当前 Durable 根模块与 distributed 模块的 Go workspace，显式提供隔离 PG 测试 DSN 与授权开关。真实 API key 仅通过进程环境注入，不提交凭据，不打印 thinking 或原始响应。
+在 `experiments/react-durable` 目录设置 `GOWORK=off` 后运行：
 
 ```text
-go test -buildvcs=false -mod=readonly -race -count=1 -v -run '^TestLiveReActRecoveryOffline$' ./systemtest
-go test -buildvcs=false -mod=readonly -race -count=1 -timeout=360s -v -run '^TestLiveReActRecoveryPostgres$' ./systemtest
+go mod download
+go test -race -count=1 -buildvcs=false ./...
+go vet -buildvcs=false ./...
 ```
 
-真实 API 需要 `PULSE_LIVE_MINIMAX_ALLOW=yes`、`PULSE_LIVE_MINIMAX_KEY`、`PULSE_LIVE_MINIMAX_BASE`、`PULSE_LIVE_MINIMAX_MODEL`；PG 需要现有测试 allowlist 对应的 `PULSE_DISTRIBUTED_TEST_ALLOW`、`PULSE_DISTRIBUTED_TEST_DSN`。只发送合成测试数据；不将付费 API 放入默认无凭据 CI。
+默认只执行 MemoryStore 与本地 HTTP fixture，真实 API/PG 及子进程入口默认 skip；运行前清除继承的授权与子进程控制变量，具体 PowerShell 命令见实验 README。真实 API 需要显式提供 `PULSE_LIVE_MINIMAX_ALLOW`、`PULSE_LIVE_MINIMAX_KEY`、`PULSE_LIVE_MINIMAX_BASE`、`PULSE_LIVE_MINIMAX_MODEL`；PG 需要测试 allowlist 对应的 `PULSE_DISTRIBUTED_TEST_ALLOW`、`PULSE_DISTRIBUTED_TEST_DSN`。密钥只从进程环境注入，不打印 thinking 或原始响应，只发送合成数据。此轮归档仅重跑离线测试，不把历史真实 API/PG 结果表述为本轮重测。下节记录增长为历史观测，对应独立试验不在本次四文件归档范围内。
 
 ## 存储扩展观察
 
