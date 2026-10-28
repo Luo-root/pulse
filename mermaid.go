@@ -60,15 +60,18 @@ type mermaidGraph struct {
 }
 
 type mermaidNode struct {
-	shape *NodeShape
-	id    string
-	child *mermaidGraph
-	binds []mermaidBind
+	shape   *NodeShape
+	id      string
+	child   *mermaidGraph
+	binds   []mermaidBind
+	inputs  map[string][]string // 同一父键可按声明顺序连接多个子入口。
+	outputs map[string]string
 }
 
 type mermaidBind struct {
 	shape BindShape
 	id    string
+	typ   string
 }
 
 type mermaidClass struct {
@@ -109,13 +112,39 @@ func (r *mermaidRenderer) index(t *Topology) *mermaidGraph {
 			g.producer[p.Name] = n
 		}
 		if n.shape.Sub != nil {
+			inTypes, outTypes := mermaidKeyTypes(n.shape.Requires), mermaidKeyTypes(n.shape.Provides)
+			n.inputs = make(map[string][]string)
+			n.outputs = make(map[string]string)
 			for _, b := range n.shape.Binds {
-				n.binds = append(n.binds, mermaidBind{shape: b, id: r.id()})
+				bind := mermaidBind{shape: b, id: r.id()}
+				if !b.Fixed {
+					if b.In {
+						bind.typ = inTypes[b.Parent]
+						n.inputs[b.Parent] = append(n.inputs[b.Parent], bind.id)
+					} else {
+						bind.typ = outTypes[b.Parent]
+						if _, exists := n.outputs[b.Parent]; !exists {
+							n.outputs[b.Parent] = bind.id
+						}
+					}
+				}
+				n.binds = append(n.binds, bind)
 			}
 			n.child = r.index(n.shape.Sub)
 		}
 	}
 	return g
+}
+
+// 仅为挂载接线建类型查找；首个同名声明的显示语义与原逐项查找一致。
+func mermaidKeyTypes(keys []KeyShape) map[string]string {
+	types := make(map[string]string, len(keys))
+	for _, key := range keys {
+		if _, exists := types[key.Name]; !exists {
+			types[key.Name] = key.Type
+		}
+	}
+	return types
 }
 
 func (r *mermaidRenderer) graph(g *mermaidGraph, s *Snapshot, mount *mermaidNode, mountLabel string, depth int) {
@@ -165,17 +194,11 @@ func (r *mermaidRenderer) graph(g *mermaidGraph, s *Snapshot, mount *mermaidNode
 				r.line(depth+1, b.id+"{\"fixed\"}")
 				continue
 			}
-			kind, keys := "out", n.shape.Provides
+			kind := "out"
 			if b.shape.In {
-				kind, keys = "in", n.shape.Requires
+				kind = "in"
 			}
-			p := KeyShape{Name: b.shape.Parent}
-			for _, k := range keys {
-				if k.Name == p.Name {
-					p.Type = k.Type
-					break
-				}
-			}
+			p := KeyShape{Name: b.shape.Parent, Type: b.typ}
 			r.vertex(depth+1, b.id, n.shape.ID+" · "+mermaidKeyLabel(kind, p), true)
 		}
 		var childState *Snapshot
@@ -217,23 +240,15 @@ func (r *mermaidRenderer) arrow(from, to, label string) {
 
 // input/output 让父图依赖落到挂载点的对应键端点，避免把整个子图误画成一个循环节点。
 func (n *mermaidNode) input(key string) []string {
-	var ids []string
-	for _, b := range n.binds {
-		if b.shape.In && !b.shape.Fixed && b.shape.Parent == key {
-			ids = append(ids, b.id)
-		}
+	if ids := n.inputs[key]; len(ids) != 0 {
+		return ids
 	}
-	if len(ids) == 0 {
-		ids = append(ids, n.id)
-	}
-	return ids
+	return []string{n.id}
 }
 
 func (n *mermaidNode) output(key string) string {
-	for _, b := range n.binds {
-		if !b.shape.In && !b.shape.Fixed && b.shape.Parent == key {
-			return b.id
-		}
+	if id, ok := n.outputs[key]; ok {
+		return id
 	}
 	return n.id
 }

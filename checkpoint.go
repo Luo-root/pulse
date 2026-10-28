@@ -169,17 +169,18 @@ func (g *Graph) CheckpointPorts() []CheckpointPort {
 	if g == nil {
 		return nil
 	}
-	return g.checkpointPortsAt("", nil)
+	return g.checkpointPortsAt("", make(map[*Graph]struct{}), nil)
 }
 
-func (g *Graph) checkpointPortsAt(path string, chain mountChain) []CheckpointPort {
-	if chain.has(g) {
-		return nil
+// 所有层追加到同一份结果；祖先集合随递归栈进出，同一子图在其他挂载位置仍完整展开。
+func (g *Graph) checkpointPortsAt(path string, ancestors map[*Graph]struct{}, out []CheckpointPort) []CheckpointPort {
+	if _, cycle := ancestors[g]; cycle {
+		return out
 	}
+	ancestors[g] = struct{}{}
+	defer delete(ancestors, g)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	chain = chain.push(g)
-	var out []CheckpointPort
 	for _, k := range g.inPortOrder {
 		_, alsoOutput := g.outPorts[k.name]
 		out = append(out, CheckpointPort{Graph: g.id, Path: path, Key: checkpointKey(k), Input: true, Output: alsoOutput})
@@ -195,7 +196,7 @@ func (g *Graph) checkpointPortsAt(path string, chain mountChain) []CheckpointPor
 			if path != "" {
 				childPath = path + "/" + n.id
 			}
-			out = append(out, n.child.checkpointPortsAt(childPath, chain)...)
+			out = n.child.checkpointPortsAt(childPath, ancestors, out)
 		}
 	}
 	return out
@@ -207,17 +208,17 @@ func (g *Graph) CheckpointNodes() []CheckpointNode {
 	if g == nil {
 		return nil
 	}
-	return g.checkpointNodesAt("", nil)
+	return g.checkpointNodesAt("", make(map[*Graph]struct{}), nil)
 }
 
-func (g *Graph) checkpointNodesAt(path string, chain mountChain) []CheckpointNode {
-	if chain.has(g) {
-		return nil // 未验证的非法组合环不递归；Validate 提供正式诊断。
+func (g *Graph) checkpointNodesAt(path string, ancestors map[*Graph]struct{}, out []CheckpointNode) []CheckpointNode {
+	if _, cycle := ancestors[g]; cycle {
+		return out // 未验证的非法组合环不递归；Validate 提供正式诊断。
 	}
+	ancestors[g] = struct{}{}
+	defer delete(ancestors, g)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	chain = append(append(mountChain(nil), chain...), g)
-	var out []CheckpointNode
 	for _, n := range g.nodes {
 		out = append(out, checkpointNode(g.id, path, n))
 		if n.child != nil {
@@ -225,7 +226,7 @@ func (g *Graph) checkpointNodesAt(path string, chain mountChain) []CheckpointNod
 			if path != "" {
 				childPath = path + "/" + n.id
 			}
-			out = append(out, n.child.checkpointNodesAt(childPath, chain)...)
+			out = n.child.checkpointNodesAt(childPath, ancestors, out)
 		}
 	}
 	return out

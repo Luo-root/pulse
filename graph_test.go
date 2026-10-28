@@ -891,6 +891,71 @@ func TestUndeclaredWrite(t *testing.T) {
 	}
 }
 
+func TestOutputPermissionsStayTypedAndReadOnlyInputs(t *testing.T) {
+	for _, count := range []int{1, 32} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			input, unknown := NewKey[int]("input"), NewKey[int]("unknown")
+			keys := make([]Key[int], count)
+			for i := range keys {
+				keys[i] = NewKey[int](fmt.Sprint("out", i))
+			}
+			provides := Provides(keys...)
+			g := mustNew(t, t.Context(), "permissions")
+			declareIn(t, g, NewPort(input))
+			n := NewNode("writer", "", Requires(input), provides, func(rc *RunCtx) error {
+				for _, key := range []Key[int]{input, unknown} {
+					if err := Set(rc, key, 9); !errors.Is(err, ErrUndeclared) {
+						return fmt.Errorf("Set(%s) lost write permission: %v", key.Name(), err)
+					}
+					if err := Skip(rc, key); !errors.Is(err, ErrUndeclared) {
+						return fmt.Errorf("Skip(%s) lost write permission: %v", key.Name(), err)
+					}
+				}
+				if err := Set(rc, NewKey[string](keys[count-1].Name()), "wrong type"); !errors.Is(err, ErrUndeclared) {
+					return fmt.Errorf("same-name output accepted wrong type: %v", err)
+				}
+				for i, key := range keys {
+					var err error
+					if i%2 == 0 {
+						err = Set(rc, key, i)
+					} else {
+						err = Skip(rc, key)
+					}
+					if err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			// 构造器接收的是副本：索引也不能随调用者的切片改变。
+			provides[count-1] = unknown.asRef()
+			mustAdd(t, g, n)
+			var in Inputs
+			if err := Seed(&in, input, 7); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				e, err := g.NewExecution(t.Context(), in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := e.Start(); err != nil {
+					t.Fatal(err)
+				}
+				if err := e.Wait(); err != nil {
+					t.Fatal(err)
+				}
+				for i, key := range keys {
+					state, value := e.slotOf(key.asRef()).snapshot()
+					if i%2 == 0 && (state != slotReady || value != i) || i%2 != 0 && state != slotSkipped {
+						t.Fatalf("output %d changed: state=%v value=%v", i, state, value)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestSetSkipConflict(t *testing.T) {
 	g := mustNew(t, context.Background(), "test")
 	mustAdd(t, g, NewNode("a", "", nil, Provides(kA), func(rc *RunCtx) error {
