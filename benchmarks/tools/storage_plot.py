@@ -1,4 +1,8 @@
-"""Plot separately scoped storage metrics; partial runs never become completed points."""
+"""Plot storage growth for one fixed shape/rounds/parallelism/procs workload.
+
+Mixed or missing workload identities are rejected before any output is written.
+Partial runs never become completed points.
+"""
 import argparse
 from collections import Counter, defaultdict
 import csv
@@ -7,16 +11,39 @@ from pathlib import Path
 import statistics
 
 
+WORKLOAD_FIELDS = ("shape", "rounds", "parallelism", "procs")
+
+
+def workload_identity(row, line_number):
+    identity = tuple(row.get(field) for field in WORKLOAD_FIELDS)
+    for field, value in zip(WORKLOAD_FIELDS, identity):
+        valid = isinstance(value, str) and bool(value.strip()) if field == "shape" else type(value) is int and value > 0
+        if not valid:
+            expected = "a nonempty string" if field == "shape" else "a positive integer"
+            raise ValueError(f"storage plot input line {line_number}: {field} must be {expected}; got {value!r}")
+    return identity
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     groups = defaultdict(list)
-    for line in args.input.read_text(encoding="utf-8").splitlines():
+    workload = None
+    for line_number, line in enumerate(args.input.read_text(encoding="utf-8").splitlines(), 1):
         row = json.loads(line)
         if row["mode"] != "growth":
             raise ValueError("storage plot accepts growth measurements only")
+        current = workload_identity(row, line_number)
+        if workload is None:
+            workload = current
+        elif current != workload:
+            differences = ", ".join(f"{field}={value!r} (expected {expected!r})"
+                                    for field, value, expected in zip(WORKLOAD_FIELDS, current, workload)
+                                    if value != expected)
+            raise ValueError(f"storage plot input line {line_number}: mixed workloads: {differences}; "
+                             "split input by shape/rounds/parallelism/procs before plotting")
         groups[(row["engine"], row["backend"], row["nodes"])].append(row)
     fields = ("confirmed_steps", "save_calls", "successful_saves", "logical_json_bytes",
               "final_record_json_bytes", "node_records", "history_events", "db_bytes", "wal_bytes", "db_wal_bytes")

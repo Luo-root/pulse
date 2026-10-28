@@ -92,6 +92,7 @@ Use absolute paths if the repositories are not siblings. File-backend scratch da
 - `samples.jsonl` retains each planned sample's original stdout/stderr, command, exit status and parsed fields. The Go program measures its internal operation time; `wall_seconds` also includes process launch and sampler waiting and is a different metric.
 - `summary.csv` / `summary.json` group full configurations and report valid sample counts, median and observed minimum/maximum. Repeated batch means are not individual request p95/p99 latency.
 - SVGs show whole-task time, time per business node and cumulative Go allocations. Error bars show observed min–max, not confidence intervals.
+- `tools/storage_plot.py` plots storage growth for one fixed `shape/rounds/parallelism/procs` workload, allowing different node counts, engines and backends. Every record, including `not_repeated`, must carry a complete workload identity. Missing, invalid or conflicting fields are rejected before any CSV or plot is written. Split different workloads into separate input files and plot them separately.
 
 `bytes_per_op` and `allocs_per_op` come from cumulative Go allocation counters. They are not peak heap, RSS or physical disk writes. Per-node time and throughput are derived from whole-task duration, not independently observed node latency.
 
