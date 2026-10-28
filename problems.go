@@ -36,6 +36,9 @@ func (g *Graph) problemsAtLocked(at string, chain mountChain, capacity int) []er
 // validateRunLocked 与定义检查共用判据，只额外提供这次已确认的外部 skip。
 // 子执行的 Start 也走这里，不能在递归运行时重新丢失已供给的输入状态。
 func (g *Graph) validateRunLocked(capacity int, known streamKnownInputs) error {
+	if g.validation != nil {
+		return g.validation.check(capacity, known, false)
+	}
 	if g.canReusePlainValidationLocked() {
 		return nil
 	}
@@ -65,6 +68,13 @@ func (g *Graph) problemsWithStreamsAt(at string, chain mountChain, capacity int,
 }
 
 func (g *Graph) problemsWithStreamsAtLocked(at string, chain mountChain, capacity int, streams map[string][]error) []error {
+	out := g.problemsLocalWithStreamsAtLocked(at, streams)
+	out = append(out, g.problemsSubAtLocked(at, chain, capacity, streams)...)
+	return out
+}
+
+// problemsLocalWithStreamsAtLocked 只判当前层，子视图由调用方聚合。调用方持 g.mu。
+func (g *Graph) problemsLocalWithStreamsAtLocked(at string, streams map[string][]error) []error {
 	var out []error
 	out = append(out, g.problemsSourcesLocked()...)
 	out = append(out, g.problemsOutputsLocked()...)
@@ -84,7 +94,6 @@ func (g *Graph) problemsWithStreamsAtLocked(at string, chain mountChain, capacit
 		out = append(out, g.problemsCycleLocked()...)
 	}
 	out = append(out, streams[at]...)
-	out = append(out, g.problemsSubAtLocked(at, chain, capacity, streams)...)
 	if len(out) == 0 {
 		return nil
 	}

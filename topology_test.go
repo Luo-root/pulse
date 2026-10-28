@@ -2,6 +2,7 @@ package pulse
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -881,6 +882,231 @@ func TestStaticSubtreeVisibility(t *testing.T) {
 			t.Fatalf("静态子图的节点事件没出现在父图的出口里（子执行没继承到有效出口）：%v", seen)
 		}
 	})
+}
+
+// 同一份子视图的诊断只构造一次；父层按声明序包装它，不再重新扫描整个子树。
+func TestTopologyNestedProblemOrder(t *testing.T) {
+	optional := NewKey[int]("nested.optional")
+	layer := func(id string) *Graph {
+		g := mustNew(t, context.Background(), id)
+		declareIn(t, g, NewPort(optional))
+		if err := g.DeclareOutput(NewPort(NewKey[int](id + ".out"))); err != nil {
+			t.Fatal(err)
+		}
+		mustAdd(t, g, NewNode("hungry", "", Requires(NewKey[int](id+".missing")), nil, nil))
+		if err := Produce(g, "producer", "", NewKey[<-chan int](id+".stream"),
+			func(*RunCtx, func(int) error) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	leaf, mid, root := layer("nested.leaf"), layer("nested.mid"), layer("nested.root")
+	x, y := NewKey[int]("nested.x"), NewKey[int]("nested.y")
+	mustAdd(t, leaf, NewNode("A", "", Requires(y), Provides(x), nil))
+	mustAdd(t, leaf, NewNode("B", "", Requires(x), Provides(y), nil))
+	if err := Sub(mid, "inner", "", []SubBind{Fix(optional, 1)}, leaf); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sub(root, "outer", "", []SubBind{Fix(optional, 1)}, mid); err != nil {
+		t.Fatal(err)
+	}
+
+	local := func(id, at string) []string {
+		return []string{
+			fmt.Sprintf(`pulse: node "hungry" requires "%s.missing" but nothing provides it `+
+				`(declare it with DeclareInput if the value comes from outside)`, id),
+			fmt.Sprintf(`pulse: declared output "%s.out" is never produced: `+
+				`nothing in this graph provides it, and it is not a declared input of the same name `+
+				`(a pass-through), so a parent binding it with Out could only ever report `+
+				`"never arrived" (provide it with a node, or drop the DeclareOutput)`, id),
+			fmt.Sprintf(`pulse: node "%s" provides "%s.stream" but nothing consumes it: `+
+				`a stream output nobody reads blocks the sender forever`, joinPath(at, "producer"), id),
+		}
+	}
+	wrap := func(id, at string, problems []string) []string {
+		out := make([]string, 0, len(problems))
+		for _, problem := range problems {
+			out = append(out, fmt.Sprintf(`pulse: subgraph "%s" (mounted at "%s"): %s`, id, at, problem))
+		}
+		return out
+	}
+	wantLeaf := local("nested.leaf", "outer/inner")
+	wantLeaf = []string{wantLeaf[0], wantLeaf[1],
+		`pulse: dependency cycle: A -> B -> A (A requires "nested.y", B requires "nested.x")`, wantLeaf[2]}
+	wantMid := append(local("nested.mid", "outer"), wrap("nested.leaf", "outer/inner", wantLeaf)...)
+	wantRoot := append(local("nested.root", ""), wrap("nested.mid", "outer", wantMid)...)
+	top := root.Topology()
+	for _, view := range []struct {
+		top  *Topology
+		want []string
+	}{
+		{top, wantRoot},
+		{top.Nodes[2].Sub, wantMid},
+		{top.Nodes[2].Sub.Nodes[2].Sub, wantLeaf},
+	} {
+		if len(view.top.Problems) != len(view.want) {
+			t.Fatalf("%q Problems = %v; want %v", view.top.Graph.Path, view.top.Problems, view.want)
+		}
+		for i, problem := range view.top.Problems {
+			if got := problem.Error(); got != view.want[i] {
+				t.Fatalf("%q Problems[%d] = %q; want %q", view.top.Graph.Path, i, got, view.want[i])
+			}
+		}
+	}
+	if err := errors.Unwrap(errors.Unwrap(top.Problems[6])); err == nil || err.Error() != wantLeaf[0] {
+		t.Fatalf("两层包装没有保留子错误：%v", err)
+	}
+}
+
+func TestTopologyBindFailureKeepsChildView(t *testing.T) {
+	optional, late := NewKey[int]("bind.optional"), NewKey[int]("bind.late")
+	leaf := mustNew(t, context.Background(), "bind.leaf")
+	declareIn(t, leaf, NewPort(optional))
+	mustAdd(t, leaf, NewNode("hungry", "", Requires(NewKey[int]("bind.missing")), nil, nil))
+	child := mustNew(t, context.Background(), "bind.child")
+	declareIn(t, child, NewPort(optional))
+	if err := Sub(child, "inner", "", []SubBind{Fix(optional, 1)}, leaf); err != nil {
+		t.Fatal(err)
+	}
+	root := mustNew(t, context.Background(), "bind.root")
+	if err := Sub(root, "mount", "", []SubBind{Fix(optional, 1)}, child); err != nil {
+		t.Fatal(err)
+	}
+	// 挂载时绑定合法，开放子图之后新增了这一处尚未供给的必需入口。
+	declareIn(t, child, NewPort(late))
+	mustAdd(t, child, NewNode("late", "", Requires(late), nil, nil))
+	top := root.Topology()
+	want := `pulse: subgraph mounted at "mount": pulse: Sub "mount": child inlet bind.late:int ` +
+		`has no value for this mount: node "late" inside the child requires it, and it is a declared ` +
+		`input of graph "bind.child" - bind it with In, or give this mount site a value with Fix / FixSkip`
+	if len(top.Problems) != 1 || top.Problems[0].Error() != want {
+		t.Fatalf("父层只报绑定问题：%v; want %q", top.Problems, want)
+	}
+	childTop := top.Nodes[0].Sub
+	wantChild := `pulse: subgraph "bind.leaf" (mounted at "mount/inner"): ` +
+		`pulse: node "hungry" requires "bind.missing" but nothing provides it ` +
+		`(declare it with DeclareInput if the value comes from outside)`
+	if childTop == nil || len(childTop.Problems) != 1 || childTop.Problems[0].Error() != wantChild {
+		t.Fatalf("绑定失败不能隐藏子视图：%+v", childTop)
+	}
+	if childTop.Nodes[0].Sub == nil || len(childTop.Nodes[0].Sub.Problems) != 1 {
+		t.Fatal("绑定失败不能截断后代视图")
+	}
+}
+
+func TestTopologySharedChildProblemsAreIsolatedBySite(t *testing.T) {
+	in, value := NewKey[int]("shared.in"), NewKey[int]("shared.value")
+	stream := NewKey[Stream[int]]("shared.stream")
+	child := mustNew(t, context.Background(), "shared.child")
+	declareIn(t, child, NewPort(in))
+	if err := child.DeclareOutput(NewPort(in)); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, child, NewNode("writer", "", Requires(in), Deps(Provides(stream), Provides(value)), nil))
+	mustAdd(t, child, NewNode("reader", "", Requires(value), nil, nil))
+	root := mustNew(t, context.Background(), "shared.root")
+	if err := Sub(root, "live", "", []SubBind{Fix(in, 1), Out(in, NewKey[int]("shared.live"))}, child); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sub(root, "skipped", "", []SubBind{FixSkip(in), Out(in, NewKey[int]("shared.skipped"))}, child); err != nil {
+		t.Fatal(err)
+	}
+	top, unchanged := root.Topology(), root.Topology()
+	live, skipped := top.Nodes[0].Sub, top.Nodes[1].Sub
+	want := `pulse: node "live/writer" provides "shared.stream" but nothing consumes it: ` +
+		`a stream output nobody reads blocks the sender forever`
+	if live.Graph.Path != "live" || skipped.Graph.Path != "skipped" ||
+		len(live.Problems) != 1 || live.Problems[0].Error() != want || skipped.Problems != nil {
+		t.Fatalf("同一定义的诊断必须按挂载点区分：live=%+v skipped=%+v", live, skipped)
+	}
+	if len(top.Problems) != 1 || top.Problems[0].Error() !=
+		`pulse: subgraph "shared.child" (mounted at "live"): `+want {
+		t.Fatalf("父层挂载诊断：%v", top.Problems)
+	}
+	live.Problems[0] = errors.New("changed")
+	if top.Problems[0].Error() != unchanged.Problems[0].Error() {
+		t.Fatal("子 Problems 切片与父层共享")
+	}
+	top.Problems[0] = errors.New("changed")
+	top.Nodes[0].Binds[0].Child = "changed"
+	top.Nodes[0].Provides[0].Name = "changed"
+	live.Graph.ID, live.Graph.Path = "changed", "changed"
+	live.Graph.InPorts[0].Name, live.Graph.OutPorts[0].Name = "changed", "changed"
+	live.Order[0], live.Nodes[0].ID = "changed", "changed"
+	live.Nodes[0].Requires[0].Name, live.Nodes[0].Provides[0].Name = "changed", "changed"
+	live.Edges[0].Keys[0] = "changed"
+	if !reflect.DeepEqual(skipped, unchanged.Nodes[1].Sub) {
+		t.Fatal("修改一个挂载点的视图影响了兄弟挂载点")
+	}
+	if next := root.Topology(); !reflect.DeepEqual(next, unchanged) {
+		t.Fatal("修改返回副本影响了后续视图")
+	}
+}
+
+func topologyDeepGraph(tb testing.TB, depth int) *Graph {
+	tb.Helper()
+	optional := NewKey[int]("depth.optional")
+	newLayer := func(id string) *Graph {
+		g, err := New(id, "")
+		if err != nil {
+			tb.Fatal(err)
+		}
+		if err := g.DeclareInput(NewPort(optional)); err != nil {
+			tb.Fatal(err)
+		}
+		return g
+	}
+	g := newLayer("depth.leaf")
+	if err := g.Add(NewNode("leaf", "", nil, nil, nil)); err != nil {
+		tb.Fatal(err)
+	}
+	for i := 0; i < depth; i++ {
+		parent := newLayer(fmt.Sprintf("depth.%d", i))
+		if err := Sub(parent, "m", "", []SubBind{In(optional, optional)}, g); err != nil {
+			tb.Fatal(err)
+		}
+		g = parent
+	}
+	if err := g.Validate(); err != nil {
+		tb.Fatal(err)
+	}
+	return g
+}
+
+func TestTopologyDeepChain(t *testing.T) {
+	const depth = 512
+	top := topologyDeepGraph(t, depth).Topology()
+	at := ""
+	for i := 0; i <= depth; i++ {
+		if top.Graph.Path != at || top.Problems != nil || len(top.Nodes) != 1 {
+			t.Fatalf("第 %d 层形状或诊断不符：%+v", i, top)
+		}
+		if i == depth {
+			if top.Nodes[0].ID != "leaf" || top.Nodes[0].Sub != nil {
+				t.Fatalf("最内层不是叶子：%+v", top.Nodes)
+			}
+			break
+		}
+		if top.Nodes[0].ID != "m" || top.Nodes[0].Sub == nil {
+			t.Fatalf("第 %d 层丢了子树", i)
+		}
+		at = joinPath(at, "m")
+		top = top.Nodes[0].Sub
+	}
+}
+
+func TestTopologyDeepChainAllocationGrowth(t *testing.T) {
+	small, large := topologyDeepGraph(t, 32), topologyDeepGraph(t, 128)
+	allocs := func(g *Graph) float64 {
+		return testing.AllocsPerRun(1, func() { _ = g.Topology() })
+	}
+	smallAllocs, largeAllocs := allocs(small), allocs(large)
+	// 深度增为 4 倍，允许 6 倍分配次数；重扫每层子树会超过此界。
+	// 路径和祖先链随深度变长，因此不对总分配字节数作线性承诺。
+	if largeAllocs > 6*smallAllocs {
+		t.Fatalf("深度 32→128 分配次数 %.0f→%.0f，仍在重复检查子树", smallAllocs, largeAllocs)
+	}
+	t.Logf("深度 32→128 分配次数 %.0f→%.0f", smallAllocs, largeAllocs)
 }
 
 // TestTopologyReportsForgedSubgraphCycle 钉的是递归的**兜底判环**。

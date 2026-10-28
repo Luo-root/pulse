@@ -81,6 +81,8 @@ Successful `Validate`, or a successful start of an Execution, seals the entire d
 
 Failed validation seals nothing. Complete the definition and try again. A sealed Graph can still run and be mounted elsewhere: sealing freezes the definition rather than consuming it.
 
+After sealing, static validation structures are reused, including for graphs containing Sub mounts. Each start still checks this run's inputs and skips, effective quotas and aspects, host stream subscriptions, and checkpoint boundaries. Input values, execution slots, and restored records belong only to that Execution.
+
 Mounting one child at two positions creates independent child Executions. The mounting position also appears in `Site.Path`, allowing observation to distinguish instances of a reused module.
 
 ## Aspects and observation

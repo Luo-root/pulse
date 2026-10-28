@@ -70,6 +70,8 @@ type Graph struct {
 	// （见 Validate / sealTreeLocked）——子图是这张定义的一部分，只封自己那句话就成了
 	// 半句。反过来不成立：子图自己 `Validate()` 通过只封它自己与它的子树，不回头封父图。
 	sealed bool
+	// validation 只在完整检查成功的封口边界安装；只含冻结声明与有界静态事实。
+	validation *validationPlan
 }
 
 // Option 配置 Graph 的**定义**（默认运行策略与身份），在 `New` 时给。
@@ -210,7 +212,7 @@ func (g *Graph) Defaults() Option {
 }
 
 // assemblyMu 是**装配锁**：所有「改这张图的定义」的入口（`Add` / `DeclareInput` /
-// `DeclareOutput` / `Sub`）与「判完整棵树再封口」的入口（`Validate` / `Execution.Start`）共用它。
+// `DeclareOutput` / `Sub`）与开放定义的「判完整棵树再封口」（`Validate` / `Execution.Start`）共用它。
 //
 // 两件事各自都要它，合起来才成立：
 //
@@ -223,8 +225,8 @@ func (g *Graph) Defaults() Option {
 //     「要一条没人提供的输入」的节点，`Validate()` 返回 nil，而封住的子图带 1 条毛病）。
 //     把「改定义」与「判 + 封」放进同一个临界区，封上的就一定是刚判过的那份。
 //
-// 装配是一次性动作、临界区里没有用户代码（跑图的 goroutine 在放锁之后才建），代价是零；
-// 运行期不碰它。锁序**只有一种**：先 `assemblyMu`，再图自己的锁（`g.mu`），从不反过来
+// 临界区里没有用户代码（跑图的 goroutine 在放锁之后才建）；冻结定义的后续
+// Validate / Start 复用静态模型，不再取它。需要两把锁时恒为先 `assemblyMu`、再 `g.mu`，从不反过来
 // ——所以它不是「另一把图锁」，而是压在所有图锁之上的一道装订线。
 var assemblyMu sync.Mutex
 
@@ -406,17 +408,15 @@ func (g *Graph) sourceConflict(name string, owner source) error {
 // 和「依赖成环」都是读一遍声明就能定的，留到运行期只会表现成挂死或一句
 // 看不出病因的超时。
 //
-// 已经封口的普通图复用既有结果；含 Sub 或流的图仍按有效额度和等待关系检查。
+// 已冻结的声明复用结构模型；额度、skip、宿主读者与检查点仍按本轮事实判断。
 func (g *Graph) Validate() error {
-	// 与 Start 同一条同步边界：判 + 封在装配锁里一次做完（见 assemblyMu 与上面的说明）。
-	assemblyMu.Lock()
-	defer assemblyMu.Unlock()
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	// 开放定义的最终检查与封口仍共享装配边界；冻结树不再占用装配锁。
+	assembly := g.lockValidation()
+	defer g.unlockValidation(assembly)
 	if err := g.validateLocked(g.declaredCapacity()); err != nil {
 		return err
 	}
-	g.sealTreeLocked(mountChain{g})
+	g.freezeValidationLocked()
 	return nil
 }
 
@@ -430,6 +430,9 @@ func (g *Graph) Validate() error {
 // `chain` 上出现过的图不再重复进去（同一张子图挂多处是合法用法）；它同时兜住环——
 // 环本不该存在（见 mountChain），这里保证递归一定收敛。
 func (g *Graph) sealTreeLocked(chain mountChain) {
+	if g.sealed {
+		return // 该子树已经完整冻结；多挂载和后续运行无需再逐层取锁。
+	}
 	g.sealed = true
 	for _, n := range g.nodes {
 		if n.child == nil || chain.has(n.child) {
@@ -458,6 +461,9 @@ func (g *Graph) sealTree(chain mountChain) {
 // 拿的就是它；这里只取**第一条**，维持 `Validate` / `Start` 报首错的既有形状
 // 与文案（顺序也固定为来源 → 依赖环 → 流式，与旧实现一致）。
 func (g *Graph) validateLocked(capacity int) error {
+	if g.validation != nil {
+		return g.validation.check(capacity, streamKnownInputs{hasAspects: len(g.aspects) != 0}, true)
+	}
 	if g.canReusePlainValidationLocked() {
 		return nil
 	}

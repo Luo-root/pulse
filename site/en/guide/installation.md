@@ -4,7 +4,7 @@ Use this page to choose a version matching the documentation, create a Go module
 
 ## Requirements
 
-Pulse v0.5.1 requires **Go 1.26.0 or later**, aligned with Durable. Check your toolchain:
+Pulse v0.5.2 requires **Go 1.26.0 or later**, aligned with Durable. Check your toolchain:
 
 ```sh
 go version
@@ -16,13 +16,13 @@ The core package's dependency closure contains only the standard library. `pulse
 
 | Version | When to choose it | Documentation |
 | --- | --- | --- |
-| `v0.5.1` | Current API baseline; pin this version | [Migration](../reference/migration.md) · [Unified production comparison](../reference/production-comparison.md) |
+| `v0.5.2` | Current API baseline; pin this version | [Migration](../reference/migration.md) · [Unified production comparison](../reference/production-comparison.md) |
 | `main` | Use the latest development code | [main source](https://github.com/Luo-root/pulse) |
 | Local source checked out with these docs | Try an unmerged fix or contribute | Use the local replacement below |
 
-**This site uses v0.5.1 as its API baseline.** Prefer the fixed version; choose `go get …@main` only for development changes. It resolves the current main branch to a concrete version in `go.mod`. Once that file is committed, teammates use that resolved version; running the application does not automatically update it.
+**This site uses v0.5.2 as its API baseline.** Prefer the fixed version; choose `go get …@main` only for development changes. It resolves the current main branch to a concrete version in `go.mod`. Once that file is committed, teammates use that resolved version; running the application does not automatically update it.
 
-v0.5.1 includes managed Stream, live Sub, message attempts, and incremental checkpoints and supports the examples on this site. Use the local replacement below when trying an unmerged change. Read the [migration notes](../reference/migration.md) before changing APIs.
+v0.5.2 includes managed Stream, live Sub, message attempts, and incremental checkpoints and supports the examples on this site. Use the local replacement below when trying an unmerged change. Read the [migration notes](../reference/migration.md) before changing APIs.
 
 ## Create an example module
 
@@ -32,7 +32,7 @@ In the directory where you want the example:
 mkdir pulse-example
 cd pulse-example
 go mod init example.com/pulse-example
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 ```
 
 Save the [quick-start program](quickstart.md) as `main.go`, then run:
