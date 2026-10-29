@@ -248,7 +248,7 @@ func (g *Graph) Add(n *Node) error {
 	return g.addAll([]*Node{n})
 }
 
-// addAll 批量登记节点，**整批 all-or-nothing**：先对「现有图 + 本批次」全量
+// addAll 批量登记节点，**整批要么全部成功，要么全部失败**：先对「现有图 + 本批次」全量
 // 校验，再一次性提交。任一节点不过，图里不留这一批的任何痕迹（producer / 节点表都不动）
 // ——装配糖（FanOut）要的正是这条：它一次装 N 个 worker，返回错误时不能留下半批节点在跑。
 //

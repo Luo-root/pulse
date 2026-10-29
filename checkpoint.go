@@ -23,7 +23,7 @@ type CheckpointNode struct {
 	Stream             string
 }
 
-// CheckpointOutput 是一条已到达输出。ready 的 Value 可为合法的 nil 接口或 typed nil；
+// CheckpointOutput 是一条已到达输出。ready 的 Value 可为合法的 nil 接口或带类型的 nil；
 // skipped 没有值。pending 不能作为检查点成果。
 type CheckpointOutput struct {
 	Key   CheckpointKey
