@@ -40,7 +40,7 @@ func (e *Execution) classifyResult(err error) (error, NodeFinishReason) {
 }
 
 // classifyFailure 在向流读取者或可靠钩子传播前锁存归因。不能等 fail 自行
-// cancel 后才判断，也不能先发布裸 context cause 让下游先取消整张图。
+// cancel 后才判断，也不能先发布未经包装的上下文取消原因，让下游先取消整张图。
 func (e *Execution) classifyFailure(err error) error {
 	if err == nil {
 		return nil
@@ -117,7 +117,7 @@ func (e *Execution) runNode(n *Node) {
 
 	// 切面覆盖「等输入 + 执行」整段，这样 Timeout 能打断 Wait。
 	// MaxRunning 只在即将执行用户 Run 时占用。
-	// 生命周期埋点在 innermost core：Retry 重入时靠门闩只发一次。
+	// 生命周期埋点在最内层核心逻辑中：Retry 重入时靠门闩只发一次。
 	chain := buildChain(append(append([]Aspect{}, e.aspects...), n.aspects...), func(rc *RunCtx) (err error) {
 		// 推进闸：同一个节点执行上下文里 `next()` 只允许成功推进一次——`Retry` 每试都开
 		// 新的尝试边界，所以它的重入放行；用户自己写的重试切面开不了边界，第二次推进

@@ -74,7 +74,7 @@ type AspectEvent struct {
 	Origin         AttemptOrigin // 仅 Retry 的尝试/重试/退避事件。
 }
 
-// 切面事实的 Attrs key 归属 Core；observe 仅消费这些事实，不扩 Record。
+// 切面事实的 Attrs 键归属 Core；observe 仅消费这些事实，不扩 Record。
 const (
 	AttrAspect         = "pulse.aspect"
 	AttrAspectName     = "pulse.aspect.name"

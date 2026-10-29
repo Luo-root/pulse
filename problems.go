@@ -150,7 +150,7 @@ func (g *Graph) problemsSubAtLocked(at string, chain mountChain, capacity int, s
 // problemsSourcesLocked 报「每个 Requires 都有来源」。调用方持 g.mu。
 //
 // 判据是 producer 表里有没有这个 Key **且那条来源真的存在**：节点 Provides 记为
-// node + 节点 id，一条 Key 至多一个来源（see sourceConflict）。**声明过的输入端口也算有来源**（`DeclareInput`）——它表达的是
+// node + 节点 id，一条 Key 至多一个来源（见 sourceConflict）。**声明过的输入端口也算有来源**（`DeclareInput`）——它表达的是
 // 「这本来就是外部输入」，与「你忘了接线」是两件事，前者不该被报成毛病。
 // Requires 本身不登记来源，所以「表里没有**且**没声明成入口」= 没人会写它。零值
 // （`sourceNone`）按「没有来源」处理——它不该落表，万一落了也不能当有来源，
