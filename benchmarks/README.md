@@ -92,6 +92,7 @@ python benchmarks/tools/run_matrix.py --suite workflow --module ../pulse-durable
 - `samples.jsonl`：每个计划样本的原始 stdout/stderr、命令、退出状态及解析字段。主耗时由 Go 程序内部测量；`wall_seconds` 还包括进程启动和采样器等待，不能替换为同一指标。
 - `summary.csv` / `summary.json`：按完整配置分组，给有效样本数、中位数与观察到的最小/最大值。重复批次均值不是单次请求的 p95/p99。
 - SVG：整任务耗时、每节点摊销和累计 Go 分配曲线。误差棒只表示本次样本的 min–max，不是置信区间。
+- `tools/storage_plot.py`：每次绘制一套固定 `shape/rounds/parallelism/procs` 的存储增长曲线，允许比较不同节点数、引擎和后端。所有记录（含 `not_repeated`）都必须携带完整工作量身份；字段缺失、无效或互相冲突时，在写 CSV 或图表前报错。不同工作量应拆成输入文件分别绘图。
 
 `bytes_per_op` 和 `allocs_per_op` 来自 Go 累计分配计数，不是峰值堆、RSS 或设备物理写出。每节点时间和吞吐由整任务时间换算，不能理解成链上各节点的独立延迟。
 
