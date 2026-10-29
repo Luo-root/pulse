@@ -1,4 +1,4 @@
-"""Supplement Go's JSON snapshots with actual module-proxy Origin metadata."""
+"""用模块代理实际提供的 Origin 元数据补充 Go 的 JSON 快照。"""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone

@@ -1,7 +1,7 @@
-# If you prefer the allow list template instead of the deny list, see community template:
+# 若希望使用允许清单而非排除清单，请参考社区模板：
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
 #
-# Binaries for programs and plugins
+# 程序和插件的二进制产物
 *.pptx
 *.exe
 *.exe~
@@ -9,10 +9,10 @@
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
+# 通过 `go test -c` 构建的测试二进制
 *.test
 
-# Code coverage profiles and other test artifacts
+# 覆盖率记录和其他测试产物
 *.out
 coverage.*
 *.coverprofile
@@ -20,14 +20,14 @@ profile.cov
 coverage
 coverage_gorm
 
-# Dependency directories (remove the comment below to include it)
+# 依赖目录（取消下一行注释即可将其排除）
 # vendor/
 
-# Go workspace file
+# Go 工作区文件
 go.work
 go.work.sum
 
-# env / secrets — never commit credentials
+# 环境配置与秘密信息：禁止提交凭据
 .env
 .env.*
 !.env.example
@@ -35,19 +35,19 @@ go.work.sum
 *.secrets
 .workbase/
 
-# Editor/IDE
+# 编辑器与 IDE 配置
 .idea/
 # .vscode/
 
-# Database files
+# 数据库文件
 *.db
 
-# Local scratch (docs preview, temp artifacts)
+# 本机临时内容（文档预览、临时产物）
 tmp/
 benchmarks/dag/dag
-# Raw benchmark samples, local diagnostics and generated plot sets stay local.
+# 原始基准样本、本机诊断和生成的整套图表留在本机。
 benchmarks/results/
-# Published performance pages keep one curated PNG per chart.
+# 发布的性能页面每张图仅保留一份整理后的 PNG。
 site/public/performance/**/*.svg
 benchmarks/**/__pycache__/
 

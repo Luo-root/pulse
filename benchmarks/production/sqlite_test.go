@@ -130,8 +130,8 @@ func TestOfficialSQLiteSchemaAndLocks(t *testing.T) {
 	if err := s.db.QueryRow("PRAGMA synchronous").Scan(&synchronous); err != nil || synchronous != 2 {
 		t.Fatalf("inspection synchronous=%d err=%v", synchronous, err)
 	}
-	// FULL is connection-local: this is the independent reader's readback, not
-	// evidence about the private backend connection. Its public source configures FULL.
+	// FULL 只对当前连接生效：这里回读的是独立读取连接的设置，
+	// 不能证明后端私有连接的配置；后端的公开源码配置了 FULL。
 	session, err := s.Acquire(context.Background(), "layout")
 	if err != nil {
 		t.Fatal(err)
@@ -143,8 +143,8 @@ func TestOfficialSQLiteSchemaAndLocks(t *testing.T) {
 			t.Fatalf("official lock %s: %v", lock, err)
 		}
 	}
-	// Historical benchmark files have similar columns but are NOT official v1.
-	// They must remain historical: do not adopt them by setting user_version.
+	// 历史评测文件虽然有类似的列，但并非正式 v1 格式。
+	// 必须保留其历史格式，不能通过设置 user_version 将其纳入正式格式。
 	legacyPath := filepath.Join(durableTestDir(t), "legacy.db")
 	db, _, err := openBenchmarkSQLite(legacyPath)
 	if err != nil {
@@ -340,8 +340,8 @@ func TestBenchmarkSQLiteIdentityAndUint64Revision(t *testing.T) {
 		if err := session.Close(); err != nil {
 			t.Fatal(err)
 		}
-		// The official backend reports corrupt stored identity as a storage error,
-		// not the CAS-conflict sentinel used for valid competing writes.
+		// 正式后端将存储身份损坏报告为存储错误，
+		// 而不是合法竞争写入所使用的 CAS 冲突哨兵错误。
 		if loadErr == nil {
 			t.Fatalf("corrupt identity accepted: %+v", record)
 		}

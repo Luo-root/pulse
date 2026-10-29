@@ -12,7 +12,7 @@ import threading
 import time
 
 from run_matrix import WindowsJob
-from run_production import oracle
+from run_production import oracle, parse_matrix
 
 
 class Case:
@@ -40,21 +40,26 @@ class Case:
     def launch(self, args, label, capture=False):
         if self.expired.is_set() or time.perf_counter() - self.start >= 60:
             raise TimeoutError('whole recovery case budget exhausted')
-        stdout = subprocess.PIPE if capture else (self.root/(label+'.stdout.txt')).open('w', encoding='utf-8')
-        stderr = (self.root/(label+'.stderr.txt')).open('w', encoding='utf-8')
-        p = subprocess.Popen(args, stdout=stdout, stderr=stderr, env=dict(os.environ, GOMAXPROCS='4'), text=True, encoding='utf-8',
-                             errors='replace', creationflags=0x4)
-        self.processes.append((p, stdout, stderr))
+        stdout = stderr = p = None
         try:
+            # 让子进程直接写入原有命名的证据文件，超时或解码失败也保留部分输出。
+            stdout = (self.root/(label+('.json' if capture else '.stdout.txt'))).open('w', encoding='utf-8', newline='\n')
+            stderr = (self.root/(label+'.stderr.txt')).open('w', encoding='utf-8', newline='\n')
+            p = subprocess.Popen(args, stdout=stdout, stderr=stderr, env=dict(os.environ, GOMAXPROCS='4'), text=True, encoding='utf-8',
+                                 errors='replace', creationflags=0x4)
+            self.processes.append((p, stdout, stderr))
             self.job.attach_and_resume(p)
-        except Exception:
-            p.kill()
-            p.wait(timeout=5)
+            if self.expired.is_set():
+                raise TimeoutError('whole recovery case watchdog expired')
+            return p
+        except BaseException as error:
+            self.close(error)
+            if p is None:
+                for stream in (stdout, stderr):
+                    if stream is not None:
+                        try: stream.close()
+                        except Exception as extra: error.add_note(f'进程输出清理：{type(extra).__name__}: {extra}')
             raise
-        if self.expired.is_set():
-            self.job.kernel.TerminateJobObject(self.job.handle, 124)
-            raise TimeoutError('whole recovery case watchdog expired')
-        return p
 
     def command(self, operation):
         return [str(self.binary), '-engine', self.engine, '-operation', operation, '-shape', 'chain',
@@ -66,12 +71,16 @@ class Case:
     def call(self, operation):
         self.counter += 1
         label = f'{self.counter:02d}-{operation}'
-        p = self.launch(self.command(operation), label, True)
-        stdout, _ = p.communicate(timeout=max(0.1, 65 - (time.perf_counter() - self.start)))
-        (self.root/(label+'.json')).write_text(stdout, encoding='utf-8')
-        payload = json.loads(stdout)
-        if p.returncode or payload['status'] != 'ok': raise RuntimeError(label+': '+stdout)
-        return payload
+        try:
+            p = self.launch(self.command(operation), label, True)
+            p.wait(timeout=max(0.1, 65 - (time.perf_counter() - self.start)))
+            stdout = (self.root/(label+'.json')).read_text(encoding='utf-8', errors='replace')
+            payload = json.loads(stdout)
+            if p.returncode or payload['status'] != 'ok': raise RuntimeError(label+': '+stdout)
+            return payload
+        except BaseException as error:
+            self.close(error)
+            raise
 
     def server(self):
         if not self.address:
@@ -162,13 +171,25 @@ class Case:
                     status='ok', recovery_wall_s=elapsed, operation_ns=result['operation_ns'], checksum=resumed['checksum'],
                     database_bytes=sum(p.stat().st_size for p in self.root.glob('state.sqlite*') if p.is_file() and not p.name.endswith('.jsonl')))
 
-    def close(self):
-        self.timer.cancel()
-        self.job.close()
+    def close(self, failure=None):
+        errors = []
+        def cleanup(action):
+            try: action()
+            except Exception as error: errors.append(error)
+        cleanup(self.timer.cancel)
+        cleanup(lambda: self.timer.join(timeout=5))
+        cleanup(self.job.close)
         for p, out, err in self.processes:
-            p.wait(timeout=10)
-            if out != subprocess.PIPE: out.close()
-            err.close()
+            # Job 归属设置失败时，挂起的根进程仍须单独终止并等待回收。
+            cleanup(lambda: p.kill() if p.poll() is None else None)
+            cleanup(lambda: p.wait(timeout=10))
+            cleanup(out.close)
+            cleanup(err.close)
+        if errors:
+            original = failure if failure is not None else errors[0]
+            for error in errors:
+                original.add_note(f'进程清理：{type(error).__name__}: {error}')
+            if failure is None: raise original
 
 
 def main():
@@ -179,6 +200,13 @@ def main():
     parser.add_argument('--nodes',default='10,100,1000')
     parser.add_argument('--repeats',type=int,default=3)
     args=parser.parse_args()
+    try:
+        if type(args.repeats) is not int or args.repeats < 1:
+            raise ValueError('repeats must be a positive integer')
+        # 恢复必须同时有已确认前缀和待执行后缀。
+        nodes = parse_matrix(args.nodes, 'nodes', minimum=2)
+    except ValueError as error:
+        parser.error(str(error))
     args.out.mkdir(parents=True,exist_ok=False)
     manifest=dict(binary_sha256=hashlib.sha256(args.binary.read_bytes()).hexdigest(),
                   temporal_sha256=hashlib.sha256(args.temporal_bin.read_bytes()).hexdigest(),
@@ -187,13 +215,17 @@ def main():
     (args.out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
     rows=[]
     for repeat in range(args.repeats):
-        for n in map(int,args.nodes.split(',')):
+        for n in nodes:
             for engine,restart in [('pulse',False),('eino',False),('temporal',False),('temporal',True)]:
                 root=args.out/f'{engine}-{n}-{repeat}-{int(restart)}';root.mkdir()
                 case=Case(root,args.binary.resolve(),args.temporal_bin.resolve(),n,engine,repeat,restart)
+                failure = None
                 try: row=case.run()
-                except Exception as error: row=dict(engine=engine,nodes=n,repeat=repeat,status='error',error=str(error),server_restart=restart)
-                finally: case.close()
+                except BaseException as error:
+                    failure = error
+                    if not isinstance(error, Exception): raise
+                    row=dict(engine=engine,nodes=n,repeat=repeat,status='error',error=str(error),server_restart=restart)
+                finally: case.close(failure)
                 rows.append(row)
                 with (args.out/'raw.jsonl').open('a',encoding='utf-8') as stream:stream.write(json.dumps(row)+'\n')
                 print(json.dumps(row),flush=True)

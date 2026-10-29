@@ -1,4 +1,4 @@
-"""Bounded sampler regressions: mock CLI payloads and short contained processes only."""
+"""有界采样器回归测试：仅使用模拟 CLI 载荷和短时受控进程。"""
 import contextlib
 import io
 import json
@@ -14,11 +14,13 @@ import unittest
 from unittest.mock import patch
 
 import run_production as production
+import run_recovery as recovery
+import summarize_production as summary
 
 
 TEST_ROOT = Path(os.environ.get('PULSE_PRODUCTION_TEST_TMP',
                  Path(__file__).resolve().parents[1] / 'results' / 'test-production-tools'))
-CONFIG = dict(engine='pulse', mode='plain', shape='chain', nodes=1, rounds=1)
+CONFIG = dict(engine='pulse', mode='plain', shape='chain', nodes=1, rounds=1, parallelism=4)
 
 
 def payload(**overrides):
@@ -41,7 +43,7 @@ def observed(value=None, **overrides):
 class SamplerTests(unittest.TestCase):
     def setUp(self):
         TEST_ROOT.mkdir(parents=True, exist_ok=True)
-        # Keep validation evidence in the selected directory; never use the system temp directory.
+        # 将验证证据保留在指定目录，始终避开系统临时目录。
         self.directory = Path(tempfile.mkdtemp(prefix=self._testMethodName + '-', dir=TEST_ROOT))
         self.binary = self.directory / 'mock-cli.bin'
         self.binary.write_bytes(b'mock CLI; never executed\n')
@@ -125,6 +127,190 @@ class SamplerTests(unittest.TestCase):
                 self.assertEqual((out / 'raw.jsonl').read_bytes(), raw_before)
         manifest_path.write_text(json.dumps(original), encoding='utf-8')
 
+    def assert_resume_rejected_without_writes(self, out):
+        before = {str(p.relative_to(out)): p.read_bytes() if p.is_file() else None for p in out.rglob('*')}
+        with patch.object(production, 'sample_process', side_effect=AssertionError('corrupt history was sampled')) as sampler:
+            with self.assertRaises(ValueError):
+                self.invoke(out, sampler, resume=True, repeats=2)
+            sampler.assert_not_called()
+        self.assertEqual(before, {str(p.relative_to(out)): p.read_bytes() if p.is_file() else None
+                                  for p in out.rglob('*')})
+
+    def test_resume_rejects_completed_corruption_without_writes(self):
+        for change in ('empty', 'modified', 'missing-record', 'missing-file', 'records', 'errors', 'statuses', 'missing-hash'):
+            with self.subTest(change=change):
+                out = self.directory / change
+                answers = iter([observed(payload(status='error', error='historical failure', iterations=0,
+                                                 run_ns=None), returncode=1), observed()])
+                self.assertEqual(self.invoke(out, lambda *a: next(answers), repeats=2), 1)
+                raw, path = out / 'raw.jsonl', out / 'manifest.json'
+                metadata = json.loads(path.read_text(encoding='utf-8'))
+                if change == 'empty':
+                    raw.write_bytes(b'')
+                elif change == 'modified':
+                    raw.write_bytes(raw.read_bytes().replace(b'historical failure', b'fabricated failure'))
+                elif change == 'missing-record':
+                    raw.write_bytes(raw.read_bytes().splitlines(keepends=True)[1])
+                elif change == 'missing-file':
+                    raw.rename(out / 'retained-raw.jsonl')
+                else:
+                    if change == 'missing-hash':
+                        metadata.pop('raw_sha256')
+                    else:
+                        metadata[change] = {'ok': 2} if change == 'statuses' else 0
+                    path.write_text(json.dumps(metadata), encoding='utf-8')
+                self.assert_resume_rejected_without_writes(out)
+
+    def test_resume_rejects_partial_corruption_without_writes(self):
+        for change in ('empty', 'modified', 'bad-line', 'blank-line', 'records', 'errors', 'statuses', 'missing-prefix'):
+            with self.subTest(change=change):
+                out = self.directory / change
+                calls = []
+                def interrupted(*args):
+                    calls.append(1)
+                    if len(calls) == 2:
+                        raise KeyboardInterrupt('interrupted after one confirmed failure')
+                    return observed(payload(status='error', error='historical failure', iterations=0, run_ns=None),
+                                    returncode=1)
+                with self.assertRaises(KeyboardInterrupt):
+                    self.invoke(out, interrupted, repeats=2)
+                raw, path = out / 'raw.jsonl', out / 'manifest.json'
+                metadata = json.loads(path.read_text(encoding='utf-8'))
+                if change == 'empty':
+                    raw.write_bytes(b'')
+                elif change == 'modified':
+                    raw.write_bytes(raw.read_bytes().replace(b'historical failure', b'fabricated failure'))
+                elif change in ('bad-line', 'blank-line'):
+                    with raw.open('ab') as stream:
+                        stream.write(b'{' if change == 'bad-line' else b'\n')
+                else:
+                    if change == 'missing-prefix':
+                        metadata.pop('raw_prefix', None)
+                    else:
+                        metadata[change] = {'ok': 1} if change == 'statuses' else 0
+                    path.write_text(json.dumps(metadata), encoding='utf-8')
+                self.assert_resume_rejected_without_writes(out)
+
+    def test_resume_accepts_one_flushed_record_and_preserves_error(self):
+        out = self.directory / 'flushed-before-manifest'
+        write_manifest = production.write_manifest
+        def interrupt_manifest(path, manifest, rows):
+            if len(rows) == 1:
+                raise KeyboardInterrupt('raw flushed before manifest replacement')
+            return write_manifest(path, manifest, rows)
+        with patch.object(production, 'write_manifest', side_effect=interrupt_manifest):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke(out, lambda *a: observed(payload(status='error', error='historical failure',
+                                                             iterations=0, run_ns=None), returncode=1), repeats=2)
+        original_raw = (out / 'raw.jsonl').read_bytes()
+        original_manifest = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertIn('raw_prefix', original_manifest)
+        self.assertEqual(original_manifest['records'], 0)
+        self.assertEqual(original_manifest['raw_prefix']['bytes'], 0)
+        calls = []
+        def finish(*args):
+            calls.append(1)
+            return observed()
+        self.assertEqual(self.invoke(out, finish, resume=True, repeats=2), 1)
+        self.assertEqual(calls, [1])
+        self.assertEqual([row['status'] for row in self.rows(out)], ['error', 'ok'])
+        self.assertTrue((out / 'raw.jsonl').read_bytes().startswith(original_raw))
+        metadata = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertEqual((metadata['records'], metadata['errors']), (2, 1))
+        self.assertEqual(metadata['raw_prefix']['sha256'], production.digest(out / 'raw.jsonl'))
+        self.assertEqual(metadata['raw_sha256'], metadata['raw_prefix']['sha256'])
+
+    def test_cli_parallelism_is_verified_and_retained(self):
+        missing = {k: v for k, v in CONFIG.items() if k != 'parallelism'}
+        for index, config in enumerate([missing] + [dict(CONFIG, parallelism=v) for v in (1, None, True, 4.0, '4')]):
+            with self.subTest(config=config):
+                out = self.directory / str(index)
+                answers = iter([observed(payload(config=config)), observed()])
+                self.assertEqual(self.invoke(out, lambda *a: next(answers), repeats=2), 1)
+                first, second = self.rows(out)
+                self.assertEqual((first['status'], second['status']), ('error', 'ok'))
+                self.assertIn('parallelism', first['error'])
+                self.assertNotIn('config', first)
+                self.assertEqual(second['config'], CONFIG)
+                self.assertEqual(second['parallelism'], 4)
+                metadata = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+                normalized = summary.normalize(second, 'resources', metadata['identity'])
+                self.assertEqual(normalized['parallelism'], second['config']['parallelism'])
+        with self.assertRaisesRegex(ValueError, 'parallelism'):
+            production.validate(dict(CONFIG, parallelism=1), payload(config=dict(CONFIG, parallelism=True)), 0)
+        verified = production.validate(dict(CONFIG), payload(), 0)
+        self.assertEqual(verified['config'], CONFIG)
+        self.assertNotIn('gomaxprocs', verified['config'])
+
+    def test_invalid_matrices_are_rejected_before_any_output(self):
+        invalid = [('--repeats', '0'), ('--repeats', '-1'), ('--nodes', '0'), ('--nodes', '-1'),
+                   ('--rounds', '0'), ('--rounds', '-1'), ('--iterations', '0'), ('--iterations', '-1')]
+        invalid += [(flag, value) for flag in ('--nodes', '--rounds', '--shapes', '--modes', '--engines')
+                    for value in ('', ' ', ',', '[]')]
+        invalid += [('--' + field, value) for field, value in
+                    (('shapes', 'chain, chain'), ('engines', 'pulse, pulse'), ('modes', 'plain, plain'),
+                     ('nodes', '1, 01'), ('rounds', '1, 01'))]
+        for index, extra in enumerate(invalid):
+            with self.subTest(extra=extra):
+                out = self.directory / str(index)
+                with patch.object(production, 'digest', side_effect=AssertionError('binary hashed before validation')), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as caught:
+                        self.invoke(out, lambda *a: self.fail('invalid matrix started a process'), extra=extra)
+                self.assertEqual(caught.exception.code, 2)
+                self.assertFalse(out.exists())
+
+    def test_real_matrix_roundtrip_and_equivalent_resume(self):
+        cli = self.directory / 'fixture_cli.py'
+        cli.write_text('import json,sys\n'
+                       f'sys.path.insert(0, {str(Path(production.__file__).parent)!r})\n'
+                       'from run_production import oracle\n'
+                       'config={k:sys.argv[sys.argv.index("-"+k)+1] for k in ("engine","mode","shape")}\n'
+                       'config.update({k:int(sys.argv[sys.argv.index("-"+k)+1]) for k in ("nodes","rounds","parallelism")})\n'
+                       'print(json.dumps(dict(config=config,status="ok",iterations=1,requested_iterations=1,\n'
+                       'first_completed=True,first_ns=100,run_ns=100,checksum=oracle(config["shape"],config["nodes"],config["rounds"]))))\n',
+                       encoding='utf-8', newline='\n')
+        real_sample = production.sample_process
+        def sample(command, cwd):
+            return real_sample([sys.executable, '-B', str(cli), *command[1:]], cwd, timeout=5)
+        for field, spaced, canonical in (('shapes', 'chain, wide', 'chain,wide'),
+                                         ('engines', 'pulse, eino', 'pulse,eino'), ('modes', ' plain ', 'plain')):
+            with self.subTest(field=field):
+                out = self.directory / field
+                self.assertEqual(self.invoke(out, sample, repeats=1,
+                                             extra=('--' + field, spaced, '--nodes', ' 01 ', '--rounds', ' 01 ')), 0)
+                records, identity, details = summary.load_dataset('resources', out)
+                self.assertEqual(identity[field], canonical)
+                self.assertEqual((identity['nodes'], identity['rounds']), ('1', '1'))
+                self.assertEqual(details['matrix'][field], canonical)
+                self.assertEqual(len(summary.summarize(records, {'resources': identity})), len(records))
+                original = (out / 'raw.jsonl').read_bytes()
+                self.assertEqual(self.invoke(out, lambda *a: self.fail('completed sample repeated'), resume=True,
+                                             repeats=1, extra=('--' + field, canonical)), 0)
+                self.assertEqual((out / 'raw.jsonl').read_bytes(), original)
+
+    def test_resume_legacy_matrix_identity_and_rejects_changes(self):
+        for kind in ('string', 'list', 'scalar'):
+            with self.subTest(kind=kind):
+                out = self.directory / kind
+                self.assertEqual(self.invoke(out, lambda *a: observed(), repeats=1), 0)
+                path = out / 'manifest.json'
+                metadata = json.loads(path.read_text(encoding='utf-8'))
+                for field in ('nodes', 'rounds', 'shapes', 'engines', 'modes'):
+                    value = metadata['identity'][field]
+                    metadata['identity'][field] = (' ' + value + ' ' if kind == 'string' else
+                        [int(value) if field in ('nodes', 'rounds') else value] if kind == 'list' else
+                        int(value) if field in ('nodes', 'rounds') else value)
+                path.write_text(json.dumps(metadata), encoding='utf-8')
+                self.assertEqual(self.invoke(out, lambda *a: self.fail('legacy sample repeated'), repeats=1, resume=True), 0)
+                summary.load_dataset('resources', out)
+                before = {p: p.read_bytes() for p in out.rglob('*') if p.is_file()}
+                for extra in (('--shapes', 'wide'), ('--engines', 'eino'), ('--modes', 'observe'),
+                              ('--nodes', '2'), ('--rounds', '2')):
+                    with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, 'identity'):
+                        self.invoke(out, lambda *a: self.fail('changed matrix sampled'), repeats=1, resume=True, extra=extra)
+                    self.assertEqual(before, {p: p.read_bytes() for p in before})
+
     def test_bad_cli_payload_is_one_error_and_next_case_still_runs(self):
         bad = [[], payload(config=None), payload(config=dict(CONFIG, nodes=True)),
                payload(run_ns='100'), payload(run_ns=True), payload(run_ns=-1), payload(run_ns=0),
@@ -153,7 +339,7 @@ class SamplerTests(unittest.TestCase):
         order = []
         def sample(command, cwd):
             config = {k: command[command.index('-' + k) + 1] for k in ('engine', 'mode', 'shape')}
-            config.update(nodes=1, rounds=1)
+            config.update(nodes=1, rounds=1, parallelism=4)
             order.append(config['engine'])
             for flag, expected in (('-iterations', '1'), ('-parallelism', '4'), ('-gomaxprocs', '4'), ('-timeout', '60s')):
                 self.assertEqual(command[command.index(flag) + 1], expected)
@@ -259,13 +445,13 @@ class SamplerTests(unittest.TestCase):
                        'report=json.loads(out)\n'
                        'report.update(parent_pid=os.getpid(),parent_cpu_s=time.process_time())\n'
                        'print(json.dumps(report))')
-        # Use the normal safety watchdog; Python startup wall time is not an accounting SLO.
+        # 使用正常的安全看门狗；Python 启动所用的墙钟时间不属于计账 SLO。
         result = production.sample_process([sys.executable, '-B', '-c', parent_code], self.directory)
         self.assertFalse(result['hard_timeout'])
         self.assertEqual((result['returncode'], result['job_total_processes']), (0, 2))
         report = json.loads(result['stdout'])
         self.assertGreaterEqual(report['child_cpu_s'], .15)
-        # Allow one Windows accounting tick, while excluding root-only CPU accounting.
+        # 允许一个 Windows 计账时钟节拍的误差，同时排除只统计根进程 CPU 的情况。
         self.assertGreaterEqual(result['job_cpu_s'], report['child_cpu_s'] + report['parent_cpu_s'] - .02)
         self.assertGreater(result['rss_polls'], 0)
         self.assertGreater(result['sampled_tree_peak_rss_bytes'], 0)
@@ -311,7 +497,7 @@ class SamplerTests(unittest.TestCase):
                 value = (before_deadline, 1.0)[len(checkpoints)]
                 checkpoints.append(value)
                 return value
-            # This final clock read is before Job.close: cleanup cannot stand in for the watchdog.
+            # 最后一次读取时钟发生在 Job.close 之前：不能让清理动作代替看门狗。
             for name, process in processes.items():
                 try:
                     process.wait(timeout=2)
@@ -320,7 +506,7 @@ class SamplerTests(unittest.TestCase):
                 self.assertFalse(process.is_running())
                 exited.append(name)
             return 1.0
-        # Only the sampler clock is controlled; real Job assignment, RSS, CPU and kills still run.
+        # 只控制采样器时钟；真实的 Job 归属设置、RSS 和 CPU 采集以及进程终止仍照常执行。
         with patch.object(production, 'time', SimpleNamespace(perf_counter=clock)):
             result = production.sample_process([sys.executable, '-B', '-c', parent_code,
                                                 str(child_ready), str(parent_ready)], self.directory, timeout=1)
@@ -331,6 +517,119 @@ class SamplerTests(unittest.TestCase):
         self.assertGreater(result['job_cpu_s'], 0)
         self.assertGreater(result['rss_polls'], 0)
         self.assertGreater(result['sampled_tree_peak_rss_bytes'], 0)
+
+
+class RecoveryTests(unittest.TestCase):
+    def setUp(self):
+        TEST_ROOT.mkdir(parents=True, exist_ok=True)
+        self.directory = Path(tempfile.mkdtemp(prefix=self._testMethodName + '-', dir=TEST_ROOT))
+        self.binary = self.directory / 'mock-cli.bin'
+        self.binary.write_bytes(b'mock CLI; never executed\n')
+
+    def test_invalid_matrix_is_rejected_before_any_output(self):
+        invalid = [('--repeats', '0'), ('--repeats', '-1')]
+        invalid += [('--nodes', value) for value in ('0', '-1', '1', '', ' ', ',', '[]')]
+        for index, extra in enumerate(invalid):
+            with self.subTest(extra=extra):
+                out = self.directory / str(index)
+                args = ['run_recovery', '--binary', str(self.binary), '--temporal-bin', str(self.binary),
+                        '--out', str(out)] + list(extra)
+                with patch.object(sys, 'argv', args), \
+                        patch.object(recovery.hashlib, 'sha256', side_effect=AssertionError('binary hashed before validation')), \
+                        patch.object(recovery, 'Case', side_effect=AssertionError('invalid matrix started a case')), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as caught:
+                        recovery.main()
+                self.assertEqual(caught.exception.code, 2)
+                self.assertFalse(out.exists())
+
+    def test_real_cli_rejects_zero_negative_and_empty_matrix(self):
+        for script in ('run_production.py', 'run_recovery.py'):
+            for index, extra in enumerate((('--repeats', '0'), ('--repeats', '-1'), ('--nodes', ''))):
+                with self.subTest(script=script, extra=extra):
+                    out = self.directory / (script + str(index))
+                    command = [sys.executable, '-B', str(Path(__file__).with_name(script)),
+                               '--binary', str(self.binary), '--temporal-bin', str(self.binary), '--out', str(out), *extra]
+                    result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn(extra[0][2:], result.stderr)
+                    self.assertEqual(result.stdout, '')
+                    self.assertFalse(out.exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows Job containment')
+    def test_timeout_keeps_stdout_and_reaps_real_tree(self):
+        root = self.directory / 'timeout'
+        root.mkdir()
+        ready = root / 'ready.json'
+        child_code = 'import time; time.sleep(30)'
+        parent_code = ('import json,os,subprocess,sys,time\nfrom pathlib import Path\n'
+                       f'child=subprocess.Popen([sys.executable,"-B","-c",{child_code!r}])\n'
+                       'print(123,flush=True)\n'
+                       'Path(sys.argv[1]).write_text(json.dumps(dict(root=os.getpid(),child=child.pid)))\n'
+                       'time.sleep(30)')
+        case = recovery.Case(root, Path(sys.executable), Path(sys.executable), 10, 'pulse', 0)
+        case.command = lambda operation: [sys.executable, '-B', '-c', parent_code, str(ready)]
+        launch = case.launch
+        created = []
+        def ready_launch(*args):
+            process = launch(*args)
+            created.append(process)
+            deadline = time.monotonic() + 5
+            while not ready.exists():
+                self.assertLess(time.monotonic(), deadline, 'fixture did not become ready')
+                self.assertIsNone(process.poll())
+                time.sleep(.01)
+            # 先确认真实输出与子进程已产生，再缩短本次 communicate/wait 的预算。
+            case.start = time.perf_counter() - 64.95
+            return process
+        case.launch = ready_launch
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                case.call('resume')
+            stdout = root / '01-resume.json'
+            self.assertTrue(stdout.is_file(), 'timeout discarded captured stdout')
+            self.assertEqual(stdout.read_text(encoding='utf-8').strip(), '123')
+            self.assertIsNotNone(created[0].poll())
+            self.assertFalse(case.timer.is_alive())
+            self.assertIsNone(case.job.handle)
+            for pid in json.loads(ready.read_text()).values():
+                try:
+                    production.psutil.Process(pid).wait(timeout=3)
+                except production.psutil.NoSuchProcess:
+                    pass
+                self.assertFalse(production.psutil.pid_exists(pid))
+        finally:
+            case.close()
+            for process in created:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=3)
+
+    def test_call_preserves_original_timeout_when_cleanup_fails(self):
+        original = subprocess.TimeoutExpired(['fixture'], .1)
+        cleanup_error = OSError('fixture cleanup error')
+        case = recovery.Case.__new__(recovery.Case)
+        case.root, case.counter, case.start = self.directory, 0, time.perf_counter()
+        from unittest.mock import Mock
+        process = Mock()
+        process.wait.side_effect = [original, None]
+        process.communicate.side_effect = original
+        process.poll.return_value = None
+        case.timer = Mock()
+        case.job = Mock()
+        case.job.close.side_effect = cleanup_error
+        out, err = io.StringIO('123\n'), io.StringIO()
+        case.processes = [(process, out, err)]
+        case.command = lambda operation: ['fixture']
+        case.launch = lambda *args: process
+        (self.directory / '01-resume.json').write_text('123\n', encoding='utf-8')
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            case.call('resume')
+        self.assertIs(caught.exception, original)
+        self.assertTrue(any('fixture cleanup error' in note for note in getattr(original, '__notes__', ())))
+        process.kill.assert_called_once()
+        self.assertTrue(out.closed)
+        self.assertTrue(err.closed)
 
 
 if __name__ == '__main__':

@@ -41,7 +41,7 @@ Add small regression tests to the existing capability-themed test file instead o
 ## Key conventions
 
 - **No `internal/` or `cmd/`** — this is a library, not a binary. All published packages are public API.
-- **Chinese comments and doc are the norm**; preserve them when editing. **README naming**: `README.md` is the Chinese default, `README_en.md` is English — same for the root and every package (`observe/`, `yaml/`). The site builds from those two files.
+- **中文协作与注释**：源码、测试、脚本和配置中的说明性注释统一中文；保留代码标识符、协议值、编译指令、`Output:` 等示例输出断言及版权／许可证原文。Issue／PR 的标题与正文统一中文，命令行 `--body-file` 提交也必须遵循 `.github` 模板。英文版 README／站点正文仍保留双语分工。**README naming**: `README.md` is the Chinese default, `README_en.md` is English — same for the root and every package (`observe/`, `yaml/`). The site builds from those two files.
 - **Functional options pattern** throughout (`pulse.WithObserver()`, `observe.WithRenderer()`, `pulse.WithMaxRunning()`).
 - **Dependency direction is one-way and must not reverse**: `pulse` ← `observe` / `yaml`. The engine never imports an observation package. Verify with `go list -deps .` — it must contain no other `github.com/Luo-root/pulse/*` entry.
 - **Slot contract**: `pending` | `ready` | `skipped`. Skip is **arrival, not failure**; a node error cancels the graph and is never rewritten as skip. Unwritten `Provides` after a successful `Run` are auto-skipped.

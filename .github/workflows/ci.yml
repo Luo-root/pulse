@@ -63,7 +63,7 @@ jobs:
         run: go test -race -count=1 -timeout=180s ./...
       - name: Check sampling evidence contracts
         run: python ../tools/test_tools.py
-      # Full timing matrices run manually on one machine; CI latency is not a performance gate.
+      # 完整计时矩阵在同一台机器上手动运行；CI 耗时不作为性能门禁。
 
   production-correctness:
     strategy:
@@ -96,4 +96,6 @@ jobs:
         run: go test -mod=readonly -race -count=1 -timeout=180s ./...
       - name: Check production sampling contracts
         run: python ../tools/test_production_tools.py
-      # Live Temporal checks require a real Server; full timing/recovery matrices stay manual.
+      - name: Check production summary contracts
+        run: python ../tools/test_production_summary.py
+      # Temporal 实机检查需要真实 Server；完整计时与恢复矩阵仍手动运行。

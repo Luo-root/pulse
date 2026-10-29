@@ -1,35 +1,35 @@
-name: Bug report
-description: Something behaves differently from what the documentation or the design says.
-title: "[Bug] "
+name: 缺陷报告
+description: 实际行为与文档或设计约定不符。
+title: "[缺陷] "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. **A bug that cannot be reproduced cannot be fixed** — the fields
-        below are the minimum needed to act on it.
+        请用中文填写标题和正文，代码标识符、命令和错误原文保留原样。
+        **无法复现的问题无法修复**，以下信息是定位问题所需的最小材料。
 
-        **Security problems do not belong here.** Report them privately as described in
-        [SECURITY.md](https://github.com/Luo-root/pulse/blob/main/SECURITY.md).
+        **安全漏洞不要在这里公开提交。** 请按
+        [SECURITY.md](https://github.com/Luo-root/pulse/blob/main/SECURITY.md) 私下报告。
 
   - type: textarea
     id: actual
     attributes:
-      label: Actual behavior
-      description: What happened — and what you expected instead.
+      label: 实际行为与预期行为
+      description: 实际发生了什么，原本预期是什么。
     validations:
       required: true
 
   - type: textarea
     id: reproduction
     attributes:
-      label: Reproduction
+      label: 复现步骤
       description: |
-        Minimal, runnable steps or code. Trim the case down until only the bug remains; a
-        self-contained `main.go` or a single failing test is ideal.
+        提供最小且可运行的步骤或代码。请删去与缺陷无关的部分，
+        最好是一份可以独立执行的 main.go 或一个失败测试。
       placeholder: |
         go test -run TestX ./package/...
-        # or a self-contained main.go
+        // 或提供可独立执行的 main.go
       render: go
     validations:
       required: true
@@ -37,28 +37,28 @@ body:
   - type: input
     id: version
     attributes:
-      label: Pulse version
-      description: The release tag you use (see Releases), or the commit if you track main.
-      placeholder: v0.5.0
+      label: Pulse 版本
+      description: 使用的发布标签（见 Releases）；如果跟踪 main，请填写提交哈希。
+      placeholder: v0.5.1
     validations:
       required: true
 
   - type: textarea
     id: environment
     attributes:
-      label: Environment
-      description: OS and architecture, plus the Go version you built with.
+      label: 运行环境
+      description: 操作系统、架构，以及编译时使用的 Go 版本。
       placeholder: |
-        OS: Windows 11 24H2 / Ubuntu 24.04
-        Go: go1.25.0 windows/amd64
+        操作系统：Windows 11 / Ubuntu 24.04
+        Go：go1.26.0 windows/amd64
     validations:
       required: true
 
   - type: textarea
     id: logs
     attributes:
-      label: Logs or error output
-      description: Paste the full error, including the stack trace. Redact anything sensitive — no API keys, no tokens.
+      label: 日志或错误输出
+      description: 请保留完整错误与堆栈，并隐藏敏感信息；不要提交 API key、token 或私钥。
       render: shell
     validations:
       required: false
@@ -66,19 +66,19 @@ body:
   - type: textarea
     id: regression
     attributes:
-      label: First known bad version / workaround
-      description: If this used to work, which version broke it? If you found a workaround, what is it?
+      label: 首个异常版本与临时解决办法
+      description: 如果以前能正常使用，从哪个版本开始出现问题？如果有临时解决办法，请一并说明。
     validations:
       required: false
 
   - type: checkboxes
     id: checks
     attributes:
-      label: Before submitting
+      label: 提交前确认
       options:
-        - label: I searched the existing issues and this is not a duplicate.
+        - label: 已搜索现有 Issue，确认不是重复问题。
           required: true
-        - label: I have read CONTRIBUTING.md and included a way to reproduce the problem.
+        - label: 已阅读 CONTRIBUTING.md，并提供复现方式。
           required: true
-        - label: This is not a security vulnerability — those go to SECURITY.md, not the issue tracker.
+        - label: 这不是安全漏洞；安全问题应按 SECURITY.md 私下报告。
           required: true

@@ -1,65 +1,64 @@
-name: Feature request
-description: Propose something Pulse should do. A survey first, then a proposal.
-title: "[Feature] "
+name: 功能建议
+description: 提议 Pulse 应提供的能力；先调研，再提出方案。
+title: "[功能] "
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Pulse settles the design in the issue **before** code exists, so a proposal that lays
-        out options and trade-offs moves much faster than one that only names an API. The
-        fields below follow [CONTRIBUTING.md](https://github.com/Luo-root/pulse/blob/main/CONTRIBUTING.md).
+        请用中文填写标题和正文，代码标识符、命令和协议字段保留原样。
+        Pulse 在编码前先通过 Issue 确定设计。请说明候选方案及取舍，不要只给出一个 API 名称。
+        以下章节遵循 [CONTRIBUTING.md](https://github.com/Luo-root/pulse/blob/main/CONTRIBUTING.md)。
 
   - type: textarea
     id: problem
     attributes:
-      label: What problem does this solve
+      label: 要解决什么问题
       description: |
-        The situation you are actually in — not the API you want. What happens today, and what
-        does it cost you in time, correctness, or operational risk?
+        描述实际遇到的场景，以及当前做法在耗时、正确性或运维风险上的代价。
+        请先说问题，再说希望新增的 API。
     validations:
       required: true
 
   - type: textarea
     id: what-to-do
     attributes:
-      label: What to do
-      description: The concrete deliverable.
+      label: 做什么
+      description: 具体要交付什么。
     validations:
       required: true
 
   - type: textarea
     id: non-goals
     attributes:
-      label: What NOT to do
-      description: The explicit non-goals. This is what keeps the ticket from growing while it is being worked on.
+      label: 不做什么
+      description: 明确本次不覆盖的内容，避免实现过程中范围持续扩大。
     validations:
       required: true
 
   - type: textarea
     id: prior-art
     attributes:
-      label: Prior art and options considered
+      label: 调研与候选方案
       description: |
-        How do comparable projects solve this? Lay out the options with their trade-offs —
-        **including "do nothing"** — and say which one you recommend and why. Present options;
-        don't assert a conclusion the evidence doesn't carry.
+        同类项目如何解决这个问题？请列出候选方案及各自取舍，包括“保持现状”，
+        再说明推荐哪一种及原因。结论必须有相应证据。
     validations:
       required: true
 
   - type: textarea
     id: design
     attributes:
-      label: Design rationale
-      description: If you have a shape in mind — how it would be built, which contracts it touches, what it rules out.
+      label: 设计理念
+      description: 如果已有初步方案，请说明如何实现、涉及哪些契约，以及排除了哪些方案。
     validations:
       required: false
 
   - type: textarea
     id: acceptance
     attributes:
-      label: Acceptance criteria
-      description: A checklist that can be verified one item at a time.
+      label: 验收标准
+      description: 写成能够逐项核对的清单。
       placeholder: |
         - [ ] ...
         - [ ] ...
@@ -69,23 +68,23 @@ body:
   - type: dropdown
     id: breaking
     attributes:
-      label: Would this need a breaking change?
+      label: 是否需要破坏性变更
       description: |
-        Under the freeze contract (v0.2.0+), a breaking change may only ride a minor release and
-        must be listed at the top of the release notes.
+        按冻结契约（v0.2.0 起），破坏性变更只能随 minor 版本发布，
+        并须在发布说明顶部明确列出。
       options:
-        - No — a pure addition
-        - Yes — it changes existing behavior or API
-        - Not sure
+        - 否，仅新增能力
+        - 是，改变现有行为或 API
+        - 尚不能确定
     validations:
       required: true
 
   - type: checkboxes
     id: checks
     attributes:
-      label: Before submitting
+      label: 提交前确认
       options:
-        - label: I searched the existing issues and this is not a duplicate.
+        - label: 已搜索现有 Issue，确认不是重复建议。
           required: true
-        - label: I have read CONTRIBUTING.md.
+        - label: 已阅读 CONTRIBUTING.md。
           required: true

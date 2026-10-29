@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""固定三框架、串行轮换；raw/log/DB 只写 ignored results 或仓库外目录。"""
+"""固定三框架、串行轮换；raw/log/DB 只写被忽略的 results 目录或仓库外目录。"""
 import argparse
 import ctypes
 import hashlib
@@ -29,6 +29,26 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def parse_matrix(value, name, minimum=None, allowed=None):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(name + ' must be a nonempty comma-separated matrix')
+    values = [item.strip() for item in value.split(',')]
+    if any(not item for item in values):
+        raise ValueError(name + ' contains an empty matrix entry')
+    if minimum is not None:
+        try:
+            values = [int(item) for item in values]
+        except ValueError as error:
+            raise ValueError(name + ' must contain integers') from error
+        if any(item < minimum for item in values):
+            raise ValueError(f'{name} must contain integers >= {minimum}')
+    if allowed is not None and any(item not in allowed for item in values):
+        raise ValueError(name + ' contains an unsupported matrix entry')
+    if len(set(values)) != len(values):
+        raise ValueError(name + ' contains duplicate matrix entries')
+    return values
+
+
 def oracle(shape, n, rounds):
     mask = (1 << 64) - 1
     preds = [[] for _ in range(n)]
@@ -56,7 +76,7 @@ def oracle(shape, n, rounds):
 
 
 def job_cpu(job):
-    """Windows Job accounting includes terminated descendants, unlike polling CPU."""
+    """Windows Job 计账包含已终止后代进程的 CPU，用轮询获取 CPU 则无法覆盖这些进程。"""
     from ctypes import wintypes as w
     class Accounting(ctypes.Structure):
         _fields_ = [('user', ctypes.c_int64), ('kernel', ctypes.c_int64),
@@ -96,7 +116,7 @@ def sample_process(command, cwd, timeout=65):
         try:
             root = psutil.Process(process.pid)
         except psutil.NoSuchProcess:
-            root = None  # A short CLI may exit before the first RSS handle is opened.
+            root = None  # 短时 CLI 可能在首次打开 RSS 句柄前就已退出。
         while reader.is_alive():
             rss, sampled = 0, False
             tree = [root] if root is not None else []
@@ -143,7 +163,7 @@ def sample_process(command, cwd, timeout=65):
                 try: os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError: pass
                 except OSError as error: cleanup_errors.append(error)
-            # Assignment can fail before the suspended root belongs to the Job.
+            # 将挂起的根进程加入 Job 的操作可能失败，此时该进程尚不属于 Job。
             if process.poll() is None: cleanup(process.kill)
             cleanup(lambda: process.wait(timeout=10))
             if reader is not None:
@@ -164,9 +184,10 @@ def validate(row, payload, returncode):
     if not isinstance(payload, dict): raise ValueError('CLI output must be a JSON object')
     config = payload.get('config')
     if not isinstance(config, dict): raise ValueError('CLI config must be a JSON object')
-    # Reject nonstandard JSON numbers even in fields outside the metrics whitelist.
+    # 即使字段不在指标白名单中，也要拒绝其中的非标准 JSON 数字。
     json.dumps(payload, allow_nan=False)
-    for k in ('engine', 'mode', 'shape', 'nodes', 'rounds'):
+    config_fields = ('engine', 'mode', 'shape', 'nodes', 'rounds', 'parallelism')
+    for k in config_fields:
         if type(config.get(k)) is not type(row[k]) or config.get(k) != row[k]:
             raise ValueError('CLI identity mismatch: ' + k)
     status = payload.get('status')
@@ -196,7 +217,76 @@ def validate(row, payload, returncode):
             raise ValueError('independent Python checksum mismatch')
         if not payload.get('iterations') or run_ns is None or run_ns <= 0:
             raise ValueError('missing completed timing')
-    return {k: payload[k] for k in METRICS if k in payload}
+    return dict({k: payload[k] for k in METRICS if k in payload},
+                config={k: config[k] for k in config_fields}, parallelism=config['parallelism'])
+
+
+def resume_rows(raw, manifest, expected_keys):
+    """一次核验已确认前缀；最多接纳一条先 flush、后落清单的完整记录。"""
+    recorded = manifest.get('records')
+    if type(recorded) is not int or recorded < 0:
+        raise ValueError('resume manifest records must be a nonnegative integer')
+    if not raw.exists() and recorded:
+        raise ValueError('resume raw.jsonl missing recorded cases')
+    data = raw.read_bytes() if raw.exists() else b''
+    final_hash = manifest.get('raw_sha256')
+    if 'ended_at' in manifest and final_hash is None:
+        raise ValueError('resume completed manifest missing raw_sha256')
+    prefix = manifest.get('raw_prefix')
+    if prefix is None:
+        # 旧版完整报告可用最终摘要核验；无摘要的非空中断记录不能安全恢复。
+        if recorded and final_hash is None:
+            raise ValueError('resume missing confirmed raw prefix')
+        prefix_size = len(data) if final_hash is not None else 0
+    else:
+        if not isinstance(prefix, dict) or type(prefix.get('bytes')) is not int or prefix['bytes'] < 0:
+            raise ValueError('resume invalid raw prefix')
+        prefix_size = prefix['bytes']
+        if prefix_size > len(data):
+            raise ValueError('resume raw.jsonl missing confirmed prefix bytes')
+    raw_hash = hashlib.sha256(data[:prefix_size])
+    if prefix is not None and prefix.get('sha256') != raw_hash.hexdigest():
+        raise ValueError('resume confirmed raw prefix sha256 mismatch')
+    raw_hash.update(data[prefix_size:])
+    if final_hash is not None and final_hash != raw_hash.hexdigest():
+        raise ValueError('resume raw_sha256 mismatch')
+    rows, seen, offset = [], set(), 0
+    confirmed = 0 if prefix_size == 0 else None
+    for line in data.splitlines(keepends=True):
+        if not line.endswith(b'\n') or not line.strip():
+            raise ValueError('resume raw.jsonl contains an incomplete or empty record')
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            raise ValueError('resume raw record must be an object')
+        key = tuple(row.get(k) for k in FIELDS)
+        if any(type(value) is not kind for value, kind in zip(key, (str, str, str, int, int, int))):
+            raise ValueError('resume raw record identity has an invalid type')
+        if key not in expected_keys or key in seen:
+            raise ValueError('resume raw record outside matrix or duplicated')
+        if row.get('status') not in ('ok', 'error', 'deadline', 'hard_timeout', 'not_equivalent', 'not_repeated'):
+            raise ValueError('resume raw record has an invalid status')
+        seen.add(key)
+        rows.append(row)
+        offset += len(line)
+        if offset == prefix_size:
+            confirmed = len(rows)
+    if confirmed is None or confirmed != recorded:
+        raise ValueError('resume confirmed record count mismatch')
+    confirmed_rows = rows[:confirmed]
+    errors = sum(row['status'] == 'error' for row in confirmed_rows)
+    statuses = {s: sum(row['status'] == s for row in confirmed_rows)
+                for s in sorted({row['status'] for row in confirmed_rows})}
+    if type(manifest.get('errors')) is not int or manifest['errors'] != errors:
+        raise ValueError('resume confirmed error count mismatch')
+    if (not isinstance(manifest.get('statuses'), dict) or manifest['statuses'] != statuses
+            or any(type(v) is not int for v in manifest['statuses'].values())):
+        raise ValueError('resume confirmed status counts mismatch')
+    if final_hash is not None:
+        if len(rows) != recorded or len(rows) != len(expected_keys):
+            raise ValueError('resume completed record count mismatch')
+    elif len(rows) > recorded + 1:
+        raise ValueError('resume raw.jsonl exceeds one unconfirmed append')
+    return rows, raw_hash, len(data)
 
 
 def write_manifest(path, manifest, rows):
@@ -233,11 +323,25 @@ def main():
     parser.add_argument('--iterations', type=int, default=None, help='fixed reuse batch; resource comparisons use 1 for every engine')
     parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
+    try:
+        if type(args.repeats) is not int or args.repeats < 1:
+            raise ValueError('repeats must be a positive integer')
+        if args.iterations is not None and (type(args.iterations) is not int or args.iterations < 1):
+            raise ValueError('iterations must be a positive integer')
+        nodes = parse_matrix(args.nodes, 'nodes', minimum=1)
+        rounds_values = parse_matrix(args.rounds, 'rounds', minimum=1)
+        shapes = parse_matrix(args.shapes, 'shapes', allowed=('chain', 'wide', 'diamonds'))
+        modes = parse_matrix(args.modes, 'modes', allowed=('plain', 'observe', 'checkpoint'))
+        engines = parse_matrix(args.engines, 'engines', allowed=('pulse', 'eino', 'temporal'))
+    except ValueError as error:
+        parser.error(str(error))
+    cases = [(mode, shape, n, rounds) for mode in modes for shape in shapes for n in nodes for rounds in rounds_values]
+    expected_keys = {(engine, mode, shape, n, rounds, repeat) for repeat in range(args.repeats)
+                     for mode, shape, n, rounds in cases for engine in engines}
     binary, temporal = args.binary.resolve(), args.temporal_bin.resolve()
     out = args.out.resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    identity = dict(repeats=args.repeats, nodes=args.nodes, rounds=args.rounds, shapes=args.shapes,
-                    modes=args.modes, engines=args.engines, binary_sha256=digest(binary),
+    identity = dict(repeats=args.repeats, nodes=','.join(map(str, nodes)), rounds=','.join(map(str, rounds_values)),
+                    shapes=','.join(shapes), modes=','.join(modes), engines=','.join(engines), binary_sha256=digest(binary),
                     temporal_sha256=digest(temporal), tool='run_production.py',
                     sampler_sha256=digest(__file__), containment_sha256=digest(Path(__file__).with_name('run_matrix.py')),
                     budget_s=60, watchdog_s=65,
@@ -245,32 +349,37 @@ def main():
     manifest_path, raw = out/'manifest.json', out/'raw.jsonl'
     if args.resume:
         manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
-        if not isinstance(manifest, dict) or manifest.get('identity') != identity:
+        if not isinstance(manifest, dict) or not isinstance(manifest.get('identity'), dict):
             raise ValueError('resume identity/binary changed')
-        if raw.exists():
-            rows = [json.loads(line) for line in raw.read_text(encoding='utf-8').splitlines()]
-        elif manifest.get('records', 0):
-            raise ValueError('resume raw.jsonl missing recorded cases')
-        else:
-            rows = []
+        previous = dict(manifest['identity'])
+        # 只规范矩阵的历史表示；二进制、采样器和其余身份仍须逐项相同。
+        for field in ('nodes', 'rounds', 'shapes', 'modes', 'engines'):
+            value = previous.get(field)
+            text = ','.join(map(str, value)) if isinstance(value, list) else str(value)
+            previous[field] = ','.join(map(str, parse_matrix(text, field, minimum=1 if field in ('nodes', 'rounds') else None)))
+        if previous != identity:
+            raise ValueError('resume identity/binary changed')
+        rows, raw_hash, raw_size = resume_rows(raw, manifest, expected_keys)
     else:
         if manifest_path.exists() or raw.exists(): raise ValueError('existing run: use --resume or a fresh output')
         manifest = dict(identity=identity, started_at=datetime.now(timezone.utc).isoformat())
-        rows = []
+        rows, raw_hash, raw_size = [], hashlib.sha256(), 0
+    # 历史核验全部通过后才能修改清单、raw 或案例目录。
+    out.mkdir(parents=True, exist_ok=True)
+    manifest['identity'] = identity
     manifest.pop('ended_at', None)
     manifest.pop('raw_sha256', None)
-    write_manifest(manifest_path, manifest, rows)  # Persist identity before the first case can be interrupted.
+    manifest['raw_prefix'] = dict(bytes=raw_size, sha256=raw_hash.hexdigest())
+    write_manifest(manifest_path, manifest, rows)  # 在首个案例可能被中断前持久化身份信息。
     seen = {tuple(r[k] for k in FIELDS) for r in rows}
     limited = {tuple(r[k] for k in FIELDS[:-1]) for r in rows if r['status'] in LIMITS}
-    engines = args.engines.split(',')
-    cases = [(mode, shape, int(n), int(rounds)) for mode in args.modes.split(',')
-             for shape in args.shapes.split(',') for n in args.nodes.split(',') for rounds in args.rounds.split(',')]
-    with raw.open('a', encoding='utf-8', newline='\n') as stream:
+    with raw.open('ab') as stream:
         for repeat in range(args.repeats):
             for case_index, (mode, shape, n, rounds) in enumerate(cases):
                 offset = (repeat + case_index) % len(engines)
                 for engine in engines[offset:] + engines[:offset]:
-                    row = dict(engine=engine, mode=mode, shape=shape, nodes=n, rounds=rounds, repeat=repeat)
+                    row = dict(engine=engine, mode=mode, shape=shape, nodes=n, rounds=rounds, repeat=repeat,
+                               parallelism=identity['parallelism'])
                     key = tuple(row[k] for k in FIELDS)
                     if key in seen: continue
                     group = key[:-1]
@@ -294,7 +403,7 @@ def main():
                             (case/'stderr.txt').write_text(getattr(error, 'sampler_stderr', ''), encoding='utf-8')
                             (case/'sampler-error.txt').write_text(
                                 ''.join(traceback.format_exception(type(error), error, error.__traceback__)), encoding='utf-8')
-                            if not isinstance(error, Exception): raise  # Keep interruptions resumable and unrecorded.
+                            if not isinstance(error, Exception): raise  # 中断后仍可恢复，且不记录为采样结果。
                             row.update(status='error', error=f'{type(error).__name__}: {error}')
                         else:
                             stdout = observed.pop('stdout')
@@ -311,13 +420,18 @@ def main():
                         row['database_bytes'] = sum(p.stat().st_size for p in case.glob('state.sqlite*') if p.is_file() and not p.name.endswith('.log'))
                         if row['status'] in LIMITS: limited.add(group)
                     rows.append(row)
-                    stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
+                    encoded = (json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')
+                    stream.write(encoded)
                     stream.flush()
+                    # 每次只散列新追加字节，不重复读取整个 raw。
+                    raw_hash.update(encoded)
+                    raw_size += len(encoded)
+                    manifest['raw_prefix'] = dict(bytes=raw_size, sha256=raw_hash.hexdigest())
                     seen.add(key)
                     write_manifest(manifest_path, manifest, rows)
                     if row['status'] != 'not_repeated': print(f"{len(rows)} {label} {row['status']} {row.get('run_ns')}", flush=True)
     manifest['ended_at'] = datetime.now(timezone.utc).isoformat()
-    manifest['raw_sha256'] = digest(raw)
+    manifest['raw_sha256'] = raw_hash.hexdigest()
     write_manifest(manifest_path, manifest, rows)
     print(json.dumps(manifest, indent=2), flush=True)
     return int(any(r['status'] == 'error' for r in rows))
