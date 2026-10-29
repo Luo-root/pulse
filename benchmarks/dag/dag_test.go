@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"reflect"
 	"runtime"
 	"testing"
@@ -86,6 +88,37 @@ func TestCorrectness(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+func TestAzureConcurrencyProgress(t *testing.T) {
+	const child = "PULSE_DAG_WAKEUP_CHILD"
+	if os.Getenv(child) != "1" {
+		// 独立进程限定丢失唤醒的等待时间；旧依赖即使不响应 ctx，也不会挂住整个测试套件。
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAzureConcurrencyProgress$", "-test.timeout=15s")
+		cmd.Env = append(os.Environ(), child+"=1")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Azure bounded-concurrency progress failed: %v (context: %v)\n%s", err, ctx.Err(), output)
+		}
+		return
+	}
+
+	old := runtime.GOMAXPROCS(4)
+	defer runtime.GOMAXPROCS(old)
+	g, err := newGraph("chain", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, checksum := g.reference(1)
+	c := config{engine: "azure", nodes: 3, rounds: 1, parallelism: 1}
+	// 将业务额度压至 1，同时允许调度循环与完成通知并行，覆盖归还额度与唤醒的先后窗口。
+	for trial := range 4096 {
+		if err := verify(context.Background(), c, g, expected, checksum); err != nil {
+			t.Fatalf("trial %d: %v", trial, err)
 		}
 	}
 }
