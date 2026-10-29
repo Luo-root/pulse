@@ -80,9 +80,10 @@ func (g *Graph) problemsLocalWithStreamsAtLocked(at string, streams map[string][
 	out = append(out, g.problemsOutputsLocked()...)
 	// 结构组合已在事件图中展开。把 Sub 的全部父 Requires 压成一个原子
 	// 节点，会误拒实时流反馈，或把可选且无人读取的 In 变成整个 child 的门。
+	// 只有本层已纳入事件模型才替代原 DAG；其它层的检查结果不能证明本层无环。
 	// 没有挂载的简单图保留原 DAG 判据、顺序与报文。
 	expanded := false
-	if streams != nil {
+	if _, checked := streams[at]; checked {
 		for _, n := range g.nodes {
 			if n.child != nil {
 				expanded = true
