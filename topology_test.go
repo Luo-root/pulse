@@ -994,6 +994,256 @@ func TestTopologyBindFailureKeepsChildView(t *testing.T) {
 	}
 }
 
+// 父绑定失效后，仍可见的子视图必须保留普通环与完整流诊断；合法流反馈仍按事件模型判断。
+func TestTopologyBindFailureKeepsUncheckedDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		build func(*testing.T) *Graph
+		want  string
+	}{
+		{
+			name: "ordinary-cycle-with-sub",
+			build: func(t *testing.T) *Graph {
+				g := streamTestGraph(t, "unchecked.cycle")
+				leaf := streamTestGraph(t, "unchecked.leaf")
+				optional := NewKey[int]("unchecked.optional")
+				declareIn(t, leaf, NewPort(optional))
+				streamTestMust(t, Sub(g, "inner", "", []SubBind{Fix(optional, 1)}, leaf))
+				x, y := NewKey[int]("unchecked.x"), NewKey[int]("unchecked.y")
+				mustAdd(t, g, NewNode("A", "", Requires(y), Provides(x), nil))
+				mustAdd(t, g, NewNode("B", "", Requires(x), Provides(y), nil))
+				return g
+			},
+			want: "dependency cycle",
+		},
+		{
+			name: "native-missing-reader",
+			build: func(t *testing.T) *Graph {
+				g := streamTestGraph(t, "unchecked.native")
+				streamTestProduce(t, g, "writer", NewKey[<-chan int]("unchecked.native"), 1, 0)
+				return g
+			},
+			want: "nothing consumes it",
+		},
+		{
+			name: "managed-missing-reader",
+			build: func(t *testing.T) *Graph {
+				g := streamTestGraph(t, "unchecked.managed")
+				mustAdd(t, g, NewNode("writer", "", nil, Provides(NewKey[Stream[int]]("unchecked.managed")), nil))
+				return g
+			},
+			want: "nothing consumes it",
+		},
+		{
+			name: "nested-stream-lifecycle",
+			build: func(t *testing.T) *Graph {
+				g, _ := streamTestCompletion(t, true, true, false, 0, false, true)
+				return g
+			},
+			want: "stream lifecycle cycle",
+		},
+		{
+			name: "legal-stream-feedback",
+			build: func(t *testing.T) *Graph {
+				g, leaf := streamTestGraph(t, "unchecked.feedback"), streamTestGraph(t, "unchecked.sender")
+				inside, outside := NewKey[<-chan int]("inside"), NewKey[<-chan int]("outside")
+				done := NewKey[bool]("done")
+				declareIn(t, leaf, NewPort(done))
+				streamTestMust(t, leaf.DeclareOutput(NewPort(inside)))
+				streamTestProduce(t, leaf, "writer", inside, 1, 0)
+				mustAdd(t, leaf, NewNode("acknowledge", "", Requires(done), nil, nil))
+				streamTestMust(t, Sub(g, "inner", "", []SubBind{In(done, done), Out(inside, outside)}, leaf))
+				mustAdd(t, g, NewNode("read-and-return-done", "", Requires(outside), Provides(done), nil))
+				g.mu.Lock()
+				atomicProblems := g.problemsCycleLocked()
+				g.mu.Unlock()
+				if len(atomicProblems) == 0 {
+					t.Fatal("测试图必须能区分原子 Sub 与合法流反馈")
+				}
+				return g
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			child := tc.build(t)
+			optional, late := NewKey[int]("unchecked.mount.optional"), NewKey[int]("unchecked.mount.late")
+			declareIn(t, child, NewPort(optional))
+			root := streamTestGraph(t, "unchecked.root")
+			streamTestMust(t, Sub(root, "outer", "", []SubBind{Fix(optional, 1)}, child))
+			before := root.Topology().Nodes[0].Sub
+			if tc.want == "" {
+				if len(before.Problems) != 0 {
+					t.Fatalf("合法流反馈被误拒：%v", before.Problems)
+				}
+			} else if len(before.Problems) != 1 || !strings.Contains(before.Problems[0].Error(), tc.want) {
+				t.Fatalf("绑定失效前应报 %q：%v", tc.want, before.Problems)
+			}
+
+			declareIn(t, child, NewPort(late))
+			mustAdd(t, child, NewNode("late", "", Requires(late), nil, nil))
+			after := root.Topology()
+			if len(after.Problems) != 1 || !strings.Contains(after.Problems[0].Error(), "has no value for this mount") {
+				t.Fatalf("父层只应报绑定错误：%v", after.Problems)
+			}
+			if got := after.Nodes[0].Sub; got == nil || got.Graph.Path != "outer" ||
+				!reflect.DeepEqual(got.Problems, before.Problems) {
+				t.Fatalf("缺绑定祖先改变了子视图诊断：before=%v after=%+v", before.Problems, got)
+			}
+			if err := root.Validate(); err == nil || err.Error() != after.Problems[0].Error() {
+				t.Fatalf("Validate 应继续拒绝缺绑定：%v", err)
+			}
+			if err := startOn(root); err == nil || err.Error() != after.Problems[0].Error() {
+				t.Fatalf("Start 应继续拒绝缺绑定：%v", err)
+			}
+		})
+	}
+}
+
+// 进入子树的挂载事实仍来自真实根；漏绑无关新入口不能改变已有流边界的诊断。
+func TestTopologyBindFailureKeepsIncomingMountFacts(t *testing.T) {
+	for _, kind := range []string{
+		"managed-not-exported", "managed-root-outlet", "inherited-aspect", "cut-inherited-aspect",
+		"incoming-fix-skip", "incoming-in-skip", "native-parent-reader", "shared-parent-pool", "independent-parent-pool",
+	} {
+		t.Run(kind, func(t *testing.T) {
+			optional, late, trigger := NewKey[int]("boundary.optional"), NewKey[int]("boundary.late"), NewKey[int]("boundary.trigger")
+			stream := NewKey[Stream[int]]("boundary.stream")
+			var childOpts []Option
+			if kind == "independent-parent-pool" {
+				childOpts = append(childOpts, WithMaxRunning(2))
+			}
+			child := streamTestGraph(t, "boundary.child", childOpts...)
+			declareIn(t, child, NewPort(optional))
+			root := streamTestGraph(t, "boundary.root")
+			binds := []SubBind{Fix(optional, 1)}
+			want := ""
+			switch kind {
+			case "managed-not-exported", "managed-root-outlet":
+				mustAdd(t, child, NewNode("writer", "", nil, Provides(stream), nil))
+				streamTestMust(t, child.DeclareOutput(NewPort(stream)))
+				if kind == "managed-root-outlet" {
+					streamTestMust(t, root.DeclareOutput(NewPort(stream)))
+					binds = append(binds, Out(stream, stream))
+				} else {
+					want = "nothing consumes it"
+				}
+			case "inherited-aspect", "cut-inherited-aspect":
+				root = streamTestGraph(t, "boundary.root", WithAspects(func(rc *RunCtx, next func(*RunCtx) error) error {
+					return next(rc)
+				}))
+				var leafOpts []Option
+				if kind == "cut-inherited-aspect" {
+					leafOpts = append(leafOpts, WithoutAspects())
+				} else {
+					want = "nothing consumes it"
+				}
+				leaf := streamTestGraph(t, "boundary.leaf", leafOpts...)
+				declareIn(t, leaf, NewPort(trigger))
+				mustAdd(t, leaf, NewNode("writer", "", Requires(trigger), Provides(stream), nil))
+				streamTestMust(t, Sub(child, "inner", "", []SubBind{FixSkip(trigger)}, leaf))
+			case "incoming-fix-skip", "incoming-in-skip":
+				declareIn(t, child, NewPort(trigger))
+				mustAdd(t, child, NewNode("writer", "", Requires(trigger), Provides(stream), nil))
+				if kind == "incoming-fix-skip" {
+					binds = append(binds, FixSkip(trigger))
+				} else {
+					pass := streamTestGraph(t, "boundary.pass")
+					declareIn(t, pass, NewPort(trigger))
+					streamTestMust(t, pass.DeclareOutput(NewPort(trigger)))
+					streamTestMust(t, Sub(root, "skip-source", "", []SubBind{FixSkip(trigger), Out(trigger, trigger)}, pass))
+					binds = append(binds, In(trigger, trigger))
+				}
+			case "native-parent-reader", "shared-parent-pool", "independent-parent-pool":
+				if kind != "native-parent-reader" {
+					root = streamTestGraph(t, "boundary.root", WithMaxRunning(2))
+				}
+				native, exported := NewKey[<-chan int]("boundary.native"), NewKey[<-chan int]("boundary.exported")
+				streamTestMust(t, child.DeclareOutput(NewPort(native)))
+				streamTestProduce(t, child, "writer", native, 1, 0)
+				binds = append(binds, Out(native, exported))
+				streamTestMust(t, Consume(root, "reader", "", exported, func(*RunCtx, int) error { return nil }))
+				if kind != "native-parent-reader" {
+					other, otherExport := NewKey[<-chan int]("boundary.other"), NewKey[<-chan int]("boundary.other-export")
+					streamTestMust(t, child.DeclareOutput(NewPort(other)))
+					streamTestProduce(t, child, "other-writer", other, 1, 0)
+					binds = append(binds, Out(other, otherExport))
+					streamTestMust(t, Consume(root, "other-reader", "", otherExport, func(*RunCtx, int) error { return nil }))
+				}
+			}
+			streamTestMust(t, Sub(root, "outer", "", binds, child))
+			beforeTop := root.Topology()
+			if kind == "shared-parent-pool" {
+				if len(beforeTop.Problems) != 1 || !strings.Contains(beforeTop.Problems[0].Error(), "needs 4 slots") {
+					t.Fatalf("测试图必须在真实父池里合计四个流参与者：%v", beforeTop.Problems)
+				}
+			} else if kind == "independent-parent-pool" && len(beforeTop.Problems) != 0 {
+				t.Fatalf("同容量的父子独立池不应合并：%v", beforeTop.Problems)
+			}
+			mount := len(beforeTop.Nodes) - 1
+			before := beforeTop.Nodes[mount].Sub.Problems
+			if (want == "" && len(before) != 0) ||
+				(want != "" && (len(before) != 1 || !strings.Contains(before[0].Error(), want))) {
+				t.Fatalf("漏绑前的流边界控制失败：%v；应包含 %q", before, want)
+			}
+			declareIn(t, child, NewPort(late))
+			mustAdd(t, child, NewNode("late", "", Requires(late), nil, nil))
+			after := root.Topology()
+			if len(after.Problems) != 1 || !strings.Contains(after.Problems[0].Error(), "has no value for this mount") {
+				t.Fatalf("父层只应报绑定错误：%v", after.Problems)
+			}
+			if got := after.Nodes[mount].Sub.Problems; !reflect.DeepEqual(got, before) {
+				t.Fatalf("漏绑无关入口改变了进入子树的流事实：before=%v after=%v", before, got)
+			}
+			if err := root.Validate(); err == nil || err.Error() != after.Problems[0].Error() {
+				t.Fatalf("Validate 应继续拒绝缺绑定：%v", err)
+			}
+			if err := startOn(root); err == nil || err.Error() != after.Problems[0].Error() {
+				t.Fatalf("Start 应继续拒绝缺绑定：%v", err)
+			}
+		})
+	}
+}
+
+func TestTopologyBindFailureKeepsDescendantMountFacts(t *testing.T) {
+	trigger, optional, late := NewKey[int]("facts.trigger"), NewKey[int]("facts.optional"), NewKey[int]("facts.late")
+	stream := NewKey[Stream[int]]("facts.stream")
+	shared := streamTestGraph(t, "facts.shared")
+	declareIn(t, shared, NewPort(trigger))
+	mustAdd(t, shared, NewNode("writer", "", Requires(trigger), Provides(stream), nil))
+	child := streamTestGraph(t, "facts.child")
+	declareIn(t, child, NewPort(optional))
+	streamTestMust(t, Sub(child, "live", "", []SubBind{Fix(trigger, 1)}, shared))
+	streamTestMust(t, Sub(child, "skipped", "", []SubBind{FixSkip(trigger)}, shared))
+	root := streamTestGraph(t, "facts.root")
+	streamTestMust(t, Sub(root, "outer", "", []SubBind{Fix(optional, 1)}, child))
+	declareIn(t, child, NewPort(late))
+	mustAdd(t, child, NewNode("late", "", Requires(late), nil, nil))
+
+	top, unchanged := root.Topology(), root.Topology()
+	if len(top.Problems) != 1 || !strings.Contains(top.Problems[0].Error(), "has no value for this mount") {
+		t.Fatalf("父层只应报绑定错误：%v", top.Problems)
+	}
+	childTop := top.Nodes[0].Sub
+	live, skipped := childTop.Nodes[0].Sub, childTop.Nodes[1].Sub
+	want := `pulse: node "outer/live/writer" provides "facts.stream" but nothing consumes it: ` +
+		`a stream output nobody reads blocks the sender forever`
+	if live.Graph.Path != "outer/live" || len(live.Problems) != 1 || live.Problems[0].Error() != want ||
+		skipped.Graph.Path != "outer/skipped" || skipped.Problems != nil {
+		t.Fatalf("补建子树模型丢失逐挂载事实：live=%+v skipped=%+v", live, skipped)
+	}
+	if len(childTop.Problems) != 1 || childTop.Problems[0].Error() !=
+		`pulse: subgraph "facts.shared" (mounted at "outer/live"): `+want {
+		t.Fatalf("子层应只聚合 live 挂载诊断：%v", childTop.Problems)
+	}
+	live.Problems[0] = errors.New("changed")
+	if !reflect.DeepEqual(skipped, unchanged.Nodes[0].Sub.Nodes[1].Sub) {
+		t.Fatal("修改子视图影响了同一定义的另一处挂载")
+	}
+	if next := root.Topology(); !reflect.DeepEqual(next, unchanged) {
+		t.Fatal("修改补建模型的返回副本影响了后续视图")
+	}
+}
+
 func TestTopologySharedChildProblemsAreIsolatedBySite(t *testing.T) {
 	in, value := NewKey[int]("shared.in"), NewKey[int]("shared.value")
 	stream := NewKey[Stream[int]]("shared.stream")

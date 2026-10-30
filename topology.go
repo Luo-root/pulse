@@ -249,7 +249,7 @@ func (g *Graph) Topology() *Topology {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	chain, capacity := mountChain{g}, g.declaredCapacity()
-	streams := g.problemsStreamLocked("", chain, capacity)
+	streams := g.problemsTopologyStreamsLocked("", chain, capacity)
 	return g.topologyAtLocked("", chain, capacity, streams)
 }
 

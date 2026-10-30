@@ -15,6 +15,9 @@ type streamTree struct {
 	keys   []*streamKey
 	pools  []*streamPool
 	groups []*streamGroup
+
+	includeUnbound bool // 仅 Topology 的根级补充检查展开漏绑子树，既有绑定仍沿真实挂载解释。
+	unbound        bool // 正常检查是否因绑定失败跳过了子树。
 }
 
 type streamSite struct {
@@ -66,10 +69,33 @@ type streamGroup struct {
 // 来源 → 出口 → 普通依赖环 → 流式 → 子树的既有顺序。根 capacity 已解析
 // ExecOption > 定义声明；子层有声明就新建池，否则继承同一池（不能按数值合并）。
 func (g *Graph) problemsStreamLocked(at string, chain mountChain, capacity int, known ...streamKnownInputs) map[string][]error {
-	if !g.needsWaitTreeLocked() {
-		return nil
+	out, _ := g.problemsStreamModelLocked(at, chain, capacity, false, known...)
+	return out
+}
+
+// problemsTopologyStreamsLocked 保留正常检查的诊断与顺序，只为未覆盖的子视图补齐事实。
+// 补充检查仍从真实根展开，不能把子图的出口当根出口，或丢失进入子图的 skip、别名、池与切面。
+func (g *Graph) problemsTopologyStreamsLocked(at string, chain mountChain, capacity int) map[string][]error {
+	out, unbound := g.problemsStreamModelLocked(at, chain, capacity, false)
+	if !unbound {
+		return out
 	}
-	t := &streamTree{}
+	complete, _ := g.problemsStreamModelLocked(at, chain, capacity, true)
+	for site, problems := range complete {
+		if _, checked := out[site]; !checked {
+			out[site] = problems
+		}
+	}
+	return out
+}
+
+// problemsStreamModelLocked 的第二个返回值表示有子树因绑定失败而未纳入正常检查。
+// 只在 Topology 的例外路径展开这些子树；Validate / Start 始终使用正常模型。
+func (g *Graph) problemsStreamModelLocked(at string, chain mountChain, capacity int, includeUnbound bool, known ...streamKnownInputs) (map[string][]error, bool) {
+	if !g.needsWaitTreeLocked() {
+		return nil, false
+	}
+	t := &streamTree{includeUnbound: includeUnbound}
 	pool := &streamPool{capacity: capacity}
 	t.pools = append(t.pools, pool)
 	facts := streamKnownInputs{hasAspects: len(g.aspects) != 0}
@@ -94,11 +120,15 @@ func (g *Graph) problemsStreamLocked(at string, chain mountChain, capacity int, 
 	}
 	t.collectHostReaders(facts.hostReads)
 	t.collectReaders()
-	out := make(map[string][]error)
+	// 键存在表示这一处挂载已纳入事件模型；没有诊断也登记，不能与未检查的子树混淆。
+	out := make(map[string][]error, len(t.sites))
+	for _, site := range t.sites {
+		out[site.at] = nil
+	}
 	t.problemsSlots(out)
 	t.problemsReaders(out)
 	t.problemsLifecycle(out, facts.checkpoint)
-	return out
+	return out, t.unbound
 }
 
 // 没有流声明且没有 Sub 的普通图沿用原 DAG 快路；结构 Sub 的实际输入依赖
@@ -153,7 +183,12 @@ func (t *streamTree) collectLocked(g *Graph, at string, chain mountChain, pool *
 			continue
 		}
 		if checkBinds(child, n.def.id, n.def.binds) != nil {
-			continue // 接线错误由原有子树检查报；不从错误接线猜流关系
+			t.unbound = true
+			if !t.includeUnbound || !n.def.sub {
+				continue // 正常检查仍由原有子树判据报绑定错误。
+			}
+			// Sub 初装已校验并复制全部绑定；公开装配只能追加声明和节点，不能改型或删除端口。
+			// 新增必需入口漏绑不使既有绑定失效。补充视图只沿这些真实绑定展开，不猜新入口的值。
 		}
 		child.mu.Lock()
 		childPool := pool
