@@ -112,7 +112,7 @@ function convert(srcFile, lang, pageDirs) {
   return dest
 }
 
-// ---- Pass 1：收集双语 README 目录清单（供目录链接的站内路由判定）----
+// ---- 第一步：收集双语 README 目录清单（供目录链接的站内路由判定）----
 const readmeByLang = { zh: new Map(), en: new Map() } // relDir → srcFile
 for (const f of sourceReadmes()) {
   const rel = relative(repoDir, f).replaceAll('\\', '/')

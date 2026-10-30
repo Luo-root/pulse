@@ -1,6 +1,6 @@
-"""Tiny fixture-only summary checks; never launch samplers, engines or servers.
+"""仅用小型测试样本检查汇总，不启动采样器、引擎或服务器。
 
-Set PULSE_PRODUCTION_SUMMARY_TEST_TMP to retain fixtures outside the source checkout.
+设置 PULSE_PRODUCTION_SUMMARY_TEST_TMP 可将测试样本保留在源码 checkout 之外。
 """
 import contextlib
 import csv
@@ -20,7 +20,7 @@ import summarize_production as summary
 
 TEST_ROOT = Path(os.environ.get('PULSE_PRODUCTION_SUMMARY_TEST_TMP',
                  Path(__file__).resolve().parents[1] / 'results' / 'test-production-summary'))
-GOLDEN = 1164970750538294679  # uint64 reference from the independent sampler tests.
+GOLDEN = 1164970750538294679  # 来自独立采样器测试的 uint64 参考值。
 
 
 def manifest(experiment, repeats=1):
@@ -239,6 +239,51 @@ class ProductionSummaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'manifest identity mismatch'):
             normal(parallelism=8)
 
+    def test_matrix_formats_preserve_history_and_reject_duplicates(self):
+        formats = (dict(engines=' pulse ', modes=' plain ', shapes=' chain ', nodes=' 01 ', rounds=' 01 '),
+                   dict(engines=['pulse'], modes=['plain'], shapes=['chain'], nodes=[1], rounds=[1]),
+                   dict(engines='pulse', modes='plain', shapes='chain', nodes=1, rounds=1))
+        for index, matrix in enumerate(formats):
+            with self.subTest(matrix=matrix):
+                metadata = manifest('resources')
+                metadata['identity'].update(matrix)
+                root = self.root / str(index)
+                self.root = root
+                root.mkdir()
+                directory = self.dataset('resources', metadata=metadata)
+                before = {p: p.read_bytes() for p in directory.iterdir()}
+                records, identity, details = summary.load_dataset('resources', directory)
+                self.assertEqual(details['matrix']['nodes'], matrix['nodes'])
+                self.assertEqual(summary.summarize(records, {'resources': identity})[0]['status_ok'], 1)
+                self.assertEqual(before, {p: p.read_bytes() for p in before})
+                for field, values in (('engines', ('pulse, pulse', ['pulse', 'pulse'])),
+                                      ('nodes', ('1, 01', [1, '01']))):
+                    for value in values:
+                        with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, 'duplicate'):
+                            summary.normalize(sample('resources'), 'resources', dict(identity, **{field: value}))
+                self.root = root.parent
+
+    def test_verified_config_is_used_and_historical_records_still_load(self):
+        identity = manifest('resources')['identity']
+        config = dict(engine='pulse', mode='plain', shape='chain', nodes=1, rounds=1, parallelism=4)
+        verified = summary.normalize(sample('resources', config=config), 'resources', identity)
+        historical = summary.normalize(sample('resources'), 'resources', identity)
+        self.assertEqual((verified['parallelism'], historical['parallelism']), (4, 4))
+        self.assertEqual((verified['gomaxprocs'], historical['gomaxprocs']), (4, 4))
+        for bad in (None, {}, dict(config, parallelism=1), dict(config, parallelism=True),
+                    dict(config, parallelism=4.0), dict(config, nodes=True)):
+            with self.subTest(config=bad), self.assertRaisesRegex(ValueError, 'config'):
+                summary.normalize(sample('resources', config=bad), 'resources', identity)
+        for value in (1, True, 4.0):
+            with self.subTest(parallelism=value), self.assertRaisesRegex(ValueError, 'parallelism'):
+                summary.normalize(sample('resources', config=config, parallelism=value), 'resources', identity)
+        directory = self.dataset('resources', [sample('resources', config=config)])
+        records, _, _ = summary.load_dataset('resources', directory)
+        self.assertEqual(records[0]['parallelism'], config['parallelism'])
+        # 无 config 的旧记录继续按历史清单解释，不回写原始证据。
+        legacy = self.dataset('native')
+        self.assertEqual(summary.load_dataset('native', legacy)[0][0]['parallelism'], 4)
+
     def test_versions_come_from_retained_stdout_and_are_not_inferred(self):
         directory = self.dataset('native', [sample(case_dir='cases/fixture')])
         case = directory / 'cases' / 'fixture'
@@ -303,8 +348,8 @@ class ProductionSummaryTests(unittest.TestCase):
         self.assertTrue((out / 'identity.json').is_file())
 
     def test_four_plot_routes_without_rendering_or_loading_matplotlib(self):
-        # Execute routing with tiny data and an in-memory plotting facade. Rendering is
-        # deliberately deferred while the parent may be timing production samples.
+        # 用少量数据和内存中的绘图替身执行路由；父进程可能正在计时生产样本，
+        # 因此有意推迟实际渲染。
         figures = []
         def subplots(nrows, ncols, **options):
             figure = MagicMock()
@@ -331,7 +376,7 @@ class ProductionSummaryTests(unittest.TestCase):
         self.assertEqual(len(figures), 4)
         for (figure, axes), name in zip(figures, names):
             self.assertEqual(figure.savefig.call_args.args[0], self.root / name)
-        # Resources must not use the deliberately unequal native CPU total.
+        # 资源对比不能使用刻意设置为不等值的原生运行 CPU 总量。
         cpu_call = figures[1][1][0][0].errorbar.call_args
         self.assertEqual(cpu_call.args[:2], ([1], [.125]))
         self.assertEqual(cpu_call.kwargs['yerr'][0], [.125])

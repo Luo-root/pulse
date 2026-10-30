@@ -1,7 +1,7 @@
-"""Plot storage growth for one fixed shape/rounds/parallelism/procs workload.
+"""为 shape/rounds/parallelism/procs 固定的单一工作负载绘制存储增长图。
 
-Mixed or missing workload identities are rejected before any output is written.
-Partial runs never become completed points.
+在写入任何输出前，拒绝混合或缺失工作负载身份信息的输入。
+部分完成的运行不会被当作已完成的数据点。
 """
 import argparse
 from collections import Counter, defaultdict
@@ -51,7 +51,7 @@ def main():
     for (engine, backend, nodes), group in sorted(groups.items()):
         attempted = [r for r in group if r["status"] != "not_repeated"]
         complete = [r for r in attempted if r["status"] == "ok"]
-        # Complete-run values and partial-prefix values must not be pooled together.
+        # 完整运行的值与部分前缀的值不能合并统计。
         for state, records in (("complete", complete), ("partial", [r for r in attempted if r["status"] != "ok"])):
             if not records:
                 continue
@@ -59,7 +59,7 @@ def main():
                            samples=len(records), statuses=json.dumps(dict(Counter(r["status"] for r in records))))
             for field in fields:
                 if field == "db_wal_bytes":
-                    # Aggregate each sample before taking its median; sums of medians differ.
+                    # 先对每个样本求和，再取中位数；各项中位数相加会得到不同结果。
                     values = [r["storage"]["db_bytes"] + r["storage"]["wal_bytes"] for r in records
                               if all(type(r.get("storage", {}).get(k)) in (int, float) for k in ("db_bytes", "wal_bytes"))]
                 else:

@@ -1,4 +1,4 @@
-"""Serial, versioned sampling for the isolated DAG/workflow benchmark CLIs."""
+"""对隔离的 DAG/工作流评测 CLI 串行采样，并记录版本信息。"""
 import argparse
 import hashlib
 import itertools
@@ -62,7 +62,7 @@ def capture(command, cwd, timeout=180):
 
 
 class WindowsJob:
-    """Contain a suspended sample before it can create any descendants."""
+    """在挂起的采样进程能够创建任何后代进程前，将其纳入隔离控制。"""
     def __init__(self):
         import ctypes
         from ctypes import wintypes as w
@@ -101,7 +101,7 @@ class WindowsJob:
             raise error
 
     def attach_and_resume(self, process):
-        handle = int(process._handle)  # CPython retains the CreateProcess process handle.
+        handle = int(process._handle)  # CPython 保留 CreateProcess 的进程句柄。
         if not self.kernel.AssignProcessToJobObject(self.handle, handle):
             raise self.ctypes.WinError(self.ctypes.get_last_error())
         status = self.ntdll.NtResumeProcess(handle)
@@ -111,7 +111,7 @@ class WindowsJob:
     def close(self):
         if self.handle:
             handle, self.handle = self.handle, None
-            self.kernel.CloseHandle(handle)  # kills descendants even after their parent exited
+            self.kernel.CloseHandle(handle)  # 即使父进程已退出，仍会终止其后代进程。
 
 
 def sample_process(command, cwd, timeout):
@@ -170,7 +170,7 @@ def check_result(result, case, expected):
         raise ValueError("CLI backend disagrees with requested case")
     if result.get("status") not in ("ok", "error", "timeout", "resource_limit", "unsupported"):
         raise ValueError("missing or unknown sample status")
-    # Reject NaN/Infinity even in optional fields; preserve the raw stdout separately.
+    # 即使在可选字段中也拒绝 NaN/Infinity；原始 stdout 单独保留。
     json.dumps(result, allow_nan=False)
     if result["status"] != "ok":
         return
@@ -180,7 +180,7 @@ def check_result(result, case, expected):
     for field in ("ns_per_op", "bytes_per_op", "allocs_per_op"):
         value = result.get(field)
         if value is None and field != "ns_per_op" and case["mode"] in ("resume", "reopen"):
-            continue  # Separate audited child-process scenarios do not claim allocation measurements.
+            continue  # 单独审计的子进程场景不提供分配量测量结果。
         if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value):
             raise ValueError(f"missing/non-finite {field}")
         if value < 0 or (field == "ns_per_op" and value == 0):

@@ -1,4 +1,4 @@
-"""Summarize retained samples and generate scientific plots (requires matplotlib)."""
+"""汇总保留的样本并生成科研图表（需要 matplotlib）。"""
 import argparse
 from collections import Counter, defaultdict
 import csv
@@ -107,7 +107,7 @@ def draw(rows, destination, selected_modes, selected_rounds):
                                     axis.set_yscale("log")
                                     axis.set_ylim(min(measured_bounds) / 2, max(measured_bounds) * 2)
                                 else:
-                                    # Reuse can genuinely allocate zero; keep that point visible without a negative half-axis.
+                                    # 复用时分配量确实可能为零；保留该点的显示，且不绘制负半轴。
                                     axis.set_yscale("symlog", linthresh=0.001)
                                     axis.set_ylim(0, max(measured_bounds) * 2 or 1)
                             elif positive:
@@ -129,7 +129,7 @@ def draw(rows, destination, selected_modes, selected_rounds):
                     name = "per-node" if normalized else ("time" if metric == "ns_per_op" else "allocations")
                     svg_path = destination / f"{suite}-{mode}-r{rounds}-{name}.svg"
                     figure.savefig(svg_path, metadata={"Date": None})
-                    # Matplotlib emits trailing XML-path spaces; keep generated source reviewable.
+                    # Matplotlib 会在 XML 路径末尾输出空格；去除它们以便审阅生成的源码。
                     svg_text = svg_path.read_text(encoding="utf-8")
                     svg_path.write_text("\n".join(line.rstrip() for line in svg_text.splitlines()) + "\n", encoding="utf-8", newline="\n")
                     plt.close(figure)

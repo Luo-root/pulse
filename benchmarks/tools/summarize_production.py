@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Read four retained production experiments; write one CSV, identity JSON and <=4 PNGs.
+"""读取保留的四组生产评测实验，写出一个 CSV、身份 JSON 和不超过 4 张 PNG。
 
-No engines, servers or samplers are launched. An existing output directory is refused.
-run_ns is already a reuse batch mean: repeats get equal weight, not iteration weight.
+不启动引擎、服务器或采样器；拒绝使用已有的输出目录。
+run_ns 已是复用批次均值：各次重复采样权重相同，不按迭代次数加权。
 """
 import argparse
 from collections import Counter, defaultdict
@@ -75,7 +75,7 @@ def number(value, name):
 
 @lru_cache(maxsize=None)
 def oracle(shape, nodes, rounds):
-    """Independent uint64 reference for production/model.go; never use floating point."""
+    """为 production/model.go 提供独立的 uint64 参考实现，始终使用整数运算。"""
     mask = (1 << 64) - 1
     values, used = [], set()
     previous, first, width = [], 0, 1
@@ -106,7 +106,15 @@ def matrix_values(identity, name):
     value = identity.get(name)
     if value is None:
         return None
-    return value.split(',') if isinstance(value, str) else [str(v) for v in value] if isinstance(value, list) else [str(value)]
+    entries = value.split(',') if isinstance(value, str) else value if isinstance(value, list) else [value]
+    values = [str(item).strip() for item in entries]
+    if not values or any(not item for item in values):
+        raise ValueError('manifest matrix must be nonempty: ' + name)
+    if name in ('nodes', 'rounds'):
+        values = [str(integer(int(item), 'manifest ' + name, 1)) for item in values]
+    if len(set(values)) != len(values):
+        raise ValueError('duplicate manifest matrix values: ' + name)
+    return values
 
 
 def normalize(raw, experiment, identity):
@@ -144,6 +152,22 @@ def normalize(raw, experiment, identity):
         raise ValueError('mode does not belong to experiment')
     if experiment == 'checkpoint' and row['engine'] != 'pulse':
         raise ValueError('checkpoint input must contain only Pulse+Durable')
+    if 'config' in row:
+        config = row['config']
+        if not isinstance(config, dict):
+            raise ValueError('CLI config must be an object')
+        for field in ('engine', 'mode', 'shape', 'nodes', 'rounds'):
+            if type(config.get(field)) is not type(row[field]) or config.get(field) != row[field]:
+                raise ValueError('CLI config identity mismatch: ' + field)
+        actual = integer(config.get('parallelism'), 'config.parallelism', 1)
+        if identity.get('parallelism') is not None and actual != identity['parallelism']:
+            raise ValueError('CLI config/manifest parallelism mismatch')
+        if 'parallelism' in row:
+            integer(row['parallelism'], 'parallelism', 1)
+            if row['parallelism'] != actual:
+                raise ValueError('CLI config/record parallelism mismatch')
+        row['parallelism'] = actual
+    # 旧报告没有 config 时继续使用其清单身份；不补造 CLI 未提供的 gomaxprocs。
     for field in ('parallelism', 'gomaxprocs'):
         value = row.get(field, identity.get(field))
         if value is not None:
@@ -210,7 +234,7 @@ def normalize(raw, experiment, identity):
 
 
 def version_evidence(directory, manifest, identity, records):
-    """Use only recorded metadata/CLI stdout, never go.mod or a newly executed binary."""
+    """只使用已记录的元数据和 CLI stdout，不读取 go.mod，也不重新执行二进制。"""
     found = {}
     def take(payload, source):
         if not isinstance(payload, dict):
@@ -236,8 +260,8 @@ def version_evidence(directory, manifest, identity, records):
     take(identity, 'manifest.json#identity' if 'identity' in manifest else 'manifest.json')
     for index, row in enumerate(records, 1):
         take(row, f'raw.jsonl:record={index}')
-    # A manifest binary hash identifies the common binary. One metadata-bearing stdout
-    # is sufficient per input; failed/truncated stdout is skipped, not fabricated.
+    # 清单中的二进制哈希用于标识共用的二进制文件。每份输入有一份带元数据的 stdout
+    # 即已足够；失败或截断的 stdout 会被跳过，不会编造补齐。
     for row in records:
         if all(name in found for name in (*PRIMARY_MODULES.values(), 'toolchain')):
             break
@@ -333,7 +357,7 @@ def summarize(records, identities):
             values = [s[source] for s in samples if s.get(source) is not None]
             row[target + '_known'] = len(values)
             row[target + '_total'] = sum(values) if values else ''
-        row['checksum'] = good[0]['checksum'] if good else ''  # csv writes uint64 as exact decimal.
+        row['checksum'] = good[0]['checksum'] if good else ''  # CSV 将 uint64 精确写成十进制。
         errors = Counter(s['error'] for s in samples if s.get('error'))
         row['checksum_errors'] = sum('checksum' in s.get('error', '').lower() for s in samples)
         row['errors'] = compact(errors)
@@ -348,7 +372,7 @@ def summarize(records, identities):
 
 
 def series(rows, engine, metric, factor=1):
-    """NaN keeps missing/failed points as gaps; an observed zero stays zero."""
+    """用 NaN 将缺失或失败的点保留为空缺；实测的零值仍保留为零。"""
     selected = sorted((r for r in rows if r['engine'] == engine), key=lambda r: r['nodes'])
     if len({r['nodes'] for r in selected}) != len(selected):
         raise ValueError('plot series contains multiple identities at the same node count')
@@ -529,7 +553,7 @@ def main(argv=None):
     checksum_errors = sum(row['checksum_errors'] for row in rows)
     print(compact({'out': str(out), 'records': len(records), 'groups': len(rows), 'plots': plots,
                    'statuses': dict(Counter(r['status'] for r in records)), 'checksum_errors': checksum_errors}))
-    # Retain a reviewable partial report, but make actual failures visible to callers.
+    # 保留可供审阅的部分报告，同时让调用方获知实际失败。
     return int(checksum_errors > 0 or any(r['status'] == 'error' for r in records))
 
 

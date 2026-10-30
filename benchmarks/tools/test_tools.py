@@ -1,4 +1,4 @@
-"""Contract tests for retained benchmark evidence; no engines or network required."""
+"""保留的评测证据的契约测试，无需引擎或网络。"""
 import contextlib
 import csv
 import importlib.util

@@ -1,8 +1,8 @@
 blank_issues_enabled: true
 contact_links:
-  - name: Security vulnerability
+  - name: 安全漏洞
     url: https://github.com/Luo-root/pulse/blob/main/SECURITY.md
-    about: Do not open a public issue — report privately by email, following SECURITY.md.
-  - name: Code of Conduct
+    about: 请勿提交公开 Issue；按 SECURITY.md 通过邮件私下报告。
+  - name: 行为准则
     url: https://github.com/Luo-root/pulse/blob/main/CODE_OF_CONDUCT.md
-    about: How we treat each other in issues and pull requests.
+    about: 在 Issue 和 PR 中相互交流时遵守的准则。

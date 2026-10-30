@@ -15,8 +15,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// openBenchmarkSQLite belongs to the Eino blob adapter and independent inspection,
-// not Durable persistence. Each connection uses WAL/FULL and serialized operations.
+// openBenchmarkSQLite 用于 Eino blob 适配器及独立检查，不负责 Durable 持久化。
+// 每个连接都使用 WAL/FULL，并串行执行操作。
 func openBenchmarkSQLite(path string) (*sql.DB, string, error) {
 	if path == "" || path == ":memory:" {
 		return nil, "", errors.New("benchmark sqlite: a persistent file path is required")
@@ -65,7 +65,7 @@ func openBenchmarkSQLite(path string) (*sql.DB, string, error) {
 	return db, absolute, nil
 }
 
-// blobStore is Eino's independent checkpoint blob adapter; it never changes Eino's format.
+// blobStore 是 Eino 的独立检查点 blob 适配器，始终保留 Eino 的原始格式。
 type blobStore struct{ db *sql.DB }
 
 func newBlobStore(path string) (*blobStore, error) {
@@ -108,9 +108,9 @@ func (s *blobStore) Set(ctx context.Context, key string, value []byte) error {
 
 func (s *blobStore) Close() error { return s.db.Close() }
 
-// benchmarkDurableStore delegates ALL persistence and ownership to the maintained
-// public backend. db is an independent inspection/fault-injection connection only;
-// it is never used by Runtime Load/Save and holds no duplicate record or schema.
+// benchmarkDurableStore 将全部持久化和所有权管理委托给持续维护的公开后端。
+// db 只是用于独立检查和故障注入的连接，Runtime 的 Load/Save 从不使用它，
+// 也不通过它维护重复的记录或数据库结构。
 type benchmarkDurableStore struct {
 	*sqlitestore.Store
 	db       *sql.DB

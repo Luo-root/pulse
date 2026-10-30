@@ -1,4 +1,4 @@
-/* Reading tokens shared by the Pulse documentation family. */
+/* Pulse 文档各页面共用的阅读样式变量。 */
 :root {
   --vp-c-brand-1: #2457c6;
   --vp-c-brand-2: #1e40af;
@@ -28,7 +28,7 @@
 .VPNavBarTitle .logo { height: 26px; width: auto; }
 :focus-visible { outline: 3px solid var(--vp-c-brand-1); outline-offset: 4px; }
 
-/* Mermaid remains an inspectable diagram with its own stable text metrics. */
+/* Mermaid 图表保持可检查性，并使用独立且稳定的文字度量。 */
 .mermaid-block {
   font-size: 13px;
   line-height: 1.5;

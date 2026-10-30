@@ -102,8 +102,10 @@ bilingual tutorials and usage guides live in `site/guide/` and `site/en/guide/`,
   `pulse.WithMaxRunning()`, `observe.WithRenderer()`.
 - **No `internal/` or `cmd/`** in library packages: this is a library, not a binary, and
   everything published here is public API.
-- **Chinese comments and docs are the norm.** When you edit near them, write in the same
-  language instead of translating them.
+- **Use Chinese for explanatory code comments and Issue/PR titles and bodies.** This also
+  applies to tests, scripts, configuration and CLI submissions using `--body-file`; follow
+  the `.github` templates. Keep identifiers, protocol values, compiler directives, example
+  output assertions and copyright/license text unchanged. English READMEs/site prose remain English.
 - **Observation**: business dimensions go through `Attrs` only — never add named fields to
   `Record`; attr keys follow `<component>.<field>` and belong to the package that owns the fact.
 - **The slot contract**: slots are `pending | ready | skipped`; a skip is an arrival, not a
@@ -214,7 +216,7 @@ secret scanning 与 push protection。
 - **可配置处一律用 functional options**——`pulse.WithObserver()`、`pulse.WithMaxRunning()`、
   `observe.WithRenderer()`。
 - **库包不放 `internal/` 或 `cmd/`**：这是库不是可执行程序，这里发布的每个包都是公开 API。
-- **中文注释与中文文档是本仓库常态**；在这些内容旁边改动时，用同一种语言写，不要顺手翻译。
+- **说明性代码注释及 Issue／PR 的标题和正文统一中文**，测试、脚本、配置和命令行 `--body-file` 提交同样适用，并遵循 `.github` 模板。代码标识符、协议值、编译指令、示例输出断言与版权／许可证原文保留不变；英文版 README／站点正文仍使用英文。
 - **观测**：业务维度一律走 `Attrs`——绝不给 `Record` 加具名字段；attr key 用
   `<组件>.<字段>` 约定，归属定义它的那个包。
 - **槽位契约**：槽位是 `pending | ready | skipped`；skip 是「到达」不是「失败」；节点出错会取消

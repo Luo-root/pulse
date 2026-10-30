@@ -1,39 +1,39 @@
 <!--
-Read CONTRIBUTING.md before filling this in — it explains what "…写清什么" means in practice.
-填之前请先读 CONTRIBUTING.md（中英双语同一文件，中文在后半）。
-Write in whichever language you prefer; every heading is given in both. If a section is genuinely
-empty, write "无 / none" rather than deleting it — a reviewer needs to know it was considered.
+填写前请先读 CONTRIBUTING.md。标题和正文统一使用中文；代码标识符、命令、协议字段和引用原文保留原样。
+通过 gh --body-file 等命令行提交时也须沿用本模板的章节与语言要求。
+不适用的章节请写“无”，不要删除，以便审查者确认已经考虑过。
 -->
 
-## 关联 Issue / Linked issue
+## 关联 Issue
 
-<!-- 例：见 #192。只有这个 PR 真的把票干完时才用自动关闭关键字（closes #N）。 -->
+<!-- 例：见 #192。只有这个 PR 真正完成对应 Issue 时才用自动关闭关键字（closes #N）。 -->
 
-## 改了什么 / What changed
+## 改了什么
 
-## 新增 / What's new
+## 新增
 
-## 影响范围 / Impact
+## 影响范围
 
 <!-- 谁受影响；有没有动冻结契约（slots 三态 / Aspect 形状与推进闸（并发拒、顺序重入只在新的
      尝试边界上放行）/ 哨兵错误 / Observer 回调次数契约 / 六条编码原语与 LineRenderer）；
      有没有破坏性。 -->
 
-## 测试 / Testing
+## 测试
 
-<!-- 具体命令 + 观察到的结果。「CI 绿了」是结果，不是测试方案。 -->
+<!-- 具体命令 + 观察到的结果。“CI 绿了”是结果，不是测试方案。未执行的检查必须写“未验证”。 -->
 
 - [ ] `go build ./...`
 - [ ] `go vet ./...`
-- [ ] `"$(go env GOROOT)/bin/gofmt" -l $(git ls-files '*.go')` 输出为空 / empty output
+- [ ] `"$(go env GOROOT)/bin/gofmt" -l $(git ls-files '*.go')` 输出为空
 - [ ] `go test -race -count=1 ./...`
 
-## Review 关注点 / Review focus
+## 审查关注点
 
-<!-- 希望别人重点看哪里，以及你自己没把握的地方。 -->
+<!-- 希望别人重点看哪里，以及自己还没有把握的地方。 -->
 
-## 自审 / Self-review
+## 自审
 
-- [ ] 我像 reviewer 一样读完了自己的 diff / I read my own diff the way a reviewer would
-- [ ] 没有提交任何凭据（`.env`、token、私钥）/ No credentials committed
-- [ ] 行为有变化时，文档与设计文档已同步 / Docs updated if behavior changed
+- [ ] 已像审查者一样读完自己的 diff
+- [ ] 没有提交任何凭据（`.env`、token、私钥）
+- [ ] 行为有变化时，使用文档与设计文档已同步
+- [ ] 源码、测试、脚本的说明性注释使用中文；机器指令、示例输出断言及版权原文保持不变
