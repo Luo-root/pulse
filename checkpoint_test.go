@@ -1410,6 +1410,196 @@ func TestCheckpointPersistentRetryCursorAndNestedBoundaries(t *testing.T) {
 	})
 }
 
+func TestCheckpointDeclarationsSharedMountOrderAndIsolation(t *testing.T) {
+	root, child, leaf := mustNew(t, t.Context(), "root"), mustNew(t, t.Context(), "child"), mustNew(t, t.Context(), "leaf")
+	pass, unused, out := NewKey[int]("pass"), NewKey[string]("unused"), NewKey[string]("out")
+	declareIn(t, root, NewPort(pass))
+	declareOut(t, root, NewPort(pass))
+	declareIn(t, child, NewPort(unused), NewPort(pass))
+	declareOut(t, child, NewPort(out), NewPort(pass))
+	declareIn(t, leaf, NewPort(pass))
+	declareOut(t, leaf, NewPort(out))
+	mustAdd(t, leaf, NewNode("body", "叶节点", Requires(pass), Provides(out), nil))
+	mustAdd(t, child, NewNode("before", "嵌套前", Requires(pass), Provides(out), nil))
+	if err := Sub(child, "inner", "嵌套挂载", []SubBind{Fix(pass, 1)}, leaf); err != nil {
+		t.Fatal(err)
+	}
+	mustAdd(t, child, NewNode("after", "嵌套后", nil, nil, nil))
+	mustAdd(t, root, NewNode("before", "第一处之前", nil, nil, nil))
+	for _, id := range []string{"first", "second"} {
+		if err := Sub(root, id, "共享子图", []SubBind{Fix(pass, 1)}, child); err != nil {
+			t.Fatal(err)
+		}
+		mustAdd(t, root, NewNode("after-"+id, "挂载之后", nil, nil, nil))
+	}
+
+	nodes := root.CheckpointNodes()
+	var sites []string
+	for _, n := range nodes {
+		sites = append(sites, n.Graph+":"+n.Path+":"+n.ID)
+	}
+	wantSites := []string{
+		"root::before", "root::first", "child:first:before", "child:first:inner", "leaf:first/inner:body", "child:first:after", "root::after-first",
+		"root::second", "child:second:before", "child:second:inner", "leaf:second/inner:body", "child:second:after", "root::after-second",
+	}
+	if !reflect.DeepEqual(sites, wantSites) {
+		t.Fatalf("node declaration order = %v, want %v", sites, wantSites)
+	}
+	passKey := CheckpointKey{Name: "pass", Type: reflect.TypeFor[int]()}
+	unusedKey := CheckpointKey{Name: "unused", Type: reflect.TypeFor[string]()}
+	outKey := CheckpointKey{Name: "out", Type: reflect.TypeFor[string]()}
+	for _, index := range []int{2, 4, 8, 10} {
+		if !reflect.DeepEqual(nodes[index].Requires, []CheckpointKey{passKey}) || !reflect.DeepEqual(nodes[index].Provides, []CheckpointKey{outKey}) {
+			t.Fatalf("node %d keys lost names/types: %+v", index, nodes[index])
+		}
+	}
+	wantPorts := []CheckpointPort{{Graph: "root", Key: passKey, Input: true, Output: true}}
+	for _, path := range []string{"first", "second"} {
+		wantPorts = append(wantPorts,
+			CheckpointPort{Graph: "child", Path: path, Key: unusedKey, Input: true},
+			CheckpointPort{Graph: "child", Path: path, Key: passKey, Input: true, Output: true},
+			CheckpointPort{Graph: "child", Path: path, Key: outKey, Output: true},
+			CheckpointPort{Graph: "leaf", Path: path + "/inner", Key: passKey, Input: true},
+			CheckpointPort{Graph: "leaf", Path: path + "/inner", Key: outKey, Output: true})
+	}
+	ports := root.CheckpointPorts()
+	if !reflect.DeepEqual(ports, wantPorts) {
+		t.Fatalf("port declarations = %+v, want %+v", ports, wantPorts)
+	}
+
+	independentNodes := root.CheckpointNodes()
+	nodes[2].Requires[0] = unusedKey
+	nodes[2].Provides[0] = passKey
+	nodes[2].Graph, nodes[2].Path, nodes[2].ID = "changed", "changed", "changed"
+	ports[1] = CheckpointPort{}
+	ports[2].Key, ports[2].Input, ports[2].Output = unusedKey, false, false
+	if nodes[8].Requires[0] != passKey || nodes[8].Provides[0] != outKey || ports[7] != wantPorts[7] {
+		t.Fatal("declarations at separate mount sites share mutable slices")
+	}
+	if !reflect.DeepEqual(root.CheckpointNodes(), independentNodes) || !reflect.DeepEqual(root.CheckpointPorts(), wantPorts) {
+		t.Fatal("declaration result aliases another call or the graph definition")
+	}
+	if root.sealed || child.sealed || leaf.sealed {
+		t.Fatal("declaration enumeration sealed the definition")
+	}
+}
+
+func TestCheckpointDeclarationsSkipAncestorCyclePerMount(t *testing.T) {
+	root, child := mustNew(t, t.Context(), "root"), mustNew(t, t.Context(), "child")
+	port := NewKey[int]("optional")
+	declareIn(t, root, NewPort(port))
+	declareIn(t, child, NewPort(port))
+	mustAdd(t, child, NewNode("body", "正常节点", nil, nil, nil))
+	for _, id := range []string{"first", "second"} {
+		if err := Sub(root, id, "合法复用", []SubBind{Fix(port, 1)}, child); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 公共装配入口拒绝这个环；白盒伪造以验证枚举遇到祖先时在加锁前收敛。
+	child.nodes = append(child.nodes, &Node{id: "back", child: root, sub: true})
+	var sites []string
+	for _, n := range root.CheckpointNodes() {
+		sites = append(sites, n.Graph+":"+n.Path+":"+n.ID)
+	}
+	want := []string{"root::first", "child:first:body", "child:first:back", "root::second", "child:second:body", "child:second:back"}
+	if !reflect.DeepEqual(sites, want) {
+		t.Fatalf("cycle defense dropped/repeated mount instances: got %v, want %v", sites, want)
+	}
+	ports := root.CheckpointPorts()
+	if len(ports) != 3 || ports[0].Graph != "root" || ports[0].Path != "" || ports[1].Graph != "child" || ports[1].Path != "first" || ports[2].Graph != "child" || ports[2].Path != "second" {
+		t.Fatalf("port enumeration did not stop at the ancestor: %+v", ports)
+	}
+}
+
+func TestCheckpointDeclarationsConcurrentAssembly(t *testing.T) {
+	root, child := mustNew(t, t.Context(), "root"), mustNew(t, t.Context(), "child")
+	port := NewKey[int]("optional")
+	declareIn(t, child, NewPort(port))
+	for _, id := range []string{"first", "second"} {
+		if err := Sub(root, id, "并发采样", []SubBind{Fix(port, 1)}, child); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start, done := make(chan struct{}), make(chan error, 1)
+	go func() {
+		<-start
+		for i := range 128 {
+			key := NewKey[int](fmt.Sprintf("extra%d", i))
+			if err := child.DeclareInput(NewPort(key)); err != nil {
+				done <- err
+				return
+			}
+			if err := child.Add(NewNode(fmt.Sprintf("body%d", i), "并发声明", Requires(key), nil, nil)); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	close(start)
+	for range 128 {
+		if len(root.CheckpointNodes()) < 2 || len(root.CheckpointPorts()) < 2 {
+			t.Error("concurrent sample lost an existing mount declaration")
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 自顶向下挂空子图，避免把装配开销计入只测枚举的基准。
+func checkpointDeclarationChain(tb testing.TB, depth int) *Graph {
+	tb.Helper()
+	port := NewKey[int]("pass")
+	var root, parent *Graph
+	for level := 0; level < depth; level++ {
+		g, err := New(fmt.Sprintf("layer%d", level), "")
+		if err != nil {
+			tb.Fatal(err)
+		}
+		if err := g.DeclareInput(NewPort(port)); err != nil {
+			tb.Fatal(err)
+		}
+		if err := g.DeclareOutput(NewPort(port)); err != nil {
+			tb.Fatal(err)
+		}
+		if parent == nil {
+			root = g
+		} else if err := Sub(parent, "next", "深层定义", []SubBind{Fix(port, 1)}, g); err != nil {
+			tb.Fatal(err)
+		}
+		parent = g
+	}
+	if err := parent.Add(NewNode("leaf", "末层", nil, nil, nil)); err != nil {
+		tb.Fatal(err)
+	}
+	return root
+}
+
+func BenchmarkCheckpointDeclarationsDeep(b *testing.B) {
+	for _, depth := range []int{128, 256, 512, 1024} {
+		b.Run(fmt.Sprint(depth), func(b *testing.B) {
+			root := checkpointDeclarationChain(b, depth)
+			b.Run("nodes", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					if got := root.CheckpointNodes(); len(got) != depth {
+						b.Fatalf("nodes = %d, want %d", len(got), depth)
+					}
+				}
+			})
+			b.Run("ports", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					if got := root.CheckpointPorts(); len(got) != depth {
+						b.Fatalf("ports = %d, want %d", len(got), depth)
+					}
+				}
+			})
+		})
+	}
+}
+
 func TestCheckpointDeclarationsAndChannelBoundaries(t *testing.T) {
 	ctx := checkpointTestContext(t)
 	child, parent := mustNew(t, ctx, "child-ports"), mustNew(t, ctx, "parent-ports")

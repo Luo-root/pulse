@@ -36,8 +36,8 @@ import (
 //
 // **组合环在装配期就拒**：`Sub(A, …, B)` 之后再 `Sub(B, …, A)`（或直接自挂）会让静态递归
 // 永远展开不完，所以这里沿子图子树查一遍「父图是不是已经在它的子树里」，是就报
-// `pulse: subgraph cycle: A -> B -> A`。判据只看**当前这条路径**（见 hasAncestor）——同一张
-// 子图在**不同挂载位置**重复出现是合法的，不能用全局 visited 误拒。
+// `pulse: subgraph cycle: A -> B -> A`。这里只查父图是否可达，同一张定义查过就跳过；
+// 子图在**不同挂载位置**重复出现是合法的，重复访问本身不代表组合环。
 //
 // 「查一遍」与「真的挂上」在**同一个全局临界区**里（assemblyMu）：对向挂载（A 里挂 B、同时
 // B 里挂 A）是两张图各自动作的结果，单看任何一张图的锁都拦不住——两边都可能先看过「没有环」
@@ -333,7 +333,7 @@ func (g *Graph) checkMountCycle(child *Graph) error {
 		return fmt.Errorf("pulse: subgraph cycle: %s -> %s (a graph cannot be mounted inside itself)",
 			g.id, g.id)
 	}
-	if path, ok := child.findInSubtree(g, []string{child.id}); ok {
+	if path, ok := child.findInSubtree(g); ok {
 		return fmt.Errorf("pulse: subgraph cycle: %s -> %s (mounting %q here would put %q inside its own subtree)",
 			strings.Join(append([]string{g.id}, path...), " -> "), g.id, child.id, g.id)
 	}
@@ -341,26 +341,40 @@ func (g *Graph) checkMountCycle(child *Graph) error {
 }
 
 // findInSubtree 沿**静态子图边**找 target：找到就返回从本图到 target 的 id 路径。
-//
-// 判据只看**当前这条路径**——递归进去的是子树，兄弟分支共用同一张子图不会互相影响；
-// 用全局 visited 会把「同一张子图挂多处」这种合法用法误判成环（那是本模型要支持的用法）。
-func (g *Graph) findInSubtree(target *Graph, path []string) ([]string, bool) {
-	g.mu.Lock()
-	kids := make([]*Graph, 0, len(g.nodes))
-	for _, n := range g.nodes {
-		if n.child != nil {
-			kids = append(kids, n.child)
+// 定义按指针全局去重，重复访问只跳过，不报环；声明顺序深搜保留首条见证路径。
+// 路径只随当前递归栈伸缩，不为每条边复制整条祖先链。
+func (g *Graph) findInSubtree(target *Graph) ([]string, bool) {
+	seen := make(map[*Graph]struct{})
+	var path []string
+	var visit func(*Graph) bool
+	visit = func(current *Graph) bool {
+		if _, visited := seen[current]; visited {
+			return false
 		}
-	}
-	g.mu.Unlock()
+		seen[current] = struct{}{}
+		path = append(path, current.id)
+		if current == target {
+			return true
+		}
 
-	for _, k := range kids {
-		if k == target {
-			return append(append([]string(nil), path...), k.id), true
+		current.mu.Lock()
+		kids := make([]*Graph, 0, len(current.nodes))
+		for _, n := range current.nodes {
+			if n.child != nil {
+				kids = append(kids, n.child)
+			}
 		}
-		if got, ok := k.findInSubtree(target, append(append([]string(nil), path...), k.id)); ok {
-			return got, true
+		current.mu.Unlock()
+		for _, child := range kids {
+			if visit(child) {
+				return true
+			}
 		}
+		path = path[:len(path)-1]
+		return false
+	}
+	if visit(g) {
+		return path, true
 	}
 	return nil, false
 }
