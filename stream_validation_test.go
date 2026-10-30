@@ -907,6 +907,48 @@ func TestStreamHostReadersFollowActualAliases(t *testing.T) {
 	}
 }
 
+func TestStreamSenderFactsPreserveOutputKinds(t *testing.T) {
+	for _, c := range []struct {
+		name, kind string
+		managedAt  int
+		sub        bool
+		wantSender bool
+	}{
+		{name: "native-only", managedAt: -1},
+		{name: "managed-first", managedAt: 0, wantSender: true},
+		{name: "managed-last", managedAt: 8191, wantSender: true},
+		{name: "structural-sub", managedAt: 8191, sub: true},
+		{name: "native-produce", kind: "produce", managedAt: -1, wantSender: true},
+		{name: "native-tee", kind: "tee", managedAt: -1, wantSender: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := streamTestGraph(t, c.name)
+			provides := make([]keyRef, 8192)
+			for i := range provides {
+				name := fmt.Sprint("out", i)
+				provides[i] = NewKey[<-chan int](name).asRef()
+				if i == c.managedAt {
+					provides[i] = NewKey[Stream[int]](name).asRef()
+				}
+			}
+			n := NewNode("writer", "", nil, provides, nil)
+			n.streamKind, n.sub = c.kind, c.sub
+			streamTestMust(t, g.Add(n))
+			tree := streamSkipWorkTree(g)
+			tree.connectAliases()
+			if streamSender(tree.nodes[0]) != c.wantSender || len(tree.groups) != len(provides) {
+				t.Fatal("sender facts changed with output count or stream kind")
+			}
+			for i, gr := range tree.groups {
+				wantSource := c.wantSender && (c.kind != "" || i == c.managedAt)
+				if (gr.source != nil) != wantSource {
+					t.Fatalf("output %d acquired the wrong source: %v", i, gr.source)
+				}
+			}
+		})
+	}
+}
+
 func TestStreamHostFactsDoNotSubscribeNativeChannel(t *testing.T) {
 	g := streamTestGraph(t, "native")
 	out := NewKey[<-chan int]("out")

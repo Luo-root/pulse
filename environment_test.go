@@ -611,7 +611,7 @@ func TestCancelInterruptsQueuedNode(t *testing.T) {
 // acquire 必须以取消为准并把名额放回去。这是 `select` 唯一会漏的形态：
 // 两个分支都就绪时它随机挑（若 goroutine 已经阻塞在 select 里，runtime 会把它
 // 提交给先就绪的那个分支，那种情况反而是确定的——所以直接打 acquire 本身，
-// 不靠调度碰运气）。run it with -count 才说明问题：漏了复查约有一半概率失败。
+// 不靠调度碰运气）。用 -count 重复运行才说明问题：漏了复查约有一半概率失败。
 func TestAcquireReturnsSlotWhenCanceled(t *testing.T) {
 	g := mustNew(t, context.Background(), "test", WithMaxRunning(1))
 	// 名额与取消域都在 `Execution` 上（一次运行自己的），所以先建一份执行再打 acquire。

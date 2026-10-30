@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,9 +56,11 @@ func TestValidationPlanFixedSkipModes(t *testing.T) {
 			if root.validation != plan || child.validation != nil {
 				t.Fatal("execution recompiled root or detached child model")
 			}
-			for _, n := range plan.tree.nodes {
-				if n.def.run != nil || n.def.child != nil {
-					t.Fatal("compiled declarations retained business closure or child definition")
+			for _, d := range []*validationDefinition{plan.definition, child.validationDefinition} {
+				for _, n := range d.nodes {
+					if n.def.run != nil || n.def.child != nil {
+						t.Fatal("compiled declarations retained business closure or child graph")
+					}
 				}
 			}
 		})
@@ -136,7 +139,7 @@ func TestValidationPlanFailureInstallsNothing(t *testing.T) {
 	assertOpen := func() {
 		t.Helper()
 		for _, g := range []*Graph{root, child} {
-			if g.sealed || g.validation != nil {
+			if g.sealed || g.validation != nil || g.validationDefinition != nil {
 				t.Fatalf("failed check froze or installed partial model on %s", g.id)
 			}
 		}
@@ -161,7 +164,7 @@ func TestValidationPlanFailureInstallsNothing(t *testing.T) {
 	if !root.sealed || !child.sealed || root.validation == nil {
 		t.Fatal("repaired tree was not frozen")
 	}
-	if value := root.validation.tree.nodes[0].def.binds[0].fix.in.entries[fixed.Name()].value; value != nil {
+	if value := root.validation.definition.nodes[0].def.binds[0].fix.in.entries[fixed.Name()].value; value != nil {
 		t.Fatal("compiled Fix retained business value")
 	}
 }
@@ -181,8 +184,9 @@ func TestValidationPlanMountPoolsRemainDistinct(t *testing.T) {
 	for _, capacity := range []int{2, 1, 0, 2} {
 		streamTestMust(t, root.Run(t.Context(), Inputs{}, WithExecMaxRunning(capacity)))
 	}
-	if received.Load() != 8 || len(root.validation.tree.pools) != 3 {
-		t.Fatalf("mounted pool identity lost: received=%d pools=%d", received.Load(), len(root.validation.tree.pools))
+	facts := root.validation.modes[0]
+	if received.Load() != 8 || len(facts.tree.pools) != 3 {
+		t.Fatalf("mounted pool identity lost: received=%d pools=%d", received.Load(), len(facts.tree.pools))
 	}
 }
 
@@ -252,9 +256,343 @@ func TestValidationPlanReuseWorkAndLocks(t *testing.T) {
 		streamTestMust(t, err)
 	}
 	streamTestMust(t, e.Wait())
-	if root.validation != plan || len(plan.tree.nodes) != 1001 || len(plan.tree.sites) != 2 {
-		t.Fatal("repeated validation rebuilt or changed the mounted declaration model")
+	if root.validation != plan || len(plan.definition.nodes) != 1001 ||
+		plan.definition.nodes[1000].child != child.validationDefinition || plan.modes[0].tree != nil {
+		t.Fatal("repeated validation rebuilt or retained the expanded ordinary model")
 	}
+}
+
+func TestValidationPlanSharedDefinitionsAcrossRoots(t *testing.T) {
+	port := NewKey[int]("optional")
+	leaf := streamTestGraph(t, "shared-leaf")
+	streamTestMust(t, leaf.DeclareInput(NewPort(port)))
+	streamTestMust(t, leaf.Add(NewNode("body", "", nil, nil, func(*RunCtx) error { return nil })))
+	streamTestMust(t, leaf.Validate())
+	graphs := []*Graph{leaf}
+	for i := range 32 {
+		parent := streamTestGraph(t, fmt.Sprint("shared-", i))
+		streamTestMust(t, parent.DeclareInput(NewPort(port)))
+		streamTestMust(t, Sub(parent, "mount", "", []SubBind{In(port, port)}, graphs[len(graphs)-1]))
+		streamTestMust(t, parent.Validate())
+		graphs = append(graphs, parent)
+	}
+	for i, g := range graphs {
+		streamTestMust(t, g.Validate())
+		if g.validationDefinition == nil || len(g.validationDefinition.nodes) != 1 {
+			t.Fatal("root retained declarations outside its own layer")
+		}
+		if i != 0 && (g.validation.definition != g.validationDefinition ||
+			g.validation.definition.nodes[0].child != graphs[i-1].validationDefinition) {
+			t.Fatal("independently validated root copied its child declarations")
+		}
+		for _, f := range g.validation.modes {
+			if f != nil && (f.tree != nil || f.lifecycle != nil) {
+				t.Fatal("ordinary root retained expanded work instead of its lifecycle result")
+			}
+		}
+	}
+}
+
+func TestValidationPlanPlainRootAvoidsUnusedDeclarations(t *testing.T) {
+	g := streamTestGraph(t, "plain-root")
+	for i := range 128 {
+		key := NewKey[int](fmt.Sprint("value", i))
+		streamTestMust(t, g.Add(NewNode(fmt.Sprint("source", i), "", nil, Provides(key), nil)))
+	}
+	streamTestMust(t, g.Validate())
+	if g.validationDefinition != nil || g.validation.definition != nil {
+		t.Fatal("standalone ordinary validation retained an unused declaration tree")
+	}
+	assemblyMu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- g.Validate() }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(3 * time.Second):
+		assemblyMu.Unlock()
+		<-done
+		t.Fatal("ordinary frozen validation waited for assembly")
+	}
+	assemblyMu.Unlock()
+	streamTestMust(t, err)
+}
+
+func TestValidationPlanSealedChildFirstRootUsesDeclarations(t *testing.T) {
+	middle, leaf := validationPlanOrdinarySub(t, 2)
+	root := streamTestGraph(t, "outer")
+	port := NewKey[int]("optional")
+	streamTestMust(t, middle.DeclareInput(NewPort(port)))
+	streamTestMust(t, Sub(root, "middle", "", []SubBind{Fix(port, 1)}, middle))
+	streamTestMust(t, root.Validate())
+	if middle.validation != nil || leaf.validation != nil {
+		t.Fatal("mounting eagerly installed an independent root plan")
+	}
+	assemblyMu.Lock()
+	leaf.mu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- middle.Validate() }()
+	var err error
+	timedOut := false
+	select {
+	case err = <-done:
+	case <-time.After(3 * time.Second):
+		timedOut = true
+	}
+	leaf.mu.Unlock()
+	assemblyMu.Unlock()
+	if timedOut {
+		<-done
+		t.Fatal("first independent root validation locked assembly or descendants")
+	}
+	streamTestMust(t, err)
+	if middle.validation.definition != root.validation.definition.nodes[0].child || middle.validation.pending {
+		t.Fatal("detached root did not publish the already frozen declarations")
+	}
+}
+
+// 同一组封口声明分别在无流读者、双挂载、切面继承/切断、checkpoint
+// 完整链与普通值发布混合下复验，逐字对照仍按层加锁的原判据。
+func validationPlanComparisonGraph(t *testing.T, native, cut, own, gated, consume bool) *Graph {
+	t.Helper()
+	var opts []Option
+	if cut {
+		opts = append(opts, WithoutAspects())
+	}
+	if own {
+		opts = append(opts, WithAspects(func(rc *RunCtx, next func(*RunCtx) error) error { return next(rc) }))
+	}
+	child := streamTestGraph(t, "comparison-child", opts...)
+	trigger, value := NewKey[int]("trigger"), NewKey[int]("value")
+	streamTestMust(t, child.DeclareInput(NewPort(trigger)))
+	streamTestMust(t, child.DeclareOutput(NewPort(value)))
+	var stream keyRef
+	if native {
+		stream = NewKey[<-chan int]("stream").asRef()
+	} else {
+		stream = NewKey[Stream[int]]("stream").asRef()
+	}
+	source := NewNode("source", "", Requires(trigger), []keyRef{stream, value.asRef()}, nil)
+	if native {
+		source.streamKind = "produce"
+	}
+	streamTestMust(t, child.Add(source))
+	if consume {
+		requires := []keyRef{stream}
+		if gated {
+			requires = append(requires, value.asRef())
+		}
+		sink := NewNode("sink", "", requires, nil, nil)
+		sink.streamKind = "consume"
+		streamTestMust(t, child.Add(sink))
+	} else {
+		streamTestMust(t, child.DeclareOutput(PortRef(stream)))
+	}
+	root := streamTestGraph(t, "comparison-root")
+	streamTestMust(t, root.DeclareInput(NewPort(trigger)))
+	for _, mount := range []string{"left", "right"} {
+		binds := []SubBind{In(trigger, trigger), Out(value, NewKey[int](mount+"-value"))}
+		if !consume {
+			out := stream
+			out.name = mount
+			binds = append(binds, OutRef(stream, out))
+			streamTestMust(t, root.DeclareOutput(PortRef(out)))
+		}
+		streamTestMust(t, Sub(root, mount, "", binds, child))
+	}
+	streamTestMust(t, root.Validate())
+	return root
+}
+
+func validationPlanReference(g *Graph, capacity int, known streamKnownInputs, definition bool) error {
+	// 直接从 Graph 按原挂载顺序复制，不走共享声明或模式缓存。
+	tree := &streamTree{}
+	pool := &streamPool{capacity: capacity}
+	tree.pools = append(tree.pools, pool)
+	root := tree.collectLocked(g, "", mountChain{g}, pool, nil, known.hasAspects)
+	if definition {
+		for _, ref := range g.outPortOrder {
+			if isManagedStreamType(ref.typ) {
+				tree.key(root, ref)
+			}
+		}
+	}
+	tree.propagateSkips(known.skipped)
+	tree.connectAliases()
+	if definition {
+		for _, ref := range g.outPortOrder {
+			if isManagedStreamType(ref.typ) {
+				root.keys[ref.name].group.outlet = true
+			}
+		}
+	}
+	tree.collectHostReaders(known.hostReads)
+	tree.collectReaders()
+	streams := make(map[string][]error)
+	tree.problemsSlots(streams)
+	tree.problemsReaders(streams)
+	tree.problemsLifecycle(streams, known.checkpoint)
+	if problems := g.problemsWithStreamsAtLocked("", mountChain{g}, capacity, streams); len(problems) != 0 {
+		return problems[0]
+	}
+	return nil
+}
+
+func TestValidationPlanSharedModesMatchReference(t *testing.T) {
+	cases := 0
+	for _, native := range []bool{false, true} {
+		for _, cut := range []bool{false, true} {
+			for _, own := range []bool{false, true} {
+				for _, gated := range []bool{false, true} {
+					for _, consume := range []bool{false, true} {
+						if native && !consume {
+							continue
+						}
+						g := validationPlanComparisonGraph(t, native, cut, own, gated, consume)
+						if g.validation.definition.nodes[0].child != g.validation.definition.nodes[1].child {
+							t.Fatal("two mounts copied their shared child declarations")
+						}
+						for _, capacity := range []int{0, 1, 4} {
+							for mode := range 4 {
+								for _, skip := range []map[string]bool{nil, {"trigger": true}, {"trigger": false}} {
+									for _, host := range []map[string]bool{nil, {"left": true}, {"left": true, "right": true}} {
+										known := streamKnownInputs{skipped: skip, hasAspects: mode&1 != 0, checkpoint: mode&2 != 0, hostReads: host}
+										for _, definition := range []bool{false, true} {
+											// Host 事实只由 Start 使用，定义检查没有这个组合。
+											if definition && len(host) != 0 {
+												continue
+											}
+											want := validationPlanReference(g, capacity, known, definition)
+											got := g.validation.check(capacity, known, definition)
+											if fmt.Sprint(got) != fmt.Sprint(want) {
+												t.Fatalf("native=%t cut=%t own=%t gated=%t consume=%t capacity=%d mode=%d skip=%v host=%v definition=%t\ngot %v\nwant %v", native, cut, own, gated, consume, capacity, mode, skip, host, definition, got, want)
+											}
+											cases++
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	t.Logf("%d first-error strings matched the uncached per-layer reference", cases)
+}
+
+func TestValidationPlanSealedChildFailureDiscardsCandidate(t *testing.T) {
+	root := validationPlanComparisonGraph(t, false, false, false, false, false)
+	child := root.nodes[0].child
+	declaration := child.validationDefinition
+	var in Inputs
+	streamTestMust(t, Seed(&in, NewKey[int]("trigger"), 1))
+	e, err := child.NewExecution(t.Context(), in)
+	streamTestMust(t, err)
+	defer e.Cancel()
+	if err := e.Start(); err == nil || !strings.Contains(err.Error(), "nothing consumes it") {
+		t.Fatalf("detached child accepted a stream without its parent's host readers: %v", err)
+	}
+	if child.validation != nil || child.validationDefinition != declaration || e.started {
+		t.Fatal("failed independent root check published a candidate or changed the shared declarations")
+	}
+	streamTestMust(t, child.Validate()) // 自身受管出口允许稍后登记宿主。
+	if child.validation.definition != declaration || child.validation.pending {
+		t.Fatal("successful independent root check did not publish its complete candidate")
+	}
+}
+
+func TestValidationPlanSharedModesConcurrentAndDisposable(t *testing.T) {
+	g := validationPlanComparisonGraph(t, false, false, false, true, true)
+	shared := g.nodes[0].child
+	other := streamTestGraph(t, "other-root", WithAspects(func(rc *RunCtx, next func(*RunCtx) error) error { return next(rc) }))
+	trigger, value := NewKey[int]("trigger"), NewKey[int]("value")
+	streamTestMust(t, Sub(other, "fixed", "", []SubBind{FixSkip(trigger), Out(value, value)}, shared))
+	streamTestMust(t, other.Validate())
+	if g.validation.definition.nodes[0].child != other.validation.definition.nodes[0].child || shared.validation != nil {
+		t.Fatal("multiple roots did not share the sealed child's pure declarations")
+	}
+	var wg sync.WaitGroup
+	for i := range 128 {
+		wg.Go(func() {
+			root := []*Graph{g, other}[i%2]
+			known := streamKnownInputs{hasAspects: i&2 != 0, checkpoint: i&4 != 0}
+			if i&8 != 0 {
+				known.skipped = map[string]bool{"trigger": i&16 != 0}
+			}
+			root.mu.Lock()
+			defer root.mu.Unlock()
+			want := validationPlanReference(root, 0, known, false)
+			before := root.validation.modes
+			got := root.validation.check(0, known, false)
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Errorf("concurrent shared root changed result: got %v want %v", got, want)
+			}
+			if len(known.skipped) != 0 && root.validation.modes != before {
+				t.Error("an arbitrary skip combination was retained in the bounded mode cache")
+			}
+		})
+	}
+	wg.Wait()
+	// 两处挂载仍有不同的求值节点/键；已发布模式没有继承临时 skip 状态。
+	f := g.validation.modes[0]
+	left, right := f.tree.sites[1], f.tree.sites[2]
+	if left == right || left.nodes[0] == right.nodes[0] || left.keys["stream"] == right.keys["stream"] ||
+		left.nodes[0].def != right.nodes[0].def || left.keys["trigger"].skipped || right.keys["trigger"].skipped {
+		t.Fatal("shared declarations conflated mount identities or retained disposable skip facts")
+	}
+}
+
+func BenchmarkValidationPlanStreamEvaluation(b *testing.B) {
+	root, err := New("stream-root", "")
+	if err != nil {
+		b.Fatal(err)
+	}
+	child, err := New("stream-child", "")
+	if err != nil {
+		b.Fatal(err)
+	}
+	trigger := NewKey[int]("trigger")
+	for _, g := range []*Graph{root, child} {
+		if err := g.DeclareInput(NewPort(trigger)); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for i := range 128 {
+		stream := NewKey[Stream[int]](fmt.Sprint("stream", i))
+		if err := child.Add(NewNode(fmt.Sprint("source", i), "", Requires(trigger), Provides(stream), nil)); err != nil {
+			b.Fatal(err)
+		}
+		if err := child.Add(NewNode(fmt.Sprint("sink", i), "", Requires(stream), nil, nil)); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for _, mount := range []string{"left", "right"} {
+		if err := Sub(root, mount, "", []SubBind{In(trigger, trigger)}, child); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := root.Validate(); err != nil {
+		b.Fatal(err)
+	}
+	b.Run("first-mode", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			p := &validationPlan{definition: root.validation.definition}
+			if err := p.check(0, streamKnownInputs{}, false); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("dynamic-skip", func(b *testing.B) {
+		known := streamKnownInputs{skipped: map[string]bool{"trigger": true}}
+		b.ReportAllocs()
+		for b.Loop() {
+			if err := root.validation.check(0, known, false); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
 
 func BenchmarkValidationPlanOrdinarySub(b *testing.B) {

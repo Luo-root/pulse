@@ -30,10 +30,11 @@ type streamSite struct {
 }
 
 type streamNode struct {
-	def         Node
+	def         *Node // 开放检查的局部副本，或封口后共享的纯声明。
 	at          string
 	site        *streamSite
 	child       *streamSite
+	sender      bool // 每个节点只扫描一次 Provides，别名输出复用这个声明事实。
 	bodySkipped bool // 普通节点的全输入确定 skip；结构 Sub 始终可进入
 }
 
@@ -133,7 +134,7 @@ func (t *streamTree) collectLocked(g *Graph, at string, chain mountChain, pool *
 		def.requires = append([]keyRef(nil), n.requires...)
 		def.provides = append([]keyRef(nil), n.provides...)
 		def.binds = append([]SubBind(nil), n.binds...)
-		sn := &streamNode{def: def, at: joinPath(at, n.id), site: s}
+		sn := &streamNode{def: &def, at: joinPath(at, n.id), site: s, sender: nodeStreamSender(&def)}
 		s.nodes = append(s.nodes, sn)
 		t.nodes = append(t.nodes, sn)
 		for _, ref := range def.requires {
@@ -145,17 +146,7 @@ func (t *streamTree) collectLocked(g *Graph, at string, chain mountChain, pool *
 	}
 	// 只取节点声明和这一处实际绑定涉及的键。未使用端口不参与等待，
 	// 不应让不断增长的可选端口表放大每次 Topology 的流检查。
-	if mount != nil {
-		for _, b := range mount.def.binds {
-			if b.fix != nil {
-				for _, ref := range b.fixKeys() {
-					t.key(s, ref).skipped = b.fix.in.entries[ref.name].skip
-				}
-			} else {
-				t.key(s, b.child)
-			}
-		}
-	}
+	t.collectMountKeys(s, mount)
 	for _, n := range s.nodes {
 		child := n.def.child
 		if child == nil || chain.has(child) {
@@ -175,6 +166,21 @@ func (t *streamTree) collectLocked(g *Graph, at string, chain mountChain, pool *
 		child.mu.Unlock()
 	}
 	return s
+}
+
+func (t *streamTree) collectMountKeys(s *streamSite, mount *streamNode) {
+	if mount == nil {
+		return
+	}
+	for _, b := range mount.def.binds {
+		if b.fix != nil {
+			for _, ref := range b.fixKeys() {
+				t.key(s, ref).skipped = b.fix.in.entries[ref.name].skip
+			}
+		} else {
+			t.key(s, b.child)
+		}
+	}
 }
 
 func (t *streamTree) key(s *streamSite, ref keyRef) *streamKey {
@@ -256,12 +262,14 @@ func (t *streamTree) collectHostReaders(reads map[string]bool) {
 	}
 }
 
-func streamSender(n *streamNode) bool {
-	if n.def.streamKind == "produce" || n.def.streamKind == "tee" {
+func streamSender(n *streamNode) bool { return n.sender }
+
+func nodeStreamSender(n *Node) bool {
+	if n.streamKind == "produce" || n.streamKind == "tee" {
 		return true
 	}
-	if !n.def.sub {
-		for _, ref := range n.def.provides {
+	if !n.sub {
+		for _, ref := range n.provides {
 			if isManagedStreamType(ref.typ) {
 				return true
 			}

@@ -401,7 +401,7 @@ func (e *Execution) Context() context.Context { return e.ctx }
 // 完全同一份、报文逐字相同，判的时刻在封口**之前**（见 checkStartInputsLocked）。
 //
 // 三条都是「运行时表现为挂死」的事：有 deadline 时是一句看不出病因的超时，
-// 没有时进程会被 runtime 判为 fatal deadlock。校验不过时这次运行**仍未启动**
+// 没有时运行时会判定进程发生致命死锁。校验不过时这次运行**仍未启动**
 // （`started` 保持 false）：补上生产者之后可以重新 `Start`；含环的图则要改装配
 // ——引擎没有 Remove，环只能靠**重新装一张图**消除。
 //
