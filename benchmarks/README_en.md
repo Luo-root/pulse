@@ -40,13 +40,15 @@ Direct Go computation is a business-cost reference, not a fourth workflow engine
 
 ## Fixed versions and environment
 
-| Project | Pinned version |
+| Project | Version pinned by current reproduction code |
 |---|---|
 | Pulse | `v0.4.2-0.20261016143631-7d70e1e14771` |
-| Azure/go-workflow | `v0.1.13` |
+| Azure/go-workflow | `v0.1.14-0.20260504053439-7eff231079d7` |
 | noneback/go-taskflow | `v1.2.0` |
 
-Do not use `@latest` to reproduce this baseline. Retain `go.sum` and module versions, download checksums and binary SHA256 in the sampling manifest. Supplementary `module-origins.json` queries actual Origin metadata from the same-version public module proxy; missing/failed entries are explicit, with no invented hashes. Results describe these versions, not every version of a project.
+The current Azure dependency pins [upstream fix `7eff231`](https://github.com/Azure/go-workflow/commit/7eff231079d7691d749787a8874514968acd15c7), which returns concurrency capacity before signaling completion to prevent lost wakeups ([#523](https://github.com/Luo-root/pulse/issues/523)). The adapter still uses native `MaxConcurrency` with unchanged timing boundaries. Historical reports retain their original `v0.1.13` identity and timeout statuses. This deadlock does not establish the cause of every historical timeout, and correctness regressions establish no new performance results. Check out the matching historical commit to reproduce old reports; save results from current code as a separate run without overwriting or mixing old samples.
+
+Do not use `@latest` to reproduce pinned versions. Retain `go.sum` and module versions, download checksums and binary SHA256 in the sampling manifest. Supplementary `module-origins.json` queries actual Origin metadata from the same-version public module proxy; missing/failed entries are explicit, with no invented hashes. Results describe these versions, not every version of a project.
 
 The full local matrix fixes `GOMAXPROCS=4` and a business concurrency limit of 4. Threads, concurrent business nodes and total graph size are different dimensions; save a separate matrix when changing any of them. Do not run compilers, race tests, profilers or other benchmark processes alongside timing samples. Power, temperature and unrelated workstation activity can still introduce variation; the measurements are not a production SLO.
 

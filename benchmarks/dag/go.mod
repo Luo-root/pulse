@@ -3,7 +3,7 @@ module github.com/Luo-root/pulse/benchmarks/dag
 go 1.26.0
 
 require (
-	github.com/Azure/go-workflow v0.1.13
+	github.com/Azure/go-workflow v0.1.14-0.20260504053439-7eff231079d7
 	github.com/Luo-root/pulse v0.4.2-0.20261016143631-7d70e1e14771
 	github.com/noneback/go-taskflow v1.2.0
 )
