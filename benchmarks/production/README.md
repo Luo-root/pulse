@@ -1,6 +1,6 @@
 # 统一生产工作流对照
 
-[English](README_en.md)。本模块为 Pulse v0.5.1 文档提供 **Pulse（可靠维度加 Durable）、Eino、Temporal** 的对照方法与复跑入口，独立于生产模块。
+[English](README_en.md)。本模块为 Pulse v0.5.2 文档提供 **Pulse（可靠维度加 Durable）、Eino、Temporal** 的对照方法与复跑入口，独立于生产模块。
 
 当前复跑（[#502](https://github.com/Luo-root/pulse/issues/502)，关联 Durable #81）固定正式公开版本：Core `v0.5.0`、Durable `v0.1.0`、`pulse-durable/sqlitestore v0.1.0`；Go 1.26，Eino `v0.9.21`、Temporal SDK `v1.50.0` / API `v1.63.5` 保持不变，无 replace。Durable 实际使用维护的官方 SQLite backend；本轮结果须写新目录，不改冻结结果。
 

@@ -4,7 +4,7 @@ Build a workflow that turns a document list into a summary and then a report. By
 
 ## Before you begin
 
-The example uses Pulse v0.5.1 and requires Go 1.26.0+. See [installation and versions](installation.md).
+The example uses Pulse v0.5.2 and requires Go 1.26.0+. See [installation and versions](installation.md).
 
 Initialize a module in a new directory:
 
@@ -12,7 +12,7 @@ Initialize a module in a new directory:
 mkdir pulse-quickstart
 cd pulse-quickstart
 go mod init example.com/pulse-quickstart
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 ```
 
 Run all subsequent commands in that directory.

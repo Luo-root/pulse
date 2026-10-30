@@ -1,6 +1,6 @@
 # 检查点桥接与子图恢复（方案 A）
 
-本文描述 Pulse v0.5.1 的检查点桥契约。Core 提供完整节点链和增量流检查点桥；Durable 提供 Store/Codec、Run/Resume、子图恢复，以及文件、SQLite 和 PostgreSQL 存储。持久等待与分布式运行管理属于后续设计。
+本文描述 Pulse v0.5.2 的检查点桥契约。Core 提供完整节点链和增量流检查点桥；Durable 提供 Store/Codec、Run/Resume、子图恢复，以及文件、SQLite 和 PostgreSQL 存储。持久等待与分布式运行管理属于后续设计。
 
 ## 谁使用这个入口
 
