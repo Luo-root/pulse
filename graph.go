@@ -72,6 +72,9 @@ type Graph struct {
 	sealed bool
 	// validation 只在完整检查成功的封口边界安装；只含冻结声明与有界静态事实。
 	validation *validationPlan
+	// validationDefinition 是每个封口定义共享的纯局部声明，子图未独立作根
+	// 时也可供父计划引用；不因此为子图建立 validation 或求值模式。
+	validationDefinition *validationDefinition
 }
 
 // Option 配置 Graph 的**定义**（默认运行策略与身份），在 `New` 时给。
