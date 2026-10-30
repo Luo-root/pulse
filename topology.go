@@ -1,6 +1,9 @@
 package pulse
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // 本文件是图的**静态形状**：这一层装成什么样、谁喂谁、排得出什么顺序。
 // 与运行时快照的分工是「形状 vs 进度」——形状不随运行变，跑完再问也一样。
@@ -316,7 +319,30 @@ func (g *Graph) topologyAtLocked(at string, chain mountChain, capacity int, stre
 			})
 		}
 	}
-	t.Problems = g.problemsWithStreamsAtLocked(at, chain, capacity, streams)
+	t.Problems = g.problemsLocalWithStreamsAtLocked(at, streams)
+	for i, n := range g.nodes {
+		if n.child == nil {
+			continue
+		}
+		here := joinPath(at, n.id)
+		if chain.has(n.child) {
+			t.Problems = append(t.Problems, fmt.Errorf("pulse: subgraph cycle: %s -> %s "+
+				"(mounting %q at %q would put graph %q inside its own subtree)",
+				chain.String(), n.child.id, n.child.id, here, n.child.id))
+			continue
+		}
+		// 仍在所有子视图构造之后重核接线：开放子图可能在采样后新增必需进口。
+		// 绑定失败时父层只报这一条，子视图及其 Problems 仍保持可见。
+		if err := checkBinds(n.child, n.id, n.binds); err != nil {
+			t.Problems = append(t.Problems, fmt.Errorf("pulse: subgraph mounted at %q: %w", here, err))
+			continue
+		}
+		// 子层在自己的锁内已经采样，不再重走它的整棵子树。
+		for _, err := range t.Nodes[i].Sub.Problems {
+			t.Problems = append(t.Problems, fmt.Errorf("pulse: subgraph %q (mounted at %q): %w",
+				n.child.id, here, err))
+		}
+	}
 	return t
 }
 

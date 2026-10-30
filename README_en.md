@@ -33,14 +33,14 @@ To continue after a process exits, use the separate [pulse-durable](https://gith
 
 ## Installation
 
-Pulse v0.5.1 requires **Go 1.26.0 or later**. See [installation and versions](site/en/guide/installation.md).
+Pulse v0.5.2 requires **Go 1.26.0 or later**. See [installation and versions](site/en/guide/installation.md).
 
-> This README and the documentation site use **v0.5.1** as their API baseline, including managed Stream, live Sub, and incremental checkpoints. Read [migration](site/en/reference/migration.md) before upgrading from v0.4.1. The command below pins v0.5.1. See [installation and versions](site/en/guide/installation.md) for development or unmerged changes; the tag and Release establish publication status.
+> This README and the documentation site use **v0.5.2** as their API baseline, including managed Stream, live Sub, and incremental checkpoints. Read [migration](site/en/reference/migration.md) before upgrading from v0.4.1. The command below pins v0.5.2. See [installation and versions](site/en/guide/installation.md) for development or unmerged changes; the tag and Release establish publication status.
 
 Run this in a Go module:
 
 ```sh
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 ```
 
 ## Your first workflow

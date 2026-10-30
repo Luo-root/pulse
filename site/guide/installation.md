@@ -4,7 +4,7 @@
 
 ## 环境要求
 
-Pulse v0.5.1 需要 **Go 1.26.0 或更新版本**，与 Durable 统一。执行以下命令确认工具链：
+Pulse v0.5.2 需要 **Go 1.26.0 或更新版本**，与 Durable 统一。执行以下命令确认工具链：
 
 ```sh
 go version
@@ -16,13 +16,13 @@ go version
 
 | 版本 | 适用情况 | 对应资料 |
 | --- | --- | --- |
-| `v0.5.1` | 当前 API 基线，推荐固定安装 | [迁移步骤](../reference/migration.md) · [统一生产性能对比](../reference/production-comparison.md) |
+| `v0.5.2` | 当前 API 基线，推荐固定安装 | [迁移步骤](../reference/migration.md) · [统一生产性能对比](../reference/production-comparison.md) |
 | `main` | 使用最新开发代码 | [main 源码](https://github.com/Luo-root/pulse) |
 | 与文档一起检出的本地源码 | 参与开发或试用未合并修改 | 使用下方本地替换步骤 |
 
-**本站以 v0.5.1 为 API 基线。** 默认固定版本；只有需要开发改动时才选择 `go get …@main`。后者会把当时的主线解析为具体版本并写入 `go.mod`；提交该文件后，团队使用的是解析出的版本，不会每次运行自动更新。
+**本站以 v0.5.2 为 API 基线。** 默认固定版本；只有需要开发改动时才选择 `go get …@main`。后者会把当时的主线解析为具体版本并写入 `go.mod`；提交该文件后，团队使用的是解析出的版本，不会每次运行自动更新。
 
-v0.5.1 包含受管 Stream、实时 Sub、消息尝试与增量检查点，可用于运行本站示例。需要开发改动时，按下方步骤使用对应本地源码。升级或修改 API 时请查看[迁移说明](../reference/migration.md)。
+v0.5.2 包含受管 Stream、实时 Sub、消息尝试与增量检查点，可用于运行本站示例。需要开发改动时，按下方步骤使用对应本地源码。升级或修改 API 时请查看[迁移说明](../reference/migration.md)。
 
 ## 建立示例模块
 
@@ -32,7 +32,7 @@ v0.5.1 包含受管 Stream、实时 Sub、消息尝试与增量检查点，可�
 mkdir pulse-example
 cd pulse-example
 go mod init example.com/pulse-example
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 ```
 
 将[快速开始](quickstart.md)中的程序保存为 `main.go`，然后执行：

@@ -418,10 +418,9 @@ func (e *Execution) Context() context.Context { return e.ctx }
 // started 回调把窗口拉到几十毫秒量级，这不是理论竞态）。
 func (e *Execution) Start() error {
 	g := e.graph
-	// 校验与封口在**装配锁**里做完，之后才放出去发事件、建 goroutine（临界区里不跑用户代码）：
-	// 与 Validate 同一条边界，见 assemblyMu。
-	assemblyMu.Lock()
-	g.mu.Lock()
+	// 开放定义的最终校验与封口仍在装配边界内；冻结树只需根锁，
+	// 宿主登记也取根锁，故检查期间本轮订阅事实不会变化。
+	assembly := g.lockValidation()
 	known := streamKnownInputs{
 		skipped: e.streamInputSkips(), hasAspects: len(e.aspects) != 0,
 		hostReads: e.hostStreamReads(), checkpoint: e.checkpoint != nil,
@@ -430,8 +429,7 @@ func (e *Execution) Start() error {
 	// 那次检查的上下文，不能在这里把子树当作独立根重新判。每次运行的输入仍在下方核验。
 	if !e.mounted {
 		if err := g.validateRunLocked(e.lim.capacity(), known); err != nil {
-			g.mu.Unlock()
-			assemblyMu.Unlock()
+			g.unlockValidation(assembly)
 			return err
 		}
 	}
@@ -439,20 +437,17 @@ func (e *Execution) Start() error {
 	// 按当时那张定义收下的，而从那之后定义还长得进去——这一眼之后紧接着就是封口，于是
 	// 「判过的定义」与「封上的定义」是同一个版本（见 checkStartInputsLocked）。
 	if err := g.checkStartInputsLocked(e.seeded); err != nil {
-		g.mu.Unlock()
-		assemblyMu.Unlock()
+		g.unlockValidation(assembly)
 		return err
 	}
 	if err := e.checkHostStreamInputsLocked(); err != nil {
-		g.mu.Unlock()
-		assemblyMu.Unlock()
+		g.unlockValidation(assembly)
 		return err
 	}
 	e.mu.Lock()
 	if e.started {
 		e.mu.Unlock()
-		g.mu.Unlock()
-		assemblyMu.Unlock()
+		g.unlockValidation(assembly)
 		return ErrGraphStarted
 	}
 	if e.checkpoint != nil {
@@ -466,19 +461,20 @@ func (e *Execution) Start() error {
 		}
 		if err != nil {
 			e.mu.Unlock()
-			g.mu.Unlock()
-			assemblyMu.Unlock()
+			g.unlockValidation(assembly)
 			return err
 		}
 		if err := e.applyRestoreLocked(); err != nil {
 			e.mu.Unlock()
-			g.mu.Unlock()
-			assemblyMu.Unlock()
+			g.unlockValidation(assembly)
 			return e.stopCheckpoint("restore streams", err)
 		}
 	}
-	// 全部校验通过才封整棵树；临界区内不运行 Store/Codec 或宿主回调。
-	g.sealTreeLocked(mountChain{g})
+	// 全部校验通过才封整棵树；挂载执行已由根检查并冻结，不为每个
+	// child.Start 另编一份脱离父侧读者环境的子树模型。
+	if !e.mounted {
+		g.freezeValidationLocked()
+	}
 	nodes := append([]*Node(nil), g.nodes...)
 	hostReaders := make([]keyRef, 0, len(e.hostReaders))
 	for _, ref := range e.hostReaders {
@@ -488,8 +484,7 @@ func (e *Execution) Start() error {
 	// 宿主读取组的必需义务也属于执行终态；尾部未确认时不能提前成功并关闭持久会话。
 	e.wg.Add(len(nodes) + len(hostReaders) + 1) // +1：started 那一发落地前，Wait 不该溜过去
 	e.mu.Unlock()
-	g.mu.Unlock()
-	assemblyMu.Unlock()
+	g.unlockValidation(assembly)
 
 	e.notify(func(o Observer) { o.OnGraphStarted(e.site) })
 	e.wg.Done()

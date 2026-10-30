@@ -19,11 +19,14 @@ type streamTree struct {
 
 type streamSite struct {
 	at         string
+	graphID    string
 	pool       *streamPool
 	mount      *streamNode
 	nodes      []*streamNode
 	keys       map[string]*streamKey
 	hasAspects bool
+	ownAspects bool // 声明事实；冻结模型按本轮根切面重新解析继承
+	aspectsCut bool
 }
 
 type streamNode struct {
@@ -122,7 +125,8 @@ func (g *Graph) needsWaitTreeLocked() bool {
 // 调用方持 g.mu。Node 在入图后不可改；仍复制切片，后续推导只读这份副本。
 // checkBinds 自己取子锁，必须在 collect 的子锁之外调用；组合环先挡住重入。
 func (t *streamTree) collectLocked(g *Graph, at string, chain mountChain, pool *streamPool, mount *streamNode, hasAspects bool) *streamSite {
-	s := &streamSite{at: at, pool: pool, mount: mount, keys: make(map[string]*streamKey), hasAspects: hasAspects}
+	s := &streamSite{at: at, graphID: g.id, pool: pool, mount: mount, keys: make(map[string]*streamKey),
+		hasAspects: hasAspects, ownAspects: len(g.aspects) != 0, aspectsCut: g.aspectsCut}
 	t.sites = append(t.sites, s)
 	for _, n := range g.nodes {
 		def := *n
@@ -303,54 +307,63 @@ func (t *streamTree) collectReaders() {
 
 // 仍保守地为同一池里的全部流参与者留名额，避免逐个抢额造成互相阻塞。
 // 一名节点读几个别名也只计一次；不同池彼此独立，Sub 代理完全不占额。
-func (t *streamTree) problemsSlots(out map[string][]error) {
-	for _, p := range t.pools {
-		if p.capacity <= 0 || p.capacity >= len(p.live) {
+func (t *streamTree) problemsSlots(out map[string][]error, rootCapacity ...int) {
+	for i, p := range t.pools {
+		capacity := p.capacity
+		if i == 0 && len(rootCapacity) != 0 {
+			capacity = rootCapacity[0] // 池身份不变，只替换本轮根池的有效容量。
+		}
+		if capacity <= 0 || capacity >= len(p.live) {
 			continue
 		}
 		ids, at := streamNodeNames(p.live)
 		out[at] = append(out[at], fmt.Errorf("pulse: stream needs %d slots at the same time, but WithMaxRunning(%d): %s",
-			len(p.live), p.capacity, strings.Join(ids, ", ")))
+			len(p.live), capacity, strings.Join(ids, ", ")))
 	}
 }
 
 func (t *streamTree) problemsReaders(out map[string][]error) {
 	for _, gr := range t.groups {
-		if !gr.known {
-			continue
+		t.problemsReader(out, gr)
+	}
+}
+
+// 单组判据也供冻结模型使用；调用方给本轮宿主事实的私有浅副本。
+func (t *streamTree) problemsReader(out map[string][]error, gr *streamGroup) {
+	if !gr.known {
+		return
+	}
+	if gr.host && len(gr.readers)+len(gr.hostKeys) > 1 {
+		ids := make([]string, 0, len(gr.readers)+len(gr.hostKeys))
+		for _, name := range gr.hostKeys {
+			ids = append(ids, fmt.Sprintf("host output %q", name))
 		}
-		if gr.host && len(gr.readers)+len(gr.hostKeys) > 1 {
-			ids := make([]string, 0, len(gr.readers)+len(gr.hostKeys))
-			for _, name := range gr.hostKeys {
-				ids = append(ids, fmt.Sprintf("host output %q", name))
-			}
-			for _, n := range gr.readers {
-				ids = append(ids, fmt.Sprintf("node %q", n.at))
-			}
-			out[t.sites[0].at] = append(out[t.sites[0].at], fmt.Errorf("pulse: stream output %q is read by %d readers (%s), "+
-				"so its values would be split between them: a host subscription and graph readers, or two subscribed outlet aliases, "+
-				"must use separate Tee outputs", gr.key.ref.name, len(ids), strings.Join(ids, ", ")))
-			continue
+		for _, n := range gr.readers {
+			ids = append(ids, fmt.Sprintf("node %q", n.at))
 		}
-		// 业务体被输入门跳过时，门外切面仍可发布流；只有输出确定
-		// skipped（没有端点）才不需要读者，复用 propagateSkips 的事实。
-		if gr.source != nil && gr.source.skipped {
-			continue
-		}
-		if len(gr.readers) == 0 && !gr.host && !gr.outlet && gr.source != nil {
-			n := gr.source.writer
-			out[n.site.at] = append(out[n.site.at], fmt.Errorf("pulse: node %q provides %q but nothing consumes it: "+
-				"a stream output nobody reads blocks the sender forever", n.at, gr.source.ref.name))
-			continue
-		}
-		if len(gr.readers) > 1 && !streamSameFanOut(gr.readers) {
-			ids, at := streamNodeNames(gr.readers)
-			at = streamCommonPath(at, gr.key.site.at)
-			out[at] = append(out[at], fmt.Errorf("pulse: stream output %q is read by %d nodes (%s), "+
-				"so its values would be split between them: one stream output feeds one downstream — "+
-				"add a Tee output per downstream to broadcast, or make it one FanOut to compete",
-				gr.key.ref.name, len(gr.readers), strings.Join(ids, ", ")))
-		}
+		out[t.sites[0].at] = append(out[t.sites[0].at], fmt.Errorf("pulse: stream output %q is read by %d readers (%s), "+
+			"so its values would be split between them: a host subscription and graph readers, or two subscribed outlet aliases, "+
+			"must use separate Tee outputs", gr.key.ref.name, len(ids), strings.Join(ids, ", ")))
+		return
+	}
+	// 业务体被输入门跳过时，门外切面仍可发布流；只有输出确定
+	// skipped（没有端点）才不需要读者，复用 propagateSkips 的事实。
+	if gr.source != nil && gr.source.skipped {
+		return
+	}
+	if len(gr.readers) == 0 && !gr.host && !gr.outlet && gr.source != nil {
+		n := gr.source.writer
+		out[n.site.at] = append(out[n.site.at], fmt.Errorf("pulse: node %q provides %q but nothing consumes it: "+
+			"a stream output nobody reads blocks the sender forever", n.at, gr.source.ref.name))
+		return
+	}
+	if len(gr.readers) > 1 && !streamSameFanOut(gr.readers) {
+		ids, at := streamNodeNames(gr.readers)
+		at = streamCommonPath(at, gr.key.site.at)
+		out[at] = append(out[at], fmt.Errorf("pulse: stream output %q is read by %d nodes (%s), "+
+			"so its values would be split between them: one stream output feeds one downstream — "+
+			"add a Tee output per downstream to broadcast, or make it one FanOut to compete",
+			gr.key.ref.name, len(gr.readers), strings.Join(ids, ", ")))
 	}
 }
 
