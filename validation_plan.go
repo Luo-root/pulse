@@ -5,14 +5,34 @@ import (
 	"sort"
 )
 
+// validationDefinition 每个封口定义只保留一份局部声明，子定义通过指针共享。
+// 没有绝对挂载路径、池、到达状态、业务值或闭包；这些身份只在求值时展开。
+// 在成功检查后的装配边界内发布，之后只读，不需再取子图锁。
+type validationDefinition struct {
+	graphID    string
+	nodes      []validationNode
+	outlets    []keyRef
+	capacity   int
+	limSet     bool
+	ownAspects bool
+	aspectsCut bool
+	needsTree  bool
+}
+
+type validationNode struct {
+	def    Node // 仅声明字段；不保留原 Node 或其业务闭包。
+	child  *validationDefinition
+	sender bool
+}
+
 // validationPlan 只在最终检查全部通过后安装。来源、端口、接线及普通 DAG
-// 已在同一装配边界内通过；保留的树只含声明，不含执行、输入值或用户闭包。
+// 已在同一装配边界内通过；各根共享声明，不常驻保留展开后的模板树。
 // modes 的下标只有根有效切面 / checkpoint 两个布尔位，不按输入组合缓存。
 // plan 与 modes 的发布均由所属 Graph.mu 保护；求值不再锁任何子定义。
 type validationPlan struct {
-	tree    *streamTree
-	outlets []keyRef
-	modes   [4]*validationFacts
+	definition *validationDefinition
+	modes      [4]*validationFacts
+	pending    bool // 已封子图首次独立检查的候选；成功发布，否则解锁前撤下。
 }
 
 type validationFacts struct {
@@ -27,6 +47,11 @@ type validationFacts struct {
 func (g *Graph) lockValidation() bool {
 	g.mu.Lock()
 	if g.sealed {
+		if g.validation == nil && g.validationDefinition != nil && g.validationDefinition.needsTree {
+			// 已封子图已有完整纯声明，不必再取子图锁重编。候选只在
+			// 根锁内可见；其余本轮检查失败时 unlockValidation 会撤下。
+			g.validation = &validationPlan{definition: g.validationDefinition, pending: true}
+		}
 		return false
 	}
 	g.mu.Unlock()
@@ -36,6 +61,9 @@ func (g *Graph) lockValidation() bool {
 }
 
 func (g *Graph) unlockValidation(assembly bool) {
+	if g.validation != nil && g.validation.pending {
+		g.validation = nil
+	}
 	g.mu.Unlock()
 	if assembly {
 		assemblyMu.Unlock()
@@ -48,44 +76,67 @@ func (g *Graph) freezeValidationLocked() {
 	if g.validation == nil {
 		p := &validationPlan{}
 		if g.needsWaitTreeLocked() {
-			p.tree = &streamTree{}
-			pool := &streamPool{capacity: g.declaredCapacity()}
-			p.tree.pools = append(p.tree.pools, pool)
-			root := p.tree.collectLocked(g, "", mountChain{g}, pool, nil, len(g.aspects) != 0)
-			for _, ref := range g.outPortOrder {
-				if isManagedStreamType(ref.typ) {
-					p.outlets = append(p.outlets, ref)
-					p.tree.key(root, ref)
-				}
-			}
-			sort.Slice(p.outlets, func(i, j int) bool { return p.outlets[i].name < p.outlets[j].name })
-			// 校验只需切面的存在性、Fix 的类型与 skip。不能保留业务值、
-			// run/push 闭包或另一个 Graph 的可变字段作为求值状态。
-			for _, n := range p.tree.nodes {
-				n.def.run, n.def.child = nil, nil
-				if len(n.def.aspects) != 0 {
-					n.def.aspects = []Aspect{nil}
-				}
-				for i := range n.def.binds {
-					b := &n.def.binds[i]
-					b.push = nil
-					if b.fix != nil {
-						in := Inputs{entries: make(map[string]inputEntry, len(b.fix.in.entries))}
-						for name, en := range b.fix.in.entries {
-							in.entries[name] = inputEntry{ref: en.ref, skip: en.skip}
-						}
-						b.fix = &fixBind{in: in}
-					}
-				}
-			}
+			p.definition = g.freezeValidationDefinitionLocked()
 		}
+		// 普通无流根只需通过标记；将来被挂载时再收一次局部声明，
+		// 不因单独 Validate 给每个普通节点常驻复制一套键和元数据。
 		g.validation = p
 	}
+	g.validation.pending = false
 	g.sealTreeLocked(mountChain{g})
 }
 
+func (g *Graph) freezeValidationDefinitionLocked() *validationDefinition {
+	if g.validationDefinition != nil {
+		return g.validationDefinition
+	}
+	d := &validationDefinition{
+		graphID: g.id, capacity: g.declaredCapacity(), limSet: g.limSet,
+		ownAspects: len(g.aspects) != 0, aspectsCut: g.aspectsCut,
+		needsTree: g.needsWaitTreeLocked(), nodes: make([]validationNode, len(g.nodes)),
+	}
+	for i, n := range g.nodes {
+		dn := &d.nodes[i]
+		// 显式收下校验所需字段，不把 Node 的执行闭包、描述或写权限表带进来。
+		dn.def = Node{
+			id: n.id, requires: append([]keyRef(nil), n.requires...),
+			provides:   append([]keyRef(nil), n.provides...),
+			streamKind: n.streamKind, compete: n.compete, sub: n.sub,
+			binds: append([]SubBind(nil), n.binds...),
+		}
+		if len(n.aspects) != 0 {
+			dn.def.aspects = []Aspect{nil}
+		}
+		for j := range dn.def.binds {
+			b := &dn.def.binds[j]
+			b.push = nil
+			if b.fix != nil {
+				in := Inputs{entries: make(map[string]inputEntry, len(b.fix.in.entries))}
+				for name, en := range b.fix.in.entries {
+					in.entries[name] = inputEntry{ref: en.ref, skip: en.skip}
+				}
+				b.fix = &fixBind{in: in}
+			}
+		}
+		dn.sender = nodeStreamSender(&dn.def)
+		if n.child != nil {
+			n.child.mu.Lock()
+			dn.child = n.child.freezeValidationDefinitionLocked()
+			n.child.mu.Unlock()
+		}
+	}
+	for _, ref := range g.outPortOrder {
+		if isManagedStreamType(ref.typ) {
+			d.outlets = append(d.outlets, ref)
+		}
+	}
+	sort.Slice(d.outlets, func(i, j int) bool { return d.outlets[i].name < d.outlets[j].name })
+	g.validationDefinition = d
+	return d
+}
+
 func (p *validationPlan) check(capacity int, known streamKnownInputs, definition bool) error {
-	if p.tree == nil {
+	if p.definition == nil || !p.definition.needsTree {
 		return nil // 已成功冻结的普通 DAG；本轮输入与 checkpoint 仍由 Start 核验。
 	}
 	var facts *validationFacts
@@ -130,37 +181,77 @@ func (p *validationPlan) check(capacity int, known streamKnownInputs, definition
 	for at, problems := range facts.lifecycle {
 		out[at] = append(out[at], problems...)
 	}
-	return p.firstProblem(out)
+	return t.firstValidationProblem(out)
 }
 
 func (p *validationPlan) evaluate(known streamKnownInputs) *validationFacts {
-	t := p.tree.validationCopy(known.hasAspects)
+	t := &streamTree{}
+	pool := &streamPool{capacity: p.definition.capacity}
+	t.pools = append(t.pools, pool)
+	root := t.collectValidation(p.definition, "", pool, nil, known.hasAspects)
+	for _, ref := range p.definition.outlets {
+		t.key(root, ref)
+	}
 	t.propagateSkips(known.skipped)
 	t.connectAliases()
 	t.collectReaders()
 	f := &validationFacts{tree: t, lifecycle: make(map[string][]error)}
 	t.problemsLifecycle(f.lifecycle, known.checkpoint)
-	f.firstLifecycle = p.firstProblem(f.lifecycle)
+	f.firstLifecycle = t.firstValidationProblem(f.lifecycle)
 	if len(t.groups) == 0 {
-		// 普通 Sub 只保留生命周期结论，不把求值副本留成第二棵声明树。
+		// 普通 Sub 的四种模式只保留生命周期结论，整棵展开工作树随即释放。
 		f.tree = nil
+		f.lifecycle = nil
 	} else {
 		f.outlets = make(map[*streamGroup][]string)
-		for _, ref := range p.outlets {
-			gr := t.sites[0].keys[ref.name].group
+		for _, ref := range p.definition.outlets {
+			gr := root.keys[ref.name].group
 			f.outlets[gr] = append(f.outlets[gr], ref.name)
 		}
 	}
 	return f
 }
 
+// collectValidation 每处挂载新建 site/node/key/pool，只有纯局部声明共享。
+// 即使子定义相同、额度数值相同，也不能复用这些求值身份。
+func (t *streamTree) collectValidation(d *validationDefinition, at string, pool *streamPool, mount *streamNode, hasAspects bool) *streamSite {
+	s := &streamSite{at: at, graphID: d.graphID, pool: pool, mount: mount, keys: make(map[string]*streamKey),
+		hasAspects: hasAspects, ownAspects: d.ownAspects, aspectsCut: d.aspectsCut}
+	t.sites = append(t.sites, s)
+	for i := range d.nodes {
+		dn := &d.nodes[i]
+		n := &streamNode{def: &dn.def, at: joinPath(at, dn.def.id), site: s, sender: dn.sender}
+		s.nodes = append(s.nodes, n)
+		t.nodes = append(t.nodes, n)
+		for _, ref := range n.def.requires {
+			t.key(s, ref)
+		}
+		for _, ref := range n.def.provides {
+			t.key(s, ref).writer = n
+		}
+	}
+	t.collectMountKeys(s, mount)
+	for i, n := range s.nodes {
+		if child := d.nodes[i].child; child != nil {
+			childPool := pool
+			if child.limSet {
+				childPool = &streamPool{capacity: child.capacity}
+				t.pools = append(t.pools, childPool)
+			}
+			childAspects := (hasAspects && !child.aspectsCut) || child.ownAspects
+			n.child = t.collectValidation(child, n.at, childPool, n, childAspects)
+		}
+	}
+	return s
+}
+
 // 与 problemsSubAtLocked 相同的声明顺序和逐挂载包装；已冻结的局部
 // 来源/出口/接线问题为空，只有本次流事实可能带来新诊断。
-func (p *validationPlan) firstProblem(problems map[string][]error) error {
+func (t *streamTree) firstValidationProblem(problems map[string][]error) error {
 	if len(problems) == 0 {
 		return nil
 	}
-	for _, site := range p.tree.sites {
+	for _, site := range t.sites {
 		if local := problems[site.at]; len(local) != 0 {
 			err := local[0]
 			for s := site; s.mount != nil; s = s.mount.site {
@@ -170,47 +261,4 @@ func (p *validationPlan) firstProblem(problems map[string][]error) error {
 		}
 	}
 	return nil
-}
-
-// validationCopy 复制求值状态，声明切片共享且只读。模板保持 FixSkip 原始
-// 事实、未合并的别名及空 reader/pool 状态；动态求值永远不能改模板。
-func (t *streamTree) validationCopy(hasAspects bool) *streamTree {
-	out := &streamTree{}
-	pools := make(map[*streamPool]*streamPool, len(t.pools))
-	for _, p := range t.pools {
-		copy := &streamPool{capacity: p.capacity}
-		pools[p] = copy
-		out.pools = append(out.pools, copy)
-	}
-	sites := make(map[*streamSite]*streamSite, len(t.sites))
-	for _, s := range t.sites {
-		copy := *s
-		copy.pool, copy.nodes, copy.keys = pools[s.pool], nil, make(map[string]*streamKey, len(s.keys))
-		sites[s] = &copy
-		out.sites = append(out.sites, &copy)
-	}
-	nodes := make(map[*streamNode]*streamNode, len(t.nodes))
-	for _, n := range t.nodes {
-		copy := *n
-		copy.site, copy.child = sites[n.site], sites[n.child]
-		nodes[n] = &copy
-		out.nodes = append(out.nodes, &copy)
-		copy.site.nodes = append(copy.site.nodes, &copy)
-	}
-	for _, s := range t.sites {
-		copy := sites[s]
-		copy.mount = nodes[s.mount]
-		copy.hasAspects = hasAspects
-		if copy.mount != nil {
-			copy.hasAspects = (copy.mount.site.hasAspects && !copy.aspectsCut) || copy.ownAspects
-		}
-	}
-	for _, k := range t.keys {
-		copy := *k
-		copy.site, copy.writer, copy.group = sites[k.site], nodes[k.writer], nil
-		copy.parent = &copy
-		copy.site.keys[copy.ref.name] = &copy
-		out.keys = append(out.keys, &copy)
-	}
-	return out
 }

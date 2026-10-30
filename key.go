@@ -152,7 +152,7 @@ func (g *Graph) DeclareOutput(ports ...Port) error { return g.declarePorts(ports
 //
 // 「全量」也包括**同一批内部**：`DeclareInput(NewPort(NewKey[string]("x")),
 // NewPort(NewKey[int]("x")))` 的第一条会在提交段真的写进登记表，只查**旧**表的话第二条
-// 要到提交时才炸——那时第一条已经进表了，all-or-nothing 成了半句（实测：失败之后再单独
+// 要到提交时才炸——那时第一条已经进表了，「全部成功或全部失败」的保证就落空了（实测：失败之后再单独
 // 声明一次 `int x`，报的还是「already registered as string」）。所以校验段带一张
 // **本批次**的 name → 声明 表。
 func (g *Graph) declarePorts(ports []Port, input bool) error {
