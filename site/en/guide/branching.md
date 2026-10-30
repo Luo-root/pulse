@@ -1,6 +1,6 @@
 # Branches and joins
 
-This page is for developers who need to select processing routes and combine several results. It requires Go 1.26+ and familiarity with [inputs and outputs](./inputs-outputs.md). The example uses the v0.5.1 API.
+This page is for developers who need to select processing routes and combine several results. It requires Go 1.26+ and familiarity with [inputs and outputs](./inputs-outputs.md). The example uses the v0.5.2 API.
 
 Branches are expressed through output values or skipped states. A join first waits for every input to arrive, then applies its policy to values and absent inputs. Normal skipping does not fail the run.
 
@@ -92,7 +92,7 @@ Run these commands in the directory containing the file:
 
 ```sh
 go mod init example.com/pulse-branches
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 go run .
 ```
 

@@ -4,7 +4,7 @@ This section is for developers already using Pulse who need exact behavior or in
 
 ## Version scope
 
-These documents use the v0.5.1 API object model as their baseline; performance, SQLite and recovery data are consolidated in the [unified production comparison](./production-comparison.md).
+These documents use the v0.5.2 API object model as their baseline; performance, SQLite and recovery data are consolidated in the [unified production comparison](./production-comparison.md).
 
 ## Find a contract
 
@@ -15,7 +15,7 @@ These documents use the v0.5.1 API object model as their baseline; performance, 
 | What errors mean and whether to change declarations or handle a runtime failure | [Errors](./errors.md) |
 | When outputs are confirmed and published, what recovery restores, how retry budgets persist | [Checkpoints](./checkpoint.md) |
 | How to migrate from v0.4.1 or transitional development APIs | [Migration](./migration.md) |
-| v0.5.1 API, lifecycle and checkpoint boundaries | [Migration](./migration.md) |
+| v0.5.2 API, lifecycle and checkpoint boundaries | [Migration](./migration.md) |
 
 ## Objects and interfaces
 

@@ -1,6 +1,6 @@
 # Lifecycle
 
-This page defines the [v0.5.1](./migration.md) contract for developers controlling Execution, implementing Observer, or interpreting snapshots. Usage examples are in [inputs and outputs](../guide/inputs-outputs.md), [subgraphs](../guide/subgraphs.md), and [observation](../guide/observability.md).
+This page defines the [v0.5.2](./migration.md) contract for developers controlling Execution, implementing Observer, or interpreting snapshots. Usage examples are in [inputs and outputs](../guide/inputs-outputs.md), [subgraphs](../guide/subgraphs.md), and [observation](../guide/observability.md).
 
 ## Definition assembly and sealing
 
@@ -19,6 +19,10 @@ A Graph is created, assembled, and sealed. It holds no run context, values, or f
 After sealing, definition changes through Add, DeclareInput, DeclareOutput, and Sub return errors wrapping `ErrGraphStarted`. A sealed child can still be mounted into another unsealed parent, and definitions can run repeatedly or concurrently. Validation and sealing share one assembly boundary, so the sealed definition is the one that was checked.
 
 Static validation checks Requires sources, producers or pass-through inputs for declared outputs, dependency cycles, mount binds, and visible stream relationships. It invokes no business callbacks and cannot validate their computation. Use Topology for a problem list without sealing; successful Validate changes assembly state.
+
+Sealed definitions reuse static validation structures, with several roots sharing a child's pure declarations. Each run still checks inputs, skips, effective aspects, quota pools, host subscriptions, checkpoints, and restoration records. The cache stores no business values or per-run state.
+
+Topology remains a non-atomic sample across individual graph layers. If an open child adds a required input after mounting and invalidates an ancestor binding, the parent still reports that binding error. Visible child views continue to report internal dependency cycles and stream problems in their actual mounting context rather than being reinterpreted as independent roots. Validate and Start continue to reject the missing binding.
 
 ## Control one execution
 

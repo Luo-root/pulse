@@ -1,6 +1,6 @@
 # 分支与汇聚
 
-本页面向需要按条件选择处理路径、并合并多路结果的开发者。需要 Go 1.26+，并已了解[输入与输出](./inputs-outputs.md)。本例使用 v0.5.1 API。
+本页面向需要按条件选择处理路径、并合并多路结果的开发者。需要 Go 1.26+，并已了解[输入与输出](./inputs-outputs.md)。本例使用 v0.5.2 API。
 
 分支通过输出的值或跳过状态表达。汇聚节点先等所有输入到达，再根据自己的策略处理有值与无值的输入。正常跳过不导致整轮失败。
 
@@ -92,7 +92,7 @@ func main() {
 
 ```sh
 go mod init example.com/pulse-branches
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 go run .
 ```
 

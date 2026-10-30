@@ -160,7 +160,7 @@ outbox 需要将业务变更与消息可靠地共同提交，保持事件身份�
 
 ## 6. 兼容与迁移
 
-- **版本基线**：本文描述 v0.5.1 对象模型。0.x 期间的破坏性变更随 minor 发布，并提供迁移说明。发布流程见 [`workflow-foundation.md` §8](workflow-foundation.md#8-演进顺序与可交付产物)。
+- **版本基线**：本文描述 v0.5.2 对象模型。0.x 期间的破坏性变更随 minor 发布，并提供迁移说明。发布流程见 [`workflow-foundation.md` §8](workflow-foundation.md#8-演进顺序与可交付产物)。
 - **`Sub` 换了含义（最要紧的一条，迁移说明放最前）**：`pulse.Sub(g, id, desc, binds, build)`（运行期现造子图）**被删除**，今天 `Sub` 是「挂一张**现成的**子图」（第 4 节）。跟着一起没的还有 `SubCtx`（`Context()` / `GraphID()` / `Path()` / `Observer()`）与运行期的绑定校验。替代写法逐条：① 子图在**装配期**建好，并 `DeclareInput` / `DeclareOutput` 声明端口——接线只能接端口，接子图内部的中间 Key 是静态错；② 子图的取消域**不用自己管**：每一次跑到那一步，引擎从**那一步的 ctx** 派生子执行的 ctx（阶段 2 之后没有转发 goroutine 这回事）；③ 图 id 自己起，建议沿用 `<父图 id>/<节点 id>` 这套写法；④ 挂载位置随每条回调由引擎发出来（`Site.Path`），出口直接读它就能带 `pulse.path`——不必再按层各建一个出口。`Fix` / `FixSkip` 补上「某一处挂载的固定值」这一格。YAML 侧**阶段 1 收紧过的那条已经撤回**（阶段 3）：`graph:` 节点上的 `retry:` 照装照跑——每一次尝试各建一份**新的子执行**，第一次那轮的桥回随它自己那条写暂存一起作废，父侧只拿得到成功那一次的输出版本（Go 侧 `Sub(..., pulse.Retry(...))` 同理）。
 - **冻结面怎么动**：七条哨兵**不新增、不改名**，但触发点要在 godoc、迁移说明与 release notes 里写准（第 8 节 (e)）：`ErrGraphStarted` 有两处——定义已封口后，`Add` / `DeclareInput` / `DeclareOutput` / `Sub` 改定义被拒；同一 `Execution` 二次 `Start` 被拒。`ErrGraphNotStarted` 仅由尚未成功启动的 `(*Execution).Wait` 返回；`Err` 不要求先启动；收尾前读取首错或当前 ctx 错误，收尾后与并发/重复 Wait 复用最终结论（会合可靠工作后，已锁存的树级 CheckpointError 优先并归为 failed，否则保持普通首错或真实取消），Wait 正常收尾的资源释放不会变成取消结果。
 - **端口是新的一层，子图要跟着声明**：`DeclareInput` / `DeclareOutput` 落地后，**被当作子图组合的图必须声明端口**——旧形态那种「绑定指向子图里任意声明过的 Key」不再成立（接到非端口是静态错）。迁移说明要逐条给出「原来绑内部 Key → 现在补一句 `DeclareOutput`」的改法。

@@ -1,6 +1,6 @@
 # 生命周期
 
-本页面向控制 Execution、实现 Observer 或解释快照状态的开发者，描述[v0.5.1](./migration.md)的精确契约。可运行示例见[输入与输出](../guide/inputs-outputs.md)、[子图](../guide/subgraphs.md)和[观测](../guide/observability.md)。
+本页面向控制 Execution、实现 Observer 或解释快照状态的开发者，描述[v0.5.2](./migration.md)的精确契约。可运行示例见[输入与输出](../guide/inputs-outputs.md)、[子图](../guide/subgraphs.md)和[观测](../guide/observability.md)。
 
 ## 定义的装配与封闭
 
@@ -19,6 +19,10 @@ Graph 的生命周期是创建、装配、封闭；它不保存本次运行的�
 封闭后，Add、DeclareInput、DeclareOutput 和 Sub 修改定义会返回包装 `ErrGraphStarted` 的错误。已经封闭的子图仍可挂到其他未封闭父图，定义也能顺序或并发运行多次。校验与封闭使用同一装配边界，封闭的就是被校验的定义。
 
 静态校验检查 Requires 来源、声明出口的生产者或透传入口、依赖环、挂载绑定及可见流式关系。它不执行回调，不验证业务函数的计算正确性。只需问题列表时使用 Topology；Validate 成功会改变装配状态。
+
+封闭定义复用静态验证结构，多个根共享子定义的纯声明；本次输入、skip、有效切面、额度池、宿主订阅、checkpoint 和恢复记录仍逐次检查。缓存不保存业务值或本轮执行状态。
+
+Topology 保持逐层非原子采样。开放子图在挂载后新增必需入口、导致祖先漏绑时，父层仍报告绑定错误；仍可见的子视图继续按真实挂载上下文报告内部依赖环和流问题，不把子图当独立根重新解释。Validate／Start 继续拒绝该漏绑定义。
 
 ## 一次执行的控制
 
