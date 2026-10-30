@@ -2,7 +2,7 @@
 
 Use `Key[pulse.Stream[T]]` for continuous production, individual acknowledgements, or live results across subgraphs. The slot publishes an endpoint; the endpoint manages sequences, a reading group, backpressure, and production status.
 
-This page uses the **v0.5.1** API. See [installation and versions](./installation.md).
+This page uses the **v0.5.2** API. See [installation and versions](./installation.md).
 
 ## Complete example: one quota slot, two broadcast consumers
 
@@ -80,7 +80,7 @@ In the example directory containing `main.go`, install the dependency and run:
 
 ```sh
 go mod init example.com/pulse-streams
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 go run -race .
 ```
 

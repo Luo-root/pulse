@@ -26,10 +26,10 @@ Pulse 提供图执行核心，以及可按需引入的观测和 YAML 装配包�
 
 ## 文档对应的版本
 
-本网站以 `v0.5.1` 为 API 基线，以下命令固定安装该版本。后续开发改动或尚未合并的分支按[安装页](../guide/installation.md)选择主线或对应本地源码：
+本网站以 `v0.5.2` 为 API 基线，以下命令固定安装该版本。后续开发改动或尚未合并的分支按[安装页](../guide/installation.md)选择主线或对应本地源码：
 
 ```bash
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 ```
 
-v0.5.1 需要 Go 1.26.0 或更高版本。
+v0.5.2 需要 Go 1.26.0 或更高版本。

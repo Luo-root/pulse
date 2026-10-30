@@ -47,6 +47,6 @@ The core uses only the standard library, with no database or scheduling-service 
 
 ## Documentation version
 
-These pages use v0.5.1 as their API baseline, including the complete reusable-definition and independent-execution object model. [Installation](installation.md) explains how to pin a version, select subsequent development changes, try unmerged local source, and check the selected dependency.
+These pages use v0.5.2 as their API baseline, including the complete reusable-definition and independent-execution object model. [Installation](installation.md) explains how to pin a version, select subsequent development changes, try unmerged local source, and check the selected dependency.
 
 Next: [Install Pulse](installation.md).

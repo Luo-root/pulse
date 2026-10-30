@@ -1,6 +1,6 @@
 # Unified production workflow comparison
 
-[中文](README.md). This isolated module provides the comparison method and reproduction commands for **Pulse (with Durable for reliable execution), Eino and Temporal** in the Pulse v0.5.1 documentation.
+[中文](README.md). This isolated module provides the comparison method and reproduction commands for **Pulse (with Durable for reliable execution), Eino and Temporal** in the Pulse v0.5.2 documentation.
 
 Current reruns ([#502](https://github.com/Luo-root/pulse/issues/502), related Durable #81) pin public releases: Core `v0.5.0`, Durable `v0.1.0`, and `pulse-durable/sqlitestore v0.1.0`, with Go 1.26 and no replace. Eino `v0.9.21` and Temporal SDK `v1.50.0` / API `v1.63.5` remain unchanged. Durable actually uses the maintained official SQLite backend. Write new results to fresh directories; frozen results stay unchanged.
 

@@ -2,6 +2,8 @@
 
 This page compares Pulse (with Durable for reliable execution), Eino and Temporal across execution, observation, resources, storage and recovery. Native execution, observation and resource data were collected on 2026-10-17; SQLite reliable execution and recovery data were collected on 2026-10-23.
 
+The site's current API baseline is v0.5.2. The charts below remain historical measurements from the stated dates and pinned versions, not a v0.5.2 rerun. No new equivalent production matrix was run for the validation and graph-algorithm improvements, so old data cannot establish performance for the new release.
+
 ## Test configuration
 
 The SQLite rerun uses Go 1.26, the Pulse Core v0.5.0 source baseline, Pulse Durable/sqlitestore v0.1.0, Eino v0.9.21 and Temporal v1.50.0. All tests use released dependencies without local replacements.

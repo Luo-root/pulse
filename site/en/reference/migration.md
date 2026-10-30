@@ -1,17 +1,27 @@
 # Migration
 
-This page documents the v0.5.1 reusable Graph definition, independent Execution, checkpoint bridge and stream APIs. Retain existing tests and verify the module version before upgrading.
+This page documents the v0.5.2 reusable Graph definition, independent Execution, checkpoint bridge and stream APIs. Retain existing tests and verify the module version before upgrading.
 
 ## Published releases and development documentation
 
-v0.5.1 includes the current object model, checkpoint bridge and sugar signatures below. Applications should use the matching v0.5.1 dependency:
+v0.5.2 includes the current object model, checkpoint bridge and sugar signatures below. Applications should use the matching v0.5.2 dependency:
 
 ```sh
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 go list -m github.com/Luo-root/pulse
 ```
 
-v0.5.1 requires Go 1.26.0+. Commit your application's go.mod/go.sum; for development changes or local replacements, verify the source directory and resolved version. See the [unified production comparison](production-comparison.md) for current performance, storage and recovery measurements.
+v0.5.2 requires Go 1.26.0+. Commit your application's go.mod/go.sum; for development changes or local replacements, verify the source directory and resolved version. See the [unified production comparison](production-comparison.md) for current performance, storage and recovery measurements.
+
+## Upgrade from v0.5.1 to v0.5.2
+
+v0.5.2 is a compatible patch and still requires Go 1.26.0 or later. Existing v0.5.1 callers need no signature changes; update the dependency and run existing regressions. The object-model, sugar, and managed-stream sections below help callers of earlier releases or transitional development APIs; these capabilities were not first introduced by this patch.
+
+This release improves sealed-definition validation reuse, shared-child assembly traversal, multi-output permission lookup, Mermaid wiring, and checkpoint declaration enumeration. Inputs, skips, aspects, quota pools, host subscriptions, and restoration records are still checked for each run. Topology now preserves cycle and stream diagnostics in visible child views beneath an invalid ancestor binding; Validate and Start continue to reject missing bindings.
+
+Benchmark tools now verify raw hashes and counts before resume writes, check actual CLI parallelism, reject invalid matrices early, and retain stdout after recovery timeouts. Nonempty older interrupted reports without a verifiable digest are rejected. Older complete reports can be checked against their final hash, while the existing same-sampler-version restriction remains.
+
+The [unified production comparison](production-comparison.md) retains original measurement dates, versions, and failure statuses; historical data are not relabeled as v0.5.2. See the [v0.5.2 Release](https://github.com/Luo-root/pulse/releases/tag/v0.5.2) for the complete changes.
 
 ## Node sugar constructors gain a description
 
@@ -27,7 +37,7 @@ Tee(g, id, description, in, outs, opts...)
 
 These show argument shapes. Every FanOut worker shares the description and retains its existing `id-1` through `id-N` identity. The description is static metadata in Topology / Snapshot, with no runtime setter.
 
-These signatures are part of the v0.5.1 API. Use [matching local source](../guide/installation.md) when testing development changes.
+These signatures are part of the v0.5.2 API. Use [matching local source](../guide/installation.md) when testing development changes.
 
 ## Local aspect options for stream nodes
 
@@ -55,7 +65,7 @@ Sub has no aggregate input gate. All skipped inlets still create a child whose i
 
 ## Migrate object responsibilities first
 
-| Concern | Before migration | v0.5.1 |
+| Concern | Before migration | v0.5.2 |
 |---|---|---|
 | Graph | One run's definition, slots, context, and error | Reusable static definition |
 | Context | Bound when constructing the graph | Supplied to NewExecution or Run |
@@ -130,7 +140,7 @@ Timeout cancels its inner context at expiry and waits for the body to exit. Code
 
 The rule applies to attribute keys and string values, source, host, error, trace, and host renderers using these primitives. Corresponding fragments from the built-in LineSink and AppendTextValue / AppendAttrs / AppendAttrsExcept remain byte-identical. Text-log parsers and fixed-output assertions should update expectations for these inputs and decode quoted fields as Go string literals.
 
-v0.5.1 uses these text-encoding rules; update log parsers and fixed-output tests when migrating.
+v0.5.2 uses these text-encoding rules; update log parsers and fixed-output tests when migrating.
 
 ## Migrate YAML and recovery integrations
 
