@@ -1,6 +1,6 @@
 # 观测与诊断
 
-本页面向需要查看运行进度、记录执行结果或排查流程问题的开发者。需要 Go 1.26+，并了解[输入与输出](./inputs-outputs.md)。示例使用 v0.5.1 API。
+本页面向需要查看运行进度、记录执行结果或排查流程问题的开发者。需要 Go 1.26+，并了解[输入与输出](./inputs-outputs.md)。示例使用 v0.5.2 API。
 
 Pulse 提供三种互补入口：`Topology` 查看定义，`Snapshot` 查看某次运行当前状态，`Observer` 接收生命周期回调。业务结果另由 `ReadOutput` 提供；结构与进度视图都不包含业务值。
 
@@ -77,7 +77,7 @@ func main() {
 
 ```sh
 go mod init example.com/pulse-observation
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 go run .
 ```
 

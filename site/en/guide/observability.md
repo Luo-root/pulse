@@ -1,6 +1,6 @@
 # Observation and diagnostics
 
-This page is for developers inspecting progress, recording outcomes, or diagnosing flow problems. It requires Go 1.26+ and familiarity with [inputs and outputs](./inputs-outputs.md). Examples use the v0.5.1 API.
+This page is for developers inspecting progress, recording outcomes, or diagnosing flow problems. It requires Go 1.26+ and familiarity with [inputs and outputs](./inputs-outputs.md). Examples use the v0.5.2 API.
 
 Pulse offers three complementary views: `Topology` inspects the definition, `Snapshot` reads one execution's current state, and `Observer` receives lifecycle callbacks. `ReadOutput` separately provides business results. Structure and progress views contain no business values.
 
@@ -77,7 +77,7 @@ Run in that directory:
 
 ```sh
 go mod init example.com/pulse-observation
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 go run .
 ```
 

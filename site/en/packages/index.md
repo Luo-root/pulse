@@ -26,10 +26,10 @@ Package references provide complete minimal programs and lookup tables. Guides e
 
 ## Documentation version
 
-This website uses `v0.5.1` as its API baseline. The command below pins that version. For subsequent development changes or unmerged branches, select main or matching local source as described in [installation](../guide/installation.md):
+This website uses `v0.5.2` as its API baseline. The command below pins that version. For subsequent development changes or unmerged branches, select main or matching local source as described in [installation](../guide/installation.md):
 
 ```bash
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 ```
 
-v0.5.1 requires Go 1.26.0 or later.
+v0.5.2 requires Go 1.26.0 or later.

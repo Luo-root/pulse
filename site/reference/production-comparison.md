@@ -2,6 +2,8 @@
 
 本文比较 Pulse（可靠执行使用 Durable）、Eino 和 Temporal 在执行、观测、资源、存储与恢复场景下的表现。普通执行、观测和资源数据采集于 2026-10-17；SQLite 可靠执行与恢复数据采集于 2026-10-23。
 
+本站当前 API 基线为 v0.5.2；下列图表仍是上述日期与固定版本的历史测量，不代表 v0.5.2 的重新实测。本次验证与图算法优化未另跑同规模生产矩阵，不能从旧数据推算新版本性能。
+
 ## 测试配置
 
 SQLite 重测使用 Go 1.26、Pulse Core v0.5.0 source baseline、Pulse Durable/sqlitestore v0.1.0、Eino v0.9.21 和 Temporal v1.50.0。所有测试均无本地 replace。

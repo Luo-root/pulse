@@ -10,10 +10,10 @@
 
 ## 版本与安装
 
-本页使用 Pulse v0.5.1 API，需要 Go 1.26.0+。安装方法见[安装说明](../site/guide/installation.md)：
+本页使用 Pulse v0.5.2 API，需要 Go 1.26.0+。安装方法见[安装说明](../site/guide/installation.md)：
 
 ```bash
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 ```
 
 ## 完整示例

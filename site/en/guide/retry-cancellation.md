@@ -1,6 +1,6 @@
 # Retry, timeout, and cancellation
 
-This page is for developers calling external services, handling transient faults, or controlling execution duration. First understand [inputs and outputs](./inputs-outputs.md) and normal skipping, and use the v0.5.1 API.
+This page is for developers calling external services, handling transient faults, or controlling execution duration. First understand [inputs and outputs](./inputs-outputs.md) and normal skipping, and use the v0.5.2 API.
 
 `Retry` and `Timeout` are `Aspect` functions that wrap a node's input wait, quota wait, and body. Their order determines the scope of time limits and attempts. Cancellation is a signal that the body must cooperate with.
 

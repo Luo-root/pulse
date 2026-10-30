@@ -22,7 +22,7 @@ The core package's dependency closure contains only the standard library. `pulse
 
 **This site uses v0.5.2 as its API baseline.** Prefer the fixed version; choose `go get …@main` only for development changes. It resolves the current main branch to a concrete version in `go.mod`. Once that file is committed, teammates use that resolved version; running the application does not automatically update it.
 
-v0.5.2 includes managed Stream, live Sub, message attempts, and incremental checkpoints and supports the examples on this site. Use the local replacement below when trying an unmerged change. Read the [migration notes](../reference/migration.md) before changing APIs.
+v0.5.2 retains the v0.5.1 managed Stream, live Sub, message-attempt, and incremental-checkpoint APIs while improving validation reuse and diagnostics. Upgrading from v0.5.1 requires no signature changes. Examples on this site use this version. Use the local replacement below for development changes and read the [migration notes](../reference/migration.md) for version differences.
 
 ## Create an example module
 

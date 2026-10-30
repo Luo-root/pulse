@@ -95,7 +95,7 @@ Pulse 的产品方向是**数据驱动、可观测、可组合的 Go workflow-en
 
 **落地进度**（按 [#311](https://github.com/Luo-root/pulse/issues/311) 分阶段，细则见 [`object-model.md`](object-model.md)）：阶段 1 静态组合（`Sub` 挂现成子图 + 端口 + 整棵子树封口）、阶段 2 `Execution` 拆分（定义不含任何运行态、每处挂载一份子执行）、阶段 3 事务性 `Retry`（attempt 写集：失败那一次的写不发布给下游）**都已落地**；阶段 4（快照 / 观测 / YAML 对齐）已实现（#319，静态接口、执行快照、Mermaid 与 YAML Analyze 均已具备）：静态结构看 Topology，运行进度看 Execution 的无值快照；Mermaid 从结构派生，YAML Analyze 不依赖注册表。阶段 5 负责迁移与发布收口。
 
-**兼容性**：本文以 v0.5.1 为基线。0.x 期间的破坏性 API 变更随 minor 发布，并同步更新示例与迁移说明。发布流程见 [`workflow-foundation.md`](workflow-foundation.md) §8。
+**兼容性**：本文以 v0.5.2 为基线。0.x 期间的破坏性 API 变更随 minor 发布，并同步更新示例与迁移说明。发布流程见 [`workflow-foundation.md`](workflow-foundation.md) §8。
 
 ## 因此刻意不做
 

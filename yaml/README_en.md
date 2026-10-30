@@ -10,10 +10,10 @@ The dependency direction is `pulse` ← `yaml`. This package depends on the root
 
 ## Version and installation
 
-This page uses the Pulse v0.5.1 API and requires Go 1.26.0+. See [installation](../site/en/guide/installation.md):
+This page uses the Pulse v0.5.2 API and requires Go 1.26.0+. See [installation](../site/en/guide/installation.md):
 
 ```bash
-go get github.com/Luo-root/pulse@v0.5.1
+go get github.com/Luo-root/pulse@v0.5.2
 ```
 
 ## Complete example
