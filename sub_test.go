@@ -11,6 +11,98 @@ import (
 	"time"
 )
 
+// 同一张定义每层挂两处：挂载实例数指数增长，定义可达性仍只需要检查 depth+1 张图。
+func subSharedMountDAG(tb testing.TB, depth int) (*Graph, []*Graph, Key[int]) {
+	tb.Helper()
+	port := NewKey[int]("shared.optional")
+	newGraph := func(id string) *Graph {
+		tb.Helper()
+		g, err := New(id, "")
+		if err != nil {
+			tb.Fatal(err)
+		}
+		if err := g.DeclareInput(NewPort(port)); err != nil {
+			tb.Fatal(err)
+		}
+		return g
+	}
+	child := newGraph("leaf")
+	graphs := []*Graph{child}
+	for level := 0; level < depth; level++ {
+		parent := newGraph(fmt.Sprintf("layer%d", level))
+		for _, id := range []string{"left", "right"} {
+			if err := Sub(parent, id, "共享定义", []SubBind{Fix(port, 1)}, child); err != nil {
+				tb.Fatal(err)
+			}
+		}
+		graphs = append(graphs, parent)
+		child = parent
+	}
+	return child, graphs, port
+}
+
+func TestSubMountCycleSharedDefinitions(t *testing.T) {
+	root, graphs, port := subSharedMountDAG(t, 8)
+	// Graph ID 可以相同；可达性与重复访问必须以定义指针为准。
+	outside, err := New(root.id, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Sub(outside, "mount", "合法共享", []SubBind{Fix(port, 1)}, root); err != nil {
+		t.Fatalf("repeated definitions rejected: %v", err)
+	}
+	for _, target := range graphs {
+		before := len(target.nodes)
+		err := Sub(target, "cycle", "不能闭环", []SubBind{Fix(port, 1)}, root)
+		if err == nil || !strings.Contains(err.Error(), "subgraph cycle:") || len(target.nodes) != before {
+			t.Fatalf("reachable graph %q: err=%v nodes=%d, want rejected without mutation", target.id, err, len(target.nodes))
+		}
+	}
+}
+
+func TestSubMountCycleWitnessDeclarationOrder(t *testing.T) {
+	port := NewKey[int]("optional")
+	graphs := make(map[string]*Graph)
+	for _, id := range []string{"root", "first", "second", "dead", "via", "target"} {
+		g := mustNew(t, t.Context(), id)
+		declareIn(t, g, NewPort(port))
+		graphs[id] = g
+	}
+	for _, edge := range [][2]string{{"via", "target"}, {"first", "dead"}, {"first", "via"}, {"second", "dead"}, {"second", "target"}, {"root", "first"}, {"root", "second"}} {
+		if err := Sub(graphs[edge[0]], edge[1], "声明顺序", []SubBind{Fix(port, 1)}, graphs[edge[1]]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := Sub(graphs["target"], "back", "拒绝真环", []SubBind{Fix(port, 1)}, graphs["root"])
+	want := `pulse: subgraph cycle: target -> root -> first -> via -> target -> target (mounting "root" here would put "target" inside its own subtree)`
+	if err == nil || err.Error() != want {
+		t.Fatalf("cycle witness = %v, want %s", err, want)
+	}
+	err = Sub(graphs["target"], "self", "拒绝自挂", []SubBind{Fix(port, 1)}, graphs["target"])
+	want = "pulse: subgraph cycle: target -> target (a graph cannot be mounted inside itself)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("self-cycle = %v, want %s", err, want)
+	}
+}
+
+func BenchmarkSubSharedMountDAG(b *testing.B) {
+	for _, depth := range []int{8, 12, 16, 18} {
+		b.Run(fmt.Sprint(depth), func(b *testing.B) {
+			root, _, port := subSharedMountDAG(b, depth)
+			b.ReportAllocs()
+			for b.Loop() {
+				parent, err := New("outside", "")
+				if err != nil {
+					b.Fatal(err)
+				}
+				if err := Sub(parent, "probe", "额外挂载", []SubBind{Fix(port, 1)}, root); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 // 图即节点（#293）：建图 / 桥接 / 取消域 / 观察者四件事都由 `Sub` 收齐。
 //
 // 这些用例对着探针实测的结论写（`.workbase/probe-subgraph`，五组实测已抄进票面）：
