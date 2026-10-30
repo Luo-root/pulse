@@ -232,7 +232,7 @@ func (e *Execution) recordChild(n *Node, child *Execution) {
 // 所产生的取消不算错误。任何错误返回的 value 都是零值，state 都是空串，调用方应先判 err。
 //
 // 成功收尾后，ready 返回业务值，skipped 返回零值且不报错。无人 Requires、未喂值的
-// 可选透传出口保持 pending，返回零值且不报错。ready 的 0、空串、nil 接口和 typed nil
+// 可选透传出口保持 pending，返回零值且不报错。ready 的 0、空串、nil 接口和带类型的 nil
 // 都保留 ready，不会被当作缺值。
 //
 // 读取不创建槽位、不改变状态、不发 Observer 事件，也不把业务值写进快照或错误。

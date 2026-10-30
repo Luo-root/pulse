@@ -72,6 +72,9 @@ type Graph struct {
 	sealed bool
 	// validation 只在完整检查成功的封口边界安装；只含冻结声明与有界静态事实。
 	validation *validationPlan
+	// validationDefinition 是每个封口定义共享的纯局部声明，子图未独立作根
+	// 时也可供父计划引用；不因此为子图建立 validation 或求值模式。
+	validationDefinition *validationDefinition
 }
 
 // Option 配置 Graph 的**定义**（默认运行策略与身份），在 `New` 时给。
@@ -245,7 +248,7 @@ func (g *Graph) Add(n *Node) error {
 	return g.addAll([]*Node{n})
 }
 
-// addAll 批量登记节点，**整批 all-or-nothing**：先对「现有图 + 本批次」全量
+// addAll 批量登记节点，**整批要么全部成功，要么全部失败**：先对「现有图 + 本批次」全量
 // 校验，再一次性提交。任一节点不过，图里不留这一批的任何痕迹（producer / 节点表都不动）
 // ——装配糖（FanOut）要的正是这条：它一次装 N 个 worker，返回错误时不能留下半批节点在跑。
 //

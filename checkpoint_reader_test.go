@@ -156,7 +156,7 @@ func TestCheckpointFanOutInterruptedResumeObligations(t *testing.T) {
 					_, raw := second.slotOf(key.asRef()).snapshot()
 					snapshot := raw.(Stream[int]).Snapshot()
 					valid := action == "ack" || action == "stop"
-					wantCommits := workers // source + restored worker + any active peer handing off.
+					wantCommits := workers // 来源节点 + 已恢复的工作节点 + 参与移交的活跃同组节点。
 					if valid {
 						wantCommits++
 						managedTestOK(t, err)
