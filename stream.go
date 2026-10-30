@@ -95,7 +95,7 @@ func checkStreamSlots(g *Graph, id, kind string, need int) error {
 // 取消、panic 都走它，所以不存在双次 close。send 本身在「发出去」与
 // `rc.Context().Done()` 上 select，取消能从堵住的发送里出来。
 //
-//   - fn 返回的 error 就是节点错误，走现有的首错取消；不要另开 error channel。
+//   - fn 返回的 error 就是节点错误，走现有的首错取消；不要另开错误通道。
 //   - 忽略 `send` 返回的 error 等于不响应取消——与引擎里其它不看 ctx 的 `Run`
 //     一样，糖不替调用方兜这个。
 //   - **空流**（一次都没 send 就正常返回）：下游看到关闭、零次回调、整轮成功。

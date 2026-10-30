@@ -14,9 +14,9 @@ import (
 	"time"
 )
 
-// A root source restores before a child's saved pass-through alias is decoded.
-// No Durable-private canonicalization is used: both historical and current
-// descriptors are legal inputs to the public Core restore contract.
+// 根来源先恢复，随后才解码子图已保存的透传别名。
+// 不使用 Durable 私有的规范化处理：历史描述符和当前描述符
+// 都是 Core 公开恢复契约允许的合法输入。
 func independentLateScope(t *testing.T, reference func(CheckpointStreamDescriptor) CheckpointStreamDescriptor, pending ...bool) (error, int32, bool, int, uint64) {
 	t.Helper()
 	ctx := checkpointTestContext(t)
@@ -50,8 +50,8 @@ func independentLateScope(t *testing.T, reference func(CheckpointStreamDescripto
 			return err
 		}
 		same.Store(a == b)
-		// Restored node completion must rebuild Done and the tail independently
-		// of the reader's first Receive. Wait for both ledgers to be installed.
+		// 恢复节点完成时必须重建 Done 和尾部，不能依赖读取方的首次 Receive。
+		// 等待两份账本都安装完成。
 		select {
 		case <-b.Done():
 		case <-rc.Context().Done():
@@ -72,8 +72,8 @@ func independentLateScope(t *testing.T, reference func(CheckpointStreamDescripto
 			return err
 		}
 		repeated.Add(1)
-		// Leave an observable result but discharge the second local ledger so
-		// that an unrelated reading-obligation error cannot hide the defect.
+		// 保留可观测结果，但清偿第二份本地账本的读取义务，
+		// 避免无关的读取义务错误掩盖此缺陷。
 		return d.Ack()
 	}))
 	ready := make(chan struct{})

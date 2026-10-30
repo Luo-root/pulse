@@ -25,7 +25,7 @@ const (
 	NodeCanceled NodeFinishReason = "canceled"
 )
 
-// 观测 attrs key 契约（归属 pulse 层）：字段语义的知识留在事实归属包，
+// 观测 Attrs 键契约（归属 pulse 层）：字段语义的知识留在事实归属包，
 // 折叠适配（observe.NewRecordObserver）只消费不定义——「同一出口 ≠
 // Record 变万能袋」。
 //
@@ -58,7 +58,7 @@ const (
 )
 
 // Observer 观察单次运行：图级两条 + 每个节点三条。
-// 默认无观察者（no-op）。实现必须并发安全：节点回调在各自的节点 goroutine
+// 默认无观察者（空操作）。实现必须并发安全：节点回调在各自的节点 goroutine
 // 上，图回调在 Start / Wait 的调用方 goroutine 上。panic / error 不得升格为
 // 节点失败（由 Execution 吞掉）。
 //
@@ -255,7 +255,7 @@ func WithObserver(o Observer) Option {
 	return func(g *Graph) { g.observer = o }
 }
 
-// notify 调用本次运行的观察者并吞掉 panic，避免只读 seam 变成节点失败。
+// notify 调用本次运行的观察者并吞掉 panic，避免只读接口边界变成节点失败。
 func (e *Execution) notify(fn func(Observer)) {
 	if e == nil || fn == nil {
 		return
@@ -264,7 +264,7 @@ func (e *Execution) notify(fn func(Observer)) {
 	if obs == nil {
 		return
 	}
-	defer func() { _ = recover() }() // 只读 seam：panic 静默，不升格为节点失败
+	defer func() { _ = recover() }() // 只读接口边界：panic 静默，不升格为节点失败
 	fn(obs)
 }
 
