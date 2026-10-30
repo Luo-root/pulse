@@ -295,7 +295,7 @@ func Only[T any](rc *RunCtx, k Key[T], v T) error {
 	// 先预检、再发布：sibling 里已经有**就绪**的槽就当场冲突，别先把 k 发出去、
 	// 再在补 Skip 时才失败——那会让本节点在这次错误之前多发布一条出口，下游甚至
 	// 可能已经被唤醒（引擎不回滚已发布的值）。
-	// 跳过过的 sibling 不算冲突：Skip 幂等，补一次是 no-op。
+	// 跳过过的 sibling 不算冲突：Skip 幂等，补一次是空操作。
 	for _, p := range rc.node.provides {
 		if p.name == want {
 			continue

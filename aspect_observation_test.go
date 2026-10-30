@@ -308,7 +308,7 @@ func TestAspectObservationTimeoutReportsOwnDeadline(t *testing.T) {
 			g := mustNew(t, ctx, "timeout-facts")
 			aspects := []Aspect{Timeout(time.Millisecond)}
 			if mode == "success" {
-				// This case checks a business error without timer expiry.
+				// 此用例检查计时器未到期时的业务错误。
 				aspects = []Aspect{Timeout(time.Hour)}
 			}
 			if mode == "parent" {
