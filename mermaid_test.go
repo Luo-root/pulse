@@ -162,6 +162,54 @@ func TestMermaidNestedPortsAndBinds(t *testing.T) {
 	}
 }
 
+func TestMermaidSharedParentKeepsAllBindingEndpoints(t *testing.T) {
+	input, a, b := NewKey[string]("incoming"), NewKey[string]("a"), NewKey[string]("b")
+	child := mustNew(t, t.Context(), "shared")
+	declareIn(t, child, NewPort(a), NewPort(b))
+	if err := child.DeclareOutput(NewPort(a), NewPort(b)); err != nil {
+		t.Fatal(err)
+	}
+	root := mustNew(t, t.Context(), "root")
+	declareIn(t, root, NewPort(input))
+	for _, side := range []string{"left", "right"} {
+		outA, outB := NewKey[string](side+".a"), NewKey[string](side+".b")
+		if err := Sub(root, side, "", []SubBind{In(input, a), Out(a, outA), In(input, b), Out(b, outB)}, child); err != nil {
+			t.Fatal(err)
+		}
+		if err := root.DeclareOutput(NewPort(outA), NewPort(outB)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	top := root.Topology()
+	got := top.Mermaid()
+	doc := parseMermaid(t, got)
+	rootIn := doc.vertex(t, "root", "in · incoming: string")
+	for _, side := range []string{"left", "right"} {
+		var inputEndpoints []string
+		for _, edge := range doc.edges {
+			if edge.from == rootIn && edge.label == input.Name() && doc.vertices[edge.to].label == side+" · in · incoming: string" {
+				inputEndpoints = append(inputEndpoints, edge.to)
+			}
+		}
+		if len(inputEndpoints) != 2 || inputEndpoints[0] == inputEndpoints[1] {
+			t.Fatalf("%s lost distinct child inlets: %v", side, inputEndpoints)
+		}
+		for i, name := range []string{"a", "b"} {
+			childIn := doc.vertex(t, "shared @ "+side, "in · "+name+": string")
+			childOut := doc.vertex(t, "shared @ "+side, "out · "+name+": string")
+			mountOut := doc.vertex(t, "root", side+" · out · "+side+"."+name+": string")
+			rootOut := doc.vertex(t, "root", "out · "+side+"."+name+": string")
+			doc.edge(t, inputEndpoints[i], childIn, "incoming → "+name)
+			doc.edge(t, childIn, childOut, name)
+			doc.edge(t, childOut, mountOut, name+" → "+side+"."+name)
+			doc.edge(t, mountOut, rootOut, side+"."+name)
+		}
+	}
+	if next := top.Mermaid(); next != got {
+		t.Fatal("binding indexes changed deterministic output")
+	}
+}
+
 func TestMermaidIDsDoNotCollideAcrossDomains(t *testing.T) {
 	leafIn := NewKey[string]("m0")
 	leafOut := NewKey[string]("wire")

@@ -16,6 +16,9 @@ type Node struct {
 	desc     string
 	requires []keyRef
 	provides []keyRef
+	// provided 只为多输出节点索引静态写权限；单输出直接比较，不另建 map。
+	// 构造后只读，跨 Execution 共享，不包含槽位或业务值。
+	provided map[string]struct{}
 	run      func(*RunCtx) error
 	aspects  []Aspect
 	// streamKind 非空表示这个节点是流式糖装出来的（"produce" / "consume" /
@@ -94,7 +97,7 @@ func Deps(groups ...[]keyRef) []keyRef {
 // 就等于绕过装配锁与封口改定义——`Topology()` 与校验看到的图、真跑的那张成了两张。
 // 复制是防御性的，诚实的调用方看不出区别（`Requires` / `Provides` / `Deps` 本来就返回新切片）。
 func NewNode(id, description string, requires, provides []keyRef, run func(*RunCtx) error, aspects ...Aspect) *Node {
-	return &Node{
+	n := &Node{
 		id:       id,
 		desc:     description,
 		requires: append([]keyRef(nil), requires...),
@@ -102,6 +105,13 @@ func NewNode(id, description string, requires, provides []keyRef, run func(*RunC
 		run:      run,
 		aspects:  append([]Aspect(nil), aspects...),
 	}
+	if len(n.provides) > 1 {
+		n.provided = make(map[string]struct{}, len(n.provides))
+		for _, ref := range n.provides {
+			n.provided[ref.name] = struct{}{}
+		}
+	}
+	return n
 }
 
 // ID 返回节点标识。
@@ -344,11 +354,13 @@ func (rc *RunCtx) must(k keyRef, write bool) error {
 		return fmt.Errorf("%w: %s on node %s", ErrUndeclared, k, rc.NodeID())
 	}
 	if write {
-		// 只允许写 Provides。
-		for _, p := range rc.node.provides {
-			if p.name == k.name {
+		// 类型已由 allowed 核验；这里仅判该声明是否可写，不逐次扫描 Provides。
+		if len(rc.node.provides) == 1 {
+			if rc.node.provides[0].name == k.name {
 				return nil
 			}
+		} else if _, ok := rc.node.provided[k.name]; ok {
+			return nil
 		}
 		return fmt.Errorf("%w: %s is not provided by node %s", ErrUndeclared, k, rc.NodeID())
 	}
